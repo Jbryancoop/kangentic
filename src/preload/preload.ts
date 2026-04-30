@@ -330,6 +330,13 @@ const api: ElectronAPI = {
     saveImage: (data: string, extension: string) => ipcRenderer.invoke(IPC.CLIPBOARD_SAVE_IMAGE, data, extension),
   },
 
+  browser: {
+    captureAndSend: (input) => ipcRenderer.invoke(IPC.BROWSER_CAPTURE_SEND, input),
+    getUrls: (taskId) => ipcRenderer.invoke(IPC.BROWSER_URL_GET, taskId),
+    setTaskUrl: (taskId, url) => ipcRenderer.invoke(IPC.BROWSER_URL_SET_TASK, taskId, url),
+    clearTaskUrl: (taskId) => ipcRenderer.invoke(IPC.BROWSER_URL_CLEAR_TASK, taskId),
+  },
+
   platform: process.platform,
 
   webUtils: {

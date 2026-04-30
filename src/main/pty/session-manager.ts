@@ -333,6 +333,43 @@ export class SessionManager extends EventEmitter {
     queue.enqueue(data);
   }
 
+  /**
+   * Resolve once the session's write queue has flushed all enqueued bytes
+   * to the PTY. Used by callers that need to sequence follow-up keystrokes
+   * after a large paste (e.g. the embedded browser pane sends payload ->
+   * await drain -> Escape -> Enter so the submit keystrokes don't race the
+   * chunked drain loop and split the paste mid-stream).
+   * Resolves immediately if there is no active queue or it is already idle.
+   */
+  drain(sessionId: string): Promise<void> {
+    const queue = this.writeQueues.get(sessionId);
+    if (!queue) return Promise.resolve();
+    return queue.drained();
+  }
+
+  /**
+   * Write `data` to the session's PTY in a single, un-chunked `pty.write`
+   * call. This BYPASSES the per-session FIFO write queue and the 4KB
+   * chunking that the queue enforces.
+   *
+   * Use this only when atomicity matters more than backpressure-friendly
+   * chunking, e.g. for the bracketed-paste-and-submit packet
+   * (`\e[200~ ... \e[201~\r`) where chunking can split the close marker
+   * and the trailing Enter across separate kernel reads, causing the TUI
+   * to see them as racing events. Empirically reproduced via
+   * `scripts/paste-harness.js` `split-cr`: 4/5 success vs `combined-cr`
+   * 10/10 success.
+   *
+   * Caller responsibility: await `drain(sessionId)` first if the queue
+   * may have pending bytes; otherwise `writeRaw` can interleave with
+   * still-draining chunks.
+   */
+  writeRaw(sessionId: string, data: string): void {
+    const session = this.registry.get(sessionId);
+    if (!session?.pty || data.length === 0) return;
+    session.pty.write(data);
+  }
+
   resize(sessionId: string, cols: number, rows: number): { colsChanged: boolean } {
     const session = this.registry.get(sessionId);
     if (!session?.pty) return { colsChanged: false };

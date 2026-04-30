@@ -88,6 +88,66 @@ const appLaunchTime = Date.now();
 const isEphemeral = process.argv.includes('--ephemeral');
 const isE2ETest = process.env.NODE_ENV === 'test';
 
+// Spike: harden any <webview> tags attached to the renderer.
+// - Strip nodeIntegration and any preload script the renderer attempts to set.
+// - Force contextIsolation + sandbox.
+// - Allow only http(s): src URLs; deny file://, chrome://, kangentic:// etc.
+// - Deny window.open() inside the embedded page (popups become no-ops).
+// - Deny in-webview navigations to non-http(s) schemes.
+app.on('web-contents-created', (_event, contents) => {
+  if (contents.getType() !== 'webview') return;
+
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+  contents.on('will-navigate', (navigationEvent, urlString) => {
+    try {
+      const parsed = new URL(urlString);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        navigationEvent.preventDefault();
+      }
+    } catch {
+      navigationEvent.preventDefault();
+    }
+  });
+
+  // F5 / Ctrl+R / Cmd+R reload when the embedded webview has focus.
+  // Fires inside the webview's own webContents, so a parent-renderer
+  // keydown listener wouldn't see these keystrokes.
+  contents.on('before-input-event', (inputEvent, input) => {
+    if (input.type !== 'keyDown') return;
+    const isF5 = input.key === 'F5';
+    const isCtrlR = (input.control || input.meta) && (input.key === 'r' || input.key === 'R');
+    if (isF5 || isCtrlR) {
+      inputEvent.preventDefault();
+      contents.reload();
+    }
+  });
+});
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-attach-webview', (_attachEvent, webPreferences, params) => {
+    delete (webPreferences as Record<string, unknown>).preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.webSecurity = true;
+
+    let allowed = false;
+    try {
+      const parsed = new URL(params.src);
+      allowed = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      allowed = false;
+    }
+    if (!allowed) {
+      // Replacing src here (rather than preventing the attach) keeps the
+      // <webview> mounted but blank, which is easier for the renderer to
+      // recover from than a thrown attach error.
+      params.src = 'about:blank';
+    }
+  });
+});
+
 // Enforce single instance -- prevents manual double-launches from spawning
 // duplicate windows. Ephemeral instances (worktree previews) and E2E test
 // instances skip this so they can coexist with a running dogfooding app.
@@ -144,6 +204,9 @@ const createWindow = () => {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // Spike: enable <webview> for the embedded browser side-pane in
+      // TaskDetailDialog. Hardened via the will-attach-webview hook below.
+      webviewTag: true,
     },
   });
 

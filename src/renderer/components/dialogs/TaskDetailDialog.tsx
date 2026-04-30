@@ -53,6 +53,10 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   const [isEditing, setIsEditing] = useState(!!initialEdit);
   const changesOpen = useSessionStore((s) => s.changesOpenTasks.has(task.id));
   const toggleChangesOpen = useSessionStore((s) => s.toggleChangesOpen);
+  // Spike: browser pane toggle persists across dialog open/close, mirroring
+  // the Changes panel's per-task state. Mutually exclusive with changes.
+  const browserOpen = useSessionStore((s) => s.browserOpenTasks.has(task.id));
+  const toggleBrowserOpen = useSessionStore((s) => s.toggleBrowserOpen);
 
   const isArchived = task.archived_at !== null;
   const currentSwimlane = swimlanes.find((s) => s.id === task.swimlane_id);
@@ -118,10 +122,27 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   const hasSessionContext = sessionState.hasSessionContext || actions.toggling;
 
   // Dialog sizing depends on session/edit state.
-  const needsLargeDialog = hasSessionContext || changesOpen;
+  const needsLargeDialog = hasSessionContext || changesOpen || browserOpen;
   const dialogSizeClass = isEditing || !needsLargeDialog
     ? (sessionState.isQueued ? 'w-[520px] h-[320px]' : 'w-[700px]')
     : 'w-[90vw] h-[85vh]';
+
+  const handleToggleBrowser = useCallback(() => {
+    // Mutually exclusive with the changes panel for the spike's 2-col layout.
+    if (!browserOpen && changesOpen) toggleChangesOpen(task.id);
+    toggleBrowserOpen(task.id);
+  }, [browserOpen, changesOpen, toggleBrowserOpen, toggleChangesOpen, task.id]);
+
+  const handleToggleChanges = useCallback(() => {
+    if (!changesOpen && browserOpen) toggleBrowserOpen(task.id);
+    toggleChangesOpen(task.id);
+  }, [browserOpen, changesOpen, toggleBrowserOpen, toggleChangesOpen, task.id]);
+  // Browser pane only renders inside the body's active-session branch, which
+  // requires a live (non-queued, non-suspended) session. Match that here so
+  // the toggle pill doesn't appear when clicking it would do nothing.
+  const canShowBrowser = !!sessionState.session?.id
+    && sessionState.displayState.kind !== 'queued'
+    && sessionState.displayState.kind !== 'suspended';
 
   const { copied: displayIdCopied, copy: copyDisplayId } = useCopyDisplayId(task.display_id);
 
@@ -260,7 +281,10 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
       projectPath={projectPath}
       canShowChanges={sessionState.canShowChanges}
       changesOpen={changesOpen}
-      onToggleChanges={() => toggleChangesOpen(task.id)}
+      onToggleChanges={handleToggleChanges}
+      canShowBrowser={canShowBrowser}
+      browserOpen={browserOpen}
+      onToggleBrowser={handleToggleBrowser}
     />
   );
 
@@ -374,6 +398,7 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
             resumeFailed={actions.resumeFailed}
             resumeError={actions.resumeError}
             onResetSession={actions.handleResetSession}
+            browserOpen={browserOpen}
           />
         )}
       </BaseDialog>

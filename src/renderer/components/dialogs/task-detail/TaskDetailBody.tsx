@@ -4,6 +4,7 @@ import { TerminalTab } from '../../terminal/TerminalTab';
 import { ContextBar } from '../../terminal/ContextBar';
 import { ShimmerOverlay } from '../../ShimmerOverlay';
 import { SessionSummaryPanel } from '../SessionSummaryPanel';
+import { BrowserPane } from '../../browser/BrowserPane';
 import { PriorityBadge } from '../../backlog/PriorityBadge';
 import { LabelPills } from '../../Pill';
 import { useConfigStore } from '../../../stores/config-store';
@@ -37,6 +38,7 @@ interface TaskDetailBodyProps {
   resumeFailed?: boolean;
   resumeError?: string;
   onResetSession?: () => void;
+  browserOpen: boolean;
 }
 
 export function TaskDetailBody({
@@ -60,6 +62,7 @@ export function TaskDetailBody({
   resumeFailed,
   resumeError,
   onResetSession,
+  browserOpen,
 }: TaskDetailBodyProps) {
   const labelColors = useConfigStore((state) => state.config.backlog?.labelColors) ?? {};
   const defaultBaseBranch = useConfigStore((state) => state.config.git.defaultBaseBranch);
@@ -153,12 +156,25 @@ export function TaskDetailBody({
 
   // Active terminal session
   if (sessionId && displayKind !== 'queued' && displayKind !== 'suspended') {
+    // Spike: browser pane takes the right half when toggled on, and is
+    // mutually exclusive with the changes panel.
+    const terminalWidthClass = (browserOpen || changesOpen) ? 'w-1/2' : 'flex-1';
+    const browserPaneElement = browserOpen && (
+      <div className="w-1/2 min-h-0 flex-shrink-0 border-l border-edge">
+        <BrowserPane
+          sessionId={sessionId}
+          taskId={task.id}
+          cwd={task.worktree_path ?? projectPath}
+        />
+      </div>
+    );
+
     return (
       <>
         {descriptionBar}
         <div className="flex-1 min-h-0 flex">
           {!changesExpanded && (
-            <div className={`${changesOpen ? 'w-1/2' : 'flex-1'} min-h-0 relative`}>
+            <div className={`${terminalWidthClass} min-h-0 relative`}>
               <div className="absolute inset-0">
                 <TerminalTab
                   key={sessionId}
@@ -169,7 +185,7 @@ export function TaskDetailBody({
               </div>
             </div>
           )}
-          {changesPanelElement}
+          {browserOpen ? browserPaneElement : changesPanelElement}
         </div>
         <ContextBar sessionId={sessionId} />
       </>

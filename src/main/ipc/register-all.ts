@@ -9,6 +9,7 @@ import { BoardConfigManager } from '../config/board-config-manager';
 import { GitDetector } from '../git/git-detector';
 import { ShellResolver } from '../pty/spawn/shell-resolver';
 import { CommandInjector } from '../engine/command-injector';
+import { createPasteEngine } from '../pty/paste-engine';
 import {
   registerProjectHandlers,
   cleanupProject as cleanupProjectImpl,
@@ -28,6 +29,7 @@ import { registerBoardHandlers } from './handlers/board';
 import { registerSystemHandlers } from './handlers/system';
 import { registerBacklogHandlers } from './handlers/backlog';
 import { registerGitDiffHandlers } from './handlers/git-diff';
+import { registerBrowserHandlers } from './handlers/browser';
 import type { IpcContext } from './ipc-context';
 import type { McpHttpServerHandle } from '../agent/mcp-http-server';
 
@@ -57,9 +59,12 @@ export function registerAllIpc(mainWindow: BrowserWindow, mcpServerHandle: McpHt
     return;
   }
 
-  // Eagerly create SessionManager + CommandInjector + BoardConfigManager (lightweight, needed early)
+  // Eagerly create SessionManager + PasteEngine + CommandInjector + BoardConfigManager
+  // (lightweight, needed early). CommandInjector depends on PasteEngine for
+  // its delivery primitive, so pasteEngine is constructed first.
   const sessionManager = new SessionManager();
-  const commandInjector = new CommandInjector(sessionManager);
+  const pasteEngine = createPasteEngine(sessionManager);
+  const commandInjector = new CommandInjector(sessionManager, pasteEngine);
   const boardConfigManager = new BoardConfigManager({
     ephemeral: process.argv.includes('--ephemeral'),
   });
@@ -96,6 +101,7 @@ export function registerAllIpc(mainWindow: BrowserWindow, mcpServerHandle: McpHt
       return shellResolver;
     },
     commandInjector,
+    pasteEngine,
     currentProjectId: null,
     currentProjectPath: null,
     mcpServerHandle,
@@ -111,6 +117,7 @@ export function registerAllIpc(mainWindow: BrowserWindow, mcpServerHandle: McpHt
   registerBoardHandlers(context);
   registerBacklogHandlers(context);
   registerGitDiffHandlers(context);
+  registerBrowserHandlers(context);
   registerSystemHandlers(context);
 
   // Analytics: renderer error tracking (fire-and-forget from renderer)

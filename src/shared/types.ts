@@ -739,6 +739,12 @@ export interface AppConfig {
     labelColors: Record<string, string>;
   };
 
+  // Spike: embedded browser pane defaults. Project-overridable so each
+  // project remembers its own dev-server URL.
+  browser?: {
+    defaultUrl?: string;
+  };
+
   hasCompletedFirstRun: boolean;
   showBoardSearch: boolean;
   skipDeleteConfirm: boolean;
@@ -838,6 +844,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     ],
     labelColors: {},
   },
+  browser: {},
   hasCompletedFirstRun: false,
   showBoardSearch: true,
   skipDeleteConfirm: false,
@@ -1835,6 +1842,14 @@ export interface ElectronAPI {
     saveImage: (data: string, extension: string) => Promise<string>;
   };
 
+  // Browser (spike: embedded webview capture-and-send)
+  browser: {
+    captureAndSend: (input: BrowserCaptureInput) => Promise<{ filePath: string }>;
+    getUrls: (taskId: string) => Promise<{ projectDefault: string | null; taskOverride: string | null }>;
+    setTaskUrl: (taskId: string, url: string) => Promise<void>;
+    clearTaskUrl: (taskId: string) => Promise<void>;
+  };
+
   // Platform
   platform: string;
 
@@ -1842,6 +1857,45 @@ export interface ElectronAPI {
   webUtils: {
     getPathForFile: (file: File) => string;
   };
+}
+
+// Browser (spike: embedded webview capture-and-send)
+export interface BrowserPickedElement {
+  selector: string;
+  tagName: string;
+  id?: string;
+  classes: string[];
+  testId?: string;
+  ariaLabel?: string;
+  role?: string;
+  accessibleName?: string;
+  text?: string;
+  rect: { x: number; y: number; width: number; height: number };
+  computedStyles: Record<string, string>;
+  outerHTML: string;
+  ancestors: Array<{
+    tagName: string;
+    id?: string;
+    classes: string[];
+    testId?: string;
+    role?: string;
+  }>;
+}
+
+export interface BrowserCaptureInput {
+  sessionId: string;
+  taskId: string;
+  /**
+   * The agent's working directory (task.worktree_path ?? project.path).
+   * Captures are written under this path so any agent's sandboxed file
+   * tools can reach them via a relative path in the @-mention.
+   */
+  cwd: string;
+  url: string;
+  pngBase64: string;
+  pickedElement: BrowserPickedElement | null;
+  selectedText: string;
+  note: string;
 }
 
 declare global {

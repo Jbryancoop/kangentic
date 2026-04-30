@@ -1,4 +1,5 @@
 import type { SessionManager } from '../pty/session-manager';
+import type { PasteEngine } from '../pty/paste-engine';
 import { sanitizeForPty } from '../../shared/paths';
 
 /**
@@ -21,11 +22,22 @@ interface PendingInjection {
  *
  * The injector is keyed by taskId so rapid moves cancel previous injections.
  * All state is in-memory -- no persistence needed (event-based, not recoverable).
+ *
+ * Delivery is delegated to PasteEngine.pasteAndSubmit, which writes the
+ * `text + \r` packet via a single un-chunked pty.write call. Empirically
+ * proved 100% reliable via scripts/paste-harness.js (vs the legacy split
+ * delivery which was 4/5 on multi-line and 0/5 with text+Esc+Enter atomic).
+ * The Ctrl+C interrupt for existing sessions stays here because it requires
+ * the TUI to FULLY process the interrupt-clear before new text arrives;
+ * sending it in the same atomic write as the text would cancel the text.
  */
 export class CommandInjector {
   private pending = new Map<string, PendingInjection>();
 
-  constructor(private sessionManager: SessionManager) {}
+  constructor(
+    private sessionManager: SessionManager,
+    private pasteEngine: PasteEngine,
+  ) {}
 
   /**
    * Schedule an auto-command for delivery to a PTY session.
@@ -178,57 +190,89 @@ export class CommandInjector {
   }
 
   /**
-   * Deliver a command to a PTY session using separate writes with delays.
+   * Deliver a command to a PTY session via the PasteEngine.
    *
-   * Sends each part (text, Escape, Enter) as individual pty.write() calls
-   * so Ink processes them as separate keypresses rather than a single paste.
-   * Escape dismisses any autocomplete popup before Enter submits.
-   *
-   * Sequence: [Ctrl+C] → 150ms → [command text] → 100ms → [Escape] → 100ms → [Enter]
+   * Flow:
+   *   1. (optional) Ctrl+C as a separate write to clear pending input or
+   *      interrupt thinking. We give the TUI ~150ms to process the
+   *      interrupt before sending the command text - if Ctrl+C and text
+   *      were in the same atomic write, the interrupt would cancel the
+   *      text we just wrote (verified via scripts/paste-harness.js).
+   *   2. pasteEngine.pasteAndSubmit writes `text + \r` as ONE atomic
+   *      pty.write, guaranteeing the Enter is processed in the same
+   *      kernel read as the text. No autocomplete-Escape needed -
+   *      atomic delivery sidesteps the autocomplete race entirely.
    *
    * @param sendCtrlC - Send Ctrl+C first to clear existing input / interrupt thinking
    */
-  private deliver(sessionId: string, taskId: string, command: string, sendCtrlC: boolean): void {
+  private async deliver(
+    sessionId: string,
+    taskId: string,
+    command: string,
+    sendCtrlC: boolean,
+  ): Promise<void> {
     const sanitized = this.sanitize(command);
     if (!sanitized) {
       this.pending.delete(taskId);
       return;
     }
 
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    let delay = 0;
-
-    // Optional: Ctrl+C to clear existing input / interrupt thinking
-    if (sendCtrlC) {
-      this.sessionManager.write(sessionId, '\x03');
-      delay = 150;
-    }
-
-    // Type the command text
-    timers.push(setTimeout(() => {
-      this.sessionManager.write(sessionId, sanitized);
-    }, delay));
-    delay += 100;
-
-    // Escape to dismiss autocomplete
-    timers.push(setTimeout(() => {
-      this.sessionManager.write(sessionId, '\x1b');
-    }, delay));
-    delay += 100;
-
-    // Enter to submit
-    timers.push(setTimeout(() => {
-      this.sessionManager.write(sessionId, '\r');
-      this.pending.delete(taskId);
-      console.log(`[AUTO_COMMAND] Delivered to session ${sessionId.slice(0, 8)} for task ${taskId.slice(0, 8)}`);
-    }, delay));
+    // Per-delivery AbortController so cancel(taskId) can interrupt the
+    // engine if it's mid-await on submission evidence.
+    const controller = new AbortController();
+    let interruptTimer: ReturnType<typeof setTimeout> | null = null;
 
     this.pending.set(taskId, {
       cleanup: () => {
-        for (const t of timers) clearTimeout(t);
+        controller.abort();
+        if (interruptTimer) clearTimeout(interruptTimer);
         this.pending.delete(taskId);
       },
     });
+
+    try {
+      if (sendCtrlC) {
+        // Send Ctrl+C through the queue, then drain so it's flushed,
+        // then a brief settle window to let the TUI process the
+        // interrupt-clear before we deliver the new command. This window
+        // is the ONLY wall-clock delay in the path; it's load-bearing
+        // because the interrupt-clear is async on the TUI side.
+        this.sessionManager.write(sessionId, '\x03');
+        await this.sessionManager.drain(sessionId);
+        await new Promise<void>((resolve, reject) => {
+          if (controller.signal.aborted) {
+            reject(new Error('aborted'));
+            return;
+          }
+          interruptTimer = setTimeout(() => resolve(), 150);
+          controller.signal.addEventListener('abort', () => {
+            if (interruptTimer) clearTimeout(interruptTimer);
+            reject(new Error('aborted'));
+          }, { once: true });
+        });
+      }
+
+      await this.pasteEngine.pasteAndSubmit(sessionId, sanitized, {
+        bracketed: false,
+        signal: controller.signal,
+        source: `auto_command:${taskId.slice(0, 8)}`,
+      });
+
+      console.log(`[AUTO_COMMAND] Delivered to session ${sessionId.slice(0, 8)} for task ${taskId.slice(0, 8)}`);
+    } catch (caughtError) {
+      // Ignore aborts (cleanup already ran).
+      const message = caughtError instanceof Error ? caughtError.message : String(caughtError);
+      if (!message.includes('abort')) {
+        console.warn(`[AUTO_COMMAND] Delivery failed for task ${taskId.slice(0, 8)}: ${message}`);
+      }
+    } finally {
+      // Only clear pending if it's still our entry (cleanup may have
+      // already cleared it during cancel).
+      const entry = this.pending.get(taskId);
+      if (entry) {
+        this.pending.delete(taskId);
+      }
+    }
   }
 
   /**

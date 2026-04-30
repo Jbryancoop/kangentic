@@ -8,9 +8,12 @@ export interface TaskChangesPanelSlice {
   changesSelectedFile: Record<string, string>;
   /** View mode for the task-detail Changes panel, keyed by task ID (default 'split'). */
   changesViewMode: Record<string, 'split' | 'expanded'>;
+  /** Task IDs whose Browser pane is open (persists across dialog open/close). */
+  browserOpenTasks: Set<string>;
   toggleChangesOpen: (taskId: string) => void;
   setChangesSelectedFile: (taskId: string, filePath: string | null) => void;
   setChangesViewMode: (taskId: string, mode: 'split' | 'expanded') => void;
+  toggleBrowserOpen: (taskId: string) => void;
 }
 
 /**
@@ -23,6 +26,7 @@ export const createTaskChangesPanelSlice: StateCreator<SessionStore, [], [], Tas
   changesOpenTasks: new Set<string>(),
   changesSelectedFile: {},
   changesViewMode: {},
+  browserOpenTasks: new Set<string>(),
 
   toggleChangesOpen: (taskId) => {
     const next = new Set(get().changesOpenTasks);
@@ -35,6 +39,16 @@ export const createTaskChangesPanelSlice: StateCreator<SessionStore, [], [], Tas
       viewMode[taskId] = 'split';
     }
     set({ changesOpenTasks: next, changesViewMode: viewMode });
+  },
+
+  toggleBrowserOpen: (taskId) => {
+    const next = new Set(get().browserOpenTasks);
+    if (next.has(taskId)) {
+      next.delete(taskId);
+    } else {
+      next.add(taskId);
+    }
+    set({ browserOpenTasks: next });
   },
 
   setChangesViewMode: (taskId, mode) => {

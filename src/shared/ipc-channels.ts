@@ -202,6 +202,12 @@ export const IPC = {
   // Clipboard
   CLIPBOARD_SAVE_IMAGE: 'clipboard:saveImage',
 
+  // Browser (spike: embedded webview capture-and-send)
+  BROWSER_CAPTURE_SEND: 'browser:captureSend',
+  BROWSER_URL_GET: 'browser:urlGet',
+  BROWSER_URL_SET_TASK: 'browser:urlSetTask',
+  BROWSER_URL_CLEAR_TASK: 'browser:urlClearTask',
+
   // Updater
   UPDATE_CHECK: 'updater:check',
   UPDATE_INSTALL: 'updater:install',

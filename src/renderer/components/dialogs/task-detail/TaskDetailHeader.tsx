@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useCopyDisplayId } from './useCopyDisplayId';
-import { X, Trash2, Pencil, Loader2, FolderGit2, FolderOpen, GitPullRequest, GitCompare, ArrowRightLeft, ChevronRight, ChevronLeft, CirclePause, CirclePlay, Clock, SquareChevronRight, Zap, Archive, Inbox, Copy, Check } from 'lucide-react';
+import { X, Trash2, Pencil, Loader2, FolderGit2, FolderOpen, GitPullRequest, GitCompare, ArrowRightLeft, ChevronRight, ChevronLeft, CirclePause, CirclePlay, Clock, SquareChevronRight, Zap, Archive, Inbox, Copy, Check, Globe } from 'lucide-react';
 import { usePopoverPosition } from '../../../hooks/usePopoverPosition';
 import { getSwimlaneIcon } from '../../../utils/swimlane-icons';
 import { ICON_REGISTRY } from '../../../utils/swimlane-icons';
@@ -35,6 +35,9 @@ interface TaskDetailHeaderProps {
   canShowChanges: boolean;
   changesOpen: boolean;
   onToggleChanges: () => void;
+  canShowBrowser: boolean;
+  browserOpen: boolean;
+  onToggleBrowser: () => void;
 }
 
 export function TaskDetailHeader({
@@ -61,6 +64,9 @@ export function TaskDetailHeader({
   canShowChanges,
   changesOpen,
   onToggleChanges,
+  canShowBrowser,
+  browserOpen,
+  onToggleBrowser,
 }: TaskDetailHeaderProps) {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const commandButtonRef = useRef<HTMLDivElement>(null);
@@ -213,6 +219,24 @@ export function TaskDetailHeader({
             >
               <GitCompare size={14} />
               Changes
+            </Pill>
+          )}
+
+          {/* Browser toggle pill (spike) */}
+          {canShowBrowser && (
+            <Pill
+              shape="square"
+              onClick={onToggleBrowser}
+              className={`flex-shrink-0 transition-colors border ${
+                browserOpen
+                  ? 'bg-accent/15 text-accent-fg border-accent/30'
+                  : 'bg-surface-hover/50 text-fg-muted hover:text-fg-secondary hover:bg-surface-hover border-transparent'
+              }`}
+              title={browserOpen ? 'Hide browser' : 'Show browser'}
+              data-testid="browser-toggle"
+            >
+              <Globe size={14} />
+              Browser
             </Pill>
           )}
 

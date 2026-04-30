@@ -25,6 +25,13 @@ export interface PtyWriteTarget {
 export interface WriteQueue {
   /** Append bytes to the buffer; starts the drain loop if idle. */
   enqueue(data: string): void;
+  /**
+   * Resolve once the buffer is empty and the drain loop has stopped.
+   * Resolves immediately if already idle. Used by callers that need to
+   * sequence follow-up writes (e.g. submit-keystrokes after a paste)
+   * without racing the chunked drain.
+   */
+  drained(): Promise<void>;
   /** Drop pending bytes and stop the drain loop. Idempotent. */
   dispose(): void;
 }
@@ -60,11 +67,19 @@ export function createWriteQueue(
   let buffer = '';
   let draining = false;
   let disposed = false;
+  const drainResolvers: Array<() => void> = [];
+
+  function fireDrainResolvers(): void {
+    if (drainResolvers.length === 0) return;
+    const pending = drainResolvers.splice(0, drainResolvers.length);
+    for (const resolve of pending) resolve();
+  }
 
   const drain = (): void => {
     if (disposed) {
       buffer = '';
       draining = false;
+      fireDrainResolvers();
       return;
     }
     const pty = getPty();
@@ -73,10 +88,12 @@ export function createWriteQueue(
       // be notified - matching the existing fire-and-forget IPC contract.
       buffer = '';
       draining = false;
+      fireDrainResolvers();
       return;
     }
     if (buffer.length === 0) {
       draining = false;
+      fireDrainResolvers();
       return;
     }
     const end = buffer.length > chunkSize ? safeChunkEnd(buffer, chunkSize) : buffer.length;
@@ -94,11 +111,13 @@ export function createWriteQueue(
       buffer = '';
       draining = false;
       disposed = true;
+      fireDrainResolvers();
       options.onAutoDispose?.();
       return;
     }
     if (buffer.length === 0) {
       draining = false;
+      fireDrainResolvers();
       return;
     }
     setImmediate(drain);
@@ -112,9 +131,16 @@ export function createWriteQueue(
       draining = true;
       drain();
     },
+    drained(): Promise<void> {
+      if (disposed || (!draining && buffer.length === 0)) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        drainResolvers.push(resolve);
+      });
+    },
     dispose(): void {
       disposed = true;
       buffer = '';
+      fireDrainResolvers();
     },
   };
 }
