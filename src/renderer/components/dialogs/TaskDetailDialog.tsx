@@ -44,6 +44,7 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   const archiveTask = useBoardStore((s) => s.archiveTask);
   const skipDeleteConfirm = useConfigStore((s) => s.config.skipDeleteConfirm);
   const updateConfig = useConfigStore((s) => s.updateConfig);
+  const browserEnabledConfig = useConfigStore((s) => s.config.browser?.enabled);
 
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
@@ -53,8 +54,8 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   const [isEditing, setIsEditing] = useState(!!initialEdit);
   const changesOpen = useSessionStore((s) => s.changesOpenTasks.has(task.id));
   const toggleChangesOpen = useSessionStore((s) => s.toggleChangesOpen);
-  // Spike: browser pane toggle persists across dialog open/close, mirroring
-  // the Changes panel's per-task state. Mutually exclusive with changes.
+  // Browser pane toggle persists across dialog open/close, mirroring the
+  // Changes panel's per-task state. Mutually exclusive with changes.
   const browserOpen = useSessionStore((s) => s.browserOpenTasks.has(task.id));
   const toggleBrowserOpen = useSessionStore((s) => s.toggleBrowserOpen);
 
@@ -128,7 +129,7 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
     : 'w-[90vw] h-[85vh]';
 
   const handleToggleBrowser = useCallback(() => {
-    // Mutually exclusive with the changes panel for the spike's 2-col layout.
+    // Mutually exclusive with the changes panel for the 2-col layout.
     if (!browserOpen && changesOpen) toggleChangesOpen(task.id);
     toggleBrowserOpen(task.id);
   }, [browserOpen, changesOpen, toggleBrowserOpen, toggleChangesOpen, task.id]);
@@ -139,8 +140,12 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   }, [browserOpen, changesOpen, toggleBrowserOpen, toggleChangesOpen, task.id]);
   // Browser pane only renders inside the body's active-session branch, which
   // requires a live (non-queued, non-suspended) session. Match that here so
-  // the toggle pill doesn't appear when clicking it would do nothing.
-  const canShowBrowser = !!sessionState.session?.id
+  // the toggle pill doesn't appear when clicking it would do nothing. Also
+  // gate on the project-level `browser.enabled` setting so security-sensitive
+  // projects can disable the pane entirely.
+  const browserEnabled = browserEnabledConfig !== false;
+  const canShowBrowser = browserEnabled
+    && !!sessionState.session?.id
     && sessionState.displayState.kind !== 'queued'
     && sessionState.displayState.kind !== 'suspended';
 

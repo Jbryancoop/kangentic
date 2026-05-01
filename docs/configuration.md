@@ -20,7 +20,7 @@ The config directory (`<configDir>`) is platform-specific:
 
 Both panels use a VS Code-style layout: a sidebar with tab navigation on the left and the active settings pane on the right. A search bar at the top filters settings by keyword. Search uses multi-token matching (all tokens must appear in the setting name or description). Results are grouped by tab with match count badges on the sidebar; tabs with zero matches are dimmed. Press Ctrl+F (Cmd+F on macOS) to focus the search bar, Escape to clear the filter.
 
-- **Settings Panel** -- opened via the titlebar gear icon or the gear icon on each project row in the sidebar. A project switcher dropdown in the header allows switching between projects. Sidebar tabs: Theme, Terminal, Agent, Git, Shortcuts, Layout, Behavior, MCP Server, Notifications, Privacy. The first five tabs (above the separator) are per-project settings. Four of them (Theme, Terminal, Agent, Git) save to `.kangentic/config.json`, while Shortcuts saves to the board config files (`kangentic.json` and `kangentic.local.json`). The last five (Layout, Behavior, MCP Server, Notifications, Privacy) are shared settings that apply across all projects, saved to the global config. When no project is open, only the 5 shared tabs appear. Changes save immediately. New projects clone settings from the most recently configured project (falling back to defaults if none exist).
+- **Settings Panel** -- opened via the titlebar gear icon or the gear icon on each project row in the sidebar. A project switcher dropdown in the header allows switching between projects. Sidebar tabs: Theme, Terminal, Agent, Git, Browser, Shortcuts, Layout, Behavior, MCP Server, Notifications, Privacy. The first six tabs (above the separator) are per-project settings. Five of them (Theme, Terminal, Agent, Git, Browser) save to `.kangentic/config.json`, while Shortcuts saves to the board config files (`kangentic.json` and `kangentic.local.json`). The last five (Layout, Behavior, MCP Server, Notifications, Privacy) are shared settings that apply across all projects, saved to the global config. When no project is open, only the 5 shared tabs appear. Changes save immediately. New projects clone settings from the most recently configured project (falling back to defaults if none exist).
 
 ### App-Only Settings
 
@@ -44,6 +44,7 @@ These settings appear in both App Settings (as defaults) and Project Settings (a
 - `terminal.shell`, `terminal.fontSize`, `terminal.fontFamily`, `terminal.scrollbackLines`, `terminal.cursorStyle`
 - `agent.permissionMode`
 - `git.worktreesEnabled`, `git.autoCleanup`, `git.defaultBaseBranch`, `git.copyFiles`, `git.initScript`
+- `browser.enabled`, `browser.defaultUrl`
 
 ## Full AppConfig Reference
 
@@ -186,6 +187,13 @@ All context bar settings are global-only and cannot be overridden per-project.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `sidebar.width` | number | `400` | Sidebar width (px). Global-only. |
+
+### browser.*
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `browser.enabled` | boolean | `true` | Show the Browser pill in task detail headers. Disable for security-sensitive projects that should not embed external sites. Per-project overridable. |
+| `browser.defaultUrl` | string \| undefined | `undefined` | Project default URL when a task has no per-task URL override. Auto-saved when the user first navigates the Browser pane. Per-project overridable. |
 
 ### Privacy
 

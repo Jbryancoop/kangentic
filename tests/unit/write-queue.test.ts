@@ -103,6 +103,61 @@ describe('createWriteQueue', () => {
     expect(combined.lastIndexOf('\x1b[201~')).toBe(end);
   });
 
+  it('emits an oversized paste packet as ONE atomic chunk when it begins at offset 0', () => {
+    const pty = createRecorder();
+    const queue = createWriteQueue(() => pty);
+    const body = 'p'.repeat(6000);
+    const payload = `\x1b[200~${body}\x1b[201~`;
+
+    queue.enqueue(payload);
+    vi.runAllTimers();
+
+    expect(pty.calls.length).toBe(1);
+    expect(pty.calls[0]).toBe(payload);
+  });
+
+  it('ends the chunk before the paste start marker when the paste would split', () => {
+    const pty = createRecorder();
+    const queue = createWriteQueue(() => pty);
+    const prefix = 'a'.repeat(3000);
+    const body = 'p'.repeat(2000);
+    const payload = `${prefix}\x1b[200~${body}\x1b[201~`;
+
+    queue.enqueue(payload);
+    vi.runAllTimers();
+
+    expect(pty.calls.length).toBe(2);
+    expect(pty.calls[0]).toBe(prefix);
+    expect(pty.calls[1]).toBe(`\x1b[200~${body}\x1b[201~`);
+  });
+
+  it('chunks a paste that fits within one default chunk normally', () => {
+    const pty = createRecorder();
+    const queue = createWriteQueue(() => pty);
+    const payload = `\x1b[200~${'p'.repeat(100)}\x1b[201~`;
+
+    queue.enqueue(payload);
+    vi.runAllTimers();
+
+    expect(pty.calls.length).toBe(1);
+    expect(pty.calls[0]).toBe(payload);
+  });
+
+  it('defers an unfinished paste (start marker without close) to the next chunk', () => {
+    const pty = createRecorder();
+    const queue = createWriteQueue(() => pty);
+    // Buffer must exceed chunkSize (4096) for chunking to kick in.
+    const prefix = 'a'.repeat(100);
+    const content = 'p'.repeat(4500);
+    const buffer = `${prefix}\x1b[200~${content}`;
+
+    queue.enqueue(buffer);
+    vi.runAllTimers();
+
+    expect(pty.calls[0]).toBe(prefix);
+    expect(pty.calls.slice(1).join('')).toBe(`\x1b[200~${content}`);
+  });
+
   it('drops remaining bytes when the pty disappears mid-drain', () => {
     const recorder = createRecorder();
     let livePty: (PtyWriteTarget & { calls: string[] }) | null = recorder;

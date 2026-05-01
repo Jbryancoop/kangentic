@@ -1,7 +1,7 @@
-// Spike: minimal structural types for Electron's <webview> tag and the
-// NativeImage it returns from capturePage(). Avoids importing 'electron' from
-// the renderer (which the bundler can't satisfy) while still giving us
-// type safety on the methods we actually use.
+// Structural types for Electron's <webview> tag and the NativeImage it
+// returns from capturePage(). Avoids importing 'electron' from the renderer
+// (which the bundler can't satisfy) while still giving us type safety on
+// the methods we actually use.
 
 import type { DetailedHTMLProps, HTMLAttributes } from 'react';
 

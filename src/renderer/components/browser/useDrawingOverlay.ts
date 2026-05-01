@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-// Spike: free-draw annotation overlay. Strokes are stored in CSS px relative
+// Free-draw annotation overlay. Strokes are stored in CSS px relative
 // to the canvas's bounding rect; the capture compositor scales them up to the
 // native PNG dimensions when blitting.
 
@@ -85,10 +85,16 @@ export function useDrawingOverlay({
     if (!enabled || !drawingRef.current) return;
     const point = pointFromEvent(event);
     if (!point) return;
-    currentStrokeRef.current = [...currentStrokeRef.current, point];
+    // Capture the new array at schedule time. Without this, fast drags
+    // race onPointerUp/onPointerLeave: if up fires between the setStrokes
+    // schedule and flush, the updater reads currentStrokeRef.current
+    // AFTER it was reset to [] and commits an empty stroke, blanking the
+    // visible drawing.
+    const nextStroke = [...currentStrokeRef.current, point];
+    currentStrokeRef.current = nextStroke;
     setStrokes((previous) => {
       const next = previous.slice();
-      next[next.length - 1] = currentStrokeRef.current;
+      next[next.length - 1] = nextStroke;
       return next;
     });
   }, [enabled, pointFromEvent]);
@@ -96,12 +102,44 @@ export function useDrawingOverlay({
   const onPointerUp = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     if (!drawingRef.current) return;
     drawingRef.current = false;
-    canvasRef.current?.releasePointerCapture(event.pointerId);
+    try {
+      canvasRef.current?.releasePointerCapture(event.pointerId);
+    } catch {
+      // No-op if capture was already released by the browser (fast drags
+      // can fire pointerLeave + pointerUp in close succession; the second
+      // release throws InvalidPointerId on some browser builds).
+    }
     currentStrokeRef.current = [];
   }, []);
 
-  const clear = useCallback(() => setStrokes([]), []);
+  const clear = useCallback(() => {
+    setStrokes([]);
+    // Defensive: reset draw state in case a previous stroke ended in a
+    // weird state (stuck pointer capture, ref leftover from an interrupted
+    // pointer sequence). Without this, the next pointerDown can fail to
+    // start a new stroke even though enabled=true.
+    drawingRef.current = false;
+    currentStrokeRef.current = [];
+    const canvas = canvasRef.current;
+    if (canvas) {
+      try {
+        // 0 is a sentinel pointerId. releasePointerCapture throws
+        // InvalidPointerId when no capture is active for that id, which
+        // is the no-op path we want. The catch absorbs the throw.
+        canvas.releasePointerCapture(0);
+      } catch {
+        // Expected when there is no active capture.
+      }
+    }
+  }, []);
   const undo = useCallback(() => setStrokes((previous) => previous.slice(0, -1)), []);
+
+  // Reset transient draw state whenever enabled toggles. Catches the case
+  // where the user toggles draw off and on again to "kick" stuck state.
+  useEffect(() => {
+    drawingRef.current = false;
+    currentStrokeRef.current = [];
+  }, [enabled]);
 
   return {
     canvasRef,

@@ -1,44 +1,41 @@
 import type { SessionManager } from './session-manager';
 
 /**
- * PasteEngine: deterministic text-paste-and-submit primitive for TUI agent
- * sessions. Used by the embedded browser pane (`browser-capture` source)
- * and the `CommandInjector` (auto_command path) so both share one
- * delivery contract.
+ * PasteEngine: deterministic paste-and-submit for TUI agents. Used by the
+ * browser pane and CommandInjector.
  *
- * Algorithm (3 phases):
+ * Algorithm:
+ *   1. drain pending writeQueue bytes
+ *   2. chunked writeRaw of `\e[200~payload\e[201~` (1KB chunks with
+ *      setImmediate yields - keeps ConPTY's child-side reads atomic)
+ *   3. wait for output-settle (data + 250ms idle, capped per-byte,
+ *      floored at MIN_GAP_MS for React's commit cycle)
+ *   4. queue write of `\r` + drain (queue path matches what real user
+ *      keystrokes take; writeRaw misroutes Enter on Claude Code)
+ *   5. wait for submission evidence (activity event with non-idle state,
+ *      OR new data bytes), retry \r once on timeout, hard-error if both
+ *      windows time out
  *
- *   1. drain pending writeQueue bytes for the session
- *   2. atomic `writeRaw(\e[200~payload\e[201~)` (or just `payload` when
- *      `bracketed: false`) - bypasses the queue's 4KB chunking so the
- *      bracketed paste markers can't be split across kernel reads
- *   3. wait `PASTE_TO_ENTER_GAP_MS` for Ink/React to commit the
- *      `usePaste` state update, then atomic `writeRaw('\r')`
+ * Enter must be a separate write: per Ink source, bracketed paste content
+ * goes to `usePaste` (not `useInput`), and if `\r` arrives in the same
+ * kernel read as `\e[201~` the submit handler can read stale closure
+ * state. The settle wait + floor guarantees React commits before Enter.
  *
- * Why the gap (the bug we hunted for an entire afternoon):
- *
- *   Claude Code (and any Ink-based TUI) listens on two separate input
- *   channels - `usePaste` for bracketed paste content, `useInput` for
- *   keystrokes. The close marker `\e[201~` fires `usePaste(content)`
- *   which calls `setState({placeholder: content})`. React BATCHES that
- *   state update. If the very next byte is `\r`, `useInput` fires its
- *   submit handler immediately - and reads STALE placeholder state
- *   because React hasn't committed yet. No submit happens; the
- *   `[Pasted text +N lines]` placeholder sits there waiting.
- *
- *   The 500ms gap gives React's commit phase a beat between the paste
- *   close marker and the Enter keystroke, so the submit handler reads
- *   committed state. This is the version the user empirically
- *   validated as working ("It worked!"). Replacing this gap with
- *   output-settle observation, combined-cr, or verify+retry all
- *   regressed in the app context. Don't change this without re-running
- *   the user's manual end-to-end test.
+ * CALLER CONTRACT: the session must be subscribed (in
+ * `SessionManager.focusedSessionIds`) before invoking. The `'data'` event
+ * is gated on subscription for IPC-bandwidth reasons, so settle (step 3)
+ * and evidence (step 5) only resolve via the data path when the session
+ * is focused. Both fall back to wall-clock floors and activity events
+ * respectively, but the engine is meaningfully slower and less
+ * deterministic without subscription. Browser pane and CommandInjector
+ * both run alongside an active terminal panel that subscribes via
+ * `TERMINAL_SUBSCRIBE`, so they satisfy this naturally.
  */
 
 export interface PasteOptions {
   /** Wrap content in `\e[200~ ... \e[201~`. Default true. */
   bracketed?: boolean;
-  /** Hard timeout for the entire pasteAndSubmit operation. Default 10000ms. */
+  /** Hard timeout for the entire pasteAndSubmit operation. Default 15000ms. */
   timeoutMs?: number;
   /** Caller-driven cancellation. */
   signal?: AbortSignal;
@@ -51,7 +48,7 @@ export interface PasteEngine {
 }
 
 export class PasteSubmitError extends Error {
-  readonly code: 'aborted' | 'timeout';
+  readonly code: 'aborted' | 'timeout' | 'no-submission-evidence';
   constructor(code: PasteSubmitError['code'], message: string) {
     super(message);
     this.name = 'PasteSubmitError';
@@ -61,18 +58,44 @@ export class PasteSubmitError extends Error {
 
 const BRACKETED_PASTE_START = '\x1b[200~';
 const BRACKETED_PASTE_END = '\x1b[201~';
-const PASTE_TO_ENTER_GAP_MS = 500;
+/** TUI broadcasts these sequences to enable/disable bracketed-paste mode.
+ *  When mode is OFF, our paste packet bytes are interpreted as raw input
+ *  (one character at a time), which can confirm permission prompts or
+ *  type into search fields. We track these in output so we can refuse the
+ *  retry path and surface a clear error instead. */
+const BRACKETED_PASTE_MODE_ON = '\x1b[?2004h';
+const BRACKETED_PASTE_MODE_OFF = '\x1b[?2004l';
+/** Conservative: small enough that Windows ConPTY's child-side ReadFile
+ *  reliably returns the whole chunk in one read. */
+const PASTE_CHUNK_SIZE = 1024;
+/** Quiet window after first data byte. 250ms covers slow renders / bigger
+ *  React trees without noticeably delaying the happy path. */
+const OUTPUT_SETTLE_IDLE_MS = 250;
+/** React commit floor: total paste-to-Enter wait is never below this,
+ *  regardless of how fast output settles. Prevents the usePaste/useInput
+ *  batching race when the TUI emits its redraw faster than React commits.
+ *  Sized after a regression that combined two causes: an insufficient
+ *  500ms floor AND \r going through writeRaw (bypassing the queue) instead
+ *  of sessionManager.write. Switching \r to the queue path was the primary
+ *  fix; this larger floor is defensive headroom. Don't shrink this without
+ *  also revisiting the queue routing decision below. */
+const MIN_GAP_MS = 1000;
+/** Floor for the cap; the per-byte multiplier extends this for large payloads. */
+const SETTLE_CAP_MIN_MS = 1000;
+const SETTLE_CAP_PER_BYTE_MS = 0.5;
+/** How long to wait after \r for proof the agent moved (activity event or
+ *  output bytes). Tuned so a busy session has time to transition to
+ *  'thinking' but a stuck \r is caught quickly enough to retry. */
+const EVIDENCE_FIRST_WAIT_MS = 3000;
+/** Shorter retry window: if the first \r got swallowed, the second one
+ *  should be processed faster (no paste-commit race). */
+const EVIDENCE_RETRY_WAIT_MS = 2000;
+/* Worst-case end-to-end budget = MIN_GAP_MS + capMs + EVIDENCE_FIRST_WAIT_MS
+ * + EVIDENCE_RETRY_WAIT_MS ~= 7s for a small payload, more for large pastes
+ * (capMs scales with packet length). Keep `timeoutMs` (default 15000ms in
+ * `pasteAndSubmit`) comfortably above this sum. */
 
-/**
- * Strip characters that would corrupt the PTY paste:
- * - `\r` (CR) is interpreted as Enter and prematurely submits, leaving
- *   the rest as a separate paste atom.
- * - Other C0 controls (except `\t` and `\n`) can ring the bell, reset
- *   terminal state, or trigger ANSI sequences.
- *
- * Preserves `\t` (0x09) and `\n` (0x0A); needed for indentation and
- * line breaks in our XML-formatted payloads.
- */
+/** Strip CR and other C0 controls that would corrupt paste; keep \t and \n. */
 export function sanitizeForPaste(text: string): string {
   return text
     .replace(/\r\n/g, '\n')
@@ -81,18 +104,198 @@ export function sanitizeForPaste(text: string): string {
     .replace(/[\x00-\x08\x0b-\x1f]/g, '');
 }
 
-/** Sleep that rejects with PasteSubmitError('aborted') if the signal aborts. */
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
+/**
+ * Write packet in PASTE_CHUNK_SIZE chunks with event-loop yields between.
+ * The yield (setImmediate, not a wall-clock delay) lets node-pty/ConPTY
+ * deliver each chunk to the agent before the next arrives, preventing
+ * the close marker from landing in a different child-side ReadFile call
+ * than its content - Ink's parser cannot reassemble paste across reads.
+ *
+ * INVARIANT: callers must not enable concurrent input on the same session
+ * while this is in flight. `writeRaw` bypasses the per-session FIFO write
+ * queue, so any caller routing user input through `sessionManager.write`
+ * during a paste-engine call can interleave bytes at the OS pipe level,
+ * splitting the bracketed-paste packet. Browser pane (Send button blocks)
+ * and CommandInjector (auto_command path) both naturally satisfy this.
+ *
+ * PLATFORM NOTE: on Windows ConPTY, each `pty.write` traverses an IPC
+ * channel to conhost (1-5ms per write). For 100KB+ payloads (~100 chunks)
+ * this can add ~500ms-1s of write latency before settle starts. Unix
+ * PTYs are microseconds. Not a bug, just a latency floor users on
+ * Windows may notice for very large pastes.
+ */
+async function writeChunked(
+  sessionManager: SessionManager,
+  sessionId: string,
+  packet: string,
+  signal: AbortSignal,
+): Promise<void> {
+  for (let offset = 0; offset < packet.length; offset += PASTE_CHUNK_SIZE) {
     if (signal.aborted) {
-      reject(new PasteSubmitError('aborted', 'paste-engine: aborted'));
+      throw new PasteSubmitError('aborted', 'paste-engine: aborted during chunked write');
+    }
+    const end = Math.min(offset + PASTE_CHUNK_SIZE, packet.length);
+    sessionManager.writeRaw(sessionId, packet.slice(offset, end));
+    if (end < packet.length) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+}
+
+interface SettleResult {
+  waitedMs: number;
+  observedOutput: boolean;
+  /** 'idle' = data arrived then OUTPUT_SETTLE_IDLE_MS quiet (happy path);
+   *  'cap'  = saw data but never went idle (busy session, fall back);
+   *  'floor-only' = no data ever (hookless agent, MIN_GAP_MS floor only). */
+  reason: 'idle' | 'cap' | 'floor-only';
+}
+
+/**
+ * Wait for the TUI to render the paste placeholder, then honor the
+ * React-commit floor before resolving. Resolves on first data + idle
+ * window, or capMs fallback if data never arrives. The floor keeps
+ * fast-render small payloads from racing past React's commit cycle.
+ */
+function waitForPasteSettle(
+  sessionManager: SessionManager,
+  sessionId: string,
+  packetLength: number,
+  signal: AbortSignal,
+): Promise<SettleResult> {
+  const capMs = Math.max(SETTLE_CAP_MIN_MS, Math.round(packetLength * SETTLE_CAP_PER_BYTE_MS) + SETTLE_CAP_MIN_MS);
+  return new Promise<SettleResult>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new PasteSubmitError('aborted', 'paste-engine: aborted before settle'));
       return;
     }
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener('abort', () => {
+    const start = Date.now();
+    let observedOutput = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let resolved = false;
+
+    const cleanup = (): void => {
+      sessionManager.off('data', onData);
+      signal.removeEventListener('abort', onAbort);
+      if (idleTimer) clearTimeout(idleTimer);
+      clearTimeout(capTimer);
+    };
+
+    const finish = (reason: SettleResult['reason']): void => {
+      if (resolved) return;
+      cleanup();
+      const elapsed = Date.now() - start;
+      const remainingFloor = Math.max(0, MIN_GAP_MS - elapsed);
+      if (remainingFloor > 0) {
+        // Settle landed inside the floor window; sleep the rest so React commits.
+        const floorTimer = setTimeout(() => {
+          if (resolved) return;
+          resolved = true;
+          signal.removeEventListener('abort', onFloorAbort);
+          resolve({ waitedMs: Date.now() - start, observedOutput, reason });
+        }, remainingFloor);
+        const onFloorAbort = (): void => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(floorTimer);
+          reject(new PasteSubmitError('aborted', 'paste-engine: aborted during minimum-gap floor'));
+        };
+        signal.addEventListener('abort', onFloorAbort, { once: true });
+        return;
+      }
+      resolved = true;
+      resolve({ waitedMs: elapsed, observedOutput, reason });
+    };
+
+    const onData = (...args: unknown[]): void => {
+      if (args[0] !== sessionId) return;
+      observedOutput = true;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => finish('idle'), OUTPUT_SETTLE_IDLE_MS);
+    };
+
+    const onAbort = (): void => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      reject(new PasteSubmitError('aborted', 'paste-engine: aborted during output settle'));
+    };
+
+    sessionManager.on('data', onData);
+    signal.addEventListener('abort', onAbort, { once: true });
+    const capTimer = setTimeout(() => {
+      finish(observedOutput ? 'cap' : 'floor-only');
+    }, capMs);
+  });
+}
+
+type EvidenceResult = 'activity' | 'data' | 'timeout';
+
+/**
+ * Wait for proof the agent processed our `\r`: either an `activity` event
+ * indicating the agent transitioned out of idle (Claude Code's hooks fire
+ * this when a prompt is accepted), or new output bytes (proxy for "agent
+ * started rendering its response" - works for adapters without hooks).
+ *
+ * Resolves 'timeout' instead of rejecting so the caller can retry.
+ *
+ * KNOWN LIMITATION: `data` evidence is a heuristic. ANY byte from the
+ * session resolves it, including unrelated background renders (status bar
+ * tick, hook-bridge trace bytes). This can produce a false positive where
+ * evidence "succeeds" but the actual submission didn't happen. Per-adapter
+ * capability declarations (task #79) replace this with stronger signals
+ * - until then the retry path catches the most common stuck-\r failure.
+ */
+function waitForSubmissionEvidence(
+  sessionManager: SessionManager,
+  sessionId: string,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<EvidenceResult> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new PasteSubmitError('aborted', 'paste-engine: aborted before evidence wait'));
+      return;
+    }
+    let resolved = false;
+
+    const cleanup = (): void => {
+      sessionManager.off('data', onData);
+      sessionManager.off('activity', onActivity);
+      signal.removeEventListener('abort', onAbort);
       clearTimeout(timer);
-      reject(new PasteSubmitError('aborted', 'paste-engine: aborted'));
-    }, { once: true });
+    };
+
+    const finish = (result: EvidenceResult): void => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const onData = (...args: unknown[]): void => {
+      if (args[0] !== sessionId) return;
+      finish('data');
+    };
+
+    const onActivity = (...args: unknown[]): void => {
+      if (args[0] !== sessionId) return;
+      // Any non-idle transition counts as "agent moved on our \r".
+      const activity = args[1];
+      if (activity && activity !== 'idle') finish('activity');
+    };
+
+    const onAbort = (): void => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      reject(new PasteSubmitError('aborted', 'paste-engine: aborted during evidence wait'));
+    };
+
+    sessionManager.on('data', onData);
+    sessionManager.on('activity', onActivity);
+    signal.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => finish('timeout'), timeoutMs);
   });
 }
 
@@ -101,56 +304,140 @@ export function createPasteEngine(sessionManager: SessionManager): PasteEngine {
     async pasteAndSubmit(sessionId, text, options = {}) {
       const start = Date.now();
       const bracketed = options.bracketed ?? true;
-      const totalTimeoutMs = options.timeoutMs ?? 10000;
+      const totalTimeoutMs = options.timeoutMs ?? 15000;
       const source = options.source ?? 'unknown';
 
-      // Combine caller signal with our timeout into a single signal.
       const timeoutController = new AbortController();
       const timeoutTimer = setTimeout(() => timeoutController.abort(), totalTimeoutMs);
-      const linkedSignal = linkSignals(options.signal, timeoutController.signal);
+      const { signal: linkedSignal, dispose: disposeLink } = linkSignals(
+        options.signal, timeoutController.signal,
+      );
 
       const safeText = sanitizeForPaste(text);
-      const pastePacket = bracketed
+      const packet = bracketed
         ? `${BRACKETED_PASTE_START}${safeText}${BRACKETED_PASTE_END}`
         : safeText;
+
+      // Track bracketed-paste-mode toggles in the output stream. If the TUI
+      // disables mode mid-call, a modal/permission prompt has taken focus
+      // and our retry \r could confirm it. Listener lives for the whole
+      // pasteAndSubmit call; the early data path may fire before we even
+      // start writing the packet.
+      let pasteModeOff = false;
+      const monitorPasteMode = (...args: unknown[]): void => {
+        if (args[0] !== sessionId) return;
+        const chunk = args[1];
+        if (typeof chunk !== 'string') return;
+        // Compare positions of the LAST occurrence of each marker so the
+        // most-recent toggle in this chunk wins. Presence-only checks would
+        // misclassify chunks like "...ON...OFF..." as ON because both `if`
+        // branches fire and one always overwrites the other regardless of
+        // textual order.
+        const offIdx = chunk.lastIndexOf(BRACKETED_PASTE_MODE_OFF);
+        const onIdx = chunk.lastIndexOf(BRACKETED_PASTE_MODE_ON);
+        if (offIdx === -1 && onIdx === -1) return;
+        if (offIdx > onIdx) pasteModeOff = true;
+        else if (onIdx > offIdx) pasteModeOff = false;
+      };
+      sessionManager.on('data', monitorPasteMode);
 
       try {
         await sessionManager.drain(sessionId);
         if (linkedSignal.aborted) throw new PasteSubmitError('aborted', 'paste-engine: aborted before write');
 
-        // Phase 1: paste packet (no Enter)
-        sessionManager.writeRaw(sessionId, pastePacket);
+        const writeStart = Date.now();
+        await writeChunked(sessionManager, sessionId, packet, linkedSignal);
+        const writeMs = Date.now() - writeStart;
 
-        // Phase 2: gap for Ink's usePaste -> React commit
-        await sleep(PASTE_TO_ENTER_GAP_MS, linkedSignal);
+        const settleStart = Date.now();
+        const settle = await waitForPasteSettle(sessionManager, sessionId, packet.length, linkedSignal);
+        const settleMs = Date.now() - settleStart;
 
-        // Phase 3: Enter (separate atomic write so it reads committed state)
-        sessionManager.writeRaw(sessionId, '\r');
+        // Send \r through the queue (not writeRaw). The queue's setImmediate-
+        // paced drain ships \r in a distinct event-loop tick, which matches
+        // the path real user keystrokes take. writeRaw skips the queue and
+        // empirically lands \r in a way Claude Code's TUI accepts as input
+        // but does not submit (paste content commits, but the Enter handler
+        // sees stale state). Routing through the queue + draining gives
+        // ConPTY a clean separation between the close marker and \r.
+        sessionManager.write(sessionId, '\r');
+        await sessionManager.drain(sessionId);
 
-        console.log(`[paste-engine] ${source}: ${pastePacket.length}b paste + ${PASTE_TO_ENTER_GAP_MS}ms + \\r in ${Date.now() - start}ms`);
+        // Wait for proof the agent moved. If the first \r got swallowed
+        // (TUI in a transition state, autocomplete, etc.), retry once -
+        // a stray \r outside paste content with empty input is a TUI no-op,
+        // so retrying is safe even when the original DID submit and we
+        // simply missed the evidence. Two timeouts -> hard failure with a
+        // descriptive code so the renderer can prompt the user.
+        const evidenceStart = Date.now();
+        let evidence = await waitForSubmissionEvidence(
+          sessionManager, sessionId, EVIDENCE_FIRST_WAIT_MS, linkedSignal,
+        );
+        let retried = false;
+        if (evidence === 'timeout') {
+          if (pasteModeOff) {
+            // TUI disabled bracketed paste mode during our call (modal,
+            // permission prompt, etc.). Retrying \r could confirm the
+            // modal as a destructive action. Bail out instead.
+            throw new PasteSubmitError(
+              'no-submission-evidence',
+              `paste-engine: ${source} sent paste but agent disabled bracketed-paste mode (modal/prompt focused). Skipped retry to avoid confirming a destructive action.`,
+            );
+          }
+          retried = true;
+          sessionManager.write(sessionId, '\r');
+          await sessionManager.drain(sessionId);
+          evidence = await waitForSubmissionEvidence(
+            sessionManager, sessionId, EVIDENCE_RETRY_WAIT_MS, linkedSignal,
+          );
+        }
+        const evidenceMs = Date.now() - evidenceStart;
+
+        if (evidence === 'timeout') {
+          throw new PasteSubmitError(
+            'no-submission-evidence',
+            `paste-engine: ${source} sent paste + \\r (1 retry) but agent emitted no signal in ${evidenceMs}ms`,
+          );
+        }
+
+        const totalMs = Date.now() - start;
+        console.log(
+          `[paste-engine] ${source}: ${packet.length}b in ${Math.ceil(packet.length / PASTE_CHUNK_SIZE)} chunks (${writeMs}ms) + settle ${settleMs}ms (${settle.reason}, output=${settle.observedOutput}) + evidence=${evidence}${retried ? ' (after 1 retry)' : ''} ${evidenceMs}ms = ${totalMs}ms total`,
+        );
       } catch (caughtError) {
         if (timeoutController.signal.aborted && !options.signal?.aborted) {
           throw new PasteSubmitError('timeout', `paste-engine: ${source} exceeded ${totalTimeoutMs}ms`);
         }
         throw caughtError;
       } finally {
+        sessionManager.off('data', monitorPasteMode);
         clearTimeout(timeoutTimer);
+        disposeLink();
       }
     },
   };
 }
 
-/**
- * Compose two AbortSignals into one that aborts when either input does.
- * Replaces a polyfill of `AbortSignal.any` to keep typings consistent
- * across our toolchain.
- */
-function linkSignals(a: AbortSignal | undefined, b: AbortSignal): AbortSignal {
-  if (!a) return b;
-  if (a.aborted) return a;
+/** Compose two AbortSignals into one that aborts when either input does.
+ *  Returns a `dispose` callback the caller MUST invoke in `finally` so the
+ *  abort listeners are removed from `options.signal` on the success path.
+ *  Without this, every `pasteAndSubmit` call leaks one listener on a
+ *  long-lived caller-supplied signal. */
+function linkSignals(
+  a: AbortSignal | undefined,
+  b: AbortSignal,
+): { signal: AbortSignal; dispose: () => void } {
+  if (!a) return { signal: b, dispose: () => undefined };
+  if (a.aborted) return { signal: a, dispose: () => undefined };
   const controller = new AbortController();
   const propagate = (): void => controller.abort();
-  a.addEventListener('abort', propagate, { once: true });
-  b.addEventListener('abort', propagate, { once: true });
-  return controller.signal;
+  a.addEventListener('abort', propagate);
+  b.addEventListener('abort', propagate);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      a.removeEventListener('abort', propagate);
+      b.removeEventListener('abort', propagate);
+    },
+  };
 }

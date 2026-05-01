@@ -88,43 +88,22 @@ const appLaunchTime = Date.now();
 const isEphemeral = process.argv.includes('--ephemeral');
 const isE2ETest = process.env.NODE_ENV === 'test';
 
-// Spike: harden any <webview> tags attached to the renderer.
+// Harden any <webview> tags attached to the renderer (embedded browser pane).
+// `will-attach-webview` fires before the webview is created and lets us
+// strip dangerous webPreferences and validate the initial src. The
+// per-contents handlers below run after attach, on the webview's own
+// webContents.
+//
 // - Strip nodeIntegration and any preload script the renderer attempts to set.
 // - Force contextIsolation + sandbox.
 // - Allow only http(s): src URLs; deny file://, chrome://, kangentic:// etc.
 // - Deny window.open() inside the embedded page (popups become no-ops).
 // - Deny in-webview navigations to non-http(s) schemes.
+// - Capture F5 / Ctrl+R / Cmd+R for reload (parent-renderer keydown can't see
+//   webview keystrokes - they fire inside the webview's own webContents).
 app.on('web-contents-created', (_event, contents) => {
-  if (contents.getType() !== 'webview') return;
-
-  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-
-  contents.on('will-navigate', (navigationEvent, urlString) => {
-    try {
-      const parsed = new URL(urlString);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        navigationEvent.preventDefault();
-      }
-    } catch {
-      navigationEvent.preventDefault();
-    }
-  });
-
-  // F5 / Ctrl+R / Cmd+R reload when the embedded webview has focus.
-  // Fires inside the webview's own webContents, so a parent-renderer
-  // keydown listener wouldn't see these keystrokes.
-  contents.on('before-input-event', (inputEvent, input) => {
-    if (input.type !== 'keyDown') return;
-    const isF5 = input.key === 'F5';
-    const isCtrlR = (input.control || input.meta) && (input.key === 'r' || input.key === 'R');
-    if (isF5 || isCtrlR) {
-      inputEvent.preventDefault();
-      contents.reload();
-    }
-  });
-});
-
-app.on('web-contents-created', (_event, contents) => {
+  // will-attach-webview fires on the HOST contents, before the webview attaches.
+  // Strip webPreferences and validate src here.
   contents.on('will-attach-webview', (_attachEvent, webPreferences, params) => {
     delete (webPreferences as Record<string, unknown>).preload;
     webPreferences.nodeIntegration = false;
@@ -140,10 +119,36 @@ app.on('web-contents-created', (_event, contents) => {
       allowed = false;
     }
     if (!allowed) {
-      // Replacing src here (rather than preventing the attach) keeps the
+      // Replacing src (rather than preventing the attach) keeps the
       // <webview> mounted but blank, which is easier for the renderer to
       // recover from than a thrown attach error.
       params.src = 'about:blank';
+    }
+  });
+
+  // The remaining handlers apply only to webview contents themselves.
+  if (contents.getType() !== 'webview') return;
+
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+  contents.on('will-navigate', (navigationEvent, urlString) => {
+    try {
+      const parsed = new URL(urlString);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        navigationEvent.preventDefault();
+      }
+    } catch {
+      navigationEvent.preventDefault();
+    }
+  });
+
+  contents.on('before-input-event', (inputEvent, input) => {
+    if (input.type !== 'keyDown') return;
+    const isF5 = input.key === 'F5';
+    const isCtrlR = (input.control || input.meta) && (input.key === 'r' || input.key === 'R');
+    if (isF5 || isCtrlR) {
+      inputEvent.preventDefault();
+      contents.reload();
     }
   });
 });
@@ -204,7 +209,7 @@ const createWindow = () => {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      // Spike: enable <webview> for the embedded browser side-pane in
+      // Enable <webview> for the embedded browser side-pane in
       // TaskDetailDialog. Hardened via the will-attach-webview hook below.
       webviewTag: true,
     },

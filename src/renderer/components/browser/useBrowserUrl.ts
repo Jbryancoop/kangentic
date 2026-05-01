@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useToastStore } from '../../stores/toast-store';
 
-// Spike: resolves the effective URL for a task's Browser pane and exposes
+// Resolves the effective URL for a task's Browser pane and exposes
 // save/recordNavigation helpers.
 //
 // Resolution: taskOverride > projectDefault > null (caller renders empty state).

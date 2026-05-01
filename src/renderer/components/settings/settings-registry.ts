@@ -62,6 +62,10 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   { id: 'git.copyFiles', tabId: 'git', label: 'Copy Files', description: 'Additional files copied into each worktree', scope: 'project', keywords: ['env', 'dotfiles'] },
   { id: 'git.initScript', tabId: 'git', label: 'Post-Worktree Script', description: 'Shell script to run after worktree creation', scope: 'project', keywords: ['install', 'setup', 'hook'] },
 
+  // ── Browser ──
+  { id: 'browser.enabled', tabId: 'browser', label: 'Enable Browser Pane', description: 'Show the Browser pill in task detail headers. Disable for security-sensitive projects that should not embed external sites.', scope: 'project', keywords: ['webview', 'embedded', 'preview', 'disable', 'security'] },
+  { id: 'browser.defaultUrl', tabId: 'browser', label: 'Default URL', description: 'Project default URL when a task has no per-task override. Auto-saved when you first navigate the Browser pane.', scope: 'project', keywords: ['webview', 'preview', 'localhost', 'dev server', 'url'] },
+
   // ── Shortcuts ──
   { id: 'shortcuts', tabId: 'shortcuts', label: 'Shortcuts', description: 'Custom commands accessible from the task detail dialog', scope: 'project', keywords: ['command', 'shortcut', 'tool', 'open', 'launch', 'tortoisegit', 'vscode', 'terminal', 'explorer', 'quick action'] },
 
@@ -97,6 +101,7 @@ export const TAB_LABELS: Record<string, string> = {
   terminal: 'Terminal',
   agent: 'Agent',
   git: 'Git',
+  browser: 'Browser',
   shortcuts: 'Shortcuts',
   layout: 'Layout',
   behavior: 'Behavior',

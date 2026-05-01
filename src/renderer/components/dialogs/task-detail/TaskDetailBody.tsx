@@ -156,8 +156,8 @@ export function TaskDetailBody({
 
   // Active terminal session
   if (sessionId && displayKind !== 'queued' && displayKind !== 'suspended') {
-    // Spike: browser pane takes the right half when toggled on, and is
-    // mutually exclusive with the changes panel.
+    // Browser pane takes the right half when toggled on, and is mutually
+    // exclusive with the changes panel.
     const terminalWidthClass = (browserOpen || changesOpen) ? 'w-1/2' : 'flex-1';
     const browserPaneElement = browserOpen && (
       <div className="w-1/2 min-h-0 flex-shrink-0 border-l border-edge">

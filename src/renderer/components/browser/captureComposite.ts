@@ -1,7 +1,7 @@
 import type { Stroke } from './useDrawingOverlay';
 import type { WebviewElement } from './webview-types';
 
-// Spike: composites the webview's captured frame with the user's annotation
+// Composites the webview's captured frame with the user's annotation
 // strokes (drawn in CSS pixels relative to the overlay) into a single PNG.
 // Returns base64 stripped of the data: prefix, ready to send to the main IPC
 // handler that writes it to disk.
@@ -33,6 +33,10 @@ export async function compositeCapture({
   strokeWidth = 3,
 }: CompositeOptions): Promise<string> {
   const nativeImage = await webview.capturePage();
+  // NativeImage encoding differs across platforms: macOS includes alpha
+  // channel, Windows/Linux are RGB. `ctx.drawImage` handles both, but any
+  // future change reading pixel data via `getImageData` should account
+  // for the alpha difference.
   const dataUrl = nativeImage.toDataURL();
   const size = nativeImage.getSize();
 

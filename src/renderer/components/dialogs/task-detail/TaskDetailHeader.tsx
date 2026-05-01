@@ -222,7 +222,7 @@ export function TaskDetailHeader({
             </Pill>
           )}
 
-          {/* Browser toggle pill (spike) */}
+          {/* Browser toggle pill */}
           {canShowBrowser && (
             <Pill
               shape="square"

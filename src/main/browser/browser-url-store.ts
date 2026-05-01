@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-// Spike: per-task browser URL overrides. Stored as a flat JSON map
+// Per-task browser URL overrides. Stored as a flat JSON map
 // `{ [taskId]: url }` at `<projectPath>/.kangentic/browser-urls.json`. The
 // project default lives in `<projectPath>/.kangentic/config.json` under
 // `browser.defaultUrl` and is managed via the existing ConfigManager paths;

@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import { Bell, Bot, GitBranch, LayoutGrid, Palette, Plug, ShieldCheck, SlidersHorizontal, Terminal, Zap } from 'lucide-react';
+import { Bell, Bot, GitBranch, Globe, LayoutGrid, Palette, Plug, ShieldCheck, SlidersHorizontal, Terminal, Zap } from 'lucide-react';
 import { useConfigStore } from '../../stores/config-store';
 import { SettingsPanelProvider, SearchTabGroupHeader, NoSearchResults } from './shared';
 import type { SettingsTabDefinition, SettingScope, SettingsContentProps } from './shared';
@@ -10,6 +10,7 @@ import { ThemeTab } from './tabs/ThemeTab';
 import { TerminalTab } from './tabs/TerminalTab';
 import { AgentTab } from './tabs/AgentTab';
 import { GitTab } from './tabs/GitTab';
+import { BrowserTab } from './tabs/BrowserTab';
 import { LayoutTab } from './tabs/LayoutTab';
 import { BehaviorTab } from './tabs/BehaviorTab';
 import { McpServerTab } from './tabs/McpServerTab';
@@ -32,6 +33,7 @@ export const APP_TABS: SettingsTabDefinition[] = [
   { id: 'terminal', label: 'Terminal', icon: Terminal },
   { id: 'agent', label: 'Agent', icon: Bot },
   { id: 'git', label: 'Git', icon: GitBranch },
+  { id: 'browser', label: 'Browser', icon: Globe },
   { id: 'shortcuts', label: 'Shortcuts', icon: Zap },
   // -- Shared settings (separator marks the boundary) --
   { id: 'layout', label: 'Layout', icon: LayoutGrid, separator: true, tooltip: 'Applies to all projects' },
@@ -88,6 +90,7 @@ export function SettingsContent({ activeTab, isSearching, searchQuery, matchingT
       case 'terminal': return <TerminalTab config={effectiveConfig} globalConfig={globalConfig} shells={shells} />;
       case 'agent': return <AgentTab config={effectiveConfig} globalConfig={globalConfig} agentInfo={agentInfo} agentList={agentList} />;
       case 'git': return <GitTab config={effectiveConfig} />;
+      case 'browser': return <BrowserTab config={effectiveConfig} />;
       case 'shortcuts': return <ShortcutsTab />;
       case 'layout': return <LayoutTab globalConfig={globalConfig} />;
       case 'behavior': return <BehaviorTab globalConfig={globalConfig} />;

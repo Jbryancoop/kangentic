@@ -1,14 +1,15 @@
 import { useCallback, useState } from 'react';
 import { Globe, ArrowRight } from 'lucide-react';
+import { normalizeUrl } from './BrowserEmptyState.utils';
 
 interface BrowserEmptyStateProps {
   onSubmit: (url: string) => void;
 }
 
-// Spike: agnostic preview-target prompt. Could be a local dev server, a
-// staging URL, a production site, anything reachable over http(s). Quick
-// picks cover the most common local development ports without locking the
-// copy into a dev-only narrative.
+// Agnostic preview-target prompt. Could be a local dev server, a staging URL,
+// a production site, anything reachable over http(s). Quick picks cover the
+// most common local development ports without locking the copy into a
+// dev-only narrative.
 
 interface QuickPick {
   label: string;
@@ -22,19 +23,6 @@ const QUICK_PICKS: QuickPick[] = [
   { label: 'localhost:4321', url: 'http://localhost:4321', hint: 'Astro' },
   { label: 'localhost:8080', url: 'http://localhost:8080', hint: 'Webpack, generic' },
 ];
-
-function normalizeUrl(input: string): string | null {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-  const candidate = trimmed.match(/^https?:\/\//i) ? trimmed : `http://${trimmed}`;
-  try {
-    const parsed = new URL(candidate);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-    return parsed.toString();
-  } catch {
-    return null;
-  }
-}
 
 export function BrowserEmptyState({ onSubmit }: BrowserEmptyStateProps) {
   const [value, setValue] = useState('');
@@ -96,6 +84,19 @@ export function BrowserEmptyState({ onSubmit }: BrowserEmptyStateProps) {
 
         {error && (
           <p className="text-[11px] text-red-400 -mt-1 self-start">{error}</p>
+        )}
+
+        {/* WSL hint: Windows Kangentic can't always reach a dev server bound
+         *  to WSL's loopback. The pane just shows Chromium's "site can't be
+         *  reached" page - this hint surfaces the workaround before that.
+         *  Reads platform from electronAPI (= main-process `process.platform`)
+         *  rather than the deprecated `navigator.platform`, which can return
+         *  empty / frozen / lying values across browser builds. */}
+        {window.electronAPI.platform === 'win32' && (
+          <p className="text-[11px] text-fg-faint leading-relaxed self-start">
+            On Windows: if your dev server runs in WSL and `localhost` does not
+            connect, run <code className="px-1 py-0.5 rounded bg-surface-input text-[11px]">wsl hostname -I</code> and use that IP instead.
+          </p>
         )}
 
         <div className="flex flex-col items-stretch gap-2 w-full mt-2">

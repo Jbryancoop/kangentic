@@ -739,9 +739,13 @@ export interface AppConfig {
     labelColors: Record<string, string>;
   };
 
-  // Spike: embedded browser pane defaults. Project-overridable so each
-  // project remembers its own dev-server URL.
+  // Embedded browser pane defaults. Project-overridable so each
+  // project remembers its own dev-server URL and so security-conscious
+  // projects can disable the pane entirely.
   browser?: {
+    /** Show the Browser pill in the task detail header. Default true. */
+    enabled?: boolean;
+    /** Project default URL when a task has no per-task override. */
     defaultUrl?: string;
   };
 
@@ -844,7 +848,9 @@ export const DEFAULT_CONFIG: AppConfig = {
     ],
     labelColors: {},
   },
-  browser: {},
+  browser: {
+    enabled: true,
+  },
   hasCompletedFirstRun: false,
   showBoardSearch: true,
   skipDeleteConfirm: false,
@@ -1842,7 +1848,7 @@ export interface ElectronAPI {
     saveImage: (data: string, extension: string) => Promise<string>;
   };
 
-  // Browser (spike: embedded webview capture-and-send)
+  // Browser pane: embedded webview capture-and-send
   browser: {
     captureAndSend: (input: BrowserCaptureInput) => Promise<{ filePath: string }>;
     getUrls: (taskId: string) => Promise<{ projectDefault: string | null; taskOverride: string | null }>;
@@ -1859,7 +1865,7 @@ export interface ElectronAPI {
   };
 }
 
-// Browser (spike: embedded webview capture-and-send)
+// Browser pane: embedded webview capture-and-send
 export interface BrowserPickedElement {
   selector: string;
   tagName: string;

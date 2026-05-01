@@ -4,13 +4,13 @@ import { useDrawingOverlay } from './useDrawingOverlay';
 import { compositeCapture } from './captureComposite';
 import { BrowserEmptyState } from './BrowserEmptyState';
 import { useBrowserUrl } from './useBrowserUrl';
-import { INSPECT_SCRIPT } from './inspectScript';
+import { INSPECT_SCRIPT, CLEAR_PICK_SCRIPT } from './inspectScript';
 import { AttachmentChips } from './AttachmentChips';
 import { useToastStore } from '../../stores/toast-store';
 import type { BrowserPickedElement } from '../../../shared/types';
 import type { WebviewElement } from './webview-types';
 
-// Spike: side-pane in TaskDetailDialog that hosts an Electron <webview>, a
+// Side-pane in TaskDetailDialog that hosts an Electron <webview>, a
 // free-draw annotation overlay, and a "Send to agent" button which composites
 // the capture, grabs DOM HTML + selected text, and injects a text prompt
 // (with @-mention to the saved PNG) into the task's running PTY.
@@ -20,8 +20,10 @@ interface BrowserPaneProps {
   taskId: string;
   /**
    * Working directory of the agent's session - either task.worktree_path
-   * or the project root. Captures are written under cwd/.kangentic/captures
-   * so sandboxed file tools across all agents can read them.
+   * or the project root. The capture handler writes PNGs under the
+   * project's `.kangentic/sessions/<sessionId>/captures/` so they're
+   * cleaned up by the existing session lifecycle. The agent sees a
+   * relative path in the @-mention computed from this cwd.
    */
   cwd: string;
 }
@@ -106,6 +108,7 @@ function BrowserPaneActive({
 
   const webviewRef = useRef<WebviewElement | null>(null);
   const overlayContainerRef = useRef<HTMLDivElement | null>(null);
+  const noteInputRef = useRef<HTMLInputElement | null>(null);
 
   const { canvasRef, strokes, handlers, clear, undo } = useDrawingOverlay({ enabled: drawMode });
 
@@ -126,10 +129,18 @@ function BrowserPaneActive({
         /* webview not yet attached */
       }
     };
-    webview.addEventListener('did-navigate', onUrlChanged);
+    // A picked element is page-specific - its selector is meaningless after
+    // a full navigation. Drop it on did-navigate (full document) but keep
+    // it on did-navigate-in-page (hash/SPA route changes leave the DOM
+    // intact, so the persistent overlay is still pointing at a valid node).
+    const onFullNav = () => {
+      onUrlChanged();
+      setPickedElement(null);
+    };
+    webview.addEventListener('did-navigate', onFullNav);
     webview.addEventListener('did-navigate-in-page', onUrlChanged);
     return () => {
-      webview.removeEventListener('did-navigate', onUrlChanged);
+      webview.removeEventListener('did-navigate', onFullNav);
       webview.removeEventListener('did-navigate-in-page', onUrlChanged);
     };
   }, [recordNavigation]);
@@ -234,6 +245,7 @@ function BrowserPaneActive({
       setNote('');
       clear();
       setPickedElement(null);
+      webview.executeJavaScript(CLEAR_PICK_SCRIPT).catch(() => undefined);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
@@ -259,7 +271,12 @@ function BrowserPaneActive({
     if (drawMode) setDrawMode(false);
     try {
       const result = await webview.executeJavaScript<BrowserPickedElement | null>(INSPECT_SCRIPT);
-      if (result) setPickedElement(result);
+      if (result) {
+        setPickedElement(result);
+        // Focus the note input so the user can start typing about the
+        // selection without an extra click.
+        noteInputRef.current?.focus();
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Inspect failed');
     } finally {
@@ -268,23 +285,47 @@ function BrowserPaneActive({
   }, [drawMode]);
 
   const cancelInspect = useCallback(() => {
-    if (!inspectActive) return;
+    // Unconditionally reset state - no closure check on inspectActive,
+    // which avoided the case where a stale closure would early-return
+    // and leave the React button stuck in the active style.
     setInspectActive(false);
+    // Forcibly clean up the webview side: drop the active flag, remove
+    // any leftover hover overlay, and dispatch Escape so any in-flight
+    // inspect script promise resolves with null.
     webviewRef.current
-      ?.executeJavaScript("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+      ?.executeJavaScript(`
+        (function () {
+          window.__kangenticInspectActive = false;
+          var overlay = document.querySelector('[data-kangentic-inspector]');
+          if (overlay) overlay.remove();
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        })();
+      `)
       .catch(() => undefined);
-  }, [inspectActive]);
+  }, []);
 
   const clearPicked = useCallback(() => {
     setPickedElement(null);
+    webviewRef.current?.executeJavaScript(CLEAR_PICK_SCRIPT).catch(() => undefined);
   }, []);
 
   // Document-level keyboard shortcuts. Skipped when target is a form
   // field so typing the letter `i` in the note input doesn't toggle Inspect.
+  // Registered in CAPTURE phase so the Esc-cancels-Inspect handler runs
+  // BEFORE the parent TaskDetailDialog's bubble-phase Esc-closes-dialog
+  // handler. stopImmediatePropagation prevents the dialog from also firing.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       const target = event.target as HTMLElement | null;
       const inFormField = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+      if (event.key === 'Escape' && inspectActive) {
+        // Eat the event so the parent dialog doesn't close on the same Esc.
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        cancelInspect();
+        return;
+      }
       const mod = event.ctrlKey || event.metaKey;
       if (!mod) return;
       const key = event.key.toLowerCase();
@@ -302,9 +343,9 @@ function BrowserPaneActive({
         if (!sending) void handleSend();
       }
     };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [cancelInspect, handleSend, sending, startInspect]);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [cancelInspect, handleSend, inspectActive, sending, startInspect]);
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-surface" data-testid="browser-pane">
@@ -332,7 +373,7 @@ function BrowserPaneActive({
           type="button"
           onClick={() => webviewRef.current?.reload()}
           className="p-1.5 text-fg-muted hover:text-fg hover:bg-surface-hover rounded transition-colors"
-          title="Reload"
+          title="Reload (F5 / Ctrl+R)"
         >
           <RotateCcw size={14} />
         </button>
@@ -372,12 +413,24 @@ function BrowserPaneActive({
 
       {/* Webview + canvas overlay */}
       <div ref={overlayContainerRef} className="relative flex-1 min-h-0 bg-white">
-        {/* `webview` is an Electron-only intrinsic; the typing in webview-types.ts adds it to JSX. */}
+        {/* `webview` is an Electron-only intrinsic; the typing in webview-types.ts adds it to JSX.
+         *  pointer-events:none while drawing - Electron's <webview> is a guest process that
+         *  doesn't always honor normal CSS stacking, so we explicitly turn off its event
+         *  capture when the canvas overlay needs to receive draws. */}
         <webview
           ref={webviewRef as unknown as React.Ref<HTMLElement>}
           src={initialSrc}
-          partition="persist:kangentic-browser-spike"
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
+          // Single shared persistent partition. All tasks/projects share
+          // one cookie jar. Per-project partitioning is a future option
+          // (tracked in the partition strategy task).
+          partition="persist:kangentic-browser"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: drawMode ? 'none' : 'auto',
+          }}
           data-testid="browser-webview"
         />
         <canvas
@@ -404,7 +457,7 @@ function BrowserPaneActive({
 
       {/* Toolbar: capture zone (left) | flex spacer | compose zone (right) */}
       <div className="flex items-center gap-1 px-2 py-1.5 border-t border-edge flex-shrink-0">
-        {/* Capture zone */}
+        {/* Capture zone: Draw + its stroke sub-actions, then Inspect. */}
         <button
           type="button"
           onClick={() => {
@@ -425,23 +478,8 @@ function BrowserPaneActive({
           data-testid="browser-draw-toggle"
         >
           <Pencil size={12} />
-          {drawMode ? 'Drawing' : 'Draw'}
+          Draw
         </button>
-        <button
-          type="button"
-          onClick={() => void startInspect()}
-          className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
-            inspectActive
-              ? 'bg-accent/20 text-accent-fg border border-accent/40'
-              : 'text-fg-muted hover:text-fg hover:bg-surface-hover border border-transparent'
-          }`}
-          title="Click elements to capture their identity (Ctrl/Cmd+I, Esc to exit)"
-          data-testid="browser-inspect-toggle"
-        >
-          <Crosshair size={12} />
-          {inspectActive ? 'Inspecting' : 'Inspect'}
-        </button>
-        <div className="w-px h-4 bg-edge mx-1 flex-shrink-0" aria-hidden="true" />
         <button
           type="button"
           onClick={undo}
@@ -462,9 +500,25 @@ function BrowserPaneActive({
           <Eraser size={12} />
           Clear
         </button>
+        <div className="w-px h-4 bg-edge mx-1 flex-shrink-0" aria-hidden="true" />
+        <button
+          type="button"
+          onClick={() => void startInspect()}
+          className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
+            inspectActive
+              ? 'bg-accent/20 text-accent-fg border border-accent/40'
+              : 'text-fg-muted hover:text-fg hover:bg-surface-hover border border-transparent'
+          }`}
+          title="Click elements to capture their identity (Ctrl/Cmd+I, Esc to exit)"
+          data-testid="browser-inspect-toggle"
+        >
+          <Crosshair size={12} />
+          Inspect
+        </button>
 
         {/* Compose zone */}
         <input
+          ref={noteInputRef}
           type="text"
           value={note}
           onChange={(event) => setNote(event.target.value)}

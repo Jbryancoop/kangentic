@@ -1,4 +1,4 @@
-// Spike: element-picker script injected into the webview via
+// Element-picker script injected into the webview via
 // `webview.executeJavaScript()`. Activates a hover-outline overlay and a
 // one-shot click handler that captures a structured fingerprint of the
 // clicked element. Esc cancels and resolves null.
@@ -40,6 +40,9 @@ export const INSPECT_SCRIPT = `
       return;
     }
     window.__kangenticInspectActive = true;
+
+    // Remove any prior persistent pick highlight - the new inspect replaces it.
+    document.querySelectorAll('[data-kangentic-pick]').forEach((el) => el.remove());
 
     const overlay = document.createElement('div');
     overlay.setAttribute('data-kangentic-inspector', '1');
@@ -177,6 +180,66 @@ export const INSPECT_SCRIPT = `
       try { overlay.remove(); } catch (e) { /* ignore */ }
     }
 
+    // Convert the hover overlay into a persistent pick indicator so the user
+    // sees what they selected. Different color so it's clear this isn't the
+    // active hover anymore. Inspect listeners are detached, but new
+    // scroll/resize listeners track the element's live position so the
+    // overlay follows scrolling/reflow until cleared.
+    function persistPick(targetEl) {
+      window.__kangenticInspectActive = false;
+      document.removeEventListener('mousemove', onMove, true);
+      document.removeEventListener('click', onClick, true);
+      document.removeEventListener('keydown', onKey, true);
+      overlay.removeAttribute('data-kangentic-inspector');
+      overlay.setAttribute('data-kangentic-pick', '1');
+      overlay.style.borderColor = '#3b82f6';
+      overlay.style.background = 'rgba(59, 130, 246, 0.12)';
+      overlay.style.transition = 'none';
+
+      function syncRect() {
+        if (!targetEl.isConnected) {
+          // Element removed from DOM (SPA route, react re-render). Drop the
+          // overlay rather than stranding it at stale coordinates.
+          syncTeardown();
+          try { overlay.remove(); } catch (_) { /* ignore */ }
+          return;
+        }
+        var rect = targetEl.getBoundingClientRect();
+        overlay.style.top = rect.top + 'px';
+        overlay.style.left = rect.left + 'px';
+        overlay.style.width = rect.width + 'px';
+        overlay.style.height = rect.height + 'px';
+      }
+
+      function syncTeardown() {
+        window.removeEventListener('scroll', syncRect, true);
+        window.removeEventListener('resize', syncRect);
+        if (resizeObserver) resizeObserver.disconnect();
+      }
+
+      // Stash the teardown callback on the overlay so CLEAR_PICK_SCRIPT can
+      // dispose listeners when the pick is cleared from React.
+      overlay.__kangenticPickTeardown = syncTeardown;
+
+      // capture: true so we observe scrolls in any nested scrollable
+      // ancestor (Chromium dispatches scroll events on the scrollable
+      // element, not bubbling). resize handles viewport changes.
+      window.addEventListener('scroll', syncRect, true);
+      window.addEventListener('resize', syncRect);
+
+      // ResizeObserver catches in-place layout changes (font load, image
+      // load, content edits) without scroll/resize.
+      // var (not let): hoisting puts the declaration above syncTeardown so
+      // its closure can reference resizeObserver before this assignment.
+      var resizeObserver = null;
+      if (typeof ResizeObserver !== 'undefined') {
+        resizeObserver = new ResizeObserver(syncRect);
+        resizeObserver.observe(targetEl);
+      }
+
+      syncRect();
+    }
+
     function onMove(event) {
       const target = event.target;
       if (!target || isOurOverlay(target)) return;
@@ -194,7 +257,7 @@ export const INSPECT_SCRIPT = `
       event.stopPropagation();
       if (event.stopImmediatePropagation) event.stopImmediatePropagation();
       const fingerprint = captureFingerprint(target);
-      cleanup();
+      persistPick(target);
       resolve(fingerprint);
     }
 
@@ -211,4 +274,15 @@ export const INSPECT_SCRIPT = `
     document.addEventListener('keydown', onKey, true);
   });
 })();
+`;
+
+/** Removes any persistent pick indicator left in the page by INSPECT_SCRIPT,
+ *  including its scroll/resize listeners. */
+export const CLEAR_PICK_SCRIPT = `
+document.querySelectorAll('[data-kangentic-pick]').forEach((el) => {
+  if (typeof el.__kangenticPickTeardown === 'function') {
+    try { el.__kangenticPickTeardown(); } catch (_) { /* ignore */ }
+  }
+  el.remove();
+});
 `;
