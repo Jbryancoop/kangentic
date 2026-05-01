@@ -4,6 +4,7 @@ import { removeHooks as removeQwenHooks } from './hook-manager';
 import { QwenSessionHistoryParser } from './session-history-parser';
 import { QwenStatusParser } from './status-parser';
 import { ensureWorktreeTrust } from './trust-manager';
+import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
@@ -200,5 +201,16 @@ export class QwenAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return QwenSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {
+    // Qwen Code is a fork of gemini-cli. Headless mode triggers in non-TTY; we
+    // request plain text to skip status JSON.
+    return runCliPrintSummarize({
+      cliPath,
+      args: ['--output-format', 'text'],
+      prompt: buildSummarizePrompt(prompt),
+      cwd,
+    });
   }
 }

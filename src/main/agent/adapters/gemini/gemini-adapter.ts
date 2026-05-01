@@ -3,6 +3,7 @@ import { GeminiCommandBuilder } from './command-builder';
 import { removeHooks as removeGeminiHooks } from './hook-manager';
 import { GeminiSessionHistoryParser } from './session-history-parser';
 import { GeminiStatusParser } from './status-parser';
+import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
@@ -176,5 +177,16 @@ export class GeminiAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return GeminiSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {
+    // Gemini's headless mode triggers automatically in non-TTY environments. We pipe
+    // the prompt via stdin and request plain text output.
+    return runCliPrintSummarize({
+      cliPath,
+      args: ['--output-format', 'text'],
+      prompt: buildSummarizePrompt(prompt),
+      cwd,
+    });
   }
 }

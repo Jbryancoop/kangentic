@@ -5,6 +5,7 @@ import { WorktreeChip } from '../WorktreeChip';
 import { Select } from '../../settings/shared';
 import { LabelInput } from '../../LabelInput';
 import { DescriptionEditor } from '../../DescriptionEditor';
+import { NameFromPromptButton } from '../../NameFromPromptButton';
 import { AttachmentThumbnails } from './AttachmentThumbnails';
 import { useConfigStore } from '../../../stores/config-store';
 import { useProjectStore } from '../../../stores/project-store';
@@ -70,14 +71,17 @@ export function TaskDetailEditForm({
       onDragLeave={attachments.handleAttachmentDragLeave}
       onDrop={attachments.handleAttachmentDrop}
     >
-      <input
-        ref={titleInputRef}
-        type="text"
-        placeholder="Task title"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        className="w-full bg-surface border border-edge-input rounded px-3 py-2 text-sm text-fg placeholder-fg-faint focus:outline-none focus:border-accent"
-      />
+      <div className="flex items-center gap-2">
+        <input
+          ref={titleInputRef}
+          type="text"
+          placeholder="Task title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          className="flex-1 min-w-0 bg-surface border border-edge-input rounded px-3 py-2 text-sm text-fg placeholder-fg-faint focus:outline-none focus:border-accent"
+        />
+        <NameFromPromptButton description={description} onTitle={setTitle} />
+      </div>
       <DescriptionEditor
         value={description}
         onChange={setDescription}

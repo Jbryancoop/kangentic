@@ -217,6 +217,7 @@ export function registerTaskCrudHandlers(context: IpcContext): void {
       }
       tasks.delete(id);
     });
+    drainAutoNameAskedIds(context, [id]);
   });
 
   ipcMain.handle(IPC.TASK_BULK_DELETE, async (_, ids: string[]): Promise<TaskBulkDeleteResult> => {
@@ -332,6 +333,47 @@ export function registerTaskCrudHandlers(context: IpcContext): void {
     // Guarantee the renderer observes the terminal state (bypasses throttle).
     emitProgress({ force: true });
 
+    // Drop the deleted task IDs from the persisted "auto-name asked" set so
+    // that array does not grow unboundedly across the lifetime of a project.
+    // We drop everything we attempted; for failures the task may still exist
+    // and a future spawn would re-ask, which is the correct behavior.
+    const failedIds = new Set(failures.map((entry) => entry.id));
+    const deletedIds = ids.filter((id) => !failedIds.has(id));
+    if (deletedIds.length > 0) {
+      drainAutoNameAskedIds(context, deletedIds);
+    }
+
     return { deleted: total - failures.length, failures };
   });
+}
+
+/**
+ * Remove the given task IDs from `AppConfig.autoNameAskedTaskIds` so the
+ * persisted "don't re-ask" set does not accumulate stale entries for tasks
+ * the user has deleted. No-op when the config field is absent, no IDs match,
+ * or the configManager isn't fully wired (defensive: this drain is a best-
+ * effort cleanup, not load-bearing for the delete operation).
+ * @internal Exported for unit tests only; not part of the public API.
+ */
+export function drainAutoNameAskedIds(context: IpcContext, taskIds: string[]): void {
+  if (taskIds.length === 0) return;
+  const configManager = context.configManager;
+  if (typeof configManager?.load !== 'function' || typeof configManager?.save !== 'function') return;
+  let config: { autoNameAskedTaskIds?: string[] };
+  try {
+    config = configManager.load();
+  } catch {
+    return;
+  }
+  const current = config.autoNameAskedTaskIds ?? [];
+  if (current.length === 0) return;
+  const removeSet = new Set(taskIds);
+  const next = current.filter((entry) => !removeSet.has(entry));
+  if (next.length === current.length) return;
+  try {
+    configManager.save({ autoNameAskedTaskIds: next });
+  } catch {
+    // Best-effort - a save failure here just means the next launch sees a
+    // slightly larger asked-set. Not worth surfacing to the user.
+  }
 }

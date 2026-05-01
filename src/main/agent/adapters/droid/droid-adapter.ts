@@ -1,6 +1,7 @@
 import { DroidDetector } from './detector';
 import { DroidCommandBuilder } from './command-builder';
 import { captureSessionIdFromFilesystem, locateSessionFile } from './session-id-capture';
+import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
 import type {
   AgentPermissionEntry,
@@ -141,5 +142,18 @@ export class DroidAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return locateSessionFile({ agentSessionId, cwd });
+  }
+
+  async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {
+    // `droid exec` runs non-interactively. Default output format is `text`. The prompt
+    // is delivered as a positional arg (also accepts stdin pipes; we use args for
+    // explicit alignment with documented usage).
+    return runCliPrintSummarize({
+      cliPath,
+      args: ['exec', '-o', 'text'],
+      prompt: buildSummarizePrompt(prompt),
+      cwd,
+      promptVia: 'arg',
+    });
   }
 }

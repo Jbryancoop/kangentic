@@ -7,6 +7,11 @@ import { useSessionStore, cancelSync } from './stores/session-store';
 import { useBacklogStore } from './stores/backlog-store';
 import { useToastStore } from './stores/toast-store';
 import { resolveAutoFocusTarget } from './utils/auto-focus';
+import {
+  autoNameTimers,
+  scheduleAutoNameSuggestion,
+  maybeLabelTransientSession,
+} from './lib/auto-name-scheduler';
 import type { SessionEvent, SessionUsage } from '../shared/types';
 
 /**
@@ -212,6 +217,7 @@ export function App() {
     if (sessions.onStatus) {
       cleanups.push(sessions.onStatus((sessionId, session) => {
         upsertSession(session);
+        scheduleAutoNameSuggestion(session);
       }));
     }
 
@@ -243,6 +249,14 @@ export function App() {
     if (sessions.onExit) {
       cleanups.push(sessions.onExit((sessionId, exitCode, projectId) => {
         const currentSession = useSessionStore.getState().sessions.find((s) => s.id === sessionId);
+        const exitedTaskId = currentSession?.taskId;
+        if (exitedTaskId) {
+          const timer = autoNameTimers.get(exitedTaskId);
+          if (timer) {
+            clearTimeout(timer);
+            autoNameTimers.delete(exitedTaskId);
+          }
+        }
         if (currentSession?.status === 'suspended') return;
 
         // Transient sessions (command terminal) are ephemeral - skip toasts and notifications
@@ -407,6 +421,7 @@ export function App() {
           pendingEvents.push({ sessionId, event });
           scheduleBatchFlush();
         }
+        maybeLabelTransientSession(sessionId, event);
       }));
     }
 

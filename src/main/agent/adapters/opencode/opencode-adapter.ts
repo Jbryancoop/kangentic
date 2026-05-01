@@ -5,6 +5,7 @@ import { OpenCodeDetector } from './detector';
 import { OpenCodeCommandBuilder } from './command-builder';
 import { OpenCodeSessionHistoryParser } from './session-history-parser';
 import { removeHooks as removeOpenCodeHooks } from './hook-manager';
+import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SessionEvent } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
@@ -298,5 +299,16 @@ export class OpenCodeAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return OpenCodeSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {
+    // `opencode run` runs non-interactively. The `-q` flag suppresses the spinner so
+    // stdout contains only the assistant's response.
+    return runCliPrintSummarize({
+      cliPath,
+      args: ['run', '-q'],
+      prompt: buildSummarizePrompt(prompt),
+      cwd,
+    });
   }
 }

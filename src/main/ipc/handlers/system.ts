@@ -10,7 +10,14 @@ import { deepMergeConfig } from '../../../shared/object-utils';
 import { getProjectDb } from '../../db/database';
 import { HandoffRepository } from '../../db/repositories/handoff-repository';
 import { syncProjectMcpConfig } from './projects';
-import type { NotificationInput, AgentCommand, AgentDetectionInfo, HandoffRecord } from '../../../shared/types';
+import type {
+  NotificationInput,
+  AgentCommand,
+  AgentDetectionInfo,
+  AgentSummarizeInput,
+  AgentSummarizeResult,
+  HandoffRecord,
+} from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 
 export function registerSystemHandlers(context: IpcContext): void {
@@ -121,10 +128,91 @@ export function registerSystemHandlers(context: IpcContext): void {
         permissions: adapter.permissions,
         defaultPermission: adapter.defaultPermission,
         liveTelemetryUnsupported: adapter.liveTelemetryUnsupported,
+        supportsSummarize: typeof adapter.summarize === 'function',
       });
     }
     return results;
   });
+
+  // Sliding-window rate limit for summarize calls. Each entry is a Date.now()
+  // timestamp. We expire entries older than 1 hour on every check. A burst of
+  // task creation can otherwise spam the agent CLI and burn the user's
+  // subscription quota; this caps the damage. The window is in-memory only -
+  // a restart clears the limit, which is the correct behavior (the user has
+  // explicitly chosen to start a new session).
+  const summarizeRateLimitWindow: number[] = [];
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+
+  // Summarize a free-form prompt into a short task title via the active
+  // project's default agent (or `input.agentName` if provided). Returns a
+  // discriminated result so renderer code can show a graceful error toast
+  // instead of throwing. Adapters without the `summarize` capability or
+  // CLIs that fail detection produce `{ ok: false, reason }`.
+  ipcMain.handle(
+    IPC.AGENT_SUMMARIZE,
+    async (_, input: AgentSummarizeInput): Promise<AgentSummarizeResult> => {
+      try {
+        const prompt = (input?.prompt ?? '').trim();
+        if (!prompt) return { ok: false, reason: 'empty prompt' };
+
+        const { agentRegistry } = await import('../../agent/agent-registry');
+        const config = context.configManager.load();
+
+        // Apply the sliding-window rate limit before doing any work.
+        const limit = config.autoNameRateLimitPerHour ?? 60;
+        if (limit > 0) {
+          const now = Date.now();
+          const cutoff = now - ONE_HOUR_MS;
+          while (summarizeRateLimitWindow.length > 0 && summarizeRateLimitWindow[0] < cutoff) {
+            summarizeRateLimitWindow.shift();
+          }
+          if (summarizeRateLimitWindow.length >= limit) {
+            return {
+              ok: false,
+              reason: `rate limit reached (${limit}/hour); try again later or raise the cap in Settings`,
+            };
+          }
+          summarizeRateLimitWindow.push(now);
+        }
+
+        // Resolve which adapter to ask. Caller may name a specific agent
+        // (e.g. for transient sessions); otherwise fall back to the active
+        // project's default agent, then to the registry's first entry.
+        let agentName = input.agentName;
+        if (!agentName && context.currentProjectId) {
+          const project = context.projectRepo
+            .list()
+            .find((entry) => entry.id === context.currentProjectId);
+          agentName = project?.default_agent ?? undefined;
+        }
+        if (!agentName) {
+          const list = agentRegistry.list();
+          agentName = list[0];
+        }
+        if (!agentName) return { ok: false, reason: 'no agents registered' };
+
+        const adapter = agentRegistry.get(agentName);
+        if (!adapter) return { ok: false, reason: `unknown agent: ${agentName}` };
+        if (typeof adapter.summarize !== 'function') {
+          return { ok: false, reason: `${adapter.displayName} does not support summarize` };
+        }
+
+        const cliPathOverride = config.agent.cliPaths[agentName] ?? null;
+        const info = await adapter.detect(cliPathOverride);
+        if (!info.found || !info.path) {
+          return { ok: false, reason: `${adapter.displayName} CLI not found` };
+        }
+
+        const cwd = context.currentProjectPath ?? process.cwd();
+        const title = await adapter.summarize(prompt, info.path, cwd);
+        if (!title) return { ok: false, reason: 'summarize produced empty output' };
+        return { ok: true, title };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { ok: false, reason: message };
+      }
+    },
+  );
 
   ipcMain.handle(IPC.AGENT_LIST_COMMANDS, (_, cwd?: string): AgentCommand[] => {
     const projectPath = context.currentProjectPath;

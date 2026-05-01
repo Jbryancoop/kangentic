@@ -70,6 +70,8 @@ These settings appear in both App Settings (as defaults) and Project Settings (a
 | `skipBoardConfigConfirm` | boolean | `false` | Auto-apply board config changes without confirmation dialog |
 | `statusBarPeriod` | UsageTimePeriod | `'live'` | Time period for status bar usage stats. Values: `live`, `today`, `week`, `month`, `all`. Global-only. |
 | `lastActiveTaskByProject` | Record\<string, string\> | `{}` | Per-project memory of the last user-clicked task tab in the terminal panel, keyed by project ID. Restored on project switch. Auto-saved, not shown in UI. |
+| `autoNameAskedTaskIds` | string[] | `[]` | Task IDs that have already been offered an auto-rename suggestion. Persisted so a dismissed suggestion does not reappear next launch. Drained on task delete (single + bulk delete handlers in `task-crud.ts`). Auto-saved, not shown in UI. |
+| `autoNameRateLimitPerHour` | number | `60` | Maximum auto-name CLI calls per rolling 60-minute window. Caps cost on burst task creation. `0` disables the limit. Enforced in the `agent:summarize` IPC handler. Global-only, not currently surfaced in the Settings panel. |
 
 ### terminal.*
 

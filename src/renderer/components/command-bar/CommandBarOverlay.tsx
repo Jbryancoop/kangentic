@@ -59,6 +59,11 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
     [shortcuts],
   );
 
+  const projectId = useProjectStore((s) => s.currentProject?.id ?? null);
+  const transientLabel = useSessionStore((state) =>
+    projectId ? state.transientSessions[projectId]?.label ?? null : null,
+  );
+
   // Spawn transient session on mount, or reattach to existing one
   useEffect(() => {
     if (spawnedRef.current) return;
@@ -287,7 +292,13 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
             >
               <CircleStop size={18} />
             </button>
-            <span className="text-sm text-fg-muted">Command Terminal</span>
+            <span
+              className="text-sm text-fg-muted truncate max-w-[260px]"
+              title={transientLabel ?? 'Command Terminal'}
+              data-testid="command-bar-label"
+            >
+              {transientLabel ?? 'Command Terminal'}
+            </span>
             <BranchPicker
               value={branch || ''}
               defaultBranch={defaultBranch}

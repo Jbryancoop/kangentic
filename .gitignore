@@ -128,3 +128,4 @@ tests/captures/fixtures/scrollback-*.json
 # are written by scripts/verify-*.js / scripts/capture-*.js for local
 # bug-reproduction work and are not checked in.
 /debug-traces/
+.opencode/plugins/kangentic-activity.mjs

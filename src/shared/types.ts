@@ -53,7 +53,20 @@ export interface AgentDetectionInfo {
   defaultPermission: PermissionMode;
   /** Set by adapters that have no live-telemetry channel - drives the ContextBar fallback pill. */
   liveTelemetryUnsupported?: AgentLiveTelemetryUnsupported;
+  /** True if the adapter exposes a one-shot summarize capability (used by auto-name task title). */
+  supportsSummarize?: boolean;
 }
+
+export interface AgentSummarizeInput {
+  /** Free-form text to summarize into a short task title. */
+  prompt: string;
+  /** Optional: a specific agent name. Defaults to the active project's default agent. */
+  agentName?: string;
+}
+
+export type AgentSummarizeResult =
+  | { ok: true; title: string }
+  | { ok: false; reason: string };
 
 export type ProjectSearchEntryKind = 'file' | 'directory';
 
@@ -698,6 +711,14 @@ export interface AppConfig {
   skipDoneWorktreeConfirm: boolean;
   skipBoardConfigConfirm: boolean;
   autoFocusIdleSession: boolean;
+  /** Task IDs that have already been offered an auto-rename suggestion. Persisted so a
+   *  dismissed suggestion does not reappear on the next app launch. Drained on task
+   *  delete (TASK_DELETE / TASK_BULK_DELETE handlers in `task-crud.ts`) so the array
+   *  size stays bounded by the live task count. */
+  autoNameAskedTaskIds: string[];
+  /** Maximum auto-name CLI calls per rolling 60-minute window. Caps cost on burst
+   *  task creation. 0 disables the limit. Default: 60. */
+  autoNameRateLimitPerHour: number;
   restoreWindowPosition: boolean;
   windowBounds: { x: number; y: number; width: number; height: number } | null;
   windowMaximized: boolean;
@@ -789,6 +810,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   skipDoneWorktreeConfirm: false,
   skipBoardConfigConfirm: false,
   autoFocusIdleSession: false,
+  autoNameAskedTaskIds: [],
+  autoNameRateLimitPerHour: 60,
   restoreWindowPosition: true,
   windowBounds: null,
   windowMaximized: false,
@@ -1653,6 +1676,7 @@ export interface ElectronAPI {
   agent: {
     detect: () => Promise<{ found: boolean; path: string | null; version: string | null }>;
     listCommands: (cwd?: string) => Promise<AgentCommand[]>;
+    summarize: (input: AgentSummarizeInput) => Promise<AgentSummarizeResult>;
   };
 
   // Agents

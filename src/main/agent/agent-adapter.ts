@@ -173,4 +173,20 @@ export interface AgentAdapter {
    * Adapters that do not need per-session work can omit this.
    */
   attachSession?(context: SessionContext): SessionAttachment | void;
+
+  /**
+   * Optional one-shot summarization. Spawns the agent CLI in its non-interactive
+   * `--print` (or equivalent) mode to turn a free-form description into a short
+   * task title. Used by the auto-name-tasks-from-prompt feature. Adapters that
+   * lack a non-interactive print mode (Aider) omit this; the renderer hides the
+   * "Name from prompt" affordances when the active adapter has no capability.
+   *
+   * Implementations should:
+   * - Use the adapter's read-only / no-edit equivalent of plan mode where possible
+   *   (the prompt is pure summarization, no file edits required).
+   * - Apply a strict timeout (the helper `runCliPrintSummarize` defaults to 15s).
+   * - Throw on failure rather than returning placeholder text. The IPC handler
+   *   converts thrown errors to `{ ok: false, reason }`.
+   */
+  summarize?(prompt: string, cliPath: string, cwd: string): Promise<string>;
 }

@@ -5,6 +5,7 @@ import { ClaudeStatusParser } from './status-parser';
 import { locateClaudeTranscriptFile } from './transcript-parser';
 import { ensureWorktreeTrust, ensureMcpServerTrust } from './trust-manager';
 import { removeHooks as removeClaudeHooks } from './hook-manager';
+import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
@@ -103,5 +104,14 @@ export class ClaudeAdapter implements AgentAdapter {
     } catch {
       return null;
     }
+  }
+
+  async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {
+    return runCliPrintSummarize({
+      cliPath,
+      args: ['--print', '--permission-mode', 'plan'],
+      prompt: buildSummarizePrompt(prompt),
+      cwd,
+    });
   }
 }

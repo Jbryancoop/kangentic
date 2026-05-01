@@ -102,6 +102,8 @@
     skipDoneWorktreeConfirm: false,
     skipBoardConfigConfirm: false,
     autoFocusIdleSession: false,
+    autoNameAskedTaskIds: [],
+    autoNameRateLimitPerHour: 60,
     restoreWindowPosition: true,
     windowBounds: null,
     windowMaximized: false,
@@ -1065,6 +1067,18 @@
           { name: 'ci:build', displayName: '/ci:build', description: 'Run CI build pipeline', argumentHint: '[fast|full]', source: 'command' },
         ];
       },
+      summarize: async function (input) {
+        // Deterministic stub for UI tests: return a canned title derived from
+        // the first 40 chars of the prompt. Tests can override by setting
+        // window.__mockAgentSummarize = (input) => ({ ok: true, title: '...' }).
+        if (typeof window !== 'undefined' && typeof window.__mockAgentSummarize === 'function') {
+          return window.__mockAgentSummarize(input);
+        }
+        var trimmed = (input && input.prompt ? String(input.prompt) : '').trim();
+        if (!trimmed) return { ok: false, reason: 'empty prompt' };
+        var snippet = trimmed.slice(0, 40).replace(/\s+/g, ' ');
+        return { ok: true, title: 'Mock Title: ' + snippet };
+      },
     },
 
     agents: {
@@ -1086,6 +1100,7 @@
               { mode: 'bypassPermissions', label: 'Bypass (Unsafe)' },
             ],
             defaultPermission: 'acceptEdits',
+            supportsSummarize: true,
           },
           {
             name: 'codex', displayName: 'Codex CLI', found: false, path: null, version: null,
@@ -1095,6 +1110,7 @@
               { mode: 'bypassPermissions', label: 'Full Auto (Sandboxed)' },
             ],
             defaultPermission: 'acceptEdits',
+            supportsSummarize: true,
           },
           {
             name: 'gemini', displayName: 'Gemini CLI', found: false, path: null, version: null,
@@ -1105,6 +1121,7 @@
               { mode: 'bypassPermissions', label: 'YOLO (Auto-Approve All)' },
             ],
             defaultPermission: 'acceptEdits',
+            supportsSummarize: true,
           },
           {
             name: 'aider', displayName: 'Aider', found: false, path: null, version: null,
@@ -1121,6 +1138,7 @@
               { mode: 'bypassPermissions', label: 'Non-Interactive (Full Access)' },
             ],
             defaultPermission: 'default',
+            supportsSummarize: true,
           },
           {
             name: 'warp', displayName: 'Oz CLI', found: false, path: null, version: null,
@@ -1142,6 +1160,7 @@
               { mode: 'bypassPermissions', label: 'YOLO (Full Access)' },
             ],
             defaultPermission: 'acceptEdits',
+            supportsSummarize: true,
           },
           {
             name: 'kimi', displayName: 'Kimi Code', found: false, path: null, version: null,
@@ -1152,6 +1171,7 @@
               { mode: 'bypassPermissions', label: 'YOLO (Skip Confirmations)' },
             ],
             defaultPermission: 'default',
+            supportsSummarize: true,
           },
           {
             name: 'opencode', displayName: 'OpenCode', found: false, path: null, version: null,
@@ -1161,6 +1181,7 @@
               { mode: 'acceptEdits', label: 'Build' },
             ],
             defaultPermission: 'acceptEdits',
+            supportsSummarize: true,
           },
           {
             name: 'droid', displayName: 'Droid', found: false, path: null, version: null,
@@ -1170,6 +1191,7 @@
               { mode: 'default', label: 'Default (use Droid TUI controls)' },
             ],
             defaultPermission: 'default',
+            supportsSummarize: true,
             liveTelemetryUnsupported: {
               unavailableLabel: 'Telemetry: TUI only',
               unavailableTitle:

@@ -22,7 +22,7 @@ let syncController: AbortController | null = import.meta.hot?.data?.syncControll
 // @ts-expect-error -- Vite handles import.meta.hot
 const hmrTransientData: Record<string, unknown> | undefined = import.meta.hot?.data?.transientState;
 const preservedTransientState = hmrTransientData as {
-  transientSessions: Record<string, { sessionId: string; branch: string | null }>;
+  transientSessions: Record<string, { sessionId: string; branch: string | null; label?: string }>;
   transientSessionId: string | null;
   transientBranch: string | null;
 } | undefined;

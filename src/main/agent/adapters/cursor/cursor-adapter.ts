@@ -4,6 +4,7 @@ import { AgentDetector } from '../../shared/agent-detector';
 import { interpolateTemplate } from '../../shared/template-utils';
 import { quoteArg, isUnixLikeShell } from '../../../../shared/paths';
 import { CursorStreamParser } from './stream-parser';
+import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
 import type {
   AgentPermissionEntry,
@@ -269,5 +270,19 @@ export class CursorAdapter implements AgentAdapter {
   async locateSessionHistoryFile(_agentSessionId: string, _cwd: string): Promise<string | null> {
     // Cursor CLI session history location is not yet known.
     return null;
+  }
+
+  async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {
+    // `agent -p "<prompt>"` runs non-interactively. `--output-format text` returns only
+    // the final assistant message (no tool-call summaries) per
+    // cursor.com/docs/cli/reference/output-format. The prompt is required as a positional
+    // arg after `-p`, not via stdin.
+    return runCliPrintSummarize({
+      cliPath,
+      args: ['--output-format', 'text', '-p'],
+      prompt: buildSummarizePrompt(prompt),
+      cwd,
+      promptVia: 'arg',
+    });
   }
 }

@@ -194,6 +194,38 @@ If a run would execute tests you did not add or modify, it is a full-tier run. S
 
 **Pre-commit:** `/merge-back` runs typecheck automatically. Full-tier validation is the `/test` command's job.
 
+### Auto-Name Tasks from Prompt
+
+Always-on feature that suggests task titles from the description. Two surfaces:
+
+- **`<NameFromPromptButton>`** in `src/renderer/components/NameFromPromptButton.tsx` - square Sparkles icon button placed alongside the title input (NOT inside it). Reusable; exposes a `useNameFromPromptAvailable(description)` hook. Used by `NewTaskDialog` and `TaskDetailEditForm`. Visibility gated on: project's default agent has `supportsSummarize`, the agent CLI is detected, and description is non-empty.
+- **30-second rename toast** wired in `App.tsx` - fires once per task per app run for placeholder-titled tasks (`fix`, `wip`, etc., or empty). Persisted via `AppConfig.autoNameAskedTaskIds` (drained on task delete) so a dismissed suggestion does not re-appear after restart.
+
+The capability is exposed by adapters via the optional `summarize?(prompt, cliPath, cwd)` method on `AgentAdapter`. Implementations live next to each adapter and use the shared `runCliPrintSummarize` helper in `src/main/agent/shared/auto-name.ts`. Capability matrix:
+
+| Agent | Invocation | Prompt delivery |
+|---|---|---|
+| Claude | `claude --print --permission-mode plan` | stdin |
+| Codex | `codex exec --skip-git-repo-check` | stdin |
+| Gemini | `gemini --output-format text` | stdin (non-TTY headless) |
+| Qwen Code | `qwen --output-format text` | stdin (non-TTY headless) |
+| OpenCode | `opencode run -q` | stdin |
+| Kimi | `kimi --print --quiet` | stdin |
+| Cursor | `agent --output-format text -p "<prompt>"` | positional arg |
+| Droid | `droid exec -o text "<prompt>"` | positional arg |
+| Copilot | `copilot --silent -p "<prompt>"` | positional arg |
+| Aider, Warp | (no clean plain-text headless mode yet) | n/a |
+
+Adapters that omit `summarize` are gated out automatically: the renderer hides the button and never schedules the 30s toast.
+
+**Production knobs:**
+- `AppConfig.autoNameAskedTaskIds: string[]` - persisted "don't re-ask" set, drained when a task is deleted (single + bulk delete in `task-crud.ts`)
+- `AppConfig.autoNameRateLimitPerHour: number` (default 60, 0 disables) - sliding-window cap on summarize CLI calls per hour, enforced in the IPC handler
+
+**Verification:** `node scripts/probe-summarize.js` runs each detected adapter's `summarize()` against a sample description and reports success/timeout/format issues. Run after installing or upgrading any agent CLI to verify Kangentic's invocation still produces a sane title.
+
+**Adding a new adapter's summarize:** import `runCliPrintSummarize` and `buildSummarizePrompt` from `../../shared/auto-name`, then add a `summarize()` method that picks the right `args`, `promptVia`, and (if needed) `extractRaw`. Mirror the pattern in `tests/unit/agent-summarize-shape.test.ts`. Update `tests/ui/mock-electron-api.js` to set `supportsSummarize: true` on the agent's mock entry.
+
 ### Performance
 
 - **Terminal ownership handoff:** Each PTY session spawns exactly one Claude Code CLI process. The bottom panel and task detail dialog share that single process but never render simultaneously — when the dialog opens, it claims the session via `dialogSessionId` and the panel unmounts its xterm instance. On close, the panel recreates its xterm from the PTY scrollback buffer. This prevents duplicate xterm instances from sending conflicting resize calls (different container widths garble TUI output) and ensures one CLI process per task regardless of which view is active.

@@ -212,16 +212,17 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `notification:show` | send | Show native OS notification (task name + project name) |
 | `notification:clicked` | on | User clicked a notification (includes projectId, taskId) |
 
-### Agent (2 channels)
+### Agent (3 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `agent:detect` | invoke | Detect agent CLI (path, version) |
 | `agent:listCommands` | invoke | List available agent commands and skills |
+| `agent:summarize` | invoke | Summarize a free-form prompt into a short task title via the active project's default agent (or `input.agentName`). Returns `{ ok, title } \| { ok: false, reason }`. Sliding-window rate limit per `AppConfig.autoNameRateLimitPerHour`. |
 
 ### Agents (1 channel)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
-| `agent:list` | invoke | List all detected agent CLIs as `AgentDetectionInfo` (name, displayName, found, path, version) |
+| `agent:list` | invoke | List all detected agent CLIs as `AgentDetectionInfo` (name, displayName, found, path, version, authenticated, permissions, defaultPermission, liveTelemetryUnsupported, supportsSummarize) |
 
 ### Handoffs (1 channel)
 | Channel | Pattern | Purpose |

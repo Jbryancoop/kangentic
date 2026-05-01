@@ -107,6 +107,7 @@ export const IPC = {
   // Agent
   AGENT_DETECT: 'agent:detect',
   AGENT_LIST_COMMANDS: 'agent:listCommands',
+  AGENT_SUMMARIZE: 'agent:summarize',
 
   // Agents
   AGENT_LIST: 'agent:list',

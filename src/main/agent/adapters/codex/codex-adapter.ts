@@ -3,6 +3,7 @@ import { CodexCommandBuilder } from './command-builder';
 import { removeHooks as removeCodexHooks } from './hook-manager';
 import { CodexSessionHistoryParser } from './session-history-parser';
 import { CodexStatusParser } from './status-parser';
+import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
@@ -186,5 +187,16 @@ export class CodexAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return CodexSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {
+    // `codex exec` runs non-interactively. The `--skip-git-repo-check` flag avoids
+    // failing in non-git working directories. Prompt is delivered via stdin.
+    return runCliPrintSummarize({
+      cliPath,
+      args: ['exec', '--skip-git-repo-check'],
+      prompt: buildSummarizePrompt(prompt),
+      cwd,
+    });
   }
 }

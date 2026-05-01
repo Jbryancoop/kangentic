@@ -9,8 +9,10 @@ export interface TransientSessionSlice {
   commandBarVisible: boolean;
   setCommandBarVisible: (visible: boolean) => void;
 
-  /** Per-project transient session tracking: projectId -> { sessionId, branch }. */
-  transientSessions: Record<string, { sessionId: string; branch: string | null }>;
+  /** Per-project transient session tracking: projectId -> { sessionId, branch, label? }.
+   *  `label` is the auto-derived display name (from the first prompt event); when absent
+   *  the command bar falls back to "Command Terminal". */
+  transientSessions: Record<string, { sessionId: string; branch: string | null; label?: string }>;
   /** Current project's transient session ID (convenience pointer into transientSessions). */
   transientSessionId: string | null;
   /** Current project's transient branch (convenience pointer into transientSessions). */
@@ -26,6 +28,8 @@ export interface TransientSessionSlice {
   restoreTransientSession: (projectId: string) => void;
   /** Kill a specific project's transient session and clean up all data. */
   killTransientSessionForProject: (projectId: string) => Promise<void>;
+  /** Set the derived label on a transient session entry (for the active project). */
+  setTransientSessionLabel: (sessionId: string, label: string) => void;
 }
 
 /**
@@ -45,7 +49,7 @@ export interface TransientSessionSlice {
  * entries would leak.
  */
 export function createTransientSessionSlice(preserved: {
-  transientSessions: Record<string, { sessionId: string; branch: string | null }>;
+  transientSessions: Record<string, { sessionId: string; branch: string | null; label?: string }>;
   transientSessionId: string | null;
   transientBranch: string | null;
 } | undefined): StateCreator<SessionStore, [], [], TransientSessionSlice> {
@@ -144,6 +148,27 @@ export function createTransientSessionSlice(preserved: {
       } else {
         set({ transientSessionId: null, transientBranch: null });
       }
+    },
+
+    setTransientSessionLabel: (sessionId, label) => {
+      const trimmed = label.trim();
+      if (!trimmed) return;
+      set((state) => {
+        const next = { ...state.transientSessions };
+        let changed = false;
+        for (const [projectId, entry] of Object.entries(next)) {
+          if (entry.sessionId === sessionId) {
+            // Only set the label once (first prompt wins). Don't overwrite a
+            // user-set or earlier-derived label on subsequent prompts.
+            if (entry.label) return state;
+            next[projectId] = { ...entry, label: trimmed };
+            changed = true;
+            break;
+          }
+        }
+        if (!changed) return state;
+        return { transientSessions: next };
+      });
     },
 
     killTransientSessionForProject: async (projectId) => {

@@ -4,6 +4,7 @@ import { CopilotCommandBuilder } from './command-builder';
 import { removeSessionConfig } from './hook-manager';
 import { CopilotStatusParser } from './status-parser';
 import { CopilotStreamParser } from './stream-parser';
+import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
@@ -168,5 +169,16 @@ export class CopilotAdapter implements AgentAdapter {
     // Copilot session history file location is not yet empirically verified.
     // Activity events flow through the hooks pipeline (event-bridge JSONL).
     return null;
+  }
+
+  async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {
+    // `copilot -p "<prompt>" --silent` runs non-interactively without status output.
+    return runCliPrintSummarize({
+      cliPath,
+      args: ['--silent', '-p'],
+      prompt: buildSummarizePrompt(prompt),
+      cwd,
+      promptVia: 'arg',
+    });
   }
 }

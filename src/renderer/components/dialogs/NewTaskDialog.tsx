@@ -5,6 +5,7 @@ import { useConfigStore } from '../../stores/config-store';
 import { useProjectStore } from '../../stores/project-store';
 import { useAllExistingLabels } from '../../hooks/useAllExistingLabels';
 import { useToastStore } from '../../stores/toast-store';
+import { NameFromPromptButton } from '../NameFromPromptButton';
 import { BaseDialog } from './BaseDialog';
 import { BranchPicker } from './BranchPicker';
 import { WorktreeChip } from './WorktreeChip';
@@ -271,14 +272,17 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
-            <input
-              ref={inputRef}
-              type="text"
-              placeholder="Task title"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              className="w-full bg-surface border border-edge-input rounded px-3 py-2 text-sm text-fg placeholder-fg-faint focus:outline-none focus:border-accent"
-            />
+            <div className="flex items-center gap-2">
+              <input
+                ref={inputRef}
+                type="text"
+                placeholder="Task title"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                className="flex-1 min-w-0 bg-surface border border-edge-input rounded px-3 py-2 text-sm text-fg placeholder-fg-faint focus:outline-none focus:border-accent"
+              />
+              <NameFromPromptButton description={description} onTitle={setTitle} />
+            </div>
             <DescriptionEditor
               value={description}
               onChange={setDescription}
