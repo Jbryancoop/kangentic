@@ -297,6 +297,10 @@ export function runProjectMigrations(db: Database.Database): void {
     ['lines_added', 'INTEGER DEFAULT NULL'],
     ['lines_removed', 'INTEGER DEFAULT NULL'],
     ['files_changed', 'INTEGER DEFAULT NULL'],
+    // JSON-encoded per-tool aggregates (PerToolStat[]). Captured at session
+    // exit/suspend so the Session Summary panel can show a breakdown for
+    // archived tasks where the in-memory event log is no longer available.
+    ['tool_breakdown', 'TEXT DEFAULT NULL'],
   ];
   for (const [columnName, columnDef] of metricsColumns) {
     if (!sessionColumns.has(columnName)) {

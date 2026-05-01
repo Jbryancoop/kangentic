@@ -165,6 +165,39 @@ describe('GeminiSessionHistoryParser', () => {
       const result = GeminiSessionHistoryParser.parse(json, 'full');
       expect(result.activity).toBeNull();
     });
+
+    it('sparse-merge regression: returned usage object has no cost key', () => {
+      // Regression guard for the fix that removed `cost: { totalCostUsd: 0, totalDurationMs: 0 }`
+      // from the Gemini parser output. If `cost` reappears on the usage object, it will zero-out
+      // any previously-merged cost value in UsageTracker.setSessionUsage via a shallow spread,
+      // silently discarding cost data reported by an earlier parse pass (e.g. from Claude hooks
+      // running alongside Gemini). The parser must return a *sparse* usage that omits `cost`
+      // entirely, relying on the tracker's merge logic to preserve the prior value.
+      const json = JSON.stringify({
+        sessionId: 'test',
+        messages: [
+          {
+            type: 'gemini',
+            model: 'gemini-3-flash-preview',
+            tokens: { input: 5000, output: 100, total: 5100 },
+          },
+        ],
+      });
+
+      const result = GeminiSessionHistoryParser.parse(json, 'full');
+
+      expect(result.usage).not.toBeNull();
+      // The `cost` key must be absent - NOT present with a zero value.
+      // `Object.prototype.hasOwnProperty` is the correct check because
+      // `result.usage!.cost === undefined` would also pass if the key
+      // exists with value undefined, which would still clobber the spread.
+      const usageKeys = Object.keys(result.usage as object);
+      expect(usageKeys).not.toContain('cost');
+      // Verify that contextWindow and model ARE present (sanity check that
+      // we didn't accidentally return an empty sparse object).
+      expect(usageKeys).toContain('contextWindow');
+      expect(usageKeys).toContain('model');
+    });
   });
 
   describe('captureSessionIdFromFilesystem', () => {

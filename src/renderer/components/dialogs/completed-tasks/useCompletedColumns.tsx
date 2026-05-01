@@ -7,8 +7,9 @@ import { formatTokenCount } from '../../../utils/format-tokens';
 import type { Task, Swimlane, SessionSummary } from '../../../../shared/types';
 import { StaleTaskWarning } from './StaleTaskWarning';
 import { RowActions } from './RowActions';
+import { buildToolsTooltip } from './tooltip';
 
-export type SortKey = 'select' | 'title' | 'cost' | 'duration' | 'tokens' | 'files' | 'lines' | 'completed' | 'actions';
+export type SortKey = 'select' | 'title' | 'cost' | 'duration' | 'tokens' | 'tools' | 'files' | 'lines' | 'completed' | 'actions';
 
 export interface TaskRow {
   task: Task;
@@ -140,6 +141,23 @@ export function useCompletedColumns(input: {
         ) : (
           <span className="text-fg-disabled">-</span>
         ),
+    },
+    {
+      key: 'tools' as SortKey,
+      label: 'Tools',
+      align: 'right',
+      width: 'w-[70px]',
+      sortValue: (row) => row.summary?.toolCallCount ?? -1,
+      render: (row) => {
+        if (!row.summary || row.summary.toolCallCount === 0) {
+          return <span className="text-fg-disabled">-</span>;
+        }
+        return (
+          <span className="tabular-nums text-fg-secondary" title={buildToolsTooltip(row.summary)}>
+            {row.summary.toolCallCount}
+          </span>
+        );
+      },
     },
     {
       key: 'files' as SortKey,

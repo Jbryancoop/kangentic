@@ -251,6 +251,29 @@ export interface SessionRecord {
   lines_added: number | null;
   lines_removed: number | null;
   files_changed: number | null;
+  /** JSON-encoded `PerToolStat[]`. NULL for sessions captured before this column existed. */
+  tool_breakdown: string | null;
+}
+
+/**
+ * Per-tool aggregate captured at session exit/suspend. Sourced from the
+ * incremental tracker in UsageTracker so the totals are not truncated by
+ * the bounded event-cache window. Cost/token fields are optional - they
+ * are only populated if a future adapter starts emitting per-tool cost
+ * on its ToolEnd event payload (see `SessionEvent.costUsd` etc.). The
+ * renderer hides the corresponding columns when no row has the field set.
+ */
+export interface PerToolStat {
+  toolName: string;
+  callCount: number;
+  /** Sum of (ToolEnd.ts - matching ToolStart.ts) over completed pairs. */
+  totalDurationMs: number;
+  /** Count of `interrupted` events (PostToolUseFailure). Subset of pairs that did not finish cleanly. */
+  interruptedCount: number;
+  /** Optional - reserved for adapters that emit per-tool cost. */
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 /** Record of a cross-agent context handoff. */
@@ -282,6 +305,8 @@ export interface SessionSummary {
   startedAt: string;
   exitedAt: string | null;
   exitCode: number | null;
+  /** Per-tool breakdown for the latest captured session record. Empty when missing. */
+  toolBreakdown: PerToolStat[];
 }
 
 // === Session Activity (Claude Code Hooks) ===
@@ -426,6 +451,15 @@ export interface SessionEvent {
    * - For `notification`: notification text
    */
   detail?: string;
+  /**
+   * Optional per-tool telemetry on `tool_end` events. Populated only when an
+   * adapter exposes per-tool cost or tokens (none today). Reserved as the
+   * extension point so future adapters can emit richer breakdowns without
+   * any agent-name branching at the render layer.
+   */
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 // === Session Usage (Claude Code Status Line) ===

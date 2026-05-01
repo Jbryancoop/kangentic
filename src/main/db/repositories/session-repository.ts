@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { SessionRecord, SessionRecordStatus, SessionSummary, SuspendedBy, PeriodUsageStats } from '../../../shared/types';
+import type { PerToolStat, SessionRecord, SessionRecordStatus, SessionSummary, SuspendedBy, PeriodUsageStats } from '../../../shared/types';
 
 /**
  * Fields accepted by insert(). Caller must provide `id` (the PTY session ID)
@@ -7,7 +7,7 @@ import type { SessionRecord, SessionRecordStatus, SessionSummary, SuspendedBy, P
  * Excludes metric columns (set via updateMetrics).
  */
 type SessionInsertInput = Omit<SessionRecord,
-  'total_cost_usd' | 'total_input_tokens' | 'total_output_tokens' | 'model_id' | 'model_display_name' | 'total_duration_ms' | 'tool_call_count' | 'lines_added' | 'lines_removed' | 'files_changed'
+  'total_cost_usd' | 'total_input_tokens' | 'total_output_tokens' | 'model_id' | 'model_display_name' | 'total_duration_ms' | 'tool_call_count' | 'lines_added' | 'lines_removed' | 'files_changed' | 'tool_breakdown'
 >;
 
 export interface SessionMetricsInput {
@@ -18,6 +18,45 @@ export interface SessionMetricsInput {
   modelDisplayName: string | null;
   totalDurationMs: number | null;
   toolCallCount: number | null;
+  /** JSON-serialized PerToolStat[]; null for sessions with no tool events. */
+  toolBreakdown: string | null;
+}
+
+/**
+ * Type guard for a single tool_breakdown entry. Required fields must be
+ * present and correctly typed; optional fields (costUsd / inputTokens /
+ * outputTokens) are only validated when present so future writers can
+ * extend the shape without tripping the guard.
+ */
+function isPerToolStat(value: unknown): value is PerToolStat {
+  if (value === null || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.toolName !== 'string') return false;
+  if (typeof candidate.callCount !== 'number') return false;
+  if (typeof candidate.totalDurationMs !== 'number') return false;
+  if (typeof candidate.interruptedCount !== 'number') return false;
+  if (candidate.costUsd !== undefined && typeof candidate.costUsd !== 'number') return false;
+  if (candidate.inputTokens !== undefined && typeof candidate.inputTokens !== 'number') return false;
+  if (candidate.outputTokens !== undefined && typeof candidate.outputTokens !== 'number') return false;
+  return true;
+}
+
+/**
+ * Parse a `tool_breakdown` JSON column into typed `PerToolStat[]`. Tolerant
+ * of malformed payloads (rows from older versions or hand-edited DBs) so
+ * one corrupt record can't crash the Session Summary panel. Entries that
+ * fail the shape guard are dropped silently rather than rendered as blank
+ * rows with undefined React keys.
+ */
+function parseToolBreakdown(raw: string | null): PerToolStat[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isPerToolStat);
+  } catch {
+    return [];
+  }
 }
 
 export class SessionRepository {
@@ -55,6 +94,7 @@ export class SessionRepository {
       lines_added: null,
       lines_removed: null,
       files_changed: null,
+      tool_breakdown: null,
     };
   }
 
@@ -203,7 +243,7 @@ export class SessionRepository {
     return rows.map(r => r.id);
   }
 
-  /** Update the 7 metric columns for a session record. */
+  /** Update the metric columns for a session record. */
   updateMetrics(id: string, metrics: SessionMetricsInput): void {
     this.db.prepare(`
       UPDATE sessions SET
@@ -213,7 +253,8 @@ export class SessionRepository {
         model_id = ?,
         model_display_name = ?,
         total_duration_ms = ?,
-        tool_call_count = ?
+        tool_call_count = ?,
+        tool_breakdown = ?
       WHERE id = ?
     `).run(
       metrics.totalCostUsd,
@@ -223,6 +264,7 @@ export class SessionRepository {
       metrics.modelDisplayName,
       metrics.totalDurationMs,
       metrics.toolCallCount,
+      metrics.toolBreakdown,
       id,
     );
   }
@@ -287,6 +329,7 @@ export class SessionRepository {
       startedAt: aggregated.earliest_started_at,
       exitedAt: aggregated.latest_ended_at,
       exitCode: latestRecord.exit_code,
+      toolBreakdown: parseToolBreakdown(latestRecord.tool_breakdown),
     };
   }
 
@@ -314,6 +357,7 @@ export class SessionRepository {
          s.lines_added,
          s.lines_removed,
          s.files_changed,
+         s.tool_breakdown,
          ROW_NUMBER() OVER (PARTITION BY s.task_id ORDER BY s.started_at DESC) AS row_num
        FROM sessions s
        JOIN tasks t ON t.id = s.task_id
@@ -336,6 +380,7 @@ export class SessionRepository {
       lines_added: number | null;
       lines_removed: number | null;
       files_changed: number | null;
+      tool_breakdown: string | null;
       row_num: number;
     }>;
 
@@ -385,6 +430,7 @@ export class SessionRepository {
         startedAt: earliestStartedAt,
         exitedAt: latestEndedAt,
         exitCode: latest.exit_code,
+        toolBreakdown: parseToolBreakdown(latest.tool_breakdown),
       };
     }
     return result;

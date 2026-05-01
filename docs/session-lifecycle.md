@@ -149,12 +149,13 @@ The actual shutdown sequence (`syncShutdownCleanup()` in `src/main/index.ts`):
 
 1. Cancel all pending command injections
 2. List all in-memory sessions with `running` or `queued` status
-3. For each, find the corresponding DB record and mark it `suspended` (with `suspended_at` timestamp and `suspended_by = 'system'`) so sessions can resume on next launch
-4. Call `SessionManager.killAll()` which force-kills all PTYs immediately (no graceful `/exit`, no waiting)
-5. Clean up session files and clear in-memory session maps
-6. Delete ephemeral project from index (if applicable)
-7. Close all database connections via `closeAll()`
-8. Let Electron's normal quit proceed (tears down Chromium child processes)
+3. For each running record, call `captureSessionMetrics()` (synchronous: in-memory cache read + better-sqlite3 UPDATE) so cost / tokens / duration / `tool_breakdown` are flushed to the DB before the PTY is killed. Without this step every clean app close loses in-flight metrics for any session that had not yet checkpointed.
+4. Mark each running record `suspended` (with `suspended_at` timestamp and `suspended_by = 'system'`) so sessions can resume on next launch. Queued records are marked `exited` since there is nothing to resume.
+5. Call `SessionManager.killAll()` which force-kills all PTYs immediately (no graceful `/exit`, no waiting)
+6. Clean up session files and clear in-memory session maps
+7. Delete ephemeral project from index (if applicable)
+8. Close all database connections via `closeAll()`
+9. Let Electron's normal quit proceed (tears down Chromium child processes)
 
 A hard failsafe timer (`taskkill /T /F` on Windows, 6 seconds) runs as a backstop in case Electron's shutdown hangs.
 

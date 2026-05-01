@@ -188,7 +188,11 @@ export function DataTable<TRow, TKey extends string = string>({
             {column.headerRender ? (
               column.headerRender(sortedData)
             ) : (
-              <span className="inline-flex items-center gap-1">
+              // For right-aligned columns the sort indicator must sit to the
+              // LEFT of the label, otherwise the label's right edge is offset
+              // by the indicator slot's width and visibly drifts left of the
+              // numeric values below it.
+              <span className={`inline-flex items-center gap-1 ${column.align === 'right' ? 'flex-row-reverse' : ''}`}>
                 {column.label}
                 {isSortable && (
                   <span className="w-3 h-3 flex items-center justify-center">

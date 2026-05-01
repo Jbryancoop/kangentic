@@ -210,7 +210,14 @@ export class GeminiSessionHistoryParser {
       ? (inputTokens / contextWindowSize) * 100
       : 0;
 
-    const usage: SessionUsage = {
+    // Gemini's native session file does not report cost or duration. We
+    // emit a sparse usage with `cost` omitted entirely so the shallow
+    // spread in `setSessionUsage` does not overwrite a previously-merged
+    // value with zero. (The audit caught this clobbering the cost field
+    // on every parse pass.) Cast through `unknown` mirrors the Codex
+    // parser's `buildUsage` pattern - the runtime contract is sparse,
+    // even though the type claims SessionUsage.
+    const sparseUsage = {
       contextWindow: {
         usedPercentage: percentage,
         usedTokens: inputTokens,
@@ -223,15 +230,12 @@ export class GeminiSessionHistoryParser {
         // context window.
         contextWindowSize: contextWindowSize ?? 0,
       },
-      cost: {
-        totalCostUsd: 0,
-        totalDurationMs: 0,
-      },
       model: {
         id: modelId,
         displayName: modelId,
       },
     };
+    const usage = sparseUsage as unknown as SessionUsage;
 
     // Gemini writes the file on message completion, so by the time we
     // parse it the latest message already exists - no live "thinking"

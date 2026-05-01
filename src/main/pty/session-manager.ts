@@ -27,6 +27,7 @@ import type {
   ActivityState,
   SessionEvent,
   SpawnSessionInput,
+  PerToolStat,
 } from '../../shared/types';
 
 export class SessionManager extends EventEmitter {
@@ -569,6 +570,24 @@ export class SessionManager extends EventEmitter {
   /** Return cached events for a specific session (survives renderer reloads). */
   getEventsForSession(sessionId: string): SessionEvent[] {
     return this.usageTracker.getEventsForSession(sessionId);
+  }
+
+  /**
+   * Cumulative ToolEnd count for a session. Tracked independently of the
+   * bounded event cache so captureSessionMetrics can write a faithful
+   * tool_call_count even after the cache has rolled past 500 events.
+   */
+  getToolCallCount(sessionId: string): number {
+    return this.usageTracker.getToolCallCount(sessionId);
+  }
+
+  /**
+   * Per-tool aggregate snapshot for a session. Used by captureSessionMetrics
+   * to persist a JSON breakdown so the Session Summary panel can render a
+   * "By tool" section for archived tasks.
+   */
+  getToolBreakdown(sessionId: string): PerToolStat[] {
+    return this.usageTracker.getToolBreakdown(sessionId);
   }
 
   /** Return the transcript writer instance (if enabled). */

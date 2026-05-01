@@ -2,6 +2,7 @@ import { closeAll, getProjectDb } from './db/database';
 import { SessionRepository } from './db/repositories/session-repository';
 import { TaskRepository } from './db/repositories/task-repository';
 import { markRecordSuspended, markRecordExited } from './engine/session-lifecycle';
+import { captureSessionMetrics } from './ipc/handlers/session-metrics';
 import type { SessionManager } from './pty/session-manager';
 import type { BoardConfigManager } from './config/board-config-manager';
 import type { CommandInjector } from './engine/command-injector';
@@ -73,6 +74,12 @@ export function syncShutdownCleanup(dependencies: ShutdownDependencies): void {
         for (const session of sessions) {
           const record = sessionRepo.getLatestForTask(session.taskId);
           if (record && record.status === 'running') {
+            // Flush in-flight metrics from usageCache to the DB BEFORE
+            // marking suspended. captureSessionMetrics is fully synchronous
+            // (in-memory read + better-sqlite3 UPDATE) so it's safe in this
+            // sync-only shutdown path. Without this, every clean app close
+            // loses cost/token/duration for any active session.
+            captureSessionMetrics(sessionManager, sessionRepo, session.id, record.id);
             markRecordSuspended(sessionRepo, record.id, 'system');
             taskRepo.update({ id: session.taskId, session_id: null });
           } else if (record && record.status === 'queued') {

@@ -61,7 +61,7 @@ Dragging between active columns (e.g., Executing to Code Review) keeps the sessi
 
 Drag to Done. A confirmation dialog asks you to approve deleting the local worktree (with a "Delete automatically in the future" checkbox to suppress future prompts). On confirm, the worktree directory is removed to reclaim disk, the session is suspended (not destroyed), the task is archived, and both the branch and conversation ID are preserved. If you later unarchive the task and drag it to an active column, Kangentic recreates the worktree from the preserved branch and the agent resumes with full conversation context.
 
-Clicking a completed task opens a session summary showing: duration, model, cost, token usage, tool call count, files changed, and lines added/removed. Done cards whose worktrees have been reclaimed show a small "worktree deleted" badge. The Done column also supports searching completed tasks by title and sorting by date, cost, tokens, or duration.
+Clicking a completed task opens a session summary showing: duration, model, cost, token usage, tool call count, files changed, and lines added/removed. A collapsible "By tool" section breaks the count down per tool name (calls, total duration, average duration, plus a Failed column when any tool was interrupted). Cost / input / output columns appear only for adapters that emit per-tool telemetry. Done cards whose worktrees have been reclaimed show a small "worktree deleted" badge. The Done column also supports searching completed tasks by title and sorting by date, cost, tokens, or duration.
 
 ### Task Card Context Menu
 

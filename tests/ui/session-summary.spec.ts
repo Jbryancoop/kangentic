@@ -38,8 +38,21 @@ function makePreConfig(options: {
   withSummary: boolean;
   exitCode?: number | null;
   extraArchivedTasks?: number;
+  /** Optional per-tool aggregates seeded into the summary fixture. */
+  toolBreakdown?: Array<{
+    toolName: string;
+    callCount: number;
+    totalDurationMs: number;
+    interruptedCount: number;
+    costUsd?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+  }>;
 }): string {
   const exitCode = options.exitCode !== undefined ? options.exitCode : 0;
+  const toolBreakdownLiteral = options.toolBreakdown
+    ? JSON.stringify(options.toolBreakdown)
+    : '[]';
   const summaryBlock = options.withSummary
     ? `
       state.summaryCache['${TASK_ID}'] = {
@@ -57,6 +70,7 @@ function makePreConfig(options: {
         startedAt: '2026-03-13T15:44:00.000Z',
         exitedAt: '2026-03-13T15:45:00.000Z',
         exitCode: ${exitCode === null ? 'null' : exitCode},
+        toolBreakdown: ${toolBreakdownLiteral},
       };
     `
     : '';
@@ -100,6 +114,7 @@ function makePreConfig(options: {
           startedAt: '2026-03-13T15:00:00.000Z',
           exitedAt: '2026-03-13T15:${String(index + 1).padStart(2, '0')}:00.000Z',
           exitCode: 0,
+          toolBreakdown: [],
         };
       `;
     }
@@ -286,6 +301,102 @@ test.describe('Session Summary Panel', () => {
       const summaryPanel = page.locator('[data-testid="session-summary"]');
       await expect(summaryPanel).toBeVisible({ timeout: 5000 });
       await expect(summaryPanel).toContainText('Exited (1)');
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('Tool calls row has no expander when toolBreakdown is empty', async () => {
+    const { browser, page } = await launchWithState(makePreConfig({ withSummary: true }));
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 10000 });
+      await page.locator('text=Completed Test Task').click();
+
+      const summaryPanel = page.locator('[data-testid="session-summary"]');
+      await expect(summaryPanel).toBeVisible({ timeout: 5000 });
+      await expect(page.locator('[data-testid="session-summary-tool-calls-toggle"]')).toHaveCount(0);
+      await expect(page.locator('[data-testid="session-summary-by-tool"]')).toHaveCount(0);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('Tool calls expander toggles the per-tool table', async () => {
+    const { browser, page } = await launchWithState(makePreConfig({
+      withSummary: true,
+      toolBreakdown: [
+        { toolName: 'Bash', callCount: 3, totalDurationMs: 4_200, interruptedCount: 0 },
+        { toolName: 'Read', callCount: 12, totalDurationMs: 850, interruptedCount: 0 },
+      ],
+    }));
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 10000 });
+      await page.locator('text=Completed Test Task').click();
+
+      const toggle = page.locator('[data-testid="session-summary-tool-calls-toggle"]');
+      await expect(toggle).toBeVisible({ timeout: 5000 });
+      // Collapsed by default - the table is not yet rendered.
+      await expect(page.locator('[data-testid="session-summary-by-tool"]')).toHaveCount(0);
+
+      await toggle.click();
+      const table = page.locator('[data-testid="session-summary-by-tool"]');
+      await expect(table).toBeVisible({ timeout: 2000 });
+      await expect(table).toContainText('Bash');
+      await expect(table).toContainText('Read');
+      await expect(table).toContainText('Calls');
+      await expect(table).toContainText('Total');
+      await expect(table).toContainText('Avg');
+
+      // Click again collapses.
+      await toggle.click();
+      await expect(page.locator('[data-testid="session-summary-by-tool"]')).toHaveCount(0);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('Cost / token / interrupted columns are conditional on row data', async () => {
+    // No row carries cost or tokens, and no row was interrupted -> those
+    // columns must be hidden so the panel is honest about what was captured.
+    const { browser, page } = await launchWithState(makePreConfig({
+      withSummary: true,
+      toolBreakdown: [
+        { toolName: 'Bash', callCount: 3, totalDurationMs: 4_200, interruptedCount: 0 },
+      ],
+    }));
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 10000 });
+      await page.locator('text=Completed Test Task').click();
+
+      await page.locator('[data-testid="session-summary-tool-calls-toggle"]').click();
+      const headerRow = page.locator('[data-testid="session-summary-by-tool"] table thead tr');
+      await expect(headerRow).not.toContainText('Cost');
+      await expect(headerRow).not.toContainText('In');
+      await expect(headerRow).not.toContainText('Out');
+      await expect(headerRow).not.toContainText('Failed');
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('Cost and Failed columns appear when at least one row has them', async () => {
+    const { browser, page } = await launchWithState(makePreConfig({
+      withSummary: true,
+      toolBreakdown: [
+        { toolName: 'Bash', callCount: 5, totalDurationMs: 12_000, interruptedCount: 1, costUsd: 0.04 },
+        { toolName: 'Read', callCount: 20, totalDurationMs: 1_500, interruptedCount: 0 },
+      ],
+    }));
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 10000 });
+      await page.locator('text=Completed Test Task').click();
+
+      await page.locator('[data-testid="session-summary-tool-calls-toggle"]').click();
+      const headerRow = page.locator('[data-testid="session-summary-by-tool"] table thead tr');
+      await expect(headerRow).toContainText('Cost');
+      await expect(headerRow).toContainText('Failed');
+      const readRow = page.locator('[data-testid="session-summary-by-tool"] table tbody tr', { hasText: 'Read' });
+      await expect(readRow).toContainText('-');
     } finally {
       await browser.close();
     }

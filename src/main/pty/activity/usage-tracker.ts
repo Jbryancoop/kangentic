@@ -1,5 +1,5 @@
 import { EventType, EventTypeActivity, AgentTool, IdleReason, PromptReason, Activity } from '../../../shared/types';
-import type { SessionUsage, ActivityState, SessionEvent, AgentParser } from '../../../shared/types';
+import type { SessionUsage, ActivityState, SessionEvent, AgentParser, PerToolStat } from '../../../shared/types';
 import { matchesPRCommand } from '../pr/pr-connectors';
 import { PtyActivityTracker } from './pty-activity-tracker';
 import { ActivityStateMachine } from './activity-state-machine';
@@ -7,6 +7,35 @@ import { ActivityStateMachine } from './activity-state-machine';
 const MAX_EVENTS_PER_SESSION = 500; // Cap rendered events in renderer
 const STALE_THINKING_THRESHOLD_MS = 45_000;
 const STALE_THINKING_CHECK_MS = 15_000;
+
+interface ToolAccumulator {
+  callCount: number;
+  interruptedCount: number;
+  totalDurationMs: number;
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  hasCost: boolean;
+  hasInputTokens: boolean;
+  hasOutputTokens: boolean;
+  /** FIFO of unmatched ToolStart timestamps, paired by tool name. */
+  pendingStarts: number[];
+}
+
+function newAccumulator(): ToolAccumulator {
+  return {
+    callCount: 0,
+    interruptedCount: 0,
+    totalDurationMs: 0,
+    costUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    hasCost: false,
+    hasInputTokens: false,
+    hasOutputTokens: false,
+    pendingStarts: [],
+  };
+}
 
 /**
  * Safely extract the `hookContext` string from a raw JSONL line written
@@ -55,6 +84,14 @@ export class UsageTracker {
   private sessionParsers = new Map<string, AgentParser>();
   private agentSessionIdChecked = new Set<string>();
   private eventCache = new Map<string, SessionEvent[]>();
+  // Per-tool incremental aggregator. Tracked independently of the bounded
+  // `eventCache` so totals are not truncated by the MAX_EVENTS_PER_SESSION
+  // cap. Each ToolStart pushes a timestamp into the tool's `pendingStarts`
+  // FIFO; the matching ToolEnd / Interrupted pops it and adds the duration
+  // to the tool's accumulator. Optional per-tool cost/tokens are summed
+  // when the event payload includes them (currently no adapter does).
+  // Cleared in removeSession alongside the other per-session caches.
+  private toolStats = new Map<string, Map<string, ToolAccumulator>>();
   private _idleTimeoutMinutes = 0;
   private idleTimeoutInterval: ReturnType<typeof setInterval> | null = null;
   private staleThinkingInterval: ReturnType<typeof setInterval> | null = null;
@@ -379,6 +416,115 @@ export class UsageTracker {
     this.eventCache.delete(sessionId);
     this.sessionParsers.delete(sessionId);
     this.agentSessionIdChecked.delete(sessionId);
+    this.toolStats.delete(sessionId);
+  }
+
+  /**
+   * Update the per-tool aggregator for one event. ToolStart records a
+   * pending start timestamp; ToolEnd/Interrupted pops the matching start
+   * and accumulates duration. Optional `costUsd`/`inputTokens`/`outputTokens`
+   * on the ToolEnd event are summed when present.
+   *
+   * Pairing is keyed by tool name with a FIFO queue, so interleaved tool
+   * calls (e.g. parallel Bash + Read) match correctly. An unmatched
+   * ToolEnd (no prior ToolStart) still increments the count but contributes
+   * zero duration, so the counter stays faithful even if the start was
+   * dropped before this session began capturing.
+   */
+  private recordToolEvent(sessionId: string, event: SessionEvent): void {
+    if (event.type !== EventType.ToolStart
+        && event.type !== EventType.ToolEnd
+        && event.type !== EventType.Interrupted) {
+      return;
+    }
+    const toolName = event.tool ?? 'unknown';
+    let perSession = this.toolStats.get(sessionId);
+    if (!perSession) {
+      perSession = new Map<string, ToolAccumulator>();
+      this.toolStats.set(sessionId, perSession);
+    }
+    let accumulator = perSession.get(toolName);
+    if (!accumulator) {
+      accumulator = newAccumulator();
+      perSession.set(toolName, accumulator);
+    }
+
+    if (event.type === EventType.ToolStart) {
+      accumulator.pendingStarts.push(event.ts);
+      return;
+    }
+
+    // ToolEnd / Interrupted - pair with the oldest unmatched start.
+    const startTs = accumulator.pendingStarts.shift();
+    if (startTs !== undefined) {
+      accumulator.totalDurationMs += Math.max(0, event.ts - startTs);
+    }
+    if (event.type === EventType.ToolEnd) {
+      accumulator.callCount += 1;
+    } else {
+      accumulator.interruptedCount += 1;
+    }
+    if (typeof event.costUsd === 'number') {
+      accumulator.costUsd += event.costUsd;
+      accumulator.hasCost = true;
+    }
+    if (typeof event.inputTokens === 'number') {
+      accumulator.inputTokens += event.inputTokens;
+      accumulator.hasInputTokens = true;
+    }
+    if (typeof event.outputTokens === 'number') {
+      accumulator.outputTokens += event.outputTokens;
+      accumulator.hasOutputTokens = true;
+    }
+  }
+
+  /**
+   * Cumulative ToolEnd count for a session, tracked independently of the
+   * MAX_EVENTS_PER_SESSION cap on eventCache. Used by captureSessionMetrics
+   * so long sessions don't undercount once the event cache rolls.
+   */
+  getToolCallCount(sessionId: string): number {
+    const perSession = this.toolStats.get(sessionId);
+    if (!perSession) return 0;
+    let total = 0;
+    for (const accumulator of perSession.values()) {
+      total += accumulator.callCount;
+    }
+    return total;
+  }
+
+  /**
+   * Snapshot of per-tool aggregates for a session. Sorted by total duration
+   * descending (cost descending when any row carries cost data, matching
+   * the survey spec). Returns an empty array when the session has produced
+   * no tool events.
+   */
+  getToolBreakdown(sessionId: string): PerToolStat[] {
+    const perSession = this.toolStats.get(sessionId);
+    if (!perSession) return [];
+    const rows: PerToolStat[] = [];
+    let anyCost = false;
+    for (const [toolName, accumulator] of perSession) {
+      if (accumulator.callCount === 0 && accumulator.interruptedCount === 0) continue;
+      const stat: PerToolStat = {
+        toolName,
+        callCount: accumulator.callCount,
+        totalDurationMs: accumulator.totalDurationMs,
+        interruptedCount: accumulator.interruptedCount,
+      };
+      if (accumulator.hasCost) {
+        stat.costUsd = accumulator.costUsd;
+        anyCost = true;
+      }
+      if (accumulator.hasInputTokens) stat.inputTokens = accumulator.inputTokens;
+      if (accumulator.hasOutputTokens) stat.outputTokens = accumulator.outputTokens;
+      rows.push(stat);
+    }
+    rows.sort((a, b) => {
+      if (anyCost) return (b.costUsd ?? 0) - (a.costUsd ?? 0);
+      return b.totalDurationMs - a.totalDurationMs;
+    });
+    return rows;
   }
 
   // -- PTY-based activity detection (delegated to PtyActivityTracker) --------
@@ -501,6 +647,8 @@ export class UsageTracker {
     for (const event of events) {
       cached.push(event);
       this.callbacks.onEvent(sessionId, event);
+
+      this.recordToolEvent(sessionId, event);
 
       this.maybeSuppressPtyTracker(sessionId, event, parser);
       this.detectExitPlanMode(sessionId, event);

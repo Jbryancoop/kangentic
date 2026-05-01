@@ -167,6 +167,7 @@ Index: `idx_transitions_from_to` on (from_swimlane_id, to_swimlane_id).
 | lines_added | INTEGER | | NULL |
 | lines_removed | INTEGER | | NULL |
 | files_changed | INTEGER | | NULL |
+| tool_breakdown | TEXT | | NULL |
 
 Valid session_type values: `claude_agent`, `codex_agent`, `gemini_agent`, `aider_agent`, `cursor_agent`, `copilot_agent`, `warp_agent`, `kimi_agent`, `run_script`.
 
@@ -175,6 +176,8 @@ Valid status values: `running`, `queued`, `suspended`, `exited`, `orphaned`.
 Valid suspended_by values: `user` (explicit pause button), `system` (shutdown, task move, idle timeout), or `NULL` (legacy records, treated as `system`).
 
 Valid permission_mode values: `default`, `plan`, `acceptEdits`, `dontAsk`, `bypassPermissions`, `auto` (see `PermissionMode` type in `src/shared/types.ts`).
+
+`tool_breakdown` is JSON-encoded `PerToolStat[]` (see `src/shared/types.ts`). One entry per distinct tool name with `callCount`, `totalDurationMs`, `interruptedCount`, and optional `costUsd` / `inputTokens` / `outputTokens` when the adapter emits per-tool telemetry on `tool_end` events. NULL on records captured before the column existed and on records whose session produced no tool events. Written by `captureSessionMetrics` from a per-session aggregator in `UsageTracker` that pairs `tool_start` / `tool_end` timestamps; tracked independently of the bounded event cache so totals are not truncated for long sessions.
 
 Indexes: `idx_sessions_task_started` on (task_id, started_at DESC), `idx_sessions_status` on (status), `idx_sessions_agent_session_id` on (agent_session_id).
 
@@ -297,7 +300,7 @@ Listed in execution order within `runProjectMigrations()`:
 14. **`suspended_by` column on sessions** -- tracks who suspended the session (`user` or `system`). Used by session recovery to skip user-paused sessions on relaunch.
 15. **Legacy `permission_strategy` rename** -- converts `project-settings` to `default` and `dangerously-skip` to `bypass-permissions` in swimlanes. (Values later migrated again in migration 18.)
 16. **`is_ghost` column on swimlanes** -- adds ghost column support for board config reconciliation. Ghost columns are columns removed from `kangentic.json` but still holding tasks.
-17. **Session metrics columns** -- adds `total_cost_usd`, `total_input_tokens`, `total_output_tokens`, `model_id`, `model_display_name`, `total_duration_ms`, `tool_call_count`, `lines_added`, `lines_removed`, `files_changed` to sessions for completed task summaries.
+17. **Session metrics columns** -- adds `total_cost_usd`, `total_input_tokens`, `total_output_tokens`, `model_id`, `model_display_name`, `total_duration_ms`, `tool_call_count`, `lines_added`, `lines_removed`, `files_changed`, `tool_breakdown` to sessions for completed task summaries. The same idempotent ALTER TABLE loop adds new metric columns over time; `tool_breakdown` was appended later for per-tool aggregates.
 18. **`permission_strategy` column renamed to `permission_mode`** -- renames the `permission_strategy` column to `permission_mode` on swimlanes. Migrates old values: `bypass-permissions` to `bypassPermissions`, removes `manual` (alias for `default`). Adds `dontAsk` as a new valid mode. Also removes `permissionMode` from action `config_json` (action-level override removed; resolution is now swimlane override then global setting).
 19. **Legacy `permission_mode` value normalization** -- unconditional data migration that runs on every DB open. Normalizes legacy values in both swimlanes and sessions: `project-settings` to `default`, `manual` to `default`, `dangerously-skip` to `bypassPermissions`, `bypass-permissions` to `bypassPermissions`. Ensures all records use the current `PermissionMode` union values regardless of when they were created.
 20. **Swimlane role rename (`backlog` to `todo`)** -- renames the "Backlog" swimlane to "To Do" (also catches "Not Started") and migrates role values from `backlog` to `todo`.

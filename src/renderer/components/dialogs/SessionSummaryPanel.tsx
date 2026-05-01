@@ -1,9 +1,89 @@
 import React, { useState, useEffect } from 'react';
-import { DollarSign, Cpu, Wrench, CheckCircle2, XCircle, Hash, ArrowUp, ArrowDown, ArrowRight, Calendar, Clock, Hourglass, Fingerprint, GitBranch, FileCode, Copy, Check } from 'lucide-react';
+import { DollarSign, Cpu, Wrench, CheckCircle2, XCircle, Hash, ArrowUp, ArrowDown, ArrowRight, Calendar, Clock, Hourglass, Fingerprint, GitBranch, FileCode, Copy, Check, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { formatTokenCount } from '../../utils/format-tokens';
 import { formatDuration, formatCost } from '../../utils/format-session';
 import { formatShortDateTime, formatDurationBetween } from '../../lib/datetime';
-import type { SessionSummary } from '../../../shared/types';
+import type { PerToolStat, SessionSummary } from '../../../shared/types';
+
+// Tool durations are often sub-second (Read, Edit, Grep). The shared
+// `formatDuration` helper rounds to seconds, so it would render every
+// fast tool as "0s". Use a finer-grained format here.
+function formatToolDuration(milliseconds: number): string {
+  if (milliseconds < 1000) return `${Math.round(milliseconds)}ms`;
+  if (milliseconds < 60_000) return `${(milliseconds / 1000).toFixed(1)}s`;
+  return formatDuration(milliseconds);
+}
+
+interface ByToolTableProps {
+  rows: PerToolStat[];
+}
+
+function ByToolTable({ rows }: ByToolTableProps) {
+  const anyCost = rows.some((row) => typeof row.costUsd === 'number');
+  const anyInputTokens = rows.some((row) => typeof row.inputTokens === 'number');
+  const anyOutputTokens = rows.some((row) => typeof row.outputTokens === 'number');
+  const anyInterrupted = rows.some((row) => row.interruptedCount > 0);
+
+  return (
+    <div
+      data-testid="session-summary-by-tool"
+      className="px-4 pb-3 overflow-x-auto border-t border-edge/40"
+    >
+      <table className="w-full text-xs tabular-nums">
+        <thead>
+          <tr className="text-fg-faint">
+            <th className="text-left font-normal pt-2 pb-1 pr-3">Tool</th>
+            <th className="text-right font-normal pt-2 pb-1 pr-3">Calls</th>
+            <th className="text-right font-normal pt-2 pb-1 pr-3">Total</th>
+            <th className="text-right font-normal pt-2 pb-1 pr-3">Avg</th>
+            {anyCost && <th className="text-right font-normal pt-2 pb-1 pr-3">Cost</th>}
+            {anyInputTokens && <th className="text-right font-normal pt-2 pb-1 pr-3">In</th>}
+            {anyOutputTokens && <th className="text-right font-normal pt-2 pb-1 pr-3">Out</th>}
+            {anyInterrupted && <th className="text-right font-normal pt-2 pb-1">Failed</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const totalCalls = row.callCount + row.interruptedCount;
+            const averageMs = totalCalls > 0 ? Math.round(row.totalDurationMs / totalCalls) : 0;
+            return (
+              <tr key={row.toolName} className="border-t border-edge/40">
+                <td className="py-1 pr-3 text-fg-secondary font-mono max-w-[180px] truncate" title={row.toolName}>
+                  {row.toolName}
+                </td>
+                <td className="py-1 pr-3 text-right text-fg-secondary">{row.callCount}</td>
+                <td className="py-1 pr-3 text-right text-fg-secondary">{formatToolDuration(row.totalDurationMs)}</td>
+                <td className="py-1 pr-3 text-right text-fg-secondary">{formatToolDuration(averageMs)}</td>
+                {anyCost && (
+                  <td className="py-1 pr-3 text-right text-fg-secondary">
+                    {typeof row.costUsd === 'number' ? formatCost(row.costUsd) : '-'}
+                  </td>
+                )}
+                {anyInputTokens && (
+                  <td className="py-1 pr-3 text-right text-fg-secondary">
+                    {typeof row.inputTokens === 'number' ? formatTokenCount(row.inputTokens) : '-'}
+                  </td>
+                )}
+                {anyOutputTokens && (
+                  <td className="py-1 pr-3 text-right text-fg-secondary">
+                    {typeof row.outputTokens === 'number' ? formatTokenCount(row.outputTokens) : '-'}
+                  </td>
+                )}
+                {anyInterrupted && (
+                  <td className="py-1 text-right">
+                    {row.interruptedCount > 0
+                      ? <span className="inline-flex items-center gap-0.5 text-amber-400/80"><AlertTriangle size={10} />{row.interruptedCount}</span>
+                      : <span className="text-fg-disabled">-</span>}
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 interface SessionSummaryPanelProps {
   taskId: string;
@@ -17,6 +97,7 @@ export function SessionSummaryPanel({ taskId }: SessionSummaryPanelProps) {
   const [summary, setSummary] = useState<SessionSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [byToolExpanded, setByToolExpanded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -150,14 +231,6 @@ export function SessionSummaryPanel({ taskId }: SessionSummaryPanelProps) {
     });
   }
 
-  if (summary.toolCallCount > 0) {
-    metricRows.push({
-      icon: <Wrench size={13} />,
-      label: 'Tool calls',
-      value: <span className="text-fg-secondary tabular-nums">{summary.toolCallCount}</span>,
-    });
-  }
-
   if (summary.filesChanged > 0) {
     metricRows.push({
       icon: <FileCode size={13} />,
@@ -175,6 +248,38 @@ export function SessionSummaryPanel({ taskId }: SessionSummaryPanelProps) {
           <span className="text-green-400/70">+{summary.linesAdded}</span>
           <span className="text-red-400/70">-{summary.linesRemoved}</span>
         </span>
+      ),
+    });
+  }
+
+  // Tool calls is intentionally the last metric row so the per-tool
+  // breakdown table can render directly below it when expanded - keeps
+  // the count and its breakdown visually adjacent.
+  const toolBreakdownRows = summary.toolBreakdown ?? [];
+  const hasBreakdown = toolBreakdownRows.length > 0;
+  if (summary.toolCallCount > 0) {
+    metricRows.push({
+      icon: <Wrench size={13} />,
+      label: 'Tool calls',
+      value: hasBreakdown ? (
+        <button
+          type="button"
+          onClick={() => setByToolExpanded((previousExpanded) => !previousExpanded)}
+          aria-expanded={byToolExpanded}
+          aria-controls="session-summary-by-tool-table"
+          // Pill-shaped button with subtle rest-state border + hover fill so
+          // the affordance is visible without hovering. Negative margins
+          // keep the count visually aligned with the rows above and below;
+          // padding expands the click target without changing layout.
+          title={byToolExpanded ? 'Hide per-tool breakdown' : 'Show per-tool breakdown'}
+          className="inline-flex items-center gap-1.5 px-2 py-0.5 -my-0.5 -ml-2 rounded border border-edge/60 bg-surface-raised/30 text-fg-secondary tabular-nums hover:bg-surface-raised hover:border-edge hover:text-fg transition-colors cursor-pointer"
+          data-testid="session-summary-tool-calls-toggle"
+        >
+          {summary.toolCallCount}
+          {byToolExpanded ? <ChevronDown size={14} className="text-fg-muted" /> : <ChevronRight size={14} className="text-fg-muted" />}
+        </button>
+      ) : (
+        <span className="text-fg-secondary tabular-nums">{summary.toolCallCount}</span>
       ),
     });
   }
@@ -209,6 +314,17 @@ export function SessionSummaryPanel({ taskId }: SessionSummaryPanelProps) {
               <span className="flex items-center text-xs">{row.value}</span>
             </React.Fragment>
           ))}
+        </div>
+      )}
+
+      {/* Per-tool breakdown table - revealed by the chevron next to the
+          Tool calls count. The wrapper div is always mounted (with the
+          id targeted by the button's aria-controls) when a breakdown
+          exists, so screen readers can resolve the reference even while
+          collapsed. The actual table contents render only when expanded. */}
+      {hasBreakdown && (
+        <div id="session-summary-by-tool-table">
+          {byToolExpanded && <ByToolTable rows={toolBreakdownRows} />}
         </div>
       )}
     </div>
