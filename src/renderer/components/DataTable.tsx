@@ -78,6 +78,7 @@ function SortableRow<TRow, TKey extends string>({
       onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row) : undefined}
       onContextMenu={onRowContextMenu ? (event) => { event.preventDefault(); onRowContextMenu(row, event); } : undefined}
       data-testid={rowTestId}
+      data-row-id={rowId}
     >
       {/* Drag handle cell */}
       <td className="w-[32px] px-1 py-2.5">
@@ -249,7 +250,6 @@ export function DataTable<TRow, TKey extends string = string>({
                         onRowDoubleClick={onRowDoubleClick}
                         onRowContextMenu={onRowContextMenu}
                         rowTestId={rowTestId}
-
                       />
                     );
                   }
@@ -264,6 +264,7 @@ export function DataTable<TRow, TKey extends string = string>({
                       onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row) : undefined}
                       onContextMenu={onRowContextMenu ? (event) => { event.preventDefault(); onRowContextMenu(row, event); } : undefined}
                       data-testid={rowTestId}
+                      data-row-id={id}
                     >
                       {columns.map((column, columnIndex) => (
                         <td
@@ -327,6 +328,7 @@ export function DataTable<TRow, TKey extends string = string>({
                 onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row) : undefined}
                 onContextMenu={onRowContextMenu ? (event) => { event.preventDefault(); onRowContextMenu(row, event); } : undefined}
                 data-testid={rowTestId}
+                data-row-id={rowKey(row)}
               >
                 {columns.map((column, columnIndex) => (
                   <td

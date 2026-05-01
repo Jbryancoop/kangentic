@@ -38,12 +38,6 @@ export function LayoutTab({ globalConfig }: { globalConfig: AppConfig }) {
           onChange={(value) => updateGlobal({ statusBarVisible: value })}
         />
       </SettingRow>
-      <SettingRow {...settingProps('showBoardSearch')}>
-        <ToggleSwitch
-          checked={globalConfig.showBoardSearch}
-          onChange={(value) => updateGlobal({ showBoardSearch: value })}
-        />
-      </SettingRow>
       <SettingRow {...settingProps('restoreWindowPosition')}>
         <ToggleSwitch
           checked={globalConfig.restoreWindowPosition}

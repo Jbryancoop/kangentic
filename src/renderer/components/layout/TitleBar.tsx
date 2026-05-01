@@ -1,5 +1,5 @@
 import React from 'react';
-import { Minus, Settings, Square, TerminalSquare, X } from 'lucide-react';
+import { Command, Minus, Settings, Square, TerminalSquare, X } from 'lucide-react';
 import { useProjectStore } from '../../stores/project-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useSessionStore } from '../../stores/session-store';
@@ -10,10 +10,11 @@ const isMac = window.electronAPI.platform === 'darwin';
 
 interface TitleBarProps {
   onQuickSession?: () => void;
+  onOpenSearch?: () => void;
   commandBarOpen?: boolean;
 }
 
-export function TitleBar({ onQuickSession, commandBarOpen }: TitleBarProps) {
+export function TitleBar({ onQuickSession, onOpenSearch, commandBarOpen }: TitleBarProps) {
   const currentProject = useProjectStore((s) => s.currentProject);
   const settingsOpen = useConfigStore((s) => s.settingsOpen);
   const setSettingsOpen = useConfigStore((s) => s.setSettingsOpen);
@@ -65,6 +66,18 @@ export function TitleBar({ onQuickSession, commandBarOpen }: TitleBarProps) {
       <div className="flex-1" />
 
       <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+        {onOpenSearch && (
+          <button
+            onClick={onOpenSearch}
+            className="p-1.5 hover:bg-surface-hover rounded text-fg-muted hover:text-fg transition-colors"
+            title={`Quick Find (${isMac ? '⌘' : 'Ctrl'}+Shift+F)`}
+            aria-label="Quick Find"
+            // testid kept as "open-search" for selector stability; UI label is "Quick Find"
+            data-testid="open-search-button"
+          >
+            <Command size={20} />
+          </button>
+        )}
         {currentProject && onQuickSession && (
           <button
             onClick={onQuickSession}

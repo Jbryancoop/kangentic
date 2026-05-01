@@ -49,6 +49,12 @@ interface BacklogState {
   setPendingDeleteId: (id: string | null) => void;
   setPendingBulkDelete: (pending: boolean) => void;
   setImportSource: (source: ImportSource | null) => void;
+
+  /** When set, BacklogView clears any active filter, scrolls to the row with this id,
+   *  and pulses it briefly. Cleared once the scroll lands. Set by the global search
+   *  palette when a backlog hit is selected. */
+  scrollToBacklogId: string | null;
+  setScrollToBacklogId: (id: string | null) => void;
 }
 
 export const useBacklogStore = create<BacklogState>((set, get) => ({
@@ -61,6 +67,7 @@ export const useBacklogStore = create<BacklogState>((set, get) => ({
   pendingDeleteId: null,
   pendingBulkDelete: false,
   importSource: null,
+  scrollToBacklogId: null,
 
   loadBacklog: async () => {
     set({ loading: true });
@@ -208,4 +215,5 @@ export const useBacklogStore = create<BacklogState>((set, get) => ({
   setPendingDeleteId: (id) => set({ pendingDeleteId: id }),
   setPendingBulkDelete: (pending) => set({ pendingBulkDelete: pending }),
   setImportSource: (source) => set({ importSource: source }),
+  setScrollToBacklogId: (id) => set({ scrollToBacklogId: id }),
 }));

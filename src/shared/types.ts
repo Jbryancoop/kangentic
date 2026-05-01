@@ -750,7 +750,6 @@ export interface AppConfig {
   };
 
   hasCompletedFirstRun: boolean;
-  showBoardSearch: boolean;
   skipDeleteConfirm: boolean;
   skipDoneWorktreeConfirm: boolean;
   skipBoardConfigConfirm: boolean;
@@ -852,7 +851,6 @@ export const DEFAULT_CONFIG: AppConfig = {
     enabled: true,
   },
   hasCompletedFirstRun: false,
-  showBoardSearch: true,
   skipDeleteConfirm: false,
   skipDoneWorktreeConfirm: false,
   skipBoardConfigConfirm: false,
@@ -1856,6 +1854,11 @@ export interface ElectronAPI {
     clearTaskUrl: (taskId: string) => Promise<void>;
   };
 
+  // Search
+  search: {
+    everything: (input: SearchRequest) => Promise<SearchHit[]>;
+  };
+
   // Platform
   platform: string;
 
@@ -1903,6 +1906,53 @@ export interface BrowserCaptureInput {
   selectedText: string;
   note: string;
 }
+
+export interface SearchRequest {
+  query: string;
+  scope: 'current' | 'all';
+  currentProjectId: string;
+}
+
+interface SearchHitBase {
+  projectId: string;
+  projectName: string;
+  snippet: string;
+  matchStart: number;
+  matchEnd: number;
+}
+
+export type SearchHit =
+  | (SearchHitBase & {
+      kind: 'task';
+      taskId: string;
+      displayId: number;
+      taskTitle: string;
+      archived: boolean;
+      snippetField: 'title' | 'description';
+    })
+  | (SearchHitBase & {
+      kind: 'backlog';
+      backlogId: string;
+      backlogTitle: string;
+      snippetField: 'title' | 'description';
+    })
+  | (SearchHitBase & {
+      kind: 'session_event';
+      taskId: string;
+      taskTitle: string;
+      sessionId: string;
+      agentName: string;
+      eventTs: number;
+      eventKey: string;
+      eventType: string;
+    })
+  | (SearchHitBase & {
+      kind: 'project';
+      projectPath: string;
+    });
+
+export type SearchHitKind = SearchHit['kind'];
+
 
 declare global {
   interface Window {

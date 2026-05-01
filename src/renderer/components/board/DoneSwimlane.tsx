@@ -68,15 +68,7 @@ export const DoneSwimlane = React.memo(function DoneSwimlane({ swimlane, tasks }
     data: { type: 'swimlane' },
   });
 
-  const searchQuery = useBoardStore((state) => state.searchQuery);
-
-  const filteredArchivedTasks = useMemo(() => {
-    if (!searchQuery) return archivedTasks;
-    const query = searchQuery.toLowerCase();
-    return archivedTasks.filter(
-      (task) => task.title.toLowerCase().includes(query) || task.description.toLowerCase().includes(query),
-    );
-  }, [archivedTasks, searchQuery]);
+  const filteredArchivedTasks = archivedTasks;
 
 
   return (
@@ -203,7 +195,7 @@ export const DoneSwimlane = React.memo(function DoneSwimlane({ swimlane, tasks }
             );
           })}
           {filteredArchivedTasks.length === 0 && (
-            <div className="text-xs text-fg-disabled text-center py-3">{searchQuery ? 'No matching completed tasks' : 'No completed tasks yet'}</div>
+            <div className="text-xs text-fg-disabled text-center py-3">No completed tasks yet</div>
           )}
           {/* View all as last row in the list */}
           {filteredArchivedTasks.length > 0 && (

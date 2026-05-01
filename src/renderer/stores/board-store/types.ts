@@ -3,7 +3,6 @@ import type { TaskSlice } from './task-slice';
 import type { SwimlaneSlice } from './swimlane-slice';
 import type { ArchivedTasksSlice } from './archived-tasks-slice';
 import type { TaskCompletionSlice } from './task-completion-slice';
-import type { BoardSearchSlice } from './board-search-slice';
 import type { BoardConfigSlice } from './board-config-slice';
 import type { BoardHydrationSlice } from './board-hydration-slice';
 import type { TaskMoveConfirmSlice } from './task-move-confirm-slice';
@@ -43,5 +42,5 @@ export type PendingDoneConfirm =
  * board-hydration slice's method).
  */
 export type BoardStore = TaskSlice & SwimlaneSlice & ArchivedTasksSlice & TaskCompletionSlice
-  & BoardSearchSlice & BoardConfigSlice & BoardHydrationSlice & TaskMoveConfirmSlice
+  & BoardConfigSlice & BoardHydrationSlice & TaskMoveConfirmSlice
   & DoneDropConfirmSlice & ActiveViewSlice;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripAnsiEscapes } from '../../src/main/pty/buffer/transcript-writer';
+import { stripAnsiEscapes, filterAltScreenContent } from '../../src/main/pty/buffer/transcript-writer';
 
 describe('stripAnsiEscapes', () => {
   it('strips SGR color codes', () => {
@@ -149,5 +149,76 @@ describe('stripAnsiEscapes', () => {
     // \x85 (NEL), \x8d (RI) etc. are standalone C1 codes
     const input = 'hello\x85\x8dworld';
     expect(stripAnsiEscapes(input)).toBe('helloworld');
+  });
+});
+
+describe('filterAltScreenContent', () => {
+  it('keeps content emitted before alt-screen entry', () => {
+    const input = 'banner\x1b[?1049hredraw';
+    const result = filterAltScreenContent(input, false);
+    expect(result.content).toBe('banner');
+    expect(result.inAltAtEnd).toBe(true);
+  });
+
+  it('drops content emitted entirely inside alt-screen', () => {
+    const input = 'redraw frame 1';
+    const result = filterAltScreenContent(input, true);
+    expect(result.content).toBe('');
+    expect(result.inAltAtEnd).toBe(true);
+  });
+
+  it('keeps content emitted after alt-screen exit', () => {
+    const input = 'last frame\x1b[?1049lpost-tui summary';
+    const result = filterAltScreenContent(input, true);
+    expect(result.content).toBe('post-tui summary');
+    expect(result.inAltAtEnd).toBe(false);
+  });
+
+  it('handles enter and exit in the same chunk', () => {
+    const input = 'before\x1b[?1049hinside\x1b[?1049lafter';
+    const result = filterAltScreenContent(input, false);
+    expect(result.content).toBe('beforeafter');
+    expect(result.inAltAtEnd).toBe(false);
+  });
+
+  it('threads state across multiple chunks', () => {
+    const first = filterAltScreenContent('Claude Code v2.1\x1b[?1049h', false);
+    expect(first.content).toBe('Claude Code v2.1');
+    expect(first.inAltAtEnd).toBe(true);
+
+    const second = filterAltScreenContent('Test: Birds\nBirds\nSauteed for 1s', first.inAltAtEnd);
+    expect(second.content).toBe('');
+    expect(second.inAltAtEnd).toBe(true);
+
+    const third = filterAltScreenContent('\x1b[?1049lSession ended', second.inAltAtEnd);
+    expect(third.content).toBe('Session ended');
+    expect(third.inAltAtEnd).toBe(false);
+  });
+
+  it('recognizes 1047 and 47 alt-screen sequences', () => {
+    expect(filterAltScreenContent('a\x1b[?1047hb\x1b[?1047lc', false)).toEqual({
+      content: 'ac',
+      inAltAtEnd: false,
+    });
+    expect(filterAltScreenContent('a\x1b[?47hb\x1b[?47lc', false)).toEqual({
+      content: 'ac',
+      inAltAtEnd: false,
+    });
+  });
+
+  it('passes through chunks with no alt-screen toggles when not in alt', () => {
+    const result = filterAltScreenContent('plain stdout text\n', false);
+    expect(result.content).toBe('plain stdout text\n');
+    expect(result.inAltAtEnd).toBe(false);
+  });
+
+  it('does not lose state if regex was used elsewhere first', () => {
+    // Sanity: simulate stale lastIndex from a prior global-regex use.
+    const input = 'before\x1b[?1049hinside';
+    // Run twice in a row - both should yield the same answer if state is reset.
+    const first = filterAltScreenContent(input, false);
+    const second = filterAltScreenContent(input, false);
+    expect(first).toEqual(second);
+    expect(first.content).toBe('before');
   });
 });

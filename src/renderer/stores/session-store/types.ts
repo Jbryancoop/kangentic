@@ -28,6 +28,10 @@ export interface CoreSessionSlice {
   activeSessionId: string | null;
   detailTaskId: string | null;
   dialogSessionId: string | null;
+  /** When set, the Activity Log scrolls to the event with this `${sessionId}-${ts}` key
+   *  on next mount/render, then the field is cleared. Set by the global session
+   *  search palette when a hit is selected. */
+  scrollToEventKey: string | null;
   sessionUsage: Record<string, SessionUsage>;
   /**
    * Most recent rate-limit snapshot observed across any session. Rate
@@ -71,6 +75,7 @@ export interface CoreSessionSlice {
    *  overwrite the remembered value. */
   selectActiveSession: (id: string | null) => void;
   setDialogSessionId: (id: string | null) => void;
+  setScrollToEventKey: (key: string | null) => void;
   upsertSession: (session: Session) => void;
   updateSessionStatus: (id: string, updates: Partial<Session>) => void;
   updateUsage: (sessionId: string, data: SessionUsage) => void;

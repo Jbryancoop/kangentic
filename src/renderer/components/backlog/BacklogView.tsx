@@ -105,6 +105,30 @@ export function BacklogView() {
   // --- Sort state (column sort disables drag-to-reorder) ---
   const [isColumnSorted, setIsColumnSorted] = useState(false);
 
+  // --- Scroll-to-id from global search palette ---
+  // The store field arms a one-shot request; we drop the active search query
+  // if it would hide the row, scroll the row into view, and open the edit
+  // dialog for the matched item (mirrors how task hits open the task detail
+  // dialog on the board). No row pulse here - the modal would cover it
+  // immediately, so the highlight would be invisible.
+  const scrollToBacklogId = useBacklogStore((state) => state.scrollToBacklogId);
+  const setScrollToBacklogId = useBacklogStore((state) => state.setScrollToBacklogId);
+  useEffect(() => {
+    if (!scrollToBacklogId) return;
+    if (!hydrated) return;
+    const matched = items.find((item) => item.id === scrollToBacklogId);
+    if (matched && searchQuery) {
+      handleSearchClear();
+    }
+    const targetId = scrollToBacklogId;
+    setScrollToBacklogId(null);
+    if (matched) setEditingItem(matched);
+    requestAnimationFrame(() => {
+      const row = document.querySelector(`[data-row-id="${targetId}"]`) as HTMLElement | null;
+      if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    });
+  }, [scrollToBacklogId, hydrated, items, searchQuery, handleSearchClear, setScrollToBacklogId, setEditingItem]);
+
   // --- Filtered data ---
 
   const filteredItems = useMemo(() => {

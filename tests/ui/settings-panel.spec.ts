@@ -88,7 +88,6 @@ test.describe('Settings Panel', () => {
     await expect(page.locator('text=Column Width')).toBeVisible();
     await expect(page.getByText('Terminal Panel', { exact: true })).toBeVisible();
     await expect(page.getByText('Status Bar', { exact: true })).toBeVisible();
-    await expect(page.locator('text=Board Search Bar')).toBeVisible();
     await expect(page.locator('text=Restore Window Position')).toBeVisible();
     await expect(page.locator('text=Animations')).toBeVisible();
     await closeSettings();

@@ -175,6 +175,49 @@ export function ActivityLog({ active, sessionIds, taskLabelMap }: ActivityLogPro
     };
   }, []);
 
+  // Scroll to a specific event when the global session search palette
+  // selects a hit. The hit's eventKey is `${sessionId}-${ts}`, matching
+  // the row key used below. When the target session isn't visible in
+  // this ActivityLog instance, we clear the request so a future log
+  // doesn't pick up a stale key. If the event row exists, we scroll to
+  // it, disable auto-scroll-to-bottom (so the user lands on the match
+  // instead of being yanked to the tail), highlight it briefly, and
+  // clear the field. If the row isn't in `allEvents` yet (events still
+  // streaming/loading), we leave the field armed so the next render
+  // can try again.
+  const scrollToEventKey = useSessionStore((s) => s.scrollToEventKey);
+  const setScrollToEventKey = useSessionStore((s) => s.setScrollToEventKey);
+  const [highlightedEventKey, setHighlightedEventKey] = useState<string | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => {
+    if (!scrollToEventKey || !active) return;
+    const dashIndex = scrollToEventKey.lastIndexOf('-');
+    const targetSessionId = dashIndex >= 0 ? scrollToEventKey.slice(0, dashIndex) : '';
+    if (!sessionIds.includes(targetSessionId)) {
+      setScrollToEventKey(null);
+      return;
+    }
+    const index = allEvents.findIndex(
+      (item) => `${item.sessionId}-${item.event.ts}` === scrollToEventKey,
+    );
+    if (index < 0) return;
+    autoScrollRef.current = false;
+    virtualizer.scrollToIndex(index, { align: 'center' });
+    setHighlightedEventKey(scrollToEventKey);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => {
+      highlightTimerRef.current = undefined;
+      setHighlightedEventKey(null);
+    }, 1500);
+    setScrollToEventKey(null);
+  }, [scrollToEventKey, allEvents, sessionIds, active, virtualizer, setScrollToEventKey]);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
+  }, []);
+
   const showFilter = sessionIds.length >= 2;
   const filteredLabel = filterSessionId
     ? taskLabelMap.get(filterSessionId) || filterSessionId.slice(0, 8)
@@ -213,10 +256,13 @@ export function ActivityLog({ active, sessionIds, taskLabelMap }: ActivityLogPro
           {firstStart > 0 && <div style={{ height: firstStart }} />}
           {virtualItems.map((virtualRow) => {
             const item = allEvents[virtualRow.index];
+            const eventKey = `${item.sessionId}-${item.event.ts}`;
+            const isHighlighted = highlightedEventKey === eventKey;
             return (
               <div
-                key={`${item.sessionId}-${item.event.ts}`}
+                key={eventKey}
                 data-index={virtualRow.index}
+                className={isHighlighted ? 'bg-amber-400/20 ring-1 ring-amber-400/50 rounded transition-colors duration-700' : 'transition-colors duration-700'}
               >
                 <EventLine
                   sessionId={item.sessionId}

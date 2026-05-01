@@ -76,6 +76,51 @@ export function stripAnsiEscapes(text: string): string {
 }
 
 /**
+ * Splits a chunk of raw PTY data around alternate-screen toggles, returning
+ * only the segments emitted while NOT in the alternate buffer.
+ *
+ * TUI agents (Claude Code, Codex, etc.) enter the alt buffer then redraw
+ * the entire screen on every keystroke and animation frame. The redrawn
+ * plain text is identical each time, so without filtering the transcript
+ * would fill with dozens of duplicated copies. We treat alt-screen content
+ * as ephemeral and drop it; only the pre-TUI banner and post-TUI exit
+ * messages persist.
+ *
+ * Recognized toggle sequences:
+ *   ESC [ ? 1049 h/l - smcup-style alt-screen on/off (modern, used by xterm)
+ *   ESC [ ? 1047 h/l - older alt-screen on/off
+ *   ESC [ ?   47 h/l - oldest alt-screen on/off (vt220)
+ *
+ * Threads the alt-screen state across calls via the `inAltAtStart` flag and
+ * returns the resulting state via `inAltAtEnd`. The regex is constructed
+ * inside the function so callers can never accidentally inherit a stale
+ * `lastIndex` from another caller.
+ *
+ * Exported for unit testing.
+ */
+export function filterAltScreenContent(
+  data: string,
+  inAltAtStart: boolean,
+): { content: string; inAltAtEnd: boolean } {
+  const toggleRegex = /\x1b\[\?(?:1049|1047|47)([hl])/g;
+  let cursor = 0;
+  let currentlyInAlt = inAltAtStart;
+  let captured = '';
+  let match: RegExpExecArray | null;
+  while ((match = toggleRegex.exec(data)) !== null) {
+    if (!currentlyInAlt && match.index > cursor) {
+      captured += data.slice(cursor, match.index);
+    }
+    currentlyInAlt = match[1] === 'h';
+    cursor = toggleRegex.lastIndex;
+  }
+  if (!currentlyInAlt && cursor < data.length) {
+    captured += data.slice(cursor);
+  }
+  return { content: captured, inAltAtEnd: currentlyInAlt };
+}
+
+/**
  * Streams ANSI-stripped PTY output to SQLite incrementally.
  *
  * Hooks directly into the PTY data stream as a separate consumer
@@ -83,6 +128,10 @@ export function stripAnsiEscapes(text: string): string {
  * independent of PtyBufferManager's 512KB ring buffer. This ensures long
  * sessions (2+ hours) capture the full transcript even after the ring buffer
  * evicts old content.
+ *
+ * Drops content emitted while the agent is in the alternate-screen buffer
+ * (TUI mode) since redraws would otherwise produce dozens of duplicate copies
+ * of the same plain text. Pre-TUI banner and post-TUI exit messages survive.
  *
  * Flushes to the database every 30 seconds (debounced). At worst, a crash
  * loses the last 30 seconds of output.
@@ -93,6 +142,10 @@ export class TranscriptWriter {
   private flushTimers = new Map<string, NodeJS.Timeout>();
   /** Tracks which sessions have had their DB row created. */
   private initialized = new Set<string>();
+  /** Tracks whether each session is currently in the alternate-screen buffer.
+   *  Threads across onData calls so a toggle in one chunk affects subsequent
+   *  chunks. */
+  private inAltScreen = new Map<string, boolean>();
 
   private static readonly FLUSH_INTERVAL_MS = 30_000;
 
@@ -100,11 +153,17 @@ export class TranscriptWriter {
 
   /**
    * Called on every PTY data chunk (same event source as PtyBufferManager).
-   * Strips ANSI codes and accumulates in the pending buffer.
-   * Debounces DB writes to every 30 seconds.
+   * Filters out alternate-screen content, strips ANSI codes from what
+   * remains, and accumulates in the pending buffer. Debounces DB writes to
+   * every 30 seconds.
    */
   onData(sessionId: string, data: string): void {
-    const stripped = stripAnsiEscapes(data);
+    const inAltAtStart = this.inAltScreen.get(sessionId) ?? false;
+    const { content, inAltAtEnd } = filterAltScreenContent(data, inAltAtStart);
+    this.inAltScreen.set(sessionId, inAltAtEnd);
+    if (!content) return;
+
+    const stripped = stripAnsiEscapes(content);
     if (!stripped) return;
 
     const existing = this.pending.get(sessionId) ?? '';
@@ -163,6 +222,7 @@ export class TranscriptWriter {
     this.finalize(sessionId);
     this.pending.delete(sessionId);
     this.initialized.delete(sessionId);
+    this.inAltScreen.delete(sessionId);
   }
 
   /**

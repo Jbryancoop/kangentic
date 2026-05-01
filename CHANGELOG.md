@@ -10,7 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Global search palette** (Ctrl+Shift+F or Ctrl+F, also reachable from a new ⌘ icon in the title bar). Searches across tasks (active + archived), backlog items, session events (from `events.jsonl`), and registered projects. Per-kind grouped results with keyboard navigation. Selecting a session-event hit scrolls the Activity Log to the matched event with a brief highlight; backlog hits switch to the backlog view and open the item.
 - **Kimi Code agent support** (Moonshot AI's `kimi-cli`). Full wire-protocol v1.9 telemetry via `~/.kimi/sessions/<hash>/<id>/wire.jsonl` (context %, token counts, tool events). Caller-owned session IDs via `--session <uuid>`. Plan / YOLO permission modes. MCP server config injection. Detected on Windows + macOS + Linux via uv-tool fallback paths.
+
+### Removed
+
+- The always-visible board search bar (`showBoardSearch` config key) and the in-place row filter that lived above the board columns. Task title/description search is now part of the global search palette. The label/priority filter button moves to a small floating control at the top right of the board.
 
 ## [v0.17.0] - 2026-04-24
 

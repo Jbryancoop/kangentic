@@ -4,7 +4,6 @@ import { createTaskSlice } from './board-store/task-slice';
 import { createSwimlaneSlice } from './board-store/swimlane-slice';
 import { createArchivedTasksSlice } from './board-store/archived-tasks-slice';
 import { createTaskCompletionSlice } from './board-store/task-completion-slice';
-import { createBoardSearchSlice } from './board-store/board-search-slice';
 import { createBoardConfigSlice } from './board-store/board-config-slice';
 import { createBoardHydrationSlice } from './board-store/board-hydration-slice';
 import { createTaskMoveConfirmSlice } from './board-store/task-move-confirm-slice';
@@ -33,7 +32,6 @@ export const useBoardStore = create<BoardStore>((...args) => ({
   ...createSwimlaneSlice(...args),
   ...createArchivedTasksSlice(...args),
   ...createTaskCompletionSlice(...args),
-  ...createBoardSearchSlice(...args),
   ...createBoardConfigSlice(...args),
   ...createBoardHydrationSlice(...args),
   ...createTaskMoveConfirmSlice(...args),

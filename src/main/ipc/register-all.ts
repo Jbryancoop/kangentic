@@ -30,6 +30,7 @@ import { registerSystemHandlers } from './handlers/system';
 import { registerBacklogHandlers } from './handlers/backlog';
 import { registerGitDiffHandlers } from './handlers/git-diff';
 import { registerBrowserHandlers } from './handlers/browser';
+import { registerSearchHandlers } from './handlers/search';
 import type { IpcContext } from './ipc-context';
 import type { McpHttpServerHandle } from '../agent/mcp-http-server';
 
@@ -118,6 +119,7 @@ export function registerAllIpc(mainWindow: BrowserWindow, mcpServerHandle: McpHt
   registerBacklogHandlers(context);
   registerGitDiffHandlers(context);
   registerBrowserHandlers(context);
+  registerSearchHandlers(context);
   registerSystemHandlers(context);
 
   // Analytics: renderer error tracking (fire-and-forget from renderer)

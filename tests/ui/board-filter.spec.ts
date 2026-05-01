@@ -80,14 +80,7 @@ test.afterAll(async () => {
 });
 
 test.describe('Board Filters', () => {
-  test('filter button is visible in search bar', async () => {
-    // Ensure search bar is visible
-    const searchBar = page.locator('[data-testid="board-search-bar"]');
-    if (!await searchBar.isVisible()) {
-      await page.keyboard.press('Control+f');
-      await expect(searchBar).toBeVisible();
-    }
-
+  test('filter button is visible at top of board', async () => {
     await expect(page.locator('[data-testid="board-filter-btn"]')).toBeVisible();
   });
 
@@ -187,35 +180,8 @@ test.describe('Board Filters', () => {
     await expect(page.locator('[data-testid="swimlane"]').locator('text=API refactor')).toBeVisible();
     await expect(page.locator('[data-testid="swimlane"]').locator('text=Docs update')).toBeVisible();
 
-    // Close the popover by clicking outside
-    await page.locator('[data-testid="board-search-input"]').click();
-  });
-
-  test('filter + search query uses AND logic', async () => {
-    // First open filter popover and select "High" priority
-    const filterButton = page.locator('[data-testid="board-filter-btn"]');
-    await filterButton.click();
-    await expect(page.locator('text=Priority').first()).toBeVisible();
-
-    const highPill = page.locator('[data-testid="board-filter-btn"]').locator('..').locator('text=High');
-    await highPill.click();
-
-    // With only High filter, "Auth bug fix" should be visible (it has priority 3 = High)
-    await expect(page.locator('[data-testid="swimlane"]').locator('text=Auth bug fix')).toBeVisible();
-    await expect(page.locator('[data-testid="swimlane"]').locator('text=Dashboard feature')).not.toBeVisible();
-
-    // Now also type "Dashboard" in search - should match nothing (search="Dashboard" AND priority=High)
-    const searchInput = page.locator('[data-testid="board-search-input"]');
-    await searchInput.fill('Dashboard');
-
-    await expect(page.locator('[data-testid="swimlane"]').locator('text=Auth bug fix')).not.toBeVisible();
-    await expect(page.locator('[data-testid="swimlane"]').locator('text=Dashboard feature')).not.toBeVisible();
-
-    // Clean up - clear search and untoggle High
-    await searchInput.fill('');
-    await highPill.click();
-    // Close popover
-    await searchInput.click();
+    // Close the popover by toggling the filter button.
+    await page.locator('[data-testid="board-filter-btn"]').click();
   });
 
   test('click outside closes popover', async () => {
@@ -224,8 +190,10 @@ test.describe('Board Filters', () => {
     await filterButton.click();
     await expect(page.locator('text=Priority').first()).toBeVisible();
 
-    // Click outside the popover
-    await page.locator('[data-testid="board-search-input"]').click();
+    // Click outside the popover. The board's title bar drag region has no
+    // click handler, so it's a safe outside-click target that won't open
+    // any modal or trigger a context menu.
+    await page.locator('text=Kangentic').first().click();
 
     // Verify popover closed by checking Priority header is no longer visible
     // (the only "Priority" text on page should be in the popover)

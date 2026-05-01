@@ -28,7 +28,7 @@ These settings appear only in App Settings and cannot be overridden per-project:
 
 - `sidebarVisible`, `boardLayout`, `sidebar.width`
 - `cardDensity`, `columnWidth`, `terminalPanelVisible`, `animationsEnabled`, `statusBarVisible`
-- `showBoardSearch`, `restoreWindowPosition`
+- `restoreWindowPosition`
 - `agent.cliPaths`, `agent.maxConcurrentSessions`, `agent.queueOverflow`, `agent.autoResumeSessionsOnRestart`
 - `terminal.panelHeight`, `terminal.showPreview`
 - `autoFocusIdleSession`
@@ -64,7 +64,6 @@ These settings appear in both App Settings (as defaults) and Project Settings (a
 | `skipDoneWorktreeConfirm` | boolean | `false` | Skip the confirmation dialog when a task moves to Done. Written by the dialog's "don't ask again" checkbox. No longer surfaced in the Settings panel. |
 | `autoFocusIdleSession` | boolean | `false` | Auto-switch to session tab when agent goes idle. Idle tabs are always highlighted regardless of this setting. |
 | `restoreWindowPosition` | boolean | `true` | Remember window size and position between launches. Global-only. |
-| `showBoardSearch` | boolean | `true` | Display the search bar above board columns. Toggle with Ctrl+F / Cmd+F. Global-only. |
 | `hasCompletedFirstRun` | boolean | `false` | Whether the user has completed first-run onboarding. Auto-set, not shown in UI. |
 | `windowBounds` | object \| null | `null` | Persisted window bounds `{x, y, width, height}`. Auto-saved, not shown in UI. |
 | `windowMaximized` | boolean | `false` | Whether the window was maximized at last close. Auto-saved, not shown in UI. |

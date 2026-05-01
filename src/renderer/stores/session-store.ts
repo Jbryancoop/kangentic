@@ -82,6 +82,7 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
   activeSessionId: null,
   detailTaskId: null,
   dialogSessionId: null,
+  scrollToEventKey: null,
   sessionUsage: {},
   latestRateLimits: null,
   sessionFirstOutput: {},
@@ -277,6 +278,7 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
 
   setDetailTaskId: (id) => set({ detailTaskId: id }),
   setDialogSessionId: (id) => set({ dialogSessionId: id }),
+  setScrollToEventKey: (key) => set({ scrollToEventKey: key }),
 
   upsertSession: (session) => {
     set((state) => {

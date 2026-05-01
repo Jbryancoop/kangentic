@@ -27,7 +27,6 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   { id: 'columnWidth', tabId: 'layout', label: 'Column Width', description: 'Width of board columns', scope: 'global', keywords: ['narrow', 'wide', 'size'] },
   { id: 'terminalPanelVisible', tabId: 'layout', label: 'Terminal Panel', description: 'Show the terminal panel below the board', scope: 'global', keywords: ['bottom', 'panel', 'hide', 'terminal', 'visible'] },
   { id: 'statusBarVisible', tabId: 'layout', label: 'Status Bar', description: 'Show the status bar at the bottom of the window', scope: 'global', keywords: ['bottom', 'bar', 'hide', 'visible'] },
-  { id: 'showBoardSearch', tabId: 'layout', label: 'Board Search Bar', description: 'Display the search bar above board columns. Press Ctrl+F (Cmd+F on Mac) to toggle.', scope: 'global', keywords: ['search', 'filter', 'find', 'board'] },
   { id: 'restoreWindowPosition', tabId: 'layout', label: 'Restore Window Position', description: 'Remember window size and position between launches', scope: 'global', keywords: ['size', 'bounds', 'remember'] },
   { id: 'animationsEnabled', tabId: 'layout', label: 'Animations', description: 'Enable transition and motion effects', scope: 'global', keywords: ['motion', 'reduce', 'transition', 'disable', 'accessibility'] },
 

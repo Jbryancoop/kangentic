@@ -12,7 +12,6 @@ import { AlertTriangle, Filter, X } from 'lucide-react';
 import { Swimlane, type SwimlaneProps } from './Swimlane';
 import { DoneSwimlane } from './DoneSwimlane';
 import { TaskCard } from './TaskCard';
-import { BoardSearchBar } from './BoardSearchBar';
 import { BoardDialogs } from './BoardDialogs';
 import { WelcomeOverlay } from './WelcomeOverlay';
 import { FilterPopover } from '../FilterPopover';
@@ -20,7 +19,6 @@ import { CountBadge } from '../CountBadge';
 import { useBoardStore } from '../../stores/board-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useBoardDragDrop } from '../../hooks/useBoardDragDrop';
-import { useBoardSearch } from '../../hooks/useBoardSearch';
 import { useFilterPopover } from '../../hooks/useFilterPopover';
 import type { Task } from '../../../shared/types';
 
@@ -193,11 +191,8 @@ export function KanbanBoard() {
   const swimlanes = useBoardStore((s) => s.swimlanes);
   const tasks = useBoardStore((s) => s.tasks);
   const archivedTasks = useBoardStore((s) => s.archivedTasks);
-  const updateConfig = useConfigStore((s) => s.updateConfig);
-  const showBoardSearch = useConfigStore((s) => s.config.showBoardSearch);
   const priorities = useConfigStore((s) => s.config.backlog.priorities);
   const labelColors = useConfigStore((s) => s.config.backlog.labelColors);
-  const searchQuery = useBoardStore((s) => s.searchQuery);
 
   // Filter state
   const {
@@ -226,14 +221,10 @@ export function KanbanBoard() {
     sortableColumnIds,
   } = useBoardDragDrop({ swimlanes, tasks, archivedTasks });
 
-  useBoardSearch(showBoardSearch, updateConfig);
-
   const tasksPerLane = useMemo(() => {
-    const normalizedQuery = searchQuery ? searchQuery.toLowerCase() : '';
     const map = new Map<string, Task[]>();
     for (const lane of swimlanes) map.set(lane.id, []);
     for (const task of tasks) {
-      if (normalizedQuery && !task.title.toLowerCase().includes(normalizedQuery) && !task.description.toLowerCase().includes(normalizedQuery)) continue;
       if (priorityFilters.size > 0 && !priorityFilters.has(task.priority)) continue;
       if (labelFilters.size > 0 && !(task.labels ?? []).some((label) => labelFilters.has(label))) continue;
       const arr = map.get(task.swimlane_id);
@@ -241,15 +232,7 @@ export function KanbanBoard() {
     }
     for (const arr of map.values()) arr.sort((a, b) => a.position - b.position);
     return map;
-  }, [swimlanes, tasks, searchQuery, priorityFilters, labelFilters]);
-
-  /** Total visible task count (matching search + filters) for the search bar. */
-  const searchMatchCount = useMemo(() => {
-    if (!searchQuery && !hasActiveFilters) return tasks.length;
-    let count = 0;
-    for (const arr of tasksPerLane.values()) count += arr.length;
-    return count;
-  }, [searchQuery, hasActiveFilters, tasks.length, tasksPerLane]);
+  }, [swimlanes, tasks, priorityFilters, labelFilters]);
 
   const filterButtonElement = (
     <div className="relative">
@@ -297,13 +280,9 @@ export function KanbanBoard() {
   return (
     <div className="relative h-full overflow-x-auto overflow-y-hidden flex flex-col">
       <ConfigWarningBanner />
-      {showBoardSearch ? (
-        <BoardSearchBar
-          totalCount={tasks.length}
-          matchCount={searchMatchCount}
-          filterButton={filterButtonElement}
-        />
-      ) : null}
+      <div className="absolute top-2 right-3 z-10">
+        {filterButtonElement}
+      </div>
       <div className="flex-1 overflow-x-auto overflow-y-hidden p-4">
       <WelcomeOverlay />
       <DndContext

@@ -337,6 +337,10 @@ const api: ElectronAPI = {
     clearTaskUrl: (taskId) => ipcRenderer.invoke(IPC.BROWSER_URL_CLEAR_TASK, taskId),
   },
 
+  search: {
+    everything: (input) => ipcRenderer.invoke(IPC.SEARCH_EVERYTHING, input),
+  },
+
   platform: process.platform,
 
   webUtils: {

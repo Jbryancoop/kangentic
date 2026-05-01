@@ -21,6 +21,7 @@
   let projectConfigs = {};
   let nextDisplayId = 1;
   let bulkDeleteProgressCallbacks = [];
+  let searchHits = [];
 
   let config = Object.assign({
     theme: 'dark',
@@ -97,7 +98,6 @@
       labelColors: {},
     },
     hasCompletedFirstRun: true,
-    showBoardSearch: true,
     skipDeleteConfirm: false,
     skipDoneWorktreeConfirm: false,
     skipBoardConfigConfirm: false,
@@ -1607,6 +1607,10 @@
       saveImage: function (_data, extension) { return Promise.resolve('/tmp/kangentic-clipboard/pasted-image-1234567890' + extension); },
     },
 
+    search: {
+      everything: function (_request) { return Promise.resolve(searchHits.slice()); },
+    },
+
     platform: 'win32',
 
     webUtils: {
@@ -1638,6 +1642,9 @@
     });
     if (result && result.currentProjectId !== undefined) {
       currentProjectId = result.currentProjectId;
+    }
+    if (result && Array.isArray(result.searchHits)) {
+      searchHits = result.searchHits;
     }
   };
 })();

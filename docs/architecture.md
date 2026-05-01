@@ -294,6 +294,11 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `updater:install` | invoke | Install downloaded update (quit and install) |
 | `updater:downloaded` | on | Event: update has been downloaded and is ready to install |
 
+### Search (1 channel)
+| Channel | Pattern | Purpose |
+|---------|---------|---------|
+| `search:everything` | invoke | Unified search across tasks, backlog items, session events (`events.jsonl`), and registered projects. Powers the global search palette (Ctrl+Shift+F / Ctrl+F). |
+
 ## Database
 
 Two SQLite databases using better-sqlite3 with WAL mode and foreign keys enabled.

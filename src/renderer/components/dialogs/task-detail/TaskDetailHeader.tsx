@@ -124,10 +124,18 @@ export function TaskDetailHeader({
 
       {/* Title */}
       <h2
-        className="text-base font-semibold text-fg truncate min-w-0 flex-1 basis-0"
+        className="text-base font-semibold text-fg truncate min-w-0 flex-1 basis-0 flex items-center gap-2"
         title={task.title}
       >
-        {task.title}
+        <span className="truncate">{task.title}</span>
+        {isArchived && (
+          <span
+            className="flex-shrink-0 inline-flex items-center gap-1 text-[11px] text-fg-disabled bg-surface-hover/60 border border-edge/40 rounded px-1.5 py-0.5"
+            title="This task is archived. It does not appear on the board."
+          >
+            Archived
+          </span>
+        )}
       </h2>
 
       {/* Scrollable pills container - hidden for archived tasks */}

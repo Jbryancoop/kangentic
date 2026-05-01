@@ -225,13 +225,20 @@ Saved sources persist in `.kangentic/config.json` per project and appear in the 
 
 The board supports filtering to help you focus on relevant tasks across all columns.
 
-### Search Bar
+### Search Palette
 
-Press **Ctrl+F** (Cmd+F on macOS) or enable "Show Board Search Bar" in Behavior settings to display the search bar above the board columns. Type to filter tasks by title or description. The bar shows a match count (e.g., "3 of 12"). Press Escape to clear the query, or click the eye-off icon to dismiss the search bar entirely. A toast reminds you of the keyboard shortcut when dismissing.
+Press **Ctrl+Shift+F** (Cmd+Shift+F on macOS) or **Ctrl+F** (Cmd+F) to open the global search palette. The same overlay is also reachable from the search icon in the title bar. The palette searches across:
+
+- Tasks (active and archived) by title and description
+- Backlog items by title and description
+- Session events (tool calls, agent activity from `events.jsonl`)
+- Registered projects by name and path
+
+Default scope is the current project; toggle to **All projects** to widen the search across every registered project. Selecting a hit jumps to the right place: tasks open the detail dialog, session events scroll the Activity Log to the matched event with a brief highlight, backlog hits switch to the backlog view and open the item's edit dialog, and project hits switch projects.
 
 ### Filter Popover
 
-Click the filter icon in the search bar to open the filter popover. Filter by:
+Click the filter icon at the top right of the board to open the filter popover. Filter by:
 - **Priority** - toggle one or more priority levels (None, Low, Medium, High, Urgent)
 - **Labels** - toggle one or more labels from the project's label set
 
@@ -500,8 +507,9 @@ Token and cost values pulse briefly when they change. The selected period persis
 ## Keyboard Shortcuts
 
 - **Ctrl+Shift+P** / **Cmd+Shift+P** - Toggle the Command Terminal overlay
-- **Ctrl+F** / **Cmd+F** - Toggle board search bar (or focus it if already visible)
-- **Escape** - Close any open dialog, or clear the search query if the search bar is focused
+- **Ctrl+Shift+F** / **Cmd+Shift+F** - Open the global search palette
+- **Ctrl+F** / **Cmd+F** - Open the global search palette (alternate binding; suppressed while typing in a text field)
+- **Escape** - Close any open dialog or the search palette
 - Standard OS shortcuts for copy, paste, etc. in the terminal
 
 ## Tips

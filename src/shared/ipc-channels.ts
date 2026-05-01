@@ -212,4 +212,7 @@ export const IPC = {
   UPDATE_CHECK: 'updater:check',
   UPDATE_INSTALL: 'updater:install',
   UPDATE_DOWNLOADED: 'updater:downloaded',
+
+  // Search
+  SEARCH_EVERYTHING: 'search:everything',
 } as const;

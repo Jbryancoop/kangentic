@@ -9,6 +9,7 @@ import { BacklogDialogs } from '../backlog/BacklogDialogs';
 import { TerminalPanel } from '../terminal/TerminalPanel';
 import { SettingsPanel } from '../settings/SettingsPanel';
 import { CommandBarOverlay } from '../command-bar/CommandBarOverlay';
+import { SearchPalette } from '../search/SearchPalette';
 import { WelcomeScreen } from './WelcomeScreen';
 import { useConfigStore } from '../../stores/config-store';
 import { useProjectStore } from '../../stores/project-store';
@@ -17,6 +18,7 @@ import { ToastContainer } from './ToastContainer';
 import { useSidebarResize, COLLAPSED_STRIP_WIDTH } from '../../hooks/useSidebarResize';
 import { useTerminalResize, COLLAPSED_HEIGHT } from '../../hooks/useTerminalResize';
 import { useCommandBar } from '../../hooks/useCommandBar';
+import { useSearchPalette } from '../../hooks/useSearchPalette';
 import { useViewToggle } from '../../hooks/useViewToggle';
 import { useFocusedSessionsSync } from '../../hooks/useFocusedSessionsSync';
 
@@ -31,6 +33,7 @@ export function AppLayout() {
   const sidebar = useSidebarResize(config);
   const terminal = useTerminalResize(config);
   const commandBar = useCommandBar();
+  const searchPalette = useSearchPalette();
   useViewToggle();
   useFocusedSessionsSync();
 
@@ -38,6 +41,7 @@ export function AppLayout() {
     <div className="h-screen flex flex-col bg-surface">
       <TitleBar
         onQuickSession={commandBar.open}
+        onOpenSearch={searchPalette.open}
         commandBarOpen={commandBar.isOpen}
       />
 
@@ -147,6 +151,7 @@ export function AppLayout() {
       {config.statusBarVisible !== false && <StatusBar />}
       {settingsOpen && <SettingsPanel />}
       {commandBar.isOpen && <CommandBarOverlay onClose={commandBar.close} />}
+      {searchPalette.isOpen && <SearchPalette onClose={searchPalette.close} />}
       <ToastContainer />
     </div>
   );
