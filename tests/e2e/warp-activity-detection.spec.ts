@@ -97,17 +97,25 @@ test.describe('Warp Agent - Activity Detection', () => {
 
     await moveTaskIpc(page, taskId, swimlaneIds.planning);
 
-    // Wait for scrollback to contain THIS task's prompt (title is unique per run)
-    const scrollback = await waitForScrollback(page, `MOCK_WARP_PROMPT:${title}`);
-
-    // The mock echoes back the --name (task ID) it received
-    expect(scrollback).toContain(`MOCK_WARP_NAME:${taskId}`);
+    // Wait on MOCK_WARP_NAME:<taskId> instead of the prompt text. The PTY
+    // running under PowerShell echoes the full command line (including the
+    // --prompt argument) BEFORE the mock has actually run, so any
+    // assertion targeting prompt content can match the PowerShell echo
+    // first - producing a false positive that races the actual mock
+    // output. MOCK_WARP_NAME:<taskId> only appears in the mock's own
+    // stdout after it has parsed args.
+    const scrollback = await waitForScrollback(page, `MOCK_WARP_NAME:${taskId}`);
 
     // The mock echoes back the -C (cwd) it received - should be the project dir
     expect(scrollback).toContain(`MOCK_WARP_CWD:${tmpDir}`);
 
-    // The prompt template includes the task title
-    const promptLine = scrollback.split('\n').find((line: string) => line.includes(`MOCK_WARP_PROMPT:${title}`));
+    // The prompt line includes the task title within the XML envelope.
+    // Prompts are XML-wrapped (per `feat(prompt): wrap task prompts and
+    // handoff context in XML envelopes`), so look for the title inside a
+    // `<title>...</title>` tag on a MOCK_WARP_PROMPT-prefixed line.
+    const promptLine = scrollback.split('\n').find((line: string) =>
+      line.includes('MOCK_WARP_PROMPT:') && line.includes(`<title>${title}</title>`),
+    );
     expect(promptLine).toBeDefined();
   });
 });
