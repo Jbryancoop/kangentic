@@ -25,6 +25,7 @@ import { makeTaskCounter, type TaskCounter } from './mcp-http/handler-helpers';
 import { registerTaskTools } from './mcp-http/task-tools';
 import { registerSessionTools } from './mcp-http/session-tools';
 import { registerProjectTools } from './mcp-http/project-tools';
+import { registerSearchTools } from './mcp-http/search-tools';
 import { buildServerInstructions } from './mcp-http/server-instructions';
 import type { RequestResolver } from './mcp-http/project-resolver';
 
@@ -185,6 +186,7 @@ async function handleHttpRequest(
   registerTaskTools(mcpServer, resolver, taskCounter, MAX_TASKS_PER_SESSION);
   registerSessionTools(mcpServer, resolver);
   registerProjectTools(mcpServer, resolver);
+  registerSearchTools(mcpServer, resolver);
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

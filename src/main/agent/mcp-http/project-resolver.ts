@@ -140,6 +140,18 @@ export class RequestResolver {
     }));
   }
 
+  /**
+   * Return the raw Project rows for callers that need fields beyond
+   * what `listProjects()` exposes (e.g. search-tools needs the full
+   * Project shape because runSearchEverything types its input that way).
+   * Returns a shallow copy so callers cannot mutate the per-resolver
+   * cache (in-place sorts, splices, etc.). The underlying list is
+   * cached for the lifetime of the resolver.
+   */
+  listProjectsRaw(): Project[] {
+    return [...this.loadProjects()];
+  }
+
   private loadProjects(): Project[] {
     if (this.cachedProjects === null) {
       this.cachedProjects = this.ipcContext.projectRepo.list();

@@ -240,6 +240,19 @@ Search backlog tasks by keyword across titles, descriptions, and labels.
 |-----------|------|----------|-------------|
 | `query` | string | Yes | Search keyword (case-insensitive) |
 
+### kangentic_search_everything
+
+Unified keyword search across the active project (or all registered projects) covering: board tasks (active + archived, title and description), backlog items (title and description), session events (the structured tool_start/tool_end/idle stream from agent runs), and project names/paths. Returns a per-kind grouped result with snippets so an agent can pinpoint the matching task, backlog item, session event, or project in one call instead of issuing `kangentic_search_tasks` + `kangentic_search_backlog` + `kangentic_get_session_events` separately.
+
+Defaults to scoping the search to the active project. Pass `scope: "all"` to widen across every registered project (which also surfaces project-name hits so the agent can discover routing targets). Passing `project` forces `scope: "current"` since explicit project routing already specifies the target.
+
+Per-kind hit caps prevent runaway results: 30 tasks, 20 backlog items, 50 session events, 10 projects.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Search keyword or phrase (case-insensitive). Empty queries return no results. |
+| `scope` | `'current' \| 'all'` | No | `"current"` (default) searches only the active or `project`-routed project. `"all"` widens to every registered project. Ignored (forced to `"current"`) when `project` is set. |
+
 ### kangentic_promote_backlog
 
 Move backlog tasks to the board, creating tasks in the specified column.
