@@ -201,7 +201,7 @@ Default setup: Planning column has `plan_exit_target_id` pointing to the Executi
 ## Default Seed Configuration
 
 New projects get:
-- **Start Planning Agent** action (`spawn_agent` with template `{{title}}{{description}}{{attachments}}`)
+- **Start Planning Agent** action (`spawn_agent` with template `{{task_xml}}{{attachments}}`)
 - **Kill Session** action (`kill_session`)
 - Transition: `* → Planning` = Kill Session (order 0), Start Planning Agent (order 1)
 - Transition: `* → Done` = Kill Session (order 0)

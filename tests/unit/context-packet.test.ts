@@ -23,7 +23,42 @@ describe('buildSessionHistoryReference', () => {
     });
 
     expect(prompt).toContain(filePath);
-    expect(prompt).toContain('Read this file');
+    expect(prompt).toContain('Read the prior session history');
+  });
+
+  it('wraps structured fields in a <handoff_context> envelope', () => {
+    const prompt = buildSessionHistoryReference({
+      sourceAgent: 'claude',
+      sessionFilePath: '/path/to/session.jsonl',
+      targetHasMcpAccess: false,
+    });
+
+    expect(prompt).toContain('<handoff_context>');
+    expect(prompt).toContain('<source_agent>Claude Code</source_agent>');
+    expect(prompt).toContain('<session_history_path>/path/to/session.jsonl</session_history_path>');
+    expect(prompt).toContain('</handoff_context>');
+  });
+
+  it('self-closes session_history_path when no file is available', () => {
+    const prompt = buildSessionHistoryReference({
+      sourceAgent: 'aider',
+      sessionFilePath: null,
+      targetHasMcpAccess: false,
+    });
+
+    expect(prompt).toContain('<session_history_path />');
+  });
+
+  it('escapes XML special chars in session file path', () => {
+    const prompt = buildSessionHistoryReference({
+      sourceAgent: 'claude',
+      sessionFilePath: '/tmp/foo & <bar>/"baz".jsonl',
+      targetHasMcpAccess: false,
+    });
+
+    expect(prompt).toContain('&amp;');
+    expect(prompt).toContain('&lt;bar&gt;');
+    expect(prompt).toContain('&quot;baz&quot;');
   });
 
   it('adds MCP hint when target has MCP access', () => {

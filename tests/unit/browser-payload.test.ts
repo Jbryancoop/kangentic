@@ -14,11 +14,11 @@ import {
   formatStyles,
   isMeaningfulStyle,
   isTrivialWrapper,
-  escapeXml,
   isValidSessionId,
   isCrossDrivePath,
   SELECTION_INLINE_LIMIT,
 } from '../../src/main/ipc/handlers/browser-payload';
+import { escapeXml } from '../../src/main/agent/shared';
 import type { BrowserCaptureInput, BrowserPickedElement } from '../../src/shared/types';
 
 // ---------------------------------------------------------------------------

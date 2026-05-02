@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { Task, Action, ActionConfig, AppConfig, PermissionMode } from '../../shared/types';
 import { sanitizeForPty } from '../../shared/paths';
 import { SessionManager } from '../pty/session-manager';
-import { interpolateTemplate } from '../agent/shared';
+import { interpolateTemplate, buildTaskXml } from '../agent/shared';
 import { WorktreeManager } from '../git/worktree-manager';
 import { agentRegistry } from '../agent/agent-registry';
 import { retireRecord, markRecordSuspended } from './session-lifecycle';
@@ -48,11 +48,14 @@ export class TransitionEngine {
     const attachmentPaths = this.attachmentRepo?.getPathsForTask(task.id) ?? [];
     const cleanTitle = sanitizeForPty(task.title);
     const cleanDesc = sanitizeForPty(task.description);
-    // {{description}} includes its own ": " separator when non-empty,
-    // producing "Title: Description" or just "Title" when blank.
+    // {{task_xml}} wraps title/description in a <task> envelope (Anthropic +
+    // OpenAI guidance for clear data/instruction boundaries). {{title}} and
+    // {{description}} stay raw for backward-compat with user-customized
+    // prose templates - {{description}} keeps the leading ": " separator.
     await this.executeSpawnAgent({
-      promptTemplate: skipPromptTemplate ? undefined : '{{title}}{{description}}{{attachments}}',
+      promptTemplate: skipPromptTemplate ? undefined : '{{task_xml}}{{attachments}}',
     }, task, {
+      task_xml: buildTaskXml({ title: cleanTitle, description: cleanDesc }),
       title: cleanTitle,
       description: cleanDesc ? `: ${cleanDesc}` : '',
       taskId: task.id,
@@ -89,6 +92,7 @@ export class TransitionEngine {
     const cleanTitle = sanitizeForPty(task.title);
     const cleanDesc = sanitizeForPty(task.description);
     const templateVars: Record<string, string> = {
+      task_xml: buildTaskXml({ title: cleanTitle, description: cleanDesc }),
       title: cleanTitle,
       description: cleanDesc ? `: ${cleanDesc}` : '',
       taskId: task.id,

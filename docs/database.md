@@ -293,6 +293,7 @@ Listed in execution order within `runProjectMigrations()`:
    - Appends `{{attachments}}` to prompt templates that lack it
    - Removes legacy permission modes (`dangerously-skip`, `bypass-permissions`) from action config (action-level permissionMode was removed in a later migration)
    - Updates old `Task: {{title}}...` prompt template to `{{title}}{{description}}{{attachments}}`
+   - Migrates the prior default `{{title}}{{description}}{{attachments}}` to the XML envelope form `{{task_xml}}{{attachments}}` (only rewrites exact-match defaults; user-customized templates are left alone)
 10. **`permission_strategy` and `auto_spawn` columns on swimlanes** -- adds per-column permission strategy and auto-spawn toggle. Backfills: todo/done get `auto_spawn = 0`, planning gets `permission_strategy = 'plan'`, running role is converted to a custom column. (Column later renamed to `permission_mode` in migration 16.)
 11. **`auto_command` column on swimlanes** -- per-column auto-command support.
 12. **`is_terminal` renamed to `is_archived`** -- uses `ALTER TABLE RENAME COLUMN`.

@@ -4,6 +4,7 @@
 
 import path from 'node:path';
 import type { BrowserCaptureInput, BrowserPickedElement } from '../../../shared/types';
+import { escapeXml } from '../../agent/shared';
 
 export const SELECTION_INLINE_LIMIT = 800;
 
@@ -55,14 +56,6 @@ export function formatAncestors(ancestors: BrowserPickedElement['ancestors']): s
 export function isTrivialWrapper(outerHTML: string): boolean {
   const inner = outerHTML.replace(/^<[^>]+>/, '').replace(/<\/[^>]+>\s*$/, '');
   return !/<[a-zA-Z]/.test(inner);
-}
-
-export function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 // Validates a UUID v4-style session ID. Used to guard the filesystem path

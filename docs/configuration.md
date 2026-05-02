@@ -276,7 +276,7 @@ Ghost columns are invisible on the board but still exist in the database. Once a
       "id": "uuid",
       "name": "Start Agent",
       "type": "spawn_agent",
-      "config": { "promptTemplate": "{{title}}{{description}}{{attachments}}" }
+      "config": { "promptTemplate": "{{task_xml}}{{attachments}}" }
     }
   ],
   "transitions": [

@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { seedDefaultSwimlanes, seedDefaultActions } from './default-data';
+import { migrateSpawnAgentConfig } from './spawn-agent-config-migration';
 
 export function runProjectMigrations(db: Database.Database): void {
   db.exec(`
@@ -178,37 +179,17 @@ export function runProjectMigrations(db: Database.Database): void {
     `);
   }
 
-  // Data migrations for spawn_agent actions (single pass):
-  //  1. Append {{attachments}} to promptTemplates that lack it
-  //  2. Remove legacy permission mode values (fall through to app default)
-  //  3. Update old 'Task: {{title}}...' template to '{{title}}{{description}}{{attachments}}'
+  // Per-row data migrations for spawn_agent actions. The pure transform
+  // lives in spawn-agent-config-migration.ts so it can be unit-tested
+  // without a real DB handle.
   const spawnActions = db.prepare(
     "SELECT id, config_json FROM actions WHERE type = 'spawn_agent'"
   ).all() as Array<{ id: string; config_json: string }>;
 
   for (const action of spawnActions) {
     try {
-      const config = JSON.parse(action.config_json);
-      let changed = false;
-
-      // 1. Append {{attachments}} if missing
-      if (config.promptTemplate && !config.promptTemplate.includes('{{attachments}}')) {
-        config.promptTemplate = config.promptTemplate + '{{attachments}}';
-        changed = true;
-      }
-
-      // 2. Remove action-level permissionMode (moved to swimlane-level override)
-      if (config.permissionMode !== undefined) {
-        delete config.permissionMode;
-        changed = true;
-      }
-
-      // 3. Update old 'Task: {{title}}...' prompt template
-      if (config.promptTemplate && config.promptTemplate.includes('Task: {{title}}')) {
-        config.promptTemplate = '{{title}}{{description}}{{attachments}}';
-        changed = true;
-      }
-
+      const parsed = JSON.parse(action.config_json);
+      const { config, changed } = migrateSpawnAgentConfig(parsed);
       if (changed) {
         db.prepare('UPDATE actions SET config_json = ? WHERE id = ?')
           .run(JSON.stringify(config), action.id);

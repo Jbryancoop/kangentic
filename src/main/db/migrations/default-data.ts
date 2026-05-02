@@ -69,7 +69,7 @@ function seedActionsAndTransitions(db: Database.Database, now: string): void {
     'Start Planning Agent',
     'spawn_agent',
     JSON.stringify({
-      promptTemplate: '{{title}}{{description}}{{attachments}}',
+      promptTemplate: '{{task_xml}}{{attachments}}',
     }),
     now,
   );

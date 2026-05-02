@@ -221,4 +221,20 @@ describe('resolveSpawnIntent', () => {
 
     expect(sessionRepo!.getLatestForTaskByType).toHaveBeenCalledWith('task-1', 'codex_agent');
   });
+
+  it('expands {{task_xml}} placeholder through the fresh-spawn path', () => {
+    const taskXmlValue = '<task>\n  <title>Hello</title>\n  <description />\n</task>';
+    const intent = resolveSpawnIntent({
+      taskId: 'task-1',
+      sessionType: 'claude_agent',
+      promptTemplate: '{{task_xml}}{{attachments}}',
+      templateVars: { task_xml: taskXmlValue, attachments: '' },
+      resumePrompt: undefined,
+      sessionRepo: mockSessionRepo(undefined),
+    });
+
+    expect(intent.mode).toBe('fresh');
+    expect(intent.prompt).toContain('<task>');
+    expect(intent.prompt).toContain('<title>Hello</title>');
+  });
 });

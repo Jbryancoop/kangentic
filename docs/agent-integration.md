@@ -818,7 +818,8 @@ Actions of type `spawn_agent` can define a `promptTemplate` with placeholders:
 
 | Variable | Value |
 |----------|-------|
-| `{{title}}` | Task title (PTY-sanitized) |
+| `{{task_xml}}` | `<task><title>...</title><description>...</description></task>` envelope (escaped) — preferred for default templates |
+| `{{title}}` | Task title (PTY-sanitized) — kept for backward compat with custom prose templates |
 | `{{description}}` | Task description with `: ` prefix when non-empty, empty string otherwise |
 | `{{taskId}}` | Task UUID |
 | `{{worktreePath}}` | Worktree directory path (empty if no worktree) |
@@ -827,11 +828,19 @@ Actions of type `spawn_agent` can define a `promptTemplate` with placeholders:
 | `{{prNumber}}` | Pull request number as string (empty if none) |
 | `{{attachments}}` | Bare file paths (one per line) when attachments exist, empty otherwise |
 
-Default template: `{{title}}{{description}}{{attachments}}`
+Default template: `{{task_xml}}{{attachments}}`
 
-This produces prompts like:
-- `Fix auth bug: Users can't login after password reset` followed by `/path/to/screenshot.png` on the next line
-- `Add dark mode` (no description, no attachments)
+The `<task>` envelope follows Anthropic + OpenAI guidance: wrap user-authored input in XML tags so the model has a clear data/instruction boundary. Non-XML-aware agents (Aider, Codex) treat the markup as harmless prose. Attachment `@-mention` paths stay outside the envelope so Claude Code / Gemini bare-token parsers reliably auto-inject them.
+
+A typical prompt:
+
+```
+<task>
+  <title>Fix auth bug</title>
+  <description>Users can't login after password reset</description>
+</task>
+/path/to/screenshot.png
+```
 
 Shortcut commands use a separate set of template variables. See [Configuration](configuration.md#shortcuts) for the full list.
 

@@ -9,6 +9,8 @@
  * author its own handoff summary.
  */
 
+import { buildHandoffXml } from '../shared';
+
 export interface SessionHistoryReferenceOptions {
   /** Agent identifier that previously worked on the task (e.g. 'claude', 'codex'). */
   sourceAgent: string;
@@ -23,26 +25,11 @@ export interface SessionHistoryReferenceOptions {
  * Appended to the receiving agent's initial prompt during handoff.
  */
 export function buildSessionHistoryReference(options: SessionHistoryReferenceOptions): string {
-  const { sourceAgent, sessionFilePath, targetHasMcpAccess } = options;
-  const sourceDisplayName = agentDisplayLabel(sourceAgent);
-
-  const lines: string[] = [];
-  lines.push(`You are continuing work on this task that was previously handled by ${sourceDisplayName}.`);
-
-  if (sessionFilePath) {
-    lines.push(`The prior agent's full session history is at: ${sessionFilePath}`);
-    lines.push('Read this file for context on what was done, decisions made, and current state.');
-
-    if (targetHasMcpAccess) {
-      lines.push('');
-      lines.push('You can also use the `kangentic_get_session_history` MCP tool to read the prior session content directly.');
-    }
-  } else {
-    lines.push('No session history file is available for the prior session.');
-    lines.push('Check `git log` for prior changes on this branch.');
-  }
-
-  return lines.join('\n');
+  return buildHandoffXml({
+    sourceDisplayName: agentDisplayLabel(options.sourceAgent),
+    sessionFilePath: options.sessionFilePath,
+    targetHasMcpAccess: options.targetHasMcpAccess,
+  });
 }
 
 function agentDisplayLabel(agent: string): string {

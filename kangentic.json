@@ -68,7 +68,7 @@
       "type": "spawn_agent",
       "config": {
         "agent": "claude",
-        "promptTemplate": "{{title}}{{description}}{{attachments}}"
+        "promptTemplate": "{{task_xml}}{{attachments}}"
       }
     }
   ],
