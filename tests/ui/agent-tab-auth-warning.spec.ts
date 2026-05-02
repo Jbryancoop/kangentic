@@ -71,13 +71,7 @@ async function launchWithAgentAsDefault(
     (window as Record<string, unknown>).__mockAgentListOverrides = { [args.agentId]: override };
   }, { agentId, agentPath, agentVersion, authenticatedOverride });
 
-  // 2. Set the agent as the default for the auto-created project via a
-  //    pre-init script that patches the mock's project-selection callback.
-  await page.addInitScript((agentName: string) => {
-    (window as Record<string, unknown>).__mockDefaultAgentOverride = agentName;
-  }, agentId);
-
-  // 3. Inject the full mock (reads both overrides above).
+  // 2. Inject the full mock (reads __mockAgentListOverrides above).
   await page.addInitScript({ path: MOCK_SCRIPT });
 
   await page.goto(VITE_URL);
@@ -108,12 +102,19 @@ async function openAgentSettingsTab(page: Page, agentId: string): Promise<void> 
 
   await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
 
-  // Switch the project default agent via the mock API so the AgentTab
-  // renders with effectiveAgent = agentId.
+  // Switch the project default agent via the mock API, then resync the
+  // renderer's project store so AgentTab's effectiveAgent picks up the
+  // new default_agent. Direct setDefaultAgent IPC mutates the mock's
+  // backing state but does NOT update the Zustand store; without
+  // loadCurrent() the tab would still render the old default ('claude').
   await page.evaluate(async (agent: string) => {
     const projects = await window.electronAPI.projects.list();
     if (projects.length === 0) return;
     await window.electronAPI.projects.setDefaultAgent(projects[0].id, agent);
+    const projectStore = (window as unknown as {
+      __zustandStores?: { project?: { getState: () => { loadCurrent: () => Promise<void> } } };
+    }).__zustandStores?.project;
+    if (projectStore) await projectStore.getState().loadCurrent();
   }, agentId);
 
   // Open settings and navigate to the Agent tab.

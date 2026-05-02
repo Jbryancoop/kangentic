@@ -506,29 +506,41 @@ test.describe('FlyingCard - timer and immediate-finalize paths', () => {
     try {
       // Remove the done drop zone from the DOM so FlyingCard takes the
       // immediate-finalize path instead of arming the 700ms fallback timer.
+      // Spy on setTimeout to deterministically detect whether the 700ms
+      // fallback was armed - this is the actual contract under test, not
+      // a wall-clock budget. Wall-clock assertions are brittle on loaded
+      // CI machines or under AV scan pressure.
       await page.evaluate(() => {
         const dropZone = document.querySelector('[data-done-drop-zone]');
         if (dropZone) dropZone.parentElement?.removeChild(dropZone);
+        (window as unknown as Record<string, unknown>).__fallbackTimerArmed = false;
+        const originalSetTimeout = window.setTimeout.bind(window);
+        window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+          if (timeout === 700) {
+            (window as unknown as Record<string, unknown>).__fallbackTimerArmed = true;
+          }
+          return originalSetTimeout(handler as () => void, timeout, ...args);
+        }) as typeof window.setTimeout;
       });
-
-      const startTime = Date.now();
 
       // Setting completingTask mounts FlyingCard, which on next two rAF frames
       // checks for [data-done-drop-zone]. Since it's absent, it calls
       // finalizeCompletion() immediately without the 700ms timer.
       await buildCompletingTask(page, TASK_A_ID);
 
-      // Poll until completingTaskIds is cleared
+      // Poll until completingTaskIds is cleared.
       await expect.poll(async () => {
         const state = await readCompletionState(page);
         return state.completingTaskIds.length;
       }, { timeout: 5000 }).toBe(0);
 
-      const elapsed = Date.now() - startTime;
-
-      // The immediate path fires well within the 700ms fallback window.
-      // Allow 600ms for two rAF frames + IPC round-trip on a slow CI machine.
-      expect(elapsed).toBeLessThan(600);
+      // The contract: the 700ms fallback timer must NOT have been armed.
+      // This proves the immediate-finalize path was taken, regardless of
+      // how long the IPC round-trip took on the host machine.
+      const fallbackTimerArmed = await page.evaluate(
+        () => (window as unknown as { __fallbackTimerArmed?: boolean }).__fallbackTimerArmed === true,
+      );
+      expect(fallbackTimerArmed).toBe(false);
 
       const final = await readCompletionState(page);
       expect(final.completingTask).toBeNull();

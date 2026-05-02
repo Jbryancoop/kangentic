@@ -230,7 +230,13 @@ export async function createTask(
 
   const createButton = page.getByRole('button', { name: 'Create', exact: true });
   await createButton.click();
-  await page.waitForTimeout(300);
+  // Wait for the dialog to fully unmount before returning. BaseDialog plays
+  // a 100ms exit animation, then onAnimationEnd unmounts. Under full-suite
+  // load this can exceed the old 300ms fixed sleep, leaving the backdrop
+  // intercepting the next "Add task" click in back-to-back createTask calls.
+  // Scope the wait to NewTaskDialog's "New Task" header so it does not
+  // accidentally match other dialogs that share the title-input placeholder.
+  await page.getByRole('heading', { name: 'New Task', exact: true }).waitFor({ state: 'detached', timeout: 3000 });
 }
 
 /**
