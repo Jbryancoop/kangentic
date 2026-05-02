@@ -46,6 +46,36 @@ Every agent implements the `AgentAdapter` interface. Each adapter lives in `src/
 | `attachSession?(context)` | `(SessionContext) => SessionAttachment \| void` | Per-session lifecycle hook for adapters that need work outside the declarative `runtime` strategy (out-of-band CLI queries, file watchers, etc.). The returned `dispose` is called on session end. |
 | `summarize?(prompt, cliPath, cwd)` | `(string, string, string) => Promise<string>` | One-shot summarization for the auto-name-tasks-from-prompt feature. Spawns the CLI in non-interactive `--print` mode. Adapters without a clean headless mode (Aider, Warp) omit this. |
 | `probeAuth?()` | `() => Promise<boolean \| null>` | See the methods table above. |
+| `discoverCapabilities?(cliPath)` | `(string) => Promise<AgentCapabilities>` | Probe the live CLI for adapter-specific knobs (e.g. parsing `--help` for valid effort levels and the presence of a `--model` flag). Result is attached to `AgentDetectionInfo.capabilities` and read by the renderer to gate optional UI controls (Model and Effort dropdowns on `EditColumnDialog`). Implementations must never throw - return an empty object on parse failure so the rest of detection still succeeds. |
+| `getInjectionSequence?(spec)` | `(SettingsChangeSpec) => string[]` | Translate a column-level settings change (model / effort) into the writes the `CommandInjector` should push onto the live PTY. Sibling of `getExitSequence` - both return `string[]` of writes. Claude returns `['/model X', '/effort Y']` for changed fields. Adapters with no live-swap slash return `[]` and the caller falls back to suspend+respawn. |
+| `getCommandInjectionVerifier?(input)` | `(CommandInjectionVerifierInput) => CommandInjectionVerifier \| null` | Build a verifier that confirms each command in a chained `scheduleSequence` actually landed before the next is sent. Adapters whose CLI exposes an authoritative "command processed" signal (e.g. Claude's session JSONL) implement this; others fall back to a fixed inter-command settle. Returns null when inputs are insufficient (e.g. `agent_session_id` not yet captured) - caller treats null as "use the time-based fallback". |
+
+### `AgentCapabilities`
+
+`src/shared/types.ts`
+
+Adapter-discovered capabilities surfaced to the renderer (returned by `discoverCapabilities`). All fields are optional - adapters that cannot discover a capability leave it undefined and the corresponding UI control is not rendered. Nothing is hardcoded in Kangentic; values come from the live CLI.
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `effortLevels?` | `string[]` | Effort/reasoning levels accepted by the CLI's `--effort` (or equivalent) flag. Claude parses these from the `--help` output. Drives the Effort dropdown on `EditColumnDialog`. |
+| `supportsModelOverride?` | `boolean` | True when the CLI accepts a model override flag (e.g. Claude `--model <alias>`). When true and `models` has entries, the renderer shows a dropdown; when true and `models` is empty/undefined, the renderer falls back to a free-form text input. |
+| `models?` | `string[]` | Model identifiers the user can pick from. Discovered from agent-specific sources (Claude scans `~/.claude/projects/<slug>/<sessionId>.jsonl` for assistant `message.model` values). Absent when no curated list is available - the renderer falls back to a free-form text input. |
+
+`AgentDetectionInfo.capabilities?: AgentCapabilities` — populated at detection time; absent for adapters that do not implement `discoverCapabilities`.
+
+### `CommandOptions` - new spawn knobs
+
+`src/main/agent/agent-adapter.ts`
+
+Two recently-added optional fields drive the per-column model/effort override feature. Adapters consume them in `buildCommand` to emit the appropriate CLI flag when the value is present:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `model?` | `string` | Adapter-specific model identifier (e.g. Claude `--model opus`). Empty/undefined leaves the agent default in place. Sourced from `swimlane.model_override` at spawn time by `prepare-spawn.ts`. |
+| `effort?` | `string` | Adapter-specific effort/reasoning level (e.g. Claude `--effort xhigh`). Empty/undefined leaves the agent default in place. Sourced from `swimlane.effort_override` at spawn time by `prepare-spawn.ts`. |
+
+For mid-session overrides (changing model/effort on a live session without respawn), see `getInjectionSequence` and `getCommandInjectionVerifier` in the Optional Properties table above. The adapter declares the slash-command writes; `CommandInjector.scheduleSequence` delivers them with verification.
 
 ### `AdapterRuntimeStrategy`
 

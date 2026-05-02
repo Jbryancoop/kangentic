@@ -82,6 +82,8 @@ All queries are synchronous via **better-sqlite3** -- they block the Node.js eve
 | plan_exit_target_id | TEXT | | NULL |
 | is_ghost | INTEGER | NOT NULL | 0 |
 | agent_override | TEXT | | NULL |
+| model_override | TEXT | | NULL |
+| effort_override | TEXT | | NULL |
 | handoff_context | INTEGER | NOT NULL | 0 |
 | created_at | TEXT | NOT NULL | |
 
@@ -316,6 +318,7 @@ Listed in execution order within `runProjectMigrations()`:
 29. **`agent_override` column on swimlanes** -- adds per-column agent override support. When set, tasks moving into this column use the specified agent instead of the project default.
 30. **`handoff_context` column on swimlanes** -- adds per-column toggle for cross-agent handoff context packaging. Default `0` (off) - users must opt in. When enabled, agent transitions package transcript, git diff, and metrics for the target agent.
 31. **Performance indices on sessions and tasks** -- adds four idempotent hot-path indices: `idx_sessions_task_started` on (task_id, started_at DESC) for per-task session lookups and cost summaries, `idx_sessions_status` on (status) for getResumable/getOrphaned/markRunningAsOrphaned, `idx_sessions_agent_session_id` on (agent_session_id) for the resume-by-agent-id path, and `idx_tasks_session_id` on (session_id) for session-change IPC events. Targets startup reconciliation and live board state lookups under accumulated session history.
+32. **`model_override` and `effort_override` columns on swimlanes** -- adds per-column model and effort/reasoning level overrides. Both default to NULL (inherit agent default). Read at spawn time by `prepare-spawn.ts` to set `--model` / `--effort` CLI flags. Live-applied to running sessions via adapter-specific slash injection (`getInjectionSequence`) on column transition; falls back to suspend+respawn for adapters without live-swap support.
 
 ### Key Migrations (Global DB)
 
