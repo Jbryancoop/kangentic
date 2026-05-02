@@ -1,5 +1,6 @@
 import type { SessionManager } from '../pty/session-manager';
 import type { PasteEngine } from '../pty/paste-engine';
+import { resolveSubmissionEvidence } from '../agent/submission-evidence';
 import { sanitizeForPty } from '../../shared/paths';
 
 /**
@@ -252,10 +253,18 @@ export class CommandInjector {
         });
       }
 
+      // Resolve per-adapter evidence so the engine waits on a deterministic
+      // signal instead of any post-\r byte. resolveSubmissionEvidence falls
+      // back to `{ minBytes: 50 }` when the adapter is unknown (extremely
+      // rare - the session exists at this point) so cursor-blip false
+      // positives are still filtered.
+      const evidence = resolveSubmissionEvidence(this.sessionManager, sessionId);
+
       await this.pasteEngine.pasteAndSubmit(sessionId, sanitized, {
         bracketed: false,
         signal: controller.signal,
         source: `auto_command:${taskId.slice(0, 8)}`,
+        evidence,
       });
 
       console.log(`[AUTO_COMMAND] Delivered to session ${sessionId.slice(0, 8)} for task ${taskId.slice(0, 8)}`);

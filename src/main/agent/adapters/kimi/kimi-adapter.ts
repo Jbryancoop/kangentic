@@ -7,7 +7,7 @@ import { KimiCommandBuilder } from './command-builder';
 import { KimiSessionHistoryParser } from './session-history-parser';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy } from '../../../../shared/types';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionEvidence } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 /**
@@ -60,6 +60,9 @@ export class KimiAdapter implements AgentAdapter {
     { mode: 'bypassPermissions', label: 'YOLO (Skip Confirmations)' },
   ];
   readonly defaultPermission: PermissionMode = 'default';
+  /** Kimi has no hook system. 100-byte post-\r floor avoids
+   *  cursor-blip false positives. */
+  readonly submissionEvidence: SubmissionEvidence = { minBytes: 100 };
 
   private readonly detector = new AgentDetector({
     binaryName: 'kimi',

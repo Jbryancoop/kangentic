@@ -35,6 +35,18 @@ Every agent implements the `AgentAdapter` interface. Each adapter lives in `src/
 | `defaultPermission` | `PermissionMode` | Recommended default permission mode |
 | `runtime` | `AdapterRuntimeStrategy` | Activity detection + session ID capture (see below) |
 
+### Optional Properties
+
+| Property | Type | Purpose |
+|----------|------|---------|
+| `submissionEvidence?` | `SubmissionEvidence` | How this agent signals "prompt accepted" after `\r` is sent during paste-and-submit. Read by the paste engine to wait for deterministic post-`\r` evidence (hook event, TUI marker, or post-`\r` byte threshold) instead of any stray byte. Adapters that omit this fall back to a generic `{ minBytes: 50 }` floor in the caller wiring. See [Embedded Browser - Paste Engine](embedded-browser.md#paste-engine) for the full evidence model. |
+| `liveTelemetryUnsupported?` | `AgentLiveTelemetryUnsupported` | Set when the agent CLI has no per-session telemetry channel (no status file, session history, or stream output integration is possible). Carries the renderer-facing label and tooltip so all agent-specific copy lives with the adapter. Currently used by Droid. |
+| `buildEnv?(options)` | `(SpawnCommandOptions) => Record<string, string> \| null` | Adapter-specific environment variables to inject into the PTY spawn. Used by adapters whose CLI has no flag-based MCP wiring and must deliver the Kangentic MCP server config via env (e.g. OpenCode's `OPENCODE_CONFIG_CONTENT`). |
+| `getExitSequence?()` | `() => string[]` | Sequence of strings to write to the PTY for a graceful exit. Default is `['\x03']` (Ctrl+C only). Claude overrides with `['\x03', '/exit\r']` to flush conversation state. |
+| `attachSession?(context)` | `(SessionContext) => SessionAttachment \| void` | Per-session lifecycle hook for adapters that need work outside the declarative `runtime` strategy (out-of-band CLI queries, file watchers, etc.). The returned `dispose` is called on session end. |
+| `summarize?(prompt, cliPath, cwd)` | `(string, string, string) => Promise<string>` | One-shot summarization for the auto-name-tasks-from-prompt feature. Spawns the CLI in non-interactive `--print` mode. Adapters without a clean headless mode (Aider, Warp) omit this. |
+| `probeAuth?()` | `() => Promise<boolean \| null>` | See the methods table above. |
+
 ### `AdapterRuntimeStrategy`
 
 `src/shared/types.ts`

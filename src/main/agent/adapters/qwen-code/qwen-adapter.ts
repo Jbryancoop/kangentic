@@ -6,8 +6,8 @@ import { QwenStatusParser } from './status-parser';
 import { ensureWorktreeTrust } from './trust-manager';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy } from '../../../../shared/types';
-import { ActivityDetection } from '../../../../shared/types';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionEvidence } from '../../../../shared/types';
+import { ActivityDetection, EventType } from '../../../../shared/types';
 
 /**
  * Qwen Code CLI adapter - wraps QwenDetector, QwenCommandBuilder,
@@ -33,6 +33,10 @@ export class QwenAdapter implements AgentAdapter {
     { mode: 'bypassPermissions', label: 'YOLO (Auto-Approve All)' },
   ];
   readonly defaultPermission: PermissionMode = 'acceptEdits';
+  /** Inherits Gemini's `BeforeAgent → EventType.Prompt` mapping (Qwen's
+   *  hook-manager mirrors Gemini's settings.json schema). The hook fires
+   *  the moment the agent begins processing the submitted prompt. */
+  readonly submissionEvidence: SubmissionEvidence = { hookEventType: EventType.Prompt };
 
   private readonly detector = new QwenDetector();
   private readonly commandBuilder = new QwenCommandBuilder();

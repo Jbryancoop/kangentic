@@ -22,6 +22,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createPasteEngine, sanitizeForPaste, PasteSubmitError } from '../../src/main/pty/paste-engine';
+import { EventType, type SessionEvent } from '../../src/shared/types';
 
 class MockSessionManager extends EventEmitter {
   writeRawCalls: Array<{ id: string; data: string }> = [];
@@ -53,6 +54,13 @@ class MockSessionManager extends EventEmitter {
 
   emitActivity(sessionId: string, activity: string): void {
     this.emit('activity', sessionId, activity, false);
+  }
+
+  /** Emit a SessionEvent on the 'event' channel for per-adapter
+   *  hookEventType evidence path tests. */
+  emitEvent(sessionId: string, type: EventType, detail?: string): void {
+    const event: SessionEvent = { ts: Date.now(), type, detail };
+    this.emit('event', sessionId, event);
   }
 }
 
@@ -589,6 +597,236 @@ describe('PasteEngine.pasteAndSubmit', () => {
     mockSessionManager.flushDrain();
     await tick();
     mockSessionManager.emitActivity('s1', 'thinking');
+    await tick();
+
+    await expect(promise).resolves.toBeUndefined();
+  });
+});
+
+describe('PasteEngine.pasteAndSubmit submission evidence (per-adapter)', () => {
+  let mockSessionManager: MockSessionManager;
+  let engine: ReturnType<typeof createPasteEngine>;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    mockSessionManager = new MockSessionManager();
+    engine = createPasteEngine(mockSessionManager as never);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    mockSessionManager.removeAllListeners();
+  });
+
+  /**
+   * Walk the engine forward to the post-\r evidence wait phase. Drives:
+   *  - drain pre-write
+   *  - settle cap (no data) so \r is queued
+   *  - drain post-\r
+   * After this the next emit on the appropriate channel must resolve evidence.
+   */
+  async function reachEvidenceWait(): Promise<void> {
+    await tick();
+    mockSessionManager.flushDrain();
+    await tick();
+    vi.advanceTimersByTime(1100);
+    await tick();
+    expect(mockSessionManager.writeCalls).toHaveLength(1);
+    mockSessionManager.flushDrain();
+    await tick();
+  }
+
+  it('hookEventType resolves evidence on a matching SessionEvent', async () => {
+    const promise = engine.pasteAndSubmit('s1', 'hello', {
+      timeoutMs: 30000,
+      evidence: { hookEventType: EventType.Prompt },
+      // Disable the any-data fallback so we know the resolution path is the
+      // hook event channel and not a stray data byte.
+      allowAnyDataFallback: false,
+    });
+    await reachEvidenceWait();
+
+    // Mismatched event type must NOT resolve.
+    mockSessionManager.emitEvent('s1', EventType.ToolStart);
+    await tick();
+    vi.advanceTimersByTime(500);
+    await tick();
+    expect(mockSessionManager.writeCalls).toHaveLength(1);
+
+    // Correct event type resolves.
+    mockSessionManager.emitEvent('s1', EventType.Prompt);
+    await tick();
+
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it('outputMarker resolves evidence on a regex match against the post-\\r ring buffer', async () => {
+    const promise = engine.pasteAndSubmit('s1', 'hello', {
+      timeoutMs: 30000,
+      evidence: { outputMarker: /\[Pasted text \+\d+ lines?\]/ },
+      allowAnyDataFallback: false,
+    });
+    await reachEvidenceWait();
+
+    // Bytes that do NOT match the marker must not resolve when the
+    // any-data fallback is off.
+    mockSessionManager.emitData('s1', 'cursor blip\x1b[K');
+    await tick();
+    vi.advanceTimersByTime(500);
+    await tick();
+    expect(mockSessionManager.writeCalls).toHaveLength(1);
+
+    // Marker fragment lands - resolves.
+    mockSessionManager.emitData('s1', '[Pasted text +3 lines]');
+    await tick();
+
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it('minBytes resolves evidence once cumulative post-\\r bytes meet the threshold', async () => {
+    const promise = engine.pasteAndSubmit('s1', 'hello', {
+      timeoutMs: 30000,
+      evidence: { minBytes: 50 },
+      allowAnyDataFallback: false,
+    });
+    await reachEvidenceWait();
+
+    // Below threshold - no resolution.
+    mockSessionManager.emitData('s1', 'a'.repeat(20));
+    await tick();
+    expect(mockSessionManager.writeCalls).toHaveLength(1);
+    mockSessionManager.emitData('s1', 'b'.repeat(20));
+    await tick();
+    expect(mockSessionManager.writeCalls).toHaveLength(1);
+
+    // Crossing 50 cumulative bytes resolves.
+    mockSessionManager.emitData('s1', 'c'.repeat(15));
+    await tick();
+
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it('OR-combines evidence: hookEventType wins even when minBytes also configured', async () => {
+    const promise = engine.pasteAndSubmit('s1', 'hello', {
+      timeoutMs: 30000,
+      evidence: { hookEventType: EventType.Prompt, minBytes: 1000 },
+      allowAnyDataFallback: false,
+    });
+    await reachEvidenceWait();
+
+    // Far below the 1000-byte threshold but the hook fires - must resolve.
+    mockSessionManager.emitData('s1', 'tiny');
+    await tick();
+    expect(mockSessionManager.writeCalls).toHaveLength(1);
+
+    mockSessionManager.emitEvent('s1', EventType.Prompt);
+    await tick();
+
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it('any-data fallback resolves evidence when allowAnyDataFallback is the default (true)', async () => {
+    // No evidence config - relies entirely on the legacy any-data path.
+    const promise = engine.pasteAndSubmit('s1', 'hello', { timeoutMs: 30000 });
+    await reachEvidenceWait();
+
+    mockSessionManager.emitData('s1', 'r');
+    await tick();
+
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it('regression: declared minBytes is NOT preempted by the default any-data fallback', async () => {
+    // Production caller wiring (browser.ts, command-injector.ts) leaves
+    // allowAnyDataFallback at its default `true`. If an adapter declares
+    // `minBytes: 100`, a single byte must NOT resolve evidence - the
+    // threshold has to actually gate the wait. Otherwise the explicit
+    // declaration is ineffective in production.
+    const promise = engine.pasteAndSubmit('s1', 'hello', {
+      timeoutMs: 30000,
+      evidence: { minBytes: 100 },
+      // intentionally omit allowAnyDataFallback - mirror production defaults
+    });
+    await reachEvidenceWait();
+
+    // 50 bytes: well below the 100-byte threshold.
+    mockSessionManager.emitData('s1', 'a'.repeat(50));
+    await tick();
+    // Engine must still be waiting; no second \r retry yet either.
+    expect(mockSessionManager.writeCalls).toHaveLength(1);
+
+    // Crossing 100 cumulative bytes resolves via the 'bytes' path.
+    mockSessionManager.emitData('s1', 'b'.repeat(60));
+    await tick();
+
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it('regression: declared hookEventType is NOT preempted by the default any-data fallback', async () => {
+    // Same shape as the minBytes regression: a stray data byte before
+    // the hook fires must not resolve the wait.
+    const promise = engine.pasteAndSubmit('s1', 'hello', {
+      timeoutMs: 30000,
+      evidence: { hookEventType: EventType.Prompt },
+    });
+    await reachEvidenceWait();
+
+    // Stray cursor blip: would resolve as 'data' under the buggy
+    // pre-fix behavior. Must NOT resolve here.
+    mockSessionManager.emitData('s1', '\x1b[K');
+    await tick();
+    expect(mockSessionManager.writeCalls).toHaveLength(1);
+
+    // Hook fires - resolves via 'hook'.
+    mockSessionManager.emitEvent('s1', EventType.Prompt);
+    await tick();
+
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it('any-data fallback off + only mismatched signals -> evidence times out', async () => {
+    const promise = engine.pasteAndSubmit('s1', 'hello', {
+      timeoutMs: 30000,
+      evidence: { hookEventType: EventType.Prompt },
+      allowAnyDataFallback: false,
+    });
+    promise.catch(() => undefined);
+    await reachEvidenceWait();
+
+    // Wrong event type and a few bytes - neither should resolve.
+    mockSessionManager.emitEvent('s1', EventType.ToolStart);
+    mockSessionManager.emitData('s1', 'noise');
+    await tick();
+
+    // Both evidence windows expire -> no-submission-evidence.
+    vi.advanceTimersByTime(3001);
+    await tick();
+    mockSessionManager.flushDrain();
+    await tick();
+    vi.advanceTimersByTime(2001);
+    await tick();
+
+    await expect(promise).rejects.toBeInstanceOf(PasteSubmitError);
+    await expect(promise).rejects.toMatchObject({ code: 'no-submission-evidence' });
+  });
+
+  it('hookEventType ignores events for other sessions', async () => {
+    const promise = engine.pasteAndSubmit('s1', 'hello', {
+      timeoutMs: 30000,
+      evidence: { hookEventType: EventType.Prompt },
+      allowAnyDataFallback: false,
+    });
+    await reachEvidenceWait();
+
+    // Same event type but a DIFFERENT session must not resolve.
+    mockSessionManager.emitEvent('s2-different', EventType.Prompt);
+    await tick();
+    vi.advanceTimersByTime(500);
+    await tick();
+    expect(mockSessionManager.writeCalls).toHaveLength(1);
+
+    // Correct session resolves.
+    mockSessionManager.emitEvent('s1', EventType.Prompt);
     await tick();
 
     await expect(promise).resolves.toBeUndefined();

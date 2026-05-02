@@ -7,8 +7,8 @@ import { ensureWorktreeTrust, ensureMcpServerTrust } from './trust-manager';
 import { removeHooks as removeClaudeHooks } from './hook-manager';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy } from '../../../../shared/types';
-import { ActivityDetection } from '../../../../shared/types';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionEvidence } from '../../../../shared/types';
+import { ActivityDetection, EventType } from '../../../../shared/types';
 
 /**
  * Claude Code adapter - wraps ClaudeDetector, CommandBuilder,
@@ -29,6 +29,10 @@ export class ClaudeAdapter implements AgentAdapter {
     { mode: 'bypassPermissions', label: 'Bypass (Unsafe)' },
   ];
   readonly defaultPermission: PermissionMode = 'acceptEdits';
+  /** Claude Code emits EventType.Prompt via its UserPromptSubmit hook the
+   *  moment the agent receives our submitted prompt - the strongest
+   *  possible signal. */
+  readonly submissionEvidence: SubmissionEvidence = { hookEventType: EventType.Prompt };
 
   private readonly detector = new ClaudeDetector();
   private readonly commandBuilder = new CommandBuilder();

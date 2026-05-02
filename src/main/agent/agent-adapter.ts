@@ -6,6 +6,7 @@ import type {
   SessionContext,
   SessionAttachment,
   AgentLiveTelemetryUnsupported,
+  SubmissionEvidence,
 } from '../../shared/types';
 
 /** CLI detection result returned by all agent detectors. */
@@ -189,4 +190,14 @@ export interface AgentAdapter {
    *   converts thrown errors to `{ ok: false, reason }`.
    */
   summarize?(prompt: string, cliPath: string, cwd: string): Promise<string>;
+
+  /**
+   * How this agent signals that a paste-and-submitted prompt was accepted.
+   * Read by the paste engine to wait for deterministic post-\r evidence
+   * (hook event, TUI marker, or post-\r byte threshold) instead of any
+   * stray byte. Adapters that omit this fall back to a generic minBytes
+   * floor in the caller wiring; declaring an explicit value here is
+   * always preferable.
+   */
+  readonly submissionEvidence?: SubmissionEvidence;
 }

@@ -5,8 +5,8 @@ import { CodexSessionHistoryParser } from './session-history-parser';
 import { CodexStatusParser } from './status-parser';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy } from '../../../../shared/types';
-import { ActivityDetection } from '../../../../shared/types';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionEvidence } from '../../../../shared/types';
+import { ActivityDetection, EventType } from '../../../../shared/types';
 
 /**
  * Codex CLI adapter - wraps CodexDetector, CodexCommandBuilder, and
@@ -25,6 +25,15 @@ export class CodexAdapter implements AgentAdapter {
     { mode: 'bypassPermissions', label: 'Dangerous Full Access' },
   ];
   readonly defaultPermission: PermissionMode = 'acceptEdits';
+  /** Codex declares a UserPromptSubmit hook that emits EventType.Prompt.
+   *  Note: Codex 0.118 does not actually honor `.codex/hooks.json` in
+   *  practice (see hookHolders comment below); when the hook stays silent
+   *  the engine falls through to its activity + any-data backstop and a
+   *  100-byte floor still filters single-cursor blips. */
+  readonly submissionEvidence: SubmissionEvidence = {
+    hookEventType: EventType.Prompt,
+    minBytes: 100,
+  };
 
   private readonly detector = new CodexDetector();
   private readonly commandBuilder = new CodexCommandBuilder();

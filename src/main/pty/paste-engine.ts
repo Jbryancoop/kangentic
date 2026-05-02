@@ -1,4 +1,5 @@
 import type { SessionManager } from './session-manager';
+import type { SessionEvent, SubmissionEvidence } from '../../shared/types';
 
 /**
  * PasteEngine: deterministic paste-and-submit for TUI agents. Used by the
@@ -12,9 +13,12 @@ import type { SessionManager } from './session-manager';
  *      floored at MIN_GAP_MS for React's commit cycle)
  *   4. queue write of `\r` + drain (queue path matches what real user
  *      keystrokes take; writeRaw misroutes Enter on Claude Code)
- *   5. wait for submission evidence (activity event with non-idle state,
- *      OR new data bytes), retry \r once on timeout, hard-error if both
- *      windows time out
+ *   5. wait for submission evidence per the adapter's declared
+ *      `SubmissionEvidence` (hook event / output marker / minBytes
+ *      threshold, OR-combined with a legacy 'activity' backstop and an
+ *      any-data fallback that fires only when no specific evidence was
+ *      declared). Retry \r once on timeout, hard-error if both windows
+ *      time out.
  *
  * Enter must be a separate write: per Ink source, bracketed paste content
  * goes to `usePaste` (not `useInput`), and if `\r` arrives in the same
@@ -41,6 +45,14 @@ export interface PasteOptions {
   signal?: AbortSignal;
   /** Diagnostic label for the `[paste-engine]` log lines. */
   source?: string;
+  /** How the agent signals "prompt accepted" post-\r. Looked up by the
+   *  caller from the session's adapter and forwarded here. When omitted,
+   *  only the legacy 'activity' + any-data fallback paths are active. */
+  evidence?: SubmissionEvidence;
+  /** When false, the "any data byte resolves evidence" fallback is
+   *  disabled - useful in unit tests that want to assert a specific
+   *  evidence path fired in isolation. Default true. */
+  allowAnyDataFallback?: boolean;
 }
 
 export interface PasteEngine {
@@ -229,28 +241,43 @@ function waitForPasteSettle(
   });
 }
 
-type EvidenceResult = 'activity' | 'data' | 'timeout';
+type EvidenceResult = 'hook' | 'marker' | 'bytes' | 'activity' | 'data' | 'timeout';
+
+/** Per-adapter ring buffer cap. Two screen widths is plenty for matching
+ *  short TUI placeholder fragments without holding old bytes that could
+ *  produce spurious marker matches across multiple submits. */
+const EVIDENCE_RING_BYTES = 2048;
 
 /**
- * Wait for proof the agent processed our `\r`: either an `activity` event
- * indicating the agent transitioned out of idle (Claude Code's hooks fire
- * this when a prompt is accepted), or new output bytes (proxy for "agent
- * started rendering its response" - works for adapters without hooks).
+ * Wait for proof the agent processed our `\r`. Resolves on the first
+ * matching signal among (in declared strength order):
  *
- * Resolves 'timeout' instead of rejecting so the caller can retry.
+ *   1. `evidence.hookEventType` - SessionEvent of that type on `'event'`
+ *   2. `evidence.outputMarker`  - regex match against the post-\r ring
+ *      buffer (capped at EVIDENCE_RING_BYTES to prevent stale matches)
+ *   3. `evidence.minBytes`      - cumulative post-\r byte count
+ *   4. legacy: `'activity'` non-idle transition (always active so
+ *      adapters whose hook is silent still resolve)
+ *   5. backstop: any post-\r data byte. Only enabled when the adapter
+ *      declared NO specific evidence (no hook/marker/minBytes); a
+ *      preemptive any-data fallback would defeat the declared signal.
  *
- * KNOWN LIMITATION: `data` evidence is a heuristic. ANY byte from the
- * session resolves it, including unrelated background renders (status bar
- * tick, hook-bridge trace bytes). This can produce a false positive where
- * evidence "succeeds" but the actual submission didn't happen. Per-adapter
- * capability declarations (task #79) replace this with stronger signals
- * - until then the retry path catches the most common stuck-\r failure.
+ * Resolves `'timeout'` instead of rejecting so the caller can retry.
+ *
+ * Fresh-window: `tWriteEnter` is captured by the caller right before
+ * the `\r` write. Bytes received before that timestamp do not count
+ * toward marker/byte/data evidence (stale renders from before the
+ * submit cannot satisfy it). Hook events and activity transitions are
+ * inherently post-\r in their semantics and not gated on the timestamp.
  */
 function waitForSubmissionEvidence(
   sessionManager: SessionManager,
   sessionId: string,
   timeoutMs: number,
   signal: AbortSignal,
+  evidence: SubmissionEvidence | undefined,
+  tWriteEnter: number,
+  allowAnyDataFallback: boolean,
 ): Promise<EvidenceResult> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -258,10 +285,25 @@ function waitForSubmissionEvidence(
       return;
     }
     let resolved = false;
+    let buffer = '';
+    let postWriteBytes = 0;
+    const hookType = evidence?.hookEventType;
+    const marker = evidence?.outputMarker;
+    const minBytes = evidence?.minBytes;
+    /** When the adapter has declared specific evidence, the any-data
+     *  fallback must NOT preempt it - otherwise a single cursor blip
+     *  resolves the wait before the declared signal can fire, defeating
+     *  the whole point of the declaration (especially for `minBytes`,
+     *  whose threshold is meaningless if any byte counts). The fallback
+     *  only kicks in when the adapter declared nothing and the caller
+     *  passed nothing either. */
+    const hasExplicitEvidence = Boolean(hookType || marker || typeof minBytes === 'number');
+    const dataFallbackEnabled = allowAnyDataFallback && !hasExplicitEvidence;
 
     const cleanup = (): void => {
       sessionManager.off('data', onData);
       sessionManager.off('activity', onActivity);
+      sessionManager.off('event', onEvent);
       signal.removeEventListener('abort', onAbort);
       clearTimeout(timer);
     };
@@ -275,14 +317,50 @@ function waitForSubmissionEvidence(
 
     const onData = (...args: unknown[]): void => {
       if (args[0] !== sessionId) return;
-      finish('data');
+      // Fresh-window: discard bytes that arrived before the \r write.
+      // The listener attaches after tWriteEnter is captured, so in
+      // practice any data event reaching us here passes - the explicit
+      // check is defensive (lets unit tests simulate stale bursts and
+      // documents the post-\r contract). Compares wall-clock Date.now()
+      // values; we accept rare clock-skew edge cases because the
+      // alternative (performance.now() everywhere) is a wider change.
+      if (Date.now() < tWriteEnter) return;
+
+      const chunk = args[1];
+      if (typeof chunk === 'string') {
+        // Append + clamp to keep the regex match bounded.
+        buffer = (buffer + chunk).slice(-EVIDENCE_RING_BYTES);
+        postWriteBytes += chunk.length;
+        if (marker && marker.test(buffer)) {
+          finish('marker');
+          return;
+        }
+        if (typeof minBytes === 'number' && postWriteBytes >= minBytes) {
+          finish('bytes');
+          return;
+        }
+      }
+
+      if (dataFallbackEnabled) {
+        finish('data');
+      }
     };
 
     const onActivity = (...args: unknown[]): void => {
       if (args[0] !== sessionId) return;
       // Any non-idle transition counts as "agent moved on our \r".
+      // Retained as a backstop for declared hooks that fail to fire
+      // (e.g. Codex 0.118 ignores .codex/hooks.json, but its PTY-driven
+      // activity tracker still detects the transition).
       const activity = args[1];
       if (activity && activity !== 'idle') finish('activity');
+    };
+
+    const onEvent = (...args: unknown[]): void => {
+      if (!hookType) return;
+      if (args[0] !== sessionId) return;
+      const event = args[1] as SessionEvent | undefined;
+      if (event && event.type === hookType) finish('hook');
     };
 
     const onAbort = (): void => {
@@ -294,6 +372,7 @@ function waitForSubmissionEvidence(
 
     sessionManager.on('data', onData);
     sessionManager.on('activity', onActivity);
+    if (hookType) sessionManager.on('event', onEvent);
     signal.addEventListener('abort', onAbort, { once: true });
     const timer = setTimeout(() => finish('timeout'), timeoutMs);
   });
@@ -306,6 +385,8 @@ export function createPasteEngine(sessionManager: SessionManager): PasteEngine {
       const bracketed = options.bracketed ?? true;
       const totalTimeoutMs = options.timeoutMs ?? 15000;
       const source = options.source ?? 'unknown';
+      const evidence = options.evidence;
+      const allowAnyDataFallback = options.allowAnyDataFallback ?? true;
 
       const timeoutController = new AbortController();
       const timeoutTimer = setTimeout(() => timeoutController.abort(), totalTimeoutMs);
@@ -360,6 +441,7 @@ export function createPasteEngine(sessionManager: SessionManager): PasteEngine {
         // but does not submit (paste content commits, but the Enter handler
         // sees stale state). Routing through the queue + draining gives
         // ConPTY a clean separation between the close marker and \r.
+        const tWriteEnter = Date.now();
         sessionManager.write(sessionId, '\r');
         await sessionManager.drain(sessionId);
 
@@ -370,11 +452,12 @@ export function createPasteEngine(sessionManager: SessionManager): PasteEngine {
         // simply missed the evidence. Two timeouts -> hard failure with a
         // descriptive code so the renderer can prompt the user.
         const evidenceStart = Date.now();
-        let evidence = await waitForSubmissionEvidence(
+        let evidenceResult = await waitForSubmissionEvidence(
           sessionManager, sessionId, EVIDENCE_FIRST_WAIT_MS, linkedSignal,
+          evidence, tWriteEnter, allowAnyDataFallback,
         );
         let retried = false;
-        if (evidence === 'timeout') {
+        if (evidenceResult === 'timeout') {
           if (pasteModeOff) {
             // TUI disabled bracketed paste mode during our call (modal,
             // permission prompt, etc.). Retrying \r could confirm the
@@ -385,15 +468,17 @@ export function createPasteEngine(sessionManager: SessionManager): PasteEngine {
             );
           }
           retried = true;
+          const tRetryEnter = Date.now();
           sessionManager.write(sessionId, '\r');
           await sessionManager.drain(sessionId);
-          evidence = await waitForSubmissionEvidence(
+          evidenceResult = await waitForSubmissionEvidence(
             sessionManager, sessionId, EVIDENCE_RETRY_WAIT_MS, linkedSignal,
+            evidence, tRetryEnter, allowAnyDataFallback,
           );
         }
         const evidenceMs = Date.now() - evidenceStart;
 
-        if (evidence === 'timeout') {
+        if (evidenceResult === 'timeout') {
           throw new PasteSubmitError(
             'no-submission-evidence',
             `paste-engine: ${source} sent paste + \\r (1 retry) but agent emitted no signal in ${evidenceMs}ms`,
@@ -402,7 +487,7 @@ export function createPasteEngine(sessionManager: SessionManager): PasteEngine {
 
         const totalMs = Date.now() - start;
         console.log(
-          `[paste-engine] ${source}: ${packet.length}b in ${Math.ceil(packet.length / PASTE_CHUNK_SIZE)} chunks (${writeMs}ms) + settle ${settleMs}ms (${settle.reason}, output=${settle.observedOutput}) + evidence=${evidence}${retried ? ' (after 1 retry)' : ''} ${evidenceMs}ms = ${totalMs}ms total`,
+          `[paste-engine] ${source}: ${packet.length}b in ${Math.ceil(packet.length / PASTE_CHUNK_SIZE)} chunks (${writeMs}ms) + settle ${settleMs}ms (${settle.reason}, output=${settle.observedOutput}) + evidence=${evidenceResult}${retried ? ' (after 1 retry)' : ''} ${evidenceMs}ms = ${totalMs}ms total`,
         );
       } catch (caughtError) {
         if (timeoutController.signal.aborted && !options.signal?.aborted) {

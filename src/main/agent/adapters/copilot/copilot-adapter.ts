@@ -6,7 +6,7 @@ import { CopilotStatusParser } from './status-parser';
 import { CopilotStreamParser } from './stream-parser';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy } from '../../../../shared/types';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionEvidence } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 /**
@@ -41,6 +41,11 @@ export class CopilotAdapter implements AgentAdapter {
     { mode: 'bypassPermissions', label: 'YOLO (Full Access)' },
   ];
   readonly defaultPermission: PermissionMode = 'acceptEdits';
+  /** Copilot's hooks fire on tool/agent boundaries (preToolUse, postToolUse,
+   *  agentStop, preCompact) - none on user-prompt submit. Use a post-\r
+   *  byte threshold; the engine's activity + any-data fallback still
+   *  resolve when those signals fire. */
+  readonly submissionEvidence: SubmissionEvidence = { minBytes: 100 };
 
   private readonly detector = new CopilotDetector();
   private readonly commandBuilder = new CopilotCommandBuilder();

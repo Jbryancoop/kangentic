@@ -8,6 +8,7 @@ import type {
   PermissionMode,
   AdapterRuntimeStrategy,
   AgentLiveTelemetryUnsupported,
+  SubmissionEvidence,
 } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
@@ -56,6 +57,10 @@ export class DroidAdapter implements AgentAdapter {
     { mode: 'default', label: 'Default (use Droid TUI controls)' },
   ];
   readonly defaultPermission: PermissionMode = 'default';
+  /** Droid 0.109 ignores hooks injected via --settings, so there is no
+   *  prompt-submit event channel. 100-byte post-\r floor matches the
+   *  PTY-only adapters (Aider, Cursor, Warp). */
+  readonly submissionEvidence: SubmissionEvidence = { minBytes: 100 };
 
   private readonly detector = new DroidDetector();
   private readonly commandBuilder = new DroidCommandBuilder();

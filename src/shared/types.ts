@@ -462,6 +462,42 @@ export interface SessionEvent {
   outputTokens?: number;
 }
 
+// === Per-Adapter Submission Evidence (paste-engine) ===
+
+/**
+ * How a specific agent CLI signals "prompt accepted" after `\r` is sent
+ * during paste-and-submit. Each AgentAdapter declares its own value;
+ * the paste engine reads the declaration and never branches on agent
+ * name. All three fields are optional and OR-combined: any match
+ * resolves the evidence wait.
+ *
+ * Strength order (strongest first):
+ *   1. hookEventType - dedicated hook fires post-submit. Deterministic.
+ *   2. outputMarker - the TUI renders a stable placeholder string for
+ *      a queued prompt; we match the post-\r byte stream. Fragile to
+ *      TUI version drift but better than blind data.
+ *   3. minBytes - threshold of post-\r bytes. Last resort for agents
+ *      without hooks or stable markers; filters single-byte cursor
+ *      blips that would otherwise trip an unguarded any-data check.
+ */
+export interface SubmissionEvidence {
+  /** Hook event the adapter's bridge emits when a prompt is accepted.
+   *  The paste engine subscribes to SessionManager's `'event'` channel
+   *  and resolves on the first event whose `type` matches. */
+  hookEventType?: EventType;
+
+  /** Regex matched against post-\r bytes accumulated in a sliding ring
+   *  buffer (~2KB). Useful when no hook exists but the TUI prints a
+   *  stable fragment on submit (e.g. `[Pasted text +N lines]`). */
+  outputMarker?: RegExp;
+
+  /** Minimum cumulative post-\r byte count to resolve evidence.
+   *  Filters single-cursor-blip false positives; effective only inside
+   *  the fresh-window (post-write timestamp) so unrelated background
+   *  renders before the submit do not prematurely satisfy it. */
+  minBytes?: number;
+}
+
 // === Session Usage (Claude Code Status Line) ===
 
 export interface RateLimitWindow {

@@ -23,6 +23,16 @@ class MockSessionManager extends EventEmitter {
     return this.registry.get(id);
   }
 
+  /** Per-adapter submission evidence wiring: CommandInjector looks up
+   *  the adapter name to resolve `submissionEvidence`. Most tests leave
+   *  this returning undefined to exercise the `{ minBytes: 50 }` fallback;
+   *  set `agentNameOverride` to route to a real registered adapter. */
+  agentNameOverride: string | undefined = undefined;
+
+  getSessionAgentName(_id: string): string | undefined {
+    return this.agentNameOverride;
+  }
+
   drain(_id: string): Promise<void> {
     return new Promise((resolve) => this.drainResolvers.push(resolve));
   }
@@ -54,16 +64,30 @@ class MockSessionManager extends EventEmitter {
 }
 
 class MockPasteEngine {
-  calls: Array<{ sessionId: string; text: string; bracketed?: boolean; source?: string; aborted?: boolean }> = [];
+  calls: Array<{
+    sessionId: string;
+    text: string;
+    bracketed?: boolean;
+    source?: string;
+    aborted?: boolean;
+    evidence?: unknown;
+  }> = [];
   resolveNext: (() => void) | null = null;
   rejectNext: ((error: unknown) => void) | null = null;
 
   pasteAndSubmit(
     sessionId: string,
     text: string,
-    options: { bracketed?: boolean; signal?: AbortSignal; source?: string } = {},
+    options: { bracketed?: boolean; signal?: AbortSignal; source?: string; evidence?: unknown } = {},
   ): Promise<void> {
-    const call = { sessionId, text, bracketed: options.bracketed, source: options.source, aborted: false };
+    const call = {
+      sessionId,
+      text,
+      bracketed: options.bracketed,
+      source: options.source,
+      evidence: options.evidence,
+      aborted: false,
+    };
     this.calls.push(call);
     return new Promise<void>((resolve, reject) => {
       this.resolveNext = resolve;
@@ -280,5 +304,64 @@ describe('CommandInjector', () => {
 
     // sanitizeForPty collapses CR/LF/Tab to single spaces and trims.
     expect(pasteEngine.calls[0].text).toBe('line one line two line three');
+  });
+
+  it('forwards claude adapter submissionEvidence (hookEventType only) to pasteEngine', async () => {
+    // Gap 2: previously the mock always returned undefined, exercising only
+    // the fallback path. This test proves that a known adapter name routes
+    // the real submissionEvidence through to pasteAndSubmit.
+    sessionManager.registry.set('s1', { status: 'running' });
+    sessionManager.agentNameOverride = 'claude';
+
+    injector.schedule('task-1', 's1', '/review');
+
+    await tick();
+    sessionManager.flushDrain();
+    await tick();
+    vi.advanceTimersByTime(150);
+    await tick();
+
+    expect(pasteEngine.calls).toHaveLength(1);
+    const evidence = pasteEngine.calls[0].evidence as Record<string, unknown>;
+    // Claude uses EventType.Prompt via its UserPromptSubmit hook - no minBytes.
+    expect(evidence?.hookEventType).toBe('prompt');
+    expect(evidence?.minBytes).toBeUndefined();
+  });
+
+  it('forwards codex adapter submissionEvidence (hookEventType + minBytes) to pasteEngine', async () => {
+    sessionManager.registry.set('s1', { status: 'running' });
+    sessionManager.agentNameOverride = 'codex';
+
+    injector.schedule('task-1', 's1', '/review');
+
+    await tick();
+    sessionManager.flushDrain();
+    await tick();
+    vi.advanceTimersByTime(150);
+    await tick();
+
+    expect(pasteEngine.calls).toHaveLength(1);
+    const evidence = pasteEngine.calls[0].evidence as Record<string, unknown>;
+    expect(evidence?.hookEventType).toBe('prompt');
+    expect(evidence?.minBytes).toBe(100);
+  });
+
+  it('uses { minBytes: 50 } fallback when getSessionAgentName returns undefined', async () => {
+    // Explicit regression guard: the fallback floor must not change to 0 or
+    // be removed, because it filters single-cursor blips.
+    sessionManager.registry.set('s1', { status: 'running' });
+    // agentNameOverride stays undefined (default)
+
+    injector.schedule('task-1', 's1', '/review');
+
+    await tick();
+    sessionManager.flushDrain();
+    await tick();
+    vi.advanceTimersByTime(150);
+    await tick();
+
+    expect(pasteEngine.calls).toHaveLength(1);
+    const evidence = pasteEngine.calls[0].evidence as Record<string, unknown>;
+    expect(evidence).toEqual({ minBytes: 50 });
   });
 });

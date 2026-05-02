@@ -47,10 +47,10 @@ Captures live under the session directory so they're cleaned up by existing life
 1. **Chunked atomic write** with `setImmediate` yields between 1KB chunks, sized so Windows ConPTY's child-side ReadFile reliably gets the whole chunk in one read.
 2. **Output settle** with a 250ms idle window after first data, capped per-byte, floored at 1000ms for React's commit cycle.
 3. **`\r` through the queue** (not `writeRaw`). Routing through `sessionManager.write` matches user keystroke delivery, which empirically lands on Claude Code's TUI; `writeRaw` skips the queue and gets misrouted.
-4. **Submission evidence** — after `\r`, wait up to 3s for either an `activity` event with non-idle state (Claude `UserPromptSubmit` hook) OR new `data` bytes (universal fallback). On timeout, retry `\r` once with a 2s window. Both timeouts → `PasteSubmitError('no-submission-evidence')` → toast.
+4. **Submission evidence** — after `\r`, wait up to 3s for one of (in declared strength order): a `SessionEvent` matching the adapter's `submissionEvidence.hookEventType` (e.g. Claude/Codex/Gemini/Qwen `UserPromptSubmit` → `EventType.Prompt`), a regex match of `submissionEvidence.outputMarker` against the post-`\r` ring buffer, the `submissionEvidence.minBytes` threshold of post-`\r` bytes, an `activity` event with non-idle state (legacy backstop), or any post-`\r` data byte (final fallback, gated on `allowAnyDataFallback`). On timeout, retry `\r` once with a 2s window. Both timeouts → `PasteSubmitError('no-submission-evidence')` → toast.
 5. **Bracketed-paste-mode tracking** — if the agent emits `\e[?2004l` (mode off, indicating a permission prompt or modal took focus) during the call, the retry path is skipped to avoid `\r` confirming a destructive action. Surfaced as a different toast: "Agent has a permission prompt or modal open."
 
-The engine has a known false-positive risk on `data` evidence: any byte counts, including unrelated background renders. Per-adapter strong-signal evidence is tracked as task #79 (`SubmissionEvidence` capability on `AgentAdapter`).
+Per-adapter evidence is declared on each `AgentAdapter` via the `submissionEvidence: SubmissionEvidence` field. `BROWSER_CAPTURE_SEND` and `CommandInjector.deliver` both look up the session's adapter via `agentRegistry.get(sessionManager.getSessionAgentName(sessionId))` and forward the evidence to `pasteAndSubmit`. A `?? { minBytes: 50 }` floor at the call site preserves the universal safety net if an adapter ever forgets to declare. Engine code itself never branches on agent name.
 
 **Caller contract:** the session must be subscribed to (in `SessionManager.focusedSessionIds`) when the engine is invoked. Both Browser pane and CommandInjector run alongside an active terminal panel that subscribes via `TERMINAL_SUBSCRIBE`, so they satisfy this naturally.
 
@@ -98,7 +98,8 @@ The Browser tab in `AppSettingsPanel` (per-project, above the separator) exposes
 
 | Item | Status | Tracked |
 |---|---|---|
-| Per-adapter submission evidence (replace heuristic data-byte fallback) | Future | task #79 |
+| Per-adapter submission evidence (replace heuristic data-byte fallback) | Done | `SubmissionEvidence` declared on every adapter; engine consumes via `PasteOptions.evidence` |
+| Clear browser data action in settings | Future | follow-up task |
 | Pop-out window for second-monitor workflow | Future | requires child `BrowserWindow` architecture |
 | DOM tree picker (vs free-form `getSelection()`) | Future | nice-to-have |
 | File downloads from embedded webview | Future | needs `will-download` handler |
@@ -109,7 +110,7 @@ The Browser tab in `AppSettingsPanel` (per-project, above the separator) exposes
 
 ## Test coverage
 
-- **Unit** — `tests/unit/paste-engine.test.ts` (21 cases) covers the engine state machine, settle/cap/floor, evidence + retry, bracketed-paste-mode tracking, abort, timeout. `tests/unit/write-queue.test.ts` (17 cases) covers bracketed-paste-aware chunking. `tests/unit/command-injector.test.ts` (10 cases) covers the auto_command path.
+- **Unit** — `tests/unit/paste-engine.test.ts` covers the engine state machine, settle/cap/floor, evidence + retry, bracketed-paste-mode tracking, abort, timeout, and per-adapter evidence paths (`hookEventType`, `outputMarker`, `minBytes`, OR-combined, fallback gating). `tests/unit/write-queue.test.ts` (17 cases) covers bracketed-paste-aware chunking. `tests/unit/command-injector.test.ts` (10 cases) covers the auto_command path.
 - **UI** — pending. Should cover URL bar, draw/inspect toggles, attachment chips, send disable-on-pending. The mock electron API needs `browser.captureAndSend`, `browser.getUrls`, etc.
 - **E2E** — pending. Should cover Send → paste-engine → mock-claude submission round-trip.
 
