@@ -109,6 +109,16 @@ export class CommandBuilder {
       parts.push(flag, quoteArg(options.sessionId, shell));
     }
 
+    // Per-column model and effort overrides. Both flags are session-scoped:
+    // Claude does not persist them, so they are applied on every spawn (fresh
+    // and resumed) until the column setting changes.
+    if (options.model && options.model.trim().length > 0) {
+      parts.push('--model', quoteArg(options.model.trim(), shell));
+    }
+    if (options.effort && options.effort.trim().length > 0) {
+      parts.push('--effort', quoteArg(options.effort.trim(), shell));
+    }
+
     // Non-interactive mode (print and exit) vs interactive
     if (options.nonInteractive) {
       parts.push('--print');

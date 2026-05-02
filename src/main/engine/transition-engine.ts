@@ -29,6 +29,17 @@ interface TransitionEngineConfig {
   cliPathOverrides: Record<string, string | null>;
 }
 
+/**
+ * Adapter-specific spawn knobs surfaced as column-level overrides. Both fields
+ * are passed through to `CommandOptions` and translated to CLI flags by the
+ * resolved adapter (e.g. Claude `--model` / `--effort`). Empty/null values
+ * are forwarded as undefined, leaving the agent default in place.
+ */
+export interface SpawnOverrides {
+  model?: string | null;
+  effort?: string | null;
+}
+
 export class TransitionEngine {
   constructor(
     private sessionManager: SessionManager,
@@ -43,7 +54,7 @@ export class TransitionEngine {
    * Resume a suspended session for a task. Used when moving out of
    * Backlog/Done into a non-agent column (no spawn_agent transition fires).
    */
-  async resumeSuspendedSession(task: Task, permissionOverride?: PermissionMode | null, skipPromptTemplate?: boolean, resumePrompt?: string, signal?: AbortSignal, agentOverride?: string, handoffPromptPrefix?: string): Promise<void> {
+  async resumeSuspendedSession(task: Task, permissionOverride?: PermissionMode | null, skipPromptTemplate?: boolean, resumePrompt?: string, signal?: AbortSignal, agentOverride?: string, handoffPromptPrefix?: string, spawnOverrides?: SpawnOverrides): Promise<void> {
     signal?.throwIfAborted();
     const attachmentPaths = this.attachmentRepo?.getPathsForTask(task.id) ?? [];
     const cleanTitle = sanitizeForPty(task.title);
@@ -64,10 +75,10 @@ export class TransitionEngine {
       attachments: attachmentPaths.length > 0
         ? `\n${attachmentPaths.join('\n')}`
         : '',
-    }, permissionOverride, resumePrompt, signal, agentOverride, handoffPromptPrefix);
+    }, permissionOverride, resumePrompt, signal, agentOverride, handoffPromptPrefix, spawnOverrides);
   }
 
-  async executeTransition(task: Task, fromSwimlaneId: string, toSwimlaneId: string, permissionOverride?: PermissionMode | null, skipPromptTemplate?: boolean, signal?: AbortSignal, agentOverride?: string): Promise<void> {
+  async executeTransition(task: Task, fromSwimlaneId: string, toSwimlaneId: string, permissionOverride?: PermissionMode | null, skipPromptTemplate?: boolean, signal?: AbortSignal, agentOverride?: string, spawnOverrides?: SpawnOverrides): Promise<void> {
     const transitions = this.actionRepo.getTransitionsFor(fromSwimlaneId, toSwimlaneId);
     if (transitions.length === 0) return;
 
@@ -76,11 +87,11 @@ export class TransitionEngine {
       const action = this.actionRepo.getById(transition.action_id);
       if (!action) continue;
 
-      await this.executeAction(action, task, permissionOverride, skipPromptTemplate, signal, agentOverride);
+      await this.executeAction(action, task, permissionOverride, skipPromptTemplate, signal, agentOverride, spawnOverrides);
     }
   }
 
-  private async executeAction(action: Action, task: Task, permissionOverride?: PermissionMode | null, skipPromptTemplate?: boolean, signal?: AbortSignal, agentOverride?: string): Promise<void> {
+  private async executeAction(action: Action, task: Task, permissionOverride?: PermissionMode | null, skipPromptTemplate?: boolean, signal?: AbortSignal, agentOverride?: string, spawnOverrides?: SpawnOverrides): Promise<void> {
     let config: ActionConfig;
     try {
       config = JSON.parse(action.config_json);
@@ -110,7 +121,7 @@ export class TransitionEngine {
         if (skipPromptTemplate) {
           config.promptTemplate = undefined;
         }
-        await this.executeSpawnAgent(config, task, templateVars, permissionOverride, undefined, signal, agentOverride);
+        await this.executeSpawnAgent(config, task, templateVars, permissionOverride, undefined, signal, agentOverride, undefined, spawnOverrides);
         break;
 
       case 'send_command':
@@ -139,7 +150,7 @@ export class TransitionEngine {
     }
   }
 
-  private async executeSpawnAgent(config: ActionConfig, task: Task, vars: Record<string, string>, permissionOverride?: PermissionMode | null, resumePrompt?: string, signal?: AbortSignal, agentOverride?: string, handoffPromptPrefix?: string): Promise<void> {
+  private async executeSpawnAgent(config: ActionConfig, task: Task, vars: Record<string, string>, permissionOverride?: PermissionMode | null, resumePrompt?: string, signal?: AbortSignal, agentOverride?: string, handoffPromptPrefix?: string, spawnOverrides?: SpawnOverrides): Promise<void> {
     const appConfig = this.getConfig();
 
     // Resolve which agent adapter to use.
@@ -241,6 +252,8 @@ export class TransitionEngine {
       mcpServerEnabled: appConfig.mcpServerEnabled,
       mcpServerUrl: appConfig.mcpServerUrl,
       mcpServerToken: appConfig.mcpServerToken,
+      model: spawnOverrides?.model ?? undefined,
+      effort: spawnOverrides?.effort ?? undefined,
     };
     const command = adapter.buildCommand(commandOptions);
     const extraEnv = adapter.buildEnv?.(commandOptions) ?? null;

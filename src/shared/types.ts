@@ -41,6 +41,31 @@ export interface AgentLiveTelemetryUnsupported {
   unavailableTitle: string;
 }
 
+/**
+ * Adapter-discovered capabilities surfaced to the renderer. All fields are
+ * derived from the live CLI (e.g. parsing `--help`) or runtime probes; nothing
+ * is hardcoded in Kangentic. Adapters that cannot discover a capability simply
+ * leave the field undefined and the corresponding UI control is not rendered.
+ */
+export interface AgentCapabilities {
+  /** Effort/reasoning levels accepted by the CLI's `--effort` (or equivalent) flag. */
+  effortLevels?: string[];
+  /**
+   * True when the CLI accepts a model override flag (e.g. Claude `--model <alias>`).
+   * Set independently of `models`: when true and `models` has entries, the
+   * renderer shows a dropdown; when true and `models` is empty/undefined, the
+   * renderer falls back to a free-form text input.
+   */
+  supportsModelOverride?: boolean;
+  /**
+   * Model identifiers the user can pick from. Discovered from the same sources
+   * the agent's own picker uses (e.g. Claude reads `availableModels` from the
+   * user/project settings hierarchy). Absent when the user has not curated a
+   * list - the renderer falls back to a free-form text input in that case.
+   */
+  models?: string[];
+}
+
 export interface AgentDetectionInfo {
   name: string;
   displayName: string;
@@ -55,6 +80,8 @@ export interface AgentDetectionInfo {
   liveTelemetryUnsupported?: AgentLiveTelemetryUnsupported;
   /** True if the adapter exposes a one-shot summarize capability (used by auto-name task title). */
   supportsSummarize?: boolean;
+  /** Discovered at detection time; absent for adapters that do not implement discovery. */
+  capabilities?: AgentCapabilities;
 }
 
 export interface AgentSummarizeInput {
@@ -146,6 +173,10 @@ export interface Swimlane {
   auto_command: string | null;
   plan_exit_target_id: string | null;
   agent_override: string | null;
+  /** Free-form model identifier (e.g. "opus", "sonnet", "claude-opus-4-7"). Adapter-specific; null inherits the agent default. */
+  model_override: string | null;
+  /** Adapter-specific effort/reasoning level (e.g. Claude's "low" | "medium" | "high" | "xhigh" | "max"). Null inherits the agent default. */
+  effort_override: string | null;
   handoff_context: boolean;
   created_at: string;
 }
@@ -1188,6 +1219,8 @@ export interface SwimlaneCreateInput {
   auto_command?: string | null;
   plan_exit_target_id?: string | null;
   agent_override?: string | null;
+  model_override?: string | null;
+  effort_override?: string | null;
   handoff_context?: boolean;
 }
 
@@ -1204,6 +1237,8 @@ export interface SwimlaneUpdateInput {
   auto_command?: string | null;
   plan_exit_target_id?: string | null;
   agent_override?: string | null;
+  model_override?: string | null;
+  effort_override?: string | null;
   handoff_context?: boolean;
 }
 
@@ -1591,6 +1626,10 @@ export interface BoardColumnConfig {
   archived?: boolean;
   autoCommand?: string | null;
   agentOverride?: string | null;
+  /** Adapter-specific model identifier passed at spawn time (e.g. Claude `--model`). Null inherits the agent default. */
+  modelOverride?: string | null;
+  /** Adapter-specific effort/reasoning level passed at spawn time (e.g. Claude `--effort`). Null inherits the agent default. */
+  effortOverride?: string | null;
   handoffContext?: boolean;
 }
 

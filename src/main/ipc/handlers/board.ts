@@ -4,6 +4,10 @@ import path from 'node:path';
 import { ipcMain, shell } from 'electron';
 import { IPC } from '../../../shared/ipc-channels';
 import { getProjectRepos } from '../helpers';
+import { SessionRepository } from '../../db/repositories/session-repository';
+import { getProjectDb } from '../../db/database';
+import { agentRegistry } from '../../agent/agent-registry';
+import { prepareInjectionPlan } from '../../engine/injection-plan';
 import type { ShortcutConfig } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 
@@ -69,9 +73,53 @@ export function registerBoardHandlers(context: IpcContext): void {
   });
 
   ipcMain.handle(IPC.SWIMLANE_UPDATE, (_, input) => {
-    const { swimlanes } = getProjectRepos(context);
+    const { swimlanes, tasks } = getProjectRepos(context);
+    const before = swimlanes.getById(input.id);
     const result = swimlanes.update(input);
     triggerWriteBack(context);
+
+    // When a column's model/effort overrides change, propagate the new
+    // settings to any tasks already living in that column with an active
+    // PTY session. Suspended/queued sessions don't need a hand: the
+    // prepare-spawn path reads `swimlane.model_override`/`effort_override`
+    // directly when they resume, so they pick up the new flags
+    // automatically. Without this propagation, in-flight sessions would
+    // keep the prior model/effort until the user moved them out and back.
+    //
+    // Per-task injection is delegated to prepareInjectionPlan so the
+    // slash syntax + verifier wiring lives on each adapter, not here.
+    // Pass the BEFORE swimlane as the source so deltas are computed
+    // identically to the task-move flow.
+    if (before) {
+      const sessionRepo = context.currentProjectId
+        ? new SessionRepository(getProjectDb(context.currentProjectId))
+        : null;
+      for (const task of tasks.list(result.id)) {
+        if (!task.session_id) continue;
+        const session = context.sessionManager.getSession(task.session_id);
+        if (!session || session.status !== 'running') continue;
+        const adapter = task.agent ? agentRegistry.get(task.agent) : undefined;
+        // No auto_command propagation on column edits - the column-edit
+        // intent is "change settings", not "re-run any auto trigger".
+        const plan = prepareInjectionPlan({
+          adapter,
+          sessionRepo,
+          task,
+          fromLane: before,
+          toLane: result,
+        });
+        if (!plan) continue;
+        context.commandInjector.scheduleSequence(task.id, task.session_id, plan.sequence, {
+          verifier: plan.verifier,
+          verifiedPrefixLength: plan.verifiedPrefixLength,
+        });
+        console.log(
+          `[SWIMLANE_UPDATE] Propagating ${plan.sequence.length} setting(s) to active session for task ${task.id.slice(0, 8)}`
+          + ` in column "${result.name}"${plan.verifier ? ' (with command verification)' : ''}: ${plan.sequence.join(' | ')}`,
+        );
+      }
+    }
+
     return result;
   });
 

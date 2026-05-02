@@ -457,6 +457,9 @@ export const handleGetColumnDetail: CommandHandler = (
     `  Permission mode: ${matched.permission_mode ?? 'default (inherited)'}`,
   ];
   if (matched.auto_command) lines.push(`  Auto-command: ${matched.auto_command}`);
+  if (matched.agent_override) lines.push(`  Agent override: ${matched.agent_override}`);
+  if (matched.model_override) lines.push(`  Model override: ${matched.model_override}`);
+  if (matched.effort_override) lines.push(`  Effort override: ${matched.effort_override}`);
   if (planExitTargetName) lines.push(`  Plan exit target: ${planExitTargetName}`);
   if (matched.is_archived) lines.push(`  Status: archived`);
   if (matched.is_ghost) lines.push(`  Status: ghost (removed from config but has tasks)`);
@@ -474,6 +477,9 @@ export const handleGetColumnDetail: CommandHandler = (
       autoSpawn: matched.auto_spawn,
       permissionMode: matched.permission_mode,
       autoCommand: matched.auto_command,
+      agentOverride: matched.agent_override,
+      modelOverride: matched.model_override,
+      effortOverride: matched.effort_override,
       planExitTarget: planExitTargetName,
       color: matched.color,
       icon: matched.icon,

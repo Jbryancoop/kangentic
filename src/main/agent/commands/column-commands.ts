@@ -48,6 +48,14 @@ export const handleUpdateColumn: CommandHandler = (
     updates.agent_override = params.agentOverride === null ? null : String(params.agentOverride);
     changedFields.push('agentOverride');
   }
+  if (params.modelOverride !== undefined) {
+    updates.model_override = params.modelOverride === null ? null : String(params.modelOverride).slice(0, 200);
+    changedFields.push('modelOverride');
+  }
+  if (params.effortOverride !== undefined) {
+    updates.effort_override = params.effortOverride === null ? null : String(params.effortOverride).slice(0, 50);
+    changedFields.push('effortOverride');
+  }
   if (params.permissionMode !== undefined) {
     if (params.permissionMode === null) {
       updates.permission_mode = null;
@@ -83,7 +91,7 @@ export const handleUpdateColumn: CommandHandler = (
   if (changedFields.length === 0) {
     return {
       success: false,
-      error: 'No fields to update. Provide at least one of: name, color, icon, autoSpawn, autoCommand, agentOverride, permissionMode, handoffContext, planExitTargetColumn.',
+      error: 'No fields to update. Provide at least one of: name, color, icon, autoSpawn, autoCommand, agentOverride, modelOverride, effortOverride, permissionMode, handoffContext, planExitTargetColumn.',
     };
   }
 
@@ -104,6 +112,8 @@ export const handleUpdateColumn: CommandHandler = (
       autoSpawn: updated.auto_spawn,
       autoCommand: updated.auto_command,
       agentOverride: updated.agent_override,
+      modelOverride: updated.model_override,
+      effortOverride: updated.effort_override,
       permissionMode: updated.permission_mode,
       handoffContext: updated.handoff_context,
       planExitTargetId: updated.plan_exit_target_id,

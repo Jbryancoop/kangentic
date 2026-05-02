@@ -149,7 +149,10 @@ export function registerSessionHandlers(context: IpcContext): void {
             resolvedProjectId, resolvedProjectPath,
           );
 
-          await engine.resumeSuspendedSession(current, currentLane?.permission_mode, undefined, resumePrompt, signal);
+          const laneOverrides = currentLane
+            ? { model: currentLane.model_override, effort: currentLane.effort_override }
+            : undefined;
+          await engine.resumeSuspendedSession(current, currentLane?.permission_mode, undefined, resumePrompt, signal, undefined, undefined, laneOverrides);
 
           const updated = tasks.getById(taskId);
           if (!updated?.session_id) throw new Error('Session resume failed - no session_id on task');

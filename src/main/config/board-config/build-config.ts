@@ -53,6 +53,8 @@ export function buildBoardConfigFromDb(params: {
       if (lane.is_archived && lane.role !== 'done') column.archived = true;
       if (lane.auto_command) column.autoCommand = lane.auto_command;
       if (lane.agent_override) column.agentOverride = lane.agent_override;
+      if (lane.model_override) column.modelOverride = lane.model_override;
+      if (lane.effort_override) column.effortOverride = lane.effort_override;
       if (lane.handoff_context) column.handoffContext = true;
 
       // Resolve plan_exit_target_id to target column name

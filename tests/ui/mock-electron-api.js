@@ -205,13 +205,13 @@
   }
 
   var DEFAULT_SWIMLANES = [
-    { name: 'To Do', role: 'todo', color: '#6b7280', icon: 'layers', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: false, auto_command: null, plan_exit_target_id: null, agent_override: null, handoff_context: false },
-    { name: 'Planning', role: null, color: '#8b5cf6', icon: 'map', is_archived: false, is_ghost: false, permission_mode: 'plan', auto_spawn: true, auto_command: null, plan_exit_target_id: '__executing__', agent_override: null, handoff_context: false },
-    { name: 'Executing', role: null, color: '#3b82f6', icon: 'square-terminal', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, handoff_context: false },
-    { name: 'Code Review', role: null, color: '#f59e0b', icon: 'code', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, handoff_context: false },
-    { name: 'Tests', role: null, color: '#06b6d4', icon: 'flask-conical', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, handoff_context: false },
-    { name: 'Ship It', role: null, color: '#F97316', icon: 'sailboat', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, handoff_context: false },
-    { name: 'Done', role: 'done', color: '#10b981', icon: 'circle-check-big', is_archived: true, is_ghost: false, permission_mode: null, auto_spawn: false, auto_command: null, plan_exit_target_id: null, agent_override: null, handoff_context: false },
+    { name: 'To Do', role: 'todo', color: '#6b7280', icon: 'layers', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: false, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false },
+    { name: 'Planning', role: null, color: '#8b5cf6', icon: 'map', is_archived: false, is_ghost: false, permission_mode: 'plan', auto_spawn: true, auto_command: null, plan_exit_target_id: '__executing__', agent_override: null, model_override: null, effort_override: null, handoff_context: false },
+    { name: 'Executing', role: null, color: '#3b82f6', icon: 'square-terminal', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false },
+    { name: 'Code Review', role: null, color: '#f59e0b', icon: 'code', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false },
+    { name: 'Tests', role: null, color: '#06b6d4', icon: 'flask-conical', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false },
+    { name: 'Ship It', role: null, color: '#F97316', icon: 'sailboat', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false },
+    { name: 'Done', role: 'done', color: '#10b981', icon: 'circle-check-big', is_archived: true, is_ghost: false, permission_mode: null, auto_spawn: false, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false },
   ];
 
   var MOCK_PROJECT_ENTRIES = [
@@ -826,6 +826,8 @@
           auto_command: input.auto_command || null,
           plan_exit_target_id: input.plan_exit_target_id || null,
           agent_override: input.agent_override || null,
+          model_override: input.model_override || null,
+          effort_override: input.effort_override || null,
           handoff_context: input.handoff_context !== undefined ? input.handoff_context : false,
           position: swimlanes.length,
           created_at: now(),
@@ -1117,6 +1119,16 @@
             ],
             defaultPermission: 'acceptEdits',
             supportsSummarize: true,
+            // Capabilities mirror what discoverClaudeCapabilities() would return
+            // for a real Claude install: parsed from `claude --help` plus the
+            // user's `availableModels` setting. Tests can override per-agent
+            // shape via window.__mockAgentListOverrides; clear `models` to
+            // exercise the free-form input fallback.
+            capabilities: {
+              effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+              supportsModelOverride: true,
+              models: ['opus', 'sonnet', 'haiku'],
+            },
           },
           {
             name: 'codex', displayName: 'Codex CLI', found: false, path: null, version: null,

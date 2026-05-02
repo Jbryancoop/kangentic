@@ -120,6 +120,8 @@ export async function prepareAgentSpawn(input: {
     mcpServerEnabled: config.mcpServer?.enabled ?? true,
     mcpServerUrl: input.mcpServerHandle?.urlForProject(projectId),
     mcpServerToken: input.mcpServerHandle?.token,
+    model: swimlane?.model_override ?? undefined,
+    effort: swimlane?.effort_override ?? undefined,
   };
 
   const command = adapter.buildCommand(commandOptions);

@@ -197,6 +197,7 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
         task, toLane.permission_mode, skipPromptTemplate, undefined, signal,
         targetAgent,
         handoffPromptPrefix,
+        { model: toLane.model_override, effort: toLane.effort_override },
       );
     } catch (error) {
       if (isAbortError(error)) throw error;
@@ -233,7 +234,10 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
   // targetAgent is passed through so spawn_agent actions use the correct agent.
 
   try {
-    await engine.executeTransition(task, fromSwimlaneId, toLane.id, toLane.permission_mode, skipPromptTemplate, signal, targetAgent);
+    await engine.executeTransition(
+      task, fromSwimlaneId, toLane.id, toLane.permission_mode, skipPromptTemplate, signal, targetAgent,
+      { model: toLane.model_override, effort: toLane.effort_override },
+    );
   } catch (error) {
     if (isAbortError(error)) throw error;
     console.error('[spawnAgent] Transition engine error (continuing to fallback):', error);
@@ -257,6 +261,8 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
     await engine.resumeSuspendedSession(
       currentTask, toLane.permission_mode, skipPromptTemplate, resumePrompt, signal,
       targetAgent,
+      undefined,
+      { model: toLane.model_override, effort: toLane.effort_override },
     );
   } catch (error) {
     if (isAbortError(error)) throw error;

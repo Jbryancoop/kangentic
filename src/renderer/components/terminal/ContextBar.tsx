@@ -50,7 +50,16 @@ export function ContextBar({ sessionId, compact = false, agentFallback = null }:
   const session = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId));
   const sessionShell = session?.shell;
   const isResuming = session?.resuming ?? false;
-  const taskAgent = useBoardStore((s) => s.tasks.find((t) => t.session_id === sessionId)?.agent) ?? agentFallback;
+  const task = useBoardStore((s) => s.tasks.find((t) => t.session_id === sessionId));
+  const taskAgent = task?.agent ?? agentFallback;
+  // Column-level effort override - used as a fallback when the live status
+  // JSON does not surface `effort.level`. Some Claude models (Haiku 4.5)
+  // accept `--effort` but never echo it back in status updates, so without
+  // this fallback the pill stays blank even though the user explicitly
+  // configured an effort tier on the column.
+  const taskEffortFallback = useBoardStore((s) =>
+    task ? s.swimlanes.find((lane) => lane.id === task.swimlane_id)?.effort_override ?? null : null,
+  );
   // Resolve the agent that contributed the latest rate-limit snapshot so the
   // tooltip can name it. Falls back to undefined when the source session has
   // no task row (e.g. transient command-terminal sessions).
@@ -173,14 +182,20 @@ export function ContextBar({ sessionId, compact = false, agentFallback = null }:
           )}
         </span>
       )}
-      {showModel && (
-        <span className={`${pill} text-fg-muted`}>
-          {modelName}
-          {showEffort && usage.model.effort && (
-            <span className="text-fg-faint ml-1.5">{usage.model.effort}</span>
-          )}
-        </span>
-      )}
+      {showModel && (() => {
+        // Effort source order: live status (truth) -> column override (configured).
+        // Falling back to the configured value covers Claude models that accept
+        // --effort but do not echo it in status JSON (e.g. Haiku 4.5).
+        const effectiveEffort = usage.model.effort || taskEffortFallback;
+        return (
+          <span className={`${pill} text-fg-muted`}>
+            {modelName}
+            {showEffort && effectiveEffort && (
+              <span className="text-fg-faint ml-1.5">{effectiveEffort}</span>
+            )}
+          </span>
+        );
+      })()}
       {showRateLimits && latestRateLimits && (() => {
         const rateLimits = latestRateLimits.rateLimits;
         const sourceLabel = sourceAgent ? ` via ${agentDisplayName(sourceAgent)}` : '';

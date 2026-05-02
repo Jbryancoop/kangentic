@@ -501,7 +501,12 @@ describe('task-archive handlers', () => {
         doneLane.id,
         'lane-doing',
         targetLane.permission_mode,
-        true,
+        true,      // skipPromptTemplate
+        undefined, // signal
+        undefined, // agentOverride
+        // spawnOverrides: { model, effort } pulled from the destination swimlane
+        // (undefined here because the mock swimlane fixture doesn't set them).
+        { model: targetLane.model_override, effort: targetLane.effort_override },
       );
     });
 
@@ -528,7 +533,12 @@ describe('task-archive handlers', () => {
       expect(engine.resumeSuspendedSession).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'task-no-session' }),
         targetLane.permission_mode,
-        true,
+        true,      // skipPromptTemplate
+        undefined, // resumePrompt
+        undefined, // signal
+        undefined, // agentOverride
+        undefined, // handoffPromptPrefix
+        { model: targetLane.model_override, effort: targetLane.effort_override },
       );
     });
 

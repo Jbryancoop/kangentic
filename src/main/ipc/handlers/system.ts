@@ -111,14 +111,25 @@ export function registerSystemHandlers(context: IpcContext): void {
     const { agentRegistry } = await import('../../agent/agent-registry');
     const config = context.configManager.load();
     const cliPathOverrides = config.agent.cliPaths;
-    const results: AgentDetectionInfo[] = [];
-    for (const agentName of agentRegistry.list()) {
+    // Each adapter probes an independent CLI binary - detect spawns
+    // `<binary> --version`, probeAuth spawns auth introspection, and
+    // discoverCapabilities spawns `--help`. Running them sequentially
+    // serializes ~10 subprocesses; running per-adapter pipelines in
+    // parallel cuts the wall time to roughly the slowest single agent.
+    // Within an agent the steps stay sequential because capability
+    // discovery requires the resolved path from detect.
+    return Promise.all(agentRegistry.list().map(async (agentName): Promise<AgentDetectionInfo> => {
       const adapter = agentRegistry.getOrThrow(agentName);
       const info = await adapter.detect(cliPathOverrides[agentName] ?? null);
-      const authenticated = info.found && adapter.probeAuth
-        ? await adapter.probeAuth().catch(() => null)
-        : undefined;
-      results.push({
+      const [authenticated, capabilities] = await Promise.all([
+        info.found && adapter.probeAuth
+          ? adapter.probeAuth().catch(() => null)
+          : Promise.resolve(undefined),
+        info.found && info.path && adapter.discoverCapabilities
+          ? adapter.discoverCapabilities(info.path).catch(() => undefined)
+          : Promise.resolve(undefined),
+      ]);
+      return {
         name: agentName,
         displayName: adapter.displayName,
         found: info.found,
@@ -129,9 +140,9 @@ export function registerSystemHandlers(context: IpcContext): void {
         defaultPermission: adapter.defaultPermission,
         liveTelemetryUnsupported: adapter.liveTelemetryUnsupported,
         supportsSummarize: typeof adapter.summarize === 'function',
-      });
-    }
-    return results;
+        capabilities,
+      };
+    }));
   });
 
   // Sliding-window rate limit for summarize calls. Each entry is a Date.now()

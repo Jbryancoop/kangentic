@@ -128,9 +128,10 @@ export function registerTaskCrudHandlers(context: IpcContext): void {
         const sessionRepo = new SessionRepository(db);
         const engine = createTransitionEngine(context, actions, tasks, sessionRepo, attachments, projectId, projectPath);
 
+        const laneOverrides = { model: toLane.model_override, effort: toLane.effort_override };
         try {
           // Use '*' as fromSwimlaneId - no source column on creation, matches wildcard transitions
-          await engine.executeTransition(task, '*', toLane.id, toLane.permission_mode);
+          await engine.executeTransition(task, '*', toLane.id, toLane.permission_mode, undefined, undefined, undefined, laneOverrides);
         } catch (err) {
           console.error('[TASK_CREATE] Transition engine error:', err);
         }
@@ -140,7 +141,7 @@ export function registerTaskCrudHandlers(context: IpcContext): void {
         if (finalTask && !finalTask.session_id && toLane.auto_spawn) {
           console.log(`[TASK_CREATE] Ensuring agent for task ${task.id.slice(0, 8)}`);
           try {
-            await engine.resumeSuspendedSession(finalTask, toLane.permission_mode);
+            await engine.resumeSuspendedSession(finalTask, toLane.permission_mode, undefined, undefined, undefined, undefined, undefined, laneOverrides);
             finalTask = tasks.getById(task.id);
           } catch (err) {
             console.error('[TASK_CREATE] Failed to start session:', err);

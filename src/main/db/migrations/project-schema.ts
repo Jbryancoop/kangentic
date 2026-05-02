@@ -438,6 +438,19 @@ export function runProjectMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE swimlanes ADD COLUMN handoff_context INTEGER NOT NULL DEFAULT 0');
   }
 
+  // Migration: add model_override and effort_override columns to swimlanes for per-column
+  // model/effort selection. NULL means "inherit from project default" (the agent's own default).
+  const hasModelOverride = (db.pragma('table_info(swimlanes)') as Array<{ name: string }>)
+    .some((col) => col.name === 'model_override');
+  if (!hasModelOverride) {
+    db.exec('ALTER TABLE swimlanes ADD COLUMN model_override TEXT DEFAULT NULL');
+  }
+  const hasEffortOverride = (db.pragma('table_info(swimlanes)') as Array<{ name: string }>)
+    .some((col) => col.name === 'effort_override');
+  if (!hasEffortOverride) {
+    db.exec('ALTER TABLE swimlanes ADD COLUMN effort_override TEXT DEFAULT NULL');
+  }
+
   // Migration: session_transcripts table for agent-agnostic PTY output capture.
   // No FK on session_id - the transcript row may be created before the sessions
   // row exists (PTY data arrives during spawn, before executeSpawnAgent inserts

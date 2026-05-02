@@ -90,8 +90,7 @@ test.describe('EditColumnDialog', () => {
   test('Planning column has editable permissions set to Plan', async () => {
     await openEditDialog('Planning');
 
-    // Planning is now a regular column -- permissions are editable (second select, first is agent override)
-    const select = page.locator('select').nth(1);
+    const select = page.locator('[data-testid="column-permission-mode"]');
     await expect(select).toBeEnabled();
 
     const value = await select.inputValue();
@@ -158,11 +157,112 @@ test.describe('EditColumnDialog', () => {
     await closeDialog();
   });
 
+  test('renders Model dropdown when the agent ships an availableModels list', async () => {
+    await openEditDialog('Code Review');
+
+    // Default mock agent (Claude) declares effortLevels, supportsModelOverride,
+    // AND a discovered models list, so both should render as dropdowns.
+    const modelSelect = page.locator('[data-testid="column-model-override"]');
+    await expect(modelSelect).toBeVisible();
+    const modelOptions = await modelSelect.locator('option').allTextContents();
+    // Discovered list plus the empty "Default" option.
+    expect(modelOptions).toContain('Default');
+    expect(modelOptions).toContain('opus');
+    expect(modelOptions).toContain('sonnet');
+    expect(modelOptions).toContain('haiku');
+
+    const effortSelect = page.locator('[data-testid="column-effort-override"]');
+    await expect(effortSelect).toBeVisible();
+    const effortOptions = await effortSelect.locator('option').allTextContents();
+    expect(effortOptions).toContain('Default');
+    expect(effortOptions).toContain('low');
+    expect(effortOptions).toContain('xhigh');
+    expect(effortOptions).toContain('max');
+
+    await closeDialog();
+  });
+
+  test('falls back to free-form input when models capability is empty', async () => {
+    await page.evaluate(() => {
+      (window as unknown as { __mockAgentListOverrides: Record<string, unknown> }).__mockAgentListOverrides = {
+        claude: {
+          capabilities: {
+            effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+            supportsModelOverride: true,
+            // models intentionally omitted -> renderer falls back to <input>.
+          },
+        },
+      };
+    });
+
+    await openEditDialog('Code Review');
+    const modelInput = page.locator('[data-testid="column-model-override"]');
+    // <input> exposes a placeholder; <select> does not. Use the tag name as
+    // the structural assertion.
+    await expect(modelInput).toBeVisible();
+    const tag = await modelInput.evaluate((node) => node.tagName.toLowerCase());
+    expect(tag).toBe('input');
+    await expect(modelInput).toHaveAttribute('placeholder', /opus|sonnet/i);
+
+    await closeDialog();
+    await page.evaluate(() => {
+      (window as unknown as { __mockAgentListOverrides: undefined }).__mockAgentListOverrides = undefined;
+    });
+  });
+
+  test('persists Model and Effort overrides round-trip', async () => {
+    await openEditDialog('Code Review');
+
+    const modelSelect = page.locator('[data-testid="column-model-override"]');
+    await modelSelect.selectOption('opus');
+    const effortSelect = page.locator('[data-testid="column-effort-override"]');
+    await effortSelect.selectOption('xhigh');
+
+    await page.locator('button:has-text("Save")').click();
+    await page.waitForTimeout(500);
+
+    await openEditDialog('Code Review');
+    const modelSelectAfter = page.locator('[data-testid="column-model-override"]');
+    await expect(modelSelectAfter).toHaveValue('opus');
+    const effortSelectAfter = page.locator('[data-testid="column-effort-override"]');
+    await expect(effortSelectAfter).toHaveValue('xhigh');
+
+    // Reset both so subsequent tests start clean.
+    await modelSelectAfter.selectOption('');
+    await effortSelectAfter.selectOption('');
+    await page.locator('button:has-text("Save")').click();
+    await page.waitForTimeout(300);
+  });
+
+  test('Model and Effort dropdowns hide when the active agent does not declare capabilities', async () => {
+    // Mark Codex as installed so the agent override dropdown lists it. The
+    // dialog re-fetches agentList from the IPC mock on every open via the
+    // useEffect at mount, so opening after the override is enough; no reload.
+    await page.evaluate(() => {
+      (window as unknown as { __mockAgentListOverrides: Record<string, unknown> }).__mockAgentListOverrides = {
+        codex: { found: true, authenticated: true },
+      };
+    });
+
+    await openEditDialog('Code Review');
+    await page.locator('[data-testid="column-agent-override"]').selectOption('codex');
+
+    await expect(page.locator('[data-testid="column-model-override"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="column-effort-override"]')).toHaveCount(0);
+
+    // Switch back to project default to clean up state for subsequent tests.
+    await page.locator('[data-testid="column-agent-override"]').selectOption('');
+    await closeDialog();
+
+    await page.evaluate(() => {
+      (window as unknown as { __mockAgentListOverrides: undefined }).__mockAgentListOverrides = undefined;
+    });
+  });
+
   test('save persists permission_mode and auto_spawn changes', async () => {
     await openEditDialog('Code Review');
 
-    // Change permissions to Plan (second select - first is agent override)
-    const permSelect = page.locator('select').nth(1);
+    const permSelect = page.locator('[data-testid="column-permission-mode"]');
     await permSelect.selectOption('plan');
 
     // Toggle auto-spawn OFF
@@ -178,7 +278,7 @@ test.describe('EditColumnDialog', () => {
     // Reopen and verify persisted values
     await openEditDialog('Code Review');
 
-    const permSelectAfter = page.locator('select').nth(1);
+    const permSelectAfter = page.locator('[data-testid="column-permission-mode"]');
     const valueAfter = await permSelectAfter.inputValue();
     expect(valueAfter).toBe('plan');
 

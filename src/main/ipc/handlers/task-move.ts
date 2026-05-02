@@ -27,6 +27,8 @@ import { abortBacklogPromotion } from './backlog';
 import { withTaskLock } from '../task-lifecycle-lock';
 import { emitSpawnProgress, clearSpawnProgress, createProgressCallback } from '../../engine/spawn-progress';
 import { resolveTargetAgent } from '../../engine/agent-resolver';
+import { agentRegistry } from '../../agent/agent-registry';
+import { prepareInjectionPlan } from '../../engine/injection-plan';
 import type { Task, Swimlane } from '../../../shared/types';
 
 /**
@@ -338,24 +340,38 @@ export async function handleTaskMove(
             + ` Will handoff to new agent.`,
           );
           // Fall through to Phase 2/3 (handoff spawn) by not returning null.
-        } else if (toLane?.auto_command?.trim()) {
-          // (b) Same agent + auto_command: inject directly into the running session.
-          // No suspend/resume needed. commandInjector sends Ctrl+C to clear any
-          // in-progress input, then types the command.
-          const vars = buildAutoCommandVars(task);
-          const interpolated = interpolateTemplate(toLane.auto_command, vars);
-          context.commandInjector.schedule(task.id, task.session_id, interpolated);
-          console.log(
-            `[TASK_MOVE] Injecting auto_command for task ${task.id.slice(0, 8)}`
-            + ` into running session: ${toLane.auto_command}`,
-          );
-          return null;
         } else {
-          // (c) Same agent, no auto_command. Keep session alive.
-          console.log(
-            `[TASK_MOVE] Task ${task.id.slice(0, 8)} already has active session`
-            + ` (no auto_command, same agent). Keeping session alive.`,
-          );
+          // Same agent. Delegate the model/effort/auto_command translation
+          // to the destination adapter via prepareInjectionPlan - adapters
+          // own their slash syntax and verification semantics, so this
+          // branch stays agent-agnostic.
+          const adapter = task.agent ? agentRegistry.get(task.agent) : undefined;
+          const interpolatedAuto = toLane?.auto_command?.trim()
+            ? interpolateTemplate(toLane.auto_command, buildAutoCommandVars(task))
+            : '';
+          const plan = prepareInjectionPlan({
+            adapter,
+            sessionRepo,
+            task,
+            fromLane: fromLane ?? null,
+            toLane: toLane ?? null,
+            autoCommand: interpolatedAuto,
+          });
+          if (plan) {
+            context.commandInjector.scheduleSequence(task.id, task.session_id, plan.sequence, {
+              verifier: plan.verifier,
+              verifiedPrefixLength: plan.verifiedPrefixLength,
+            });
+            console.log(
+              `[TASK_MOVE] Injecting ${plan.sequence.length} command(s) for task ${task.id.slice(0, 8)}`
+              + ` into running session${plan.verifier ? ' (with command verification)' : ''}: ${plan.sequence.join(' | ')}`,
+            );
+          } else {
+            console.log(
+              `[TASK_MOVE] Task ${task.id.slice(0, 8)} already has active session`
+              + ` (no model/effort/auto_command delta, same agent). Keeping session alive.`,
+            );
+          }
           return null;
         }
       }

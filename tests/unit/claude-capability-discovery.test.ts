@@ -1,0 +1,351 @@
+/**
+ * Capability discovery for Claude Code: parses the live `claude --help`
+ * output to extract effort levels and detect `--model` flag presence.
+ *
+ * The parser is the core of self-discovery - Kangentic holds no hardcoded
+ * model or effort lists. These tests pin the regex against representative
+ * help-output snippets so future Claude CLI changes that break the parser
+ * surface as test failures, not as silent capability loss.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Mock node:child_process before importing the module under test, since the
+// module captures references at load time.
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn(),
+  exec: vi.fn(),
+}));
+
+vi.mock('node:util', () => ({
+  promisify: (fn: unknown) => fn,
+}));
+
+vi.mock('node:fs', () => ({
+  default: {
+    readdirSync: vi.fn(),
+    statSync: vi.fn(),
+    openSync: vi.fn(),
+    readSync: vi.fn(),
+    closeSync: vi.fn(),
+  },
+}));
+
+import { execFile, exec } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { discoverClaudeCapabilities } from '../../src/main/agent/adapters/claude/capability-discovery';
+
+const execMock = exec as unknown as ReturnType<typeof vi.fn>;
+const execFileMock = execFile as unknown as ReturnType<typeof vi.fn>;
+const readdirMock = fs.readdirSync as unknown as ReturnType<typeof vi.fn>;
+const statMock = fs.statSync as unknown as ReturnType<typeof vi.fn>;
+const openMock = fs.openSync as unknown as ReturnType<typeof vi.fn>;
+const readMock = fs.readSync as unknown as ReturnType<typeof vi.fn>;
+const closeMock = fs.closeSync as unknown as ReturnType<typeof vi.fn>;
+
+function setHelpOutput(stdout: string): void {
+  // Both code paths (Windows exec and Unix execFile) just need to resolve
+  // with `{ stdout }`. promisify is mocked to identity so we hand back the
+  // resolved promise directly.
+  const result = Promise.resolve({ stdout });
+  execMock.mockReturnValue(result);
+  execFileMock.mockReturnValue(result);
+}
+
+const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
+
+/**
+ * Wire up the readdirSync/statSync/openSync/readSync/closeSync chain that
+ * `discoverHistoricalModels` walks: a map of `<projectDir>` to a list of
+ * session JSONL files, each with a head-of-file payload. Setting it to null
+ * makes ~/.claude/projects appear missing entirely.
+ */
+function setSessionStore(
+  store: Record<string, Record<string, string>> | null,
+): void {
+  readdirMock.mockReset();
+  statMock.mockReset();
+  openMock.mockReset();
+  readMock.mockReset();
+  closeMock.mockReset();
+
+  if (store === null) {
+    readdirMock.mockImplementation(() => {
+      throw new Error('ENOENT');
+    });
+    return;
+  }
+
+  // Map per-fd -> the file's contents so readSync can return them.
+  const fdContents = new Map<number, string>();
+  let nextFd = 100;
+
+  readdirMock.mockImplementation((dirPath: string, options?: { withFileTypes?: boolean }) => {
+    if (dirPath === PROJECTS_ROOT) {
+      const projectNames = Object.keys(store);
+      if (options?.withFileTypes) {
+        return projectNames.map((name) => ({
+          name,
+          isDirectory: () => true,
+        })) as unknown as fs.Dirent[];
+      }
+      return projectNames;
+    }
+    // Project subdirectory listing (returns session file names).
+    for (const projectName of Object.keys(store)) {
+      const projectFullPath = path.join(PROJECTS_ROOT, projectName);
+      if (dirPath === projectFullPath) {
+        return Object.keys(store[projectName]);
+      }
+    }
+    throw new Error(`Unexpected readdir: ${dirPath}`);
+  });
+
+  statMock.mockImplementation((targetPath: string) => {
+    return { mtimeMs: Date.now() } as fs.Stats;
+  });
+
+  openMock.mockImplementation((filePath: string) => {
+    for (const [projectName, sessions] of Object.entries(store)) {
+      for (const [sessionName, contents] of Object.entries(sessions)) {
+        const fullPath = path.join(PROJECTS_ROOT, projectName, sessionName);
+        if (filePath === fullPath) {
+          const fd = nextFd++;
+          fdContents.set(fd, contents);
+          return fd;
+        }
+      }
+    }
+    throw new Error(`Unexpected open: ${filePath}`);
+  });
+
+  readMock.mockImplementation((fd: number, buffer: Buffer, _offset: number, length: number) => {
+    const text = fdContents.get(fd) ?? '';
+    const bytes = Buffer.from(text, 'utf-8');
+    const toCopy = Math.min(length, bytes.length);
+    bytes.copy(buffer, 0, 0, toCopy);
+    return toCopy;
+  });
+
+  closeMock.mockImplementation((fd: number) => {
+    fdContents.delete(fd);
+  });
+}
+
+beforeEach(() => {
+  execMock.mockReset();
+  execFileMock.mockReset();
+  // Default: no Claude session store - discovery falls through and the
+  // renderer would render a free-form input.
+  setSessionStore(null);
+});
+
+describe('discoverClaudeCapabilities', () => {
+  it('extracts effort levels from the --effort line in help output', async () => {
+    setHelpOutput(`
+  --debug-file <path>                               Write debug logs to a specific file path
+  --effort <level>                                  Effort level for the current session (low, medium, high, xhigh, max)
+  --fallback-model <model>                          Enable automatic fallback to specified model
+`);
+
+    const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+    expect(capabilities.effortLevels).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+  });
+
+  it('detects --model flag presence', async () => {
+    setHelpOutput(`
+  --include-partial-messages                        Include partial message chunks
+  --model <model>                                   Model for the current session.
+  -n, --name <name>                                 Set a display name
+`);
+
+    const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+    expect(capabilities.supportsModelOverride).toBe(true);
+  });
+
+  it('discovers both --effort and --model from the same help output', async () => {
+    setHelpOutput(`
+  --effort <level>                                  Effort level for the current session (low, medium, high, max)
+  --model <model>                                   Model for the current session.
+`);
+
+    const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+    expect(capabilities.effortLevels).toEqual(['low', 'medium', 'high', 'max']);
+    expect(capabilities.supportsModelOverride).toBe(true);
+  });
+
+  it('returns an empty object when help text has neither flag', async () => {
+    setHelpOutput('Usage: claude [options]\n  -h, --help    Show help\n');
+
+    const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+    expect(capabilities.effortLevels).toBeUndefined();
+    expect(capabilities.supportsModelOverride).toBeUndefined();
+  });
+
+  it('returns an empty object when the CLI invocation throws', async () => {
+    // Only the platform-relevant code path runs; pre-attach a .catch on the
+    // unused side so vitest does not report an unhandled rejection.
+    const reject = (): Promise<{ stdout: string }> => {
+      const promise = Promise.reject(new Error('ENOENT')) as Promise<{ stdout: string }>;
+      promise.catch(() => {});
+      return promise;
+    };
+    execMock.mockImplementation(reject);
+    execFileMock.mockImplementation(reject);
+
+    const capabilities = await discoverClaudeCapabilities('/missing/claude');
+    expect(capabilities).toEqual({});
+  });
+
+  it('tolerates extra whitespace and irrelevant lines', async () => {
+    setHelpOutput(`
+Usage: claude [options]
+
+Options:
+  -h, --help                                        Display help
+  --some-other-flag <value>                         Foo bar (a, b, c)
+  --effort <level>                                  Effort level for the current session    (low,  medium , high)
+
+Commands:
+  doctor   Health check
+`);
+
+    const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+    expect(capabilities.effortLevels).toEqual(['low', 'medium', 'high']);
+  });
+
+  describe('historical model discovery', () => {
+    function assistantLine(model: string): string {
+      return JSON.stringify({ type: 'assistant', message: { model, content: [] } });
+    }
+
+    it('extracts distinct models from recent session JSONLs', async () => {
+      setHelpOutput('  --model <model>  Model for the current session.\n');
+      setSessionStore({
+        '-Users-dev-projectA': {
+          'session-1.jsonl': `${assistantLine('claude-opus-4-7')}\n`,
+          'session-2.jsonl': `${assistantLine('claude-sonnet-4-6')}\n`,
+        },
+        '-Users-dev-projectB': {
+          'session-3.jsonl': `${assistantLine('claude-opus-4-7')}\n`, // duplicate
+          'session-4.jsonl': `${assistantLine('claude-haiku-4-5')}\n`,
+        },
+      });
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      expect(capabilities.supportsModelOverride).toBe(true);
+      // Descending lexicographic sort puts the newest versions and most
+      // recent families first - the renderer prepends a "Default" entry
+      // separately so the picker reads Default -> latest -> ... -> oldest.
+      expect(capabilities.models).toEqual([
+        'claude-sonnet-4-6',
+        'claude-opus-4-7',
+        'claude-haiku-4-5',
+      ]);
+    });
+
+    it('scans past summary and user records to find the assistant model', async () => {
+      setHelpOutput('  --model <model>  Model for the current session.\n');
+      const summaryLine = JSON.stringify({ type: 'summary', summary: 'hi' });
+      const userLine = JSON.stringify({ type: 'user', message: { content: 'hello' } });
+      setSessionStore({
+        '-Users-dev-projectA': {
+          'session.jsonl': `${summaryLine}\n${userLine}\n${assistantLine('claude-opus-4-7')}\n`,
+        },
+      });
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      expect(capabilities.models).toEqual(['claude-opus-4-7']);
+    });
+
+    it('preserves dated and unsuffixed forms as distinct entries', async () => {
+      setHelpOutput('  --model <model>  Model for the current session.\n');
+      setSessionStore({
+        '-Users-dev-projectA': {
+          'session-1.jsonl': assistantLine('claude-haiku-4-5-20251001') + '\n',
+          'session-2.jsonl': assistantLine('claude-haiku-4-5') + '\n',
+          'session-3.jsonl': assistantLine('claude-opus-4-7-20251022') + '\n',
+        },
+      });
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      // Both forms work for --model but address different builds (dated =
+      // pinned, unsuffixed = roll-forward latest). They must surface as
+      // separate picker entries so users can choose reproducibility.
+      expect(capabilities.models).toEqual([
+        'claude-opus-4-7-20251022',
+        'claude-haiku-4-5-20251001',
+        'claude-haiku-4-5',
+      ]);
+    });
+
+    it('filters Claude Code sentinel values like <synthetic>', async () => {
+      setHelpOutput('  --model <model>  Model for the current session.\n');
+      setSessionStore({
+        '-Users-dev-projectA': {
+          'session.jsonl': [
+            assistantLine('<synthetic>'),
+            assistantLine('claude-opus-4-7'),
+            assistantLine('<unknown>'),
+          ].join('\n') + '\n',
+        },
+      });
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      // Only the real model survives; anything wrapped in <...> is dropped.
+      expect(capabilities.models).toEqual(['claude-opus-4-7']);
+    });
+
+    it('drops the truncated trailing line so a partial JSON does not throw', async () => {
+      setHelpOutput('  --model <model>  Model for the current session.\n');
+      const fullLine = assistantLine('claude-opus-4-7');
+      // Simulate a head buffer that ended mid-record (no terminating newline).
+      setSessionStore({
+        '-Users-dev-projectA': {
+          'session.jsonl': `${fullLine}\n{"type":"assistant","message":{"mod`,
+        },
+      });
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      expect(capabilities.models).toEqual(['claude-opus-4-7']);
+    });
+
+    it('returns undefined when ~/.claude/projects does not exist', async () => {
+      setHelpOutput('  --model <model>  Model for the current session.\n');
+      setSessionStore(null);
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      expect(capabilities.supportsModelOverride).toBe(true);
+      expect(capabilities.models).toBeUndefined();
+    });
+
+    it('returns undefined when no session files contain a model', async () => {
+      setHelpOutput('  --model <model>  Model for the current session.\n');
+      setSessionStore({
+        '-Users-dev-projectA': {
+          'empty.jsonl': '',
+          'malformed.jsonl': '{ not json\n',
+        },
+      });
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      expect(capabilities.models).toBeUndefined();
+    });
+
+    it('does not scan sessions when --model flag is absent', async () => {
+      setHelpOutput('  --some-other-flag <x>  No model flag here.\n');
+      setSessionStore({
+        '-Users-dev-projectA': {
+          'session.jsonl': `${assistantLine('claude-opus-4-7')}\n`,
+        },
+      });
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      expect(capabilities.supportsModelOverride).toBeUndefined();
+      expect(capabilities.models).toBeUndefined();
+      // We never even tried to walk the directory.
+      expect(readdirMock).not.toHaveBeenCalled();
+    });
+  });
+});

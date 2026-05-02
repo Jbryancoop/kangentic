@@ -27,6 +27,25 @@ if (args.includes('--version')) {
   process.exit(0);
 }
 
+// Help detection (called by ClaudeAdapter.discoverCapabilities to parse
+// --effort levels and detect --model flag presence). Print a minimal but
+// realistic help block and exit immediately so capability discovery does
+// not stall waiting for the long-running session branch below.
+if (args.includes('--help') || args.includes('-h')) {
+  console.log('Usage: claude [options] [prompt]');
+  console.log('');
+  console.log('Options:');
+  console.log('  --version            Print version and exit');
+  console.log('  --help               Show this help');
+  console.log('  --print              Non-interactive mode');
+  console.log('  --session-id <uuid>  Create a new session with this id');
+  console.log('  --resume <uuid>      Resume an existing session');
+  console.log('  --model <name>       Override the model for this session');
+  console.log('  --effort <level>     Effort level for the current session (low, medium, high, xhigh, max)');
+  console.log('  --permission-mode <mode>  Permission mode');
+  process.exit(0);
+}
+
 // Parse flags to find the prompt (last positional arg)
 let sessionId = null;
 let resumed = false;

@@ -27,6 +27,13 @@ if (args.includes('--version')) {
   process.exit(0);
 }
 
+if (args.includes('--help') || args.includes('-h')) {
+  console.log('Usage: claude [options]');
+  console.log('  --model <name>       Override model');
+  console.log('  --effort <level>     Effort level for the current session (low, medium, high, xhigh, max)');
+  process.exit(0);
+}
+
 let sessionId = null;
 let resumed = false;
 let prompt = null;

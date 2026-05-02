@@ -7,7 +7,44 @@ import type {
   SessionAttachment,
   AgentLiveTelemetryUnsupported,
   SubmissionEvidence,
+  AgentCapabilities,
 } from '../../shared/types';
+
+/**
+ * Description of a column-level settings change (model and/or effort)
+ * passed to `AgentAdapter.getInjectionSequence` so the adapter can produce
+ * the correct CLI-specific writes to apply the change to a live session.
+ *
+ * `*Changed` fields exist separately from the values because some adapters
+ * may want to clear-then-set vs. only-set vs. ignore unchanged fields.
+ * `null` values mean the destination column does not override that setting
+ * (i.e. inherit / keep current).
+ */
+export interface SettingsChangeSpec {
+  model: string | null;
+  modelChanged: boolean;
+  effort: string | null;
+  effortChanged: boolean;
+}
+
+/**
+ * Per-command verifier the CommandInjector awaits between writes when
+ * delivering a chained injection sequence (e.g. `/model X` then `/effort Y`).
+ * Returns true when the agent has confirmed the injected command was
+ * processed, false on timeout. Adapters supply this from
+ * `getCommandInjectionVerifier` to defend against TUI input races
+ * (overlay-eaten Enter, autocomplete still showing) that would otherwise
+ * concatenate the next command's text into the same prompt buffer.
+ */
+export type CommandInjectionVerifier = (command: string, sentAt: number) => Promise<boolean>;
+
+/** Inputs supplied to the adapter when constructing a verifier. */
+export interface CommandInjectionVerifierInput {
+  /** Recorded agent session id (e.g. Claude's --session-id UUID). */
+  agentSessionId: string;
+  /** Working directory at spawn time (used to resolve transcript paths). */
+  cwd: string;
+}
 
 /** CLI detection result returned by all agent detectors. */
 export interface AgentInfo {
@@ -35,6 +72,10 @@ export interface CommandOptions {
   mcpServerUrl?: string;
   /** Per-launch MCP server token. Sent as the X-Kangentic-Token header. */
   mcpServerToken?: string;
+  /** Adapter-specific model identifier (e.g. Claude `--model opus`). Empty/undefined leaves the agent default in place. */
+  model?: string;
+  /** Adapter-specific effort/reasoning level (e.g. Claude `--effort xhigh`). Empty/undefined leaves the agent default in place. */
+  effort?: string;
 }
 
 /** Agent-agnostic spawn options - renames `cliPath` to `agentPath`. */
@@ -71,6 +112,17 @@ export interface AgentAdapter {
 
   /** Invalidate any cached detection result (e.g. after user changes CLI path). */
   invalidateDetectionCache(): void;
+
+  /**
+   * Discover adapter-specific capabilities at runtime by probing the live CLI
+   * (e.g. parsing `--help` for valid effort levels and the presence of a
+   * `--model` flag). Returns nothing for adapters that do not expose any
+   * discoverable knobs. The result is attached to `AgentDetectionInfo` and
+   * read by the renderer to gate optional UI controls. Implementations must
+   * never throw - return an empty object on parse failure so the rest of
+   * detection still succeeds.
+   */
+  discoverCapabilities?(cliPath: string): Promise<AgentCapabilities>;
 
   /** Pre-approve a working directory so the agent does not prompt for trust. */
   ensureTrust(workingDirectory: string): Promise<void>;
@@ -139,6 +191,43 @@ export interface AgentAdapter {
    * cannot be found.
    */
   locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null>;
+
+  /**
+   * Optional: build a verifier that confirms each command in a chained
+   * `scheduleSequence` actually landed before the next one is sent.
+   *
+   * Adapters whose CLI exposes an authoritative "command processed" signal
+   * (e.g. Claude's session JSONL records every slash invocation) should
+   * implement this. Without it, the injector falls back to a fixed
+   * inter-command settle which is less reliable under TUI input races.
+   *
+   * Return null when the inputs are insufficient to build a verifier
+   * (e.g. agent_session_id not yet captured); the caller treats null as
+   * "use the time-based fallback" rather than as an error.
+   */
+  getCommandInjectionVerifier?(input: CommandInjectionVerifierInput): CommandInjectionVerifier | null;
+
+  /**
+   * Optional: translate a column-level settings change (model / effort)
+   * into the sequence of writes the CommandInjector should push onto the
+   * live PTY to apply it. Pairs with `getCommandInjectionVerifier` for confirmation.
+   *
+   * Sibling of `getExitSequence` - both return `string[]` of writes the
+   * PTY layer consumes, just for different lifecycle events.
+   *
+   * - Claude returns `['/model X', '/effort Y']` for changed fields.
+   * - Adapters whose CLI has no live-swap slash command should return an
+   *   empty array; the caller will fall back to suspend+respawn (handled
+   *   elsewhere by the prepare-spawn flow which reads the swimlane
+   *   overrides directly).
+   * - Adapters that don't override settings at all should not implement
+   *   this method.
+   *
+   * Only fields with `*Changed = true` should produce a write. The
+   * adapter owns ordering (e.g. /model before /effort if one depends on
+   * the other) and any quoting/escaping.
+   */
+  getInjectionSequence?(spec: SettingsChangeSpec): string[];
 
   /**
    * How this agent exposes runtime state (activity detection + session ID capture).

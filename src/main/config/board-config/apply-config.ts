@@ -128,6 +128,8 @@ export function applyBoardConfigToDb(
           auto_spawn: (isTodo || isDone) ? false : (columnConfig.autoSpawn ?? existing.auto_spawn),
           auto_command: columnConfig.autoCommand ?? existing.auto_command,
           agent_override: (isTodo || isDone) ? null : (columnConfig.agentOverride ?? existing.agent_override),
+          model_override: (isTodo || isDone) ? null : (columnConfig.modelOverride ?? existing.model_override),
+          effort_override: (isTodo || isDone) ? null : (columnConfig.effortOverride ?? existing.effort_override),
           handoff_context: columnConfig.handoffContext ?? existing.handoff_context,
         });
       } else {
@@ -143,6 +145,8 @@ export function applyBoardConfigToDb(
           auto_spawn: (isTodo || isDone) ? false : (columnConfig.autoSpawn ?? true),
           auto_command: columnConfig.autoCommand ?? null,
           agent_override: (isTodo || isDone) ? null : (columnConfig.agentOverride ?? null),
+          model_override: (isTodo || isDone) ? null : (columnConfig.modelOverride ?? null),
+          effort_override: (isTodo || isDone) ? null : (columnConfig.effortOverride ?? null),
           handoff_context: columnConfig.handoffContext ?? false,
           position: index,
         });

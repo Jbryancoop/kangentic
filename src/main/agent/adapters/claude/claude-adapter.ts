@@ -6,8 +6,23 @@ import { locateClaudeTranscriptFile } from './transcript-parser';
 import { ensureWorktreeTrust, ensureMcpServerTrust } from './trust-manager';
 import { removeHooks as removeClaudeHooks } from './hook-manager';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionEvidence } from '../../../../shared/types';
+import { discoverClaudeStaticCapabilities, rescanClaudeModels } from './capability-discovery';
+import { createSlashCommandVerifier } from './slash-command-verifier';
+import type {
+  AgentAdapter,
+  AgentInfo,
+  SpawnCommandOptions,
+  CommandInjectionVerifier,
+  CommandInjectionVerifierInput,
+  SettingsChangeSpec,
+} from '../../agent-adapter';
+import type {
+  AgentPermissionEntry,
+  PermissionMode,
+  AdapterRuntimeStrategy,
+  SubmissionEvidence,
+  AgentCapabilities,
+} from '../../../../shared/types';
 import { ActivityDetection, EventType } from '../../../../shared/types';
 
 /**
@@ -43,6 +58,30 @@ export class ClaudeAdapter implements AgentAdapter {
 
   invalidateDetectionCache(): void {
     this.detector.invalidateCache();
+    this.staticCapabilitiesCache = null;
+  }
+
+  // Cache only the static, --help-derived bits (effortLevels, supportsModelOverride
+  // flag). They never change between dialog opens for a given binary, so we
+  // avoid re-spawning `claude --help` every time the picker mounts. The model
+  // list is rescanned on every call so newly-used models appear without
+  // restarting Kangentic.
+  private staticCapabilitiesCache: { cliPath: string; capabilities: AgentCapabilities } | null = null;
+
+  async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {
+    let staticCapabilities: AgentCapabilities;
+    if (this.staticCapabilitiesCache && this.staticCapabilitiesCache.cliPath === cliPath) {
+      staticCapabilities = this.staticCapabilitiesCache.capabilities;
+    } else {
+      staticCapabilities = await discoverClaudeStaticCapabilities(cliPath);
+      this.staticCapabilitiesCache = { cliPath, capabilities: staticCapabilities };
+    }
+
+    if (!staticCapabilities.supportsModelOverride) {
+      return staticCapabilities;
+    }
+    const models = rescanClaudeModels();
+    return models ? { ...staticCapabilities, models } : staticCapabilities;
   }
 
   async ensureTrust(workingDirectory: string): Promise<void> {
@@ -117,5 +156,34 @@ export class ClaudeAdapter implements AgentAdapter {
       prompt: buildSummarizePrompt(prompt),
       cwd,
     });
+  }
+
+  /**
+   * Claude writes every slash invocation as a `local_command` entry in the
+   * session JSONL with `<command-name>` and `<command-args>` tags. The
+   * verifier polls that file for an entry matching exactly what we sent,
+   * so combined-args concatenation bugs (overlay-eaten Enter merging
+   * `/effort` into the previous `/model` invocation) are detected and
+   * retried. The transcript file is the only authoritative signal -
+   * PTY echo can be misleading if the TUI rewrites the prompt area.
+   */
+  getCommandInjectionVerifier(input: CommandInjectionVerifierInput): CommandInjectionVerifier | null {
+    const filePath = locateClaudeTranscriptFile(input.agentSessionId, input.cwd);
+    return createSlashCommandVerifier(filePath);
+  }
+
+  /**
+   * Claude accepts the slash forms `/model <id>` and `/effort <level>` as
+   * valued commands that bypass the interactive picker - confirmed
+   * empirically (scripts/probe-claude-model-forms.js for the CLI flag form,
+   * and live-tested for the slash form). Order is /model before /effort
+   * because /effort xhigh is Opus-only; setting the model first ensures
+   * /effort lands on a model that accepts the requested level.
+   */
+  getInjectionSequence(spec: SettingsChangeSpec): string[] {
+    const sequence: string[] = [];
+    if (spec.modelChanged && spec.model) sequence.push(`/model ${spec.model}`);
+    if (spec.effortChanged && spec.effort) sequence.push(`/effort ${spec.effort}`);
+    return sequence;
   }
 }
