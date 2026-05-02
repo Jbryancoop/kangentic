@@ -22,6 +22,12 @@
   let nextDisplayId = 1;
   let bulkDeleteProgressCallbacks = [];
   let searchHits = [];
+  // Browser pane state. Per-task URL overrides live here; project default is
+  // resolved through projectConfigs.<path>.browser.defaultUrl. captureCalls is
+  // a call log so tests can assert the prompt payload that would have been
+  // shipped to the agent.
+  let browserUrls = {};
+  let browserCaptureCalls = [];
 
   let config = Object.assign({
     theme: 'dark',
@@ -1617,22 +1623,80 @@
       saveImage: function (_data, extension) { return Promise.resolve('/tmp/kangentic-clipboard/pasted-image-1234567890' + extension); },
     },
 
-    browser: {
-      captureAndSend: function () { return Promise.resolve({ filePath: '/mock/capture.png' }); },
-      getUrls: function () { return Promise.resolve({ projectDefault: null, taskOverride: null }); },
-      setTaskUrl: function () { return Promise.resolve(); },
-      clearTaskUrl: function () { return Promise.resolve(); },
-      clearStorage: function () { return Promise.resolve(); },
-    },
-
     search: {
       everything: function (_request) { return Promise.resolve(searchHits.slice()); },
     },
 
-    platform: 'win32',
+    browser: {
+      captureAndSend: async function (input) {
+        browserCaptureCalls.push(input);
+        return { filePath: '/mock/captures/capture-' + Date.now() + '.png' };
+      },
+      getUrls: async function (taskId) {
+        var currentProject = projects.find(function (p) { return p.id === currentProjectId; });
+        var overrides = currentProject ? projectConfigs[currentProject.path] : null;
+        // Empty string means "no project default" -- mirrors useBrowserUrl's
+        // `||` fallthrough and BrowserTab's documented sentinel for cleared
+        // overrides (object-utils deepMerge skips `undefined`, so empty
+        // string is the only value that survives a clear).
+        var projectDefault = (overrides && overrides.browser && overrides.browser.defaultUrl) || null;
+        return {
+          projectDefault: projectDefault,
+          taskOverride: browserUrls[taskId] || null,
+        };
+      },
+      setTaskUrl: async function (taskId, url) {
+        browserUrls[taskId] = url;
+      },
+      clearTaskUrl: async function (taskId) {
+        delete browserUrls[taskId];
+      },
+      // Stub for the Clear Browser Data action in the Browser settings tab.
+      // Real impl wipes the persistent partition on the main process; the
+      // mock just resolves so the renderer can exercise the success/error
+      // toast paths via test-time monkeypatching.
+      clearStorage: function () { return Promise.resolve(); },
+    },
+
+    // Platform string. Defaults to 'win32' (matches the most common dev
+    // host) but tests can override via window.__mockPlatform set in an
+    // addInitScript before page load -- BrowserEmptyState reads this to
+    // decide whether to render the WSL hint.
+    get platform() {
+      return (typeof window !== 'undefined' && window.__mockPlatform) || 'win32';
+    },
 
     webUtils: {
       getPathForFile: function () { return '/mock/path/file.txt'; },
+    },
+  };
+
+  /**
+   * Test hook: reset and inspect the browser-pane mock state. Specs can
+   *   - reset() between cases to drop seeded URLs and capture-call logs
+   *   - getCaptureCalls() to assert the BrowserCaptureInput payload that
+   *     would have been shipped to the agent on Send.
+   */
+  window.__mockBrowser = {
+    reset: function () {
+      browserUrls = {};
+      browserCaptureCalls = [];
+      // Also drop any project-level browser default that the empty-state
+      // submit path auto-seeded via saveForProject -- otherwise the next
+      // test's BrowserPane.useBrowserUrl resolves an effectiveUrl from the
+      // previous run and skips the empty state entirely.
+      Object.keys(projectConfigs).forEach(function (projectPath) {
+        var overrides = projectConfigs[projectPath];
+        if (overrides && overrides.browser) {
+          delete overrides.browser;
+        }
+      });
+    },
+    getCaptureCalls: function () {
+      return browserCaptureCalls.slice();
+    },
+    seedTaskUrl: function (taskId, url) {
+      browserUrls[taskId] = url;
     },
   };
 

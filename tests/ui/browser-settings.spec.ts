@@ -1,3 +1,15 @@
+/**
+ * UI tests for the Browser tab in the App Settings panel.
+ *
+ * Covers two independent surfaces that share the same tab:
+ *   - "Browser settings tab" describe: Clear Browser Data action (confirm
+ *     dialog, success/error toasts, button idle state).
+ *   - "Settings -> Browser tab" describe: project-overridable
+ *     browser.enabled toggle and browser.defaultUrl input persistence.
+ *
+ * Helpers (launchPage, openBrowserTab, closeSettings) are shared because
+ * both describe blocks need the same Settings panel scaffold.
+ */
 import { test, expect } from '@playwright/test';
 import { launchPage, createProject } from './helpers';
 import type { Browser, Page } from '@playwright/test';
@@ -9,7 +21,7 @@ test.beforeAll(async () => {
   const result = await launchPage();
   browser = result.browser;
   page = result.page;
-  await createProject(page, `Webview Settings ${Date.now()}`);
+  await createProject(page, `Browser Settings Test ${Date.now()}`);
 });
 
 test.afterAll(async () => {
@@ -26,6 +38,13 @@ async function openBrowserTab() {
 async function closeSettings() {
   await page.keyboard.press('Escape');
   await page.locator('h2:has-text("Settings")').waitFor({ state: 'hidden', timeout: 2000 });
+}
+
+async function getBrowserOverrides() {
+  return page.evaluate(async () => {
+    const overrides = await window.electronAPI.config.getProjectOverrides();
+    return overrides?.browser ?? null;
+  });
 }
 
 test.describe('Browser settings tab', () => {
@@ -122,6 +141,89 @@ test.describe('Browser settings tab', () => {
     // Button must return to idle state: enabled and labelled "Clear data".
     await expect(page.getByTestId('browser-clear-storage')).toBeEnabled();
     await expect(page.getByTestId('browser-clear-storage')).toContainText('Clear data');
+
+    await closeSettings();
+  });
+});
+
+test.describe('Settings -> Browser tab', () => {
+  test.afterEach(async () => {
+    // Reset overrides between tests so each starts in a known state.
+    await page.evaluate(() => window.electronAPI.config.setProjectOverrides({}));
+  });
+
+  test('Enable Browser Pane and Default URL controls render', async () => {
+    await openBrowserTab();
+
+    await expect(page.getByText('Enable Browser Pane')).toBeVisible();
+    await expect(page.getByText('Default URL', { exact: true })).toBeVisible();
+    await expect(page.locator('input[placeholder="http://localhost:5173"]')).toBeVisible();
+
+    await closeSettings();
+  });
+
+  test('toggling Enable Browser Pane persists browser.enabled override', async () => {
+    await openBrowserTab();
+
+    // BrowserTab currently exposes a single ToggleSwitch (browser.enabled).
+    // If a second toggle is added, swap to a row-scoped selector
+    // (e.g. `page.getByText('Enable Browser Pane').locator('xpath=ancestor::div[contains(@class,"space-y")]').getByRole('switch')`).
+    const toggle = page.getByRole('switch').first();
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+    await expect.poll(async () => (await getBrowserOverrides())?.enabled).toBe(false);
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await expect.poll(async () => (await getBrowserOverrides())?.enabled).toBe(true);
+
+    await closeSettings();
+  });
+
+  test('Default URL input is disabled when browser.enabled === false', async () => {
+    await page.evaluate(() => window.electronAPI.config.setProjectOverrides({
+      browser: { enabled: false },
+    }));
+
+    await openBrowserTab();
+
+    const urlInput = page.locator('input[placeholder="http://localhost:5173"]');
+    await expect(urlInput).toBeDisabled();
+
+    await closeSettings();
+  });
+
+  test('typing a default URL persists it to project overrides', async () => {
+    await openBrowserTab();
+
+    const urlInput = page.locator('input[placeholder="http://localhost:5173"]');
+    await urlInput.fill('http://localhost:4321');
+    // Blur to ensure onChange has propagated through the synchronous mock.
+    await urlInput.blur();
+
+    await expect.poll(async () => (await getBrowserOverrides())?.defaultUrl).toBe('http://localhost:4321');
+
+    await closeSettings();
+  });
+
+  test('clearing the input persists empty string (not undefined)', async () => {
+    await page.evaluate(() => window.electronAPI.config.setProjectOverrides({
+      browser: { defaultUrl: 'http://localhost:5173' },
+    }));
+
+    await openBrowserTab();
+
+    const urlInput = page.locator('input[placeholder="http://localhost:5173"]');
+    await expect(urlInput).toHaveValue('http://localhost:5173');
+
+    await urlInput.fill('');
+    await urlInput.blur();
+
+    // Empty string is the documented sentinel for "no project default".
+    await expect.poll(async () => (await getBrowserOverrides())?.defaultUrl).toBe('');
 
     await closeSettings();
   });
