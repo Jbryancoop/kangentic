@@ -11,9 +11,9 @@ import path from 'node:path';
  */
 export function isKangenticHookCommand(command: string | undefined): boolean {
   if (typeof command !== 'string') return false;
-  return command.includes('.kangentic') && (
-    command.includes('activity-bridge') || command.includes('event-bridge')
-  );
+  const hasBridge = command.includes('activity-bridge') || command.includes('event-bridge');
+  const hasKangenticPath = command.includes('.kangentic') || command.includes('/kangentic/');
+  return hasBridge && hasKangenticPath;
 }
 
 /**

@@ -141,7 +141,7 @@ export function buildPromptPayload(input: BrowserCaptureInput, relativePngPath: 
   // Screenshot @-mention stays at top-level (outside the XML envelope) so
   // Claude Code / Gemini CLI's bare-token @-parsers reliably auto-inject
   // it as multimodal input. POSIX-style path for cross-platform safety.
-  const posixPath = relativePngPath.split(path.sep).join('/');
+  const posixPath = relativePngPath.replace(/\\/g, '/');
   lines.push(`Screenshot: @${posixPath}`);
   lines.push('');
 
