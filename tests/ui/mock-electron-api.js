@@ -1617,6 +1617,14 @@
       saveImage: function (_data, extension) { return Promise.resolve('/tmp/kangentic-clipboard/pasted-image-1234567890' + extension); },
     },
 
+    browser: {
+      captureAndSend: function () { return Promise.resolve({ filePath: '/mock/capture.png' }); },
+      getUrls: function () { return Promise.resolve({ projectDefault: null, taskOverride: null }); },
+      setTaskUrl: function () { return Promise.resolve(); },
+      clearTaskUrl: function () { return Promise.resolve(); },
+      clearStorage: function () { return Promise.resolve(); },
+    },
+
     search: {
       everything: function (_request) { return Promise.resolve(searchHits.slice()); },
     },

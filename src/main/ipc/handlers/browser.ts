@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ipcMain } from 'electron';
+import { ipcMain, session } from 'electron';
 import { IPC } from '../../../shared/ipc-channels';
+import { BROWSER_PARTITION } from '../../../shared/browser-partition';
 import type { BrowserCaptureInput } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 import { browserUrlStore } from '../../browser/browser-url-store';
@@ -132,5 +133,19 @@ export function registerBrowserHandlers(context: IpcContext): void {
     const projectPath = context.currentProjectPath;
     if (!projectPath) return;
     browserUrlStore.clear(projectPath, taskId);
+  });
+
+  // Wipe the embedded browser's persistent partition. Cookies, localStorage,
+  // IndexedDB, service workers, and HTTP/auth caches all go. Per-task URL
+  // overrides and the project default URL live elsewhere (browser-urls.json,
+  // AppConfig.browser.defaultUrl) and are intentionally left alone. Those
+  // are workflow state, not browsing identity.
+  ipcMain.handle(IPC.BROWSER_CLEAR_STORAGE, async () => {
+    const browserSession = session.fromPartition(BROWSER_PARTITION);
+    await browserSession.clearStorageData({
+      storages: ['cookies', 'localstorage', 'indexdb', 'shadercache', 'cachestorage', 'serviceworkers'],
+    });
+    await browserSession.clearCache();
+    await browserSession.clearAuthCache();
   });
 }

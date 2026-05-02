@@ -1852,6 +1852,7 @@ export interface ElectronAPI {
     getUrls: (taskId: string) => Promise<{ projectDefault: string | null; taskOverride: string | null }>;
     setTaskUrl: (taskId: string, url: string) => Promise<void>;
     clearTaskUrl: (taskId: string) => Promise<void>;
+    clearStorage: () => Promise<void>;
   };
 
   // Search

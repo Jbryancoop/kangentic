@@ -7,6 +7,7 @@ import { useBrowserUrl } from './useBrowserUrl';
 import { INSPECT_SCRIPT, CLEAR_PICK_SCRIPT } from './inspectScript';
 import { AttachmentChips } from './AttachmentChips';
 import { useToastStore } from '../../stores/toast-store';
+import { BROWSER_PARTITION } from '../../../shared/browser-partition';
 import type { BrowserPickedElement } from '../../../shared/types';
 import type { WebviewElement } from './webview-types';
 
@@ -420,10 +421,10 @@ function BrowserPaneActive({
         <webview
           ref={webviewRef as unknown as React.Ref<HTMLElement>}
           src={initialSrc}
-          // Single shared persistent partition. All tasks/projects share
-          // one cookie jar. Per-project partitioning is a future option
-          // (tracked in the partition strategy task).
-          partition="persist:kangentic-browser"
+          // Single shared persistent partition (see src/shared/browser-partition.ts).
+          // All tasks across all projects share one cookie jar. Settings ->
+          // Browser -> Clear browser data wipes it.
+          partition={BROWSER_PARTITION}
           style={{
             position: 'absolute',
             inset: 0,

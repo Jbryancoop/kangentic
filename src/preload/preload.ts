@@ -335,6 +335,7 @@ const api: ElectronAPI = {
     getUrls: (taskId) => ipcRenderer.invoke(IPC.BROWSER_URL_GET, taskId),
     setTaskUrl: (taskId, url) => ipcRenderer.invoke(IPC.BROWSER_URL_SET_TASK, taskId, url),
     clearTaskUrl: (taskId) => ipcRenderer.invoke(IPC.BROWSER_URL_CLEAR_TASK, taskId),
+    clearStorage: () => ipcRenderer.invoke(IPC.BROWSER_CLEAR_STORAGE),
   },
 
   search: {

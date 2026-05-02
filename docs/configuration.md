@@ -194,6 +194,8 @@ All context bar settings are global-only and cannot be overridden per-project.
 | `browser.enabled` | boolean | `true` | Show the Browser pill in task detail headers. Disable for security-sensitive projects that should not embed external sites. Per-project overridable. |
 | `browser.defaultUrl` | string \| undefined | `undefined` | Project default URL when a task has no per-task URL override. Auto-saved when the user first navigates the Browser pane. Per-project overridable. |
 
+**Action (not a config key):** the Browser tab also exposes a destructive **Clear Browser Data** button (registry id `browser.clearStorage`) that wipes cookies, localStorage, IndexedDB, service workers, and HTTP/auth caches for the shared embedded browser partition (`persist:kangentic-browser`). Saved URLs are kept. Backed by the `browser:clearStorage` IPC channel; not persisted in `AppConfig`.
+
 ### Privacy
 
 The Privacy tab is informational only - it has no configurable keys. It displays what anonymous analytics Kangentic collects (app launches, platform, crash reports, task/session counts) and what it does not collect (task content, file paths, usernames, code). Analytics are powered by Aptabase (no cookies, no persistent identifiers, GDPR-compliant). Set `KANGENTIC_TELEMETRY=0` as an environment variable to opt out.

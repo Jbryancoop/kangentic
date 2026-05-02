@@ -279,13 +279,14 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 |---------|---------|---------|
 | `clipboard:saveImage` | invoke | Save clipboard image data to a temp file, returns file path |
 
-### Browser pane (4 channels)
+### Browser pane (5 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `browser:captureSend` | invoke | Composite the embedded webview frame + draw overlay + picked element into a PNG, write it to the session captures dir, and submit a structured prompt to the agent's PTY via PasteEngine |
 | `browser:urlGet` | invoke | Get the project default URL and per-task URL override for a given task |
 | `browser:urlSetTask` | invoke | Persist a per-task URL override |
 | `browser:urlClearTask` | invoke | Remove the per-task URL override (falls back to project default) |
+| `browser:clearStorage` | invoke | Wipe cookies, localStorage, IndexedDB, service workers, and HTTP/auth caches for the shared embedded browser partition. Saved URLs are kept. |
 
 ### Updater (3 channels)
 | Channel | Pattern | Purpose |

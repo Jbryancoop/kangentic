@@ -26,7 +26,7 @@ The webview is hardened in `src/main/index.ts`:
 
 The webview runs in its own renderer process. The host renderer cannot reach into it; the only channel is `webview.executeJavaScript()` (used by the inspector) and the navigation/capture APIs.
 
-**Cookie isolation:** the webview uses `partition="persist:kangentic-browser"`. All tasks across all projects share this jar, which is convenient (sign in once) but leaks identity across contexts. Per-project partitions are a future option.
+**Cookie isolation:** the webview uses a single shared persistent partition, defined as `BROWSER_PARTITION` in `src/shared/browser-partition.ts` (currently `persist:kangentic-browser`). All tasks across all projects share this jar, which is the deliberate trade-off: sign in once and the cookies follow you across tasks. Per-project and per-task variants were considered and deferred. The storage and privacy concern is covered by the **Clear browser data** action in `Settings -> Browser` (see "Settings" below) without paying the migration cost. If we ever switch strategies, both the renderer `<webview partition>` and the main-process `session.fromPartition` use the same constant, so flipping it is a one-line change.
 
 ### Capture and prompt payload
 
@@ -90,15 +90,15 @@ The webview is a regular Chromium browser context. WebSocket, ES modules, fetch 
 
 - `AppConfig.browser.defaultUrl` (project-overridable) — fallback URL when the task has no override.
 - `AppConfig.browser.enabled` (project-overridable) — when `false`, the Browser pill in `TaskDetailHeader` is hidden. Default `true`.
+- **Clear Browser Data** — destructive action backed by `IPC.BROWSER_CLEAR_STORAGE` (`src/main/ipc/handlers/browser.ts`). Calls `session.fromPartition(BROWSER_PARTITION).clearStorageData(...)` for cookies, localStorage, IndexedDB, shadercache, cachestorage, and serviceworkers, then `clearCache()` and `clearAuthCache()`. Wrapped in a danger-variant `ConfirmDialog` with `showDontAskAgain: false` (a one-shot destructive action should not be suppressible). Per-task URL overrides (`.kangentic/browser-urls.json`) and the project default URL are intentionally left alone. Those are workflow state, not browsing identity. The success toast prompts the user to reload any open browser pane to apply the cleared state, since `clearStorageData` does not refresh in-flight documents.
 
-The Browser tab in `AppSettingsPanel` (per-project, above the separator) exposes both. Future additions (per-task draw color, partition strategy, capture history) belong here.
+The Browser tab in `AppSettingsPanel` (per-project, above the separator) exposes all three. Future additions (per-task draw color, capture history) belong here.
 
 ## Limitations and future work
 
 | Item | Status | Tracked |
 |---|---|---|
 | Per-adapter submission evidence (replace heuristic data-byte fallback) | Future | task #79 |
-| Clear browser data action in settings | Future | follow-up task |
 | Pop-out window for second-monitor workflow | Future | requires child `BrowserWindow` architecture |
 | DOM tree picker (vs free-form `getSelection()`) | Future | nice-to-have |
 | File downloads from embedded webview | Future | needs `will-download` handler |

@@ -207,6 +207,7 @@ export const IPC = {
   BROWSER_URL_GET: 'browser:urlGet',
   BROWSER_URL_SET_TASK: 'browser:urlSetTask',
   BROWSER_URL_CLEAR_TASK: 'browser:urlClearTask',
+  BROWSER_CLEAR_STORAGE: 'browser:clearStorage',
 
   // Updater
   UPDATE_CHECK: 'updater:check',

@@ -64,6 +64,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   // ── Browser ──
   { id: 'browser.enabled', tabId: 'browser', label: 'Enable Browser Pane', description: 'Show the Browser pill in task detail headers. Disable for security-sensitive projects that should not embed external sites.', scope: 'project', keywords: ['webview', 'embedded', 'preview', 'disable', 'security'] },
   { id: 'browser.defaultUrl', tabId: 'browser', label: 'Default URL', description: 'Project default URL when a task has no per-task override. Auto-saved when you first navigate the Browser pane.', scope: 'project', keywords: ['webview', 'preview', 'localhost', 'dev server', 'url'] },
+  { id: 'browser.clearStorage', tabId: 'browser', label: 'Clear Browser Data', description: 'Wipe cookies, localStorage, IndexedDB, service workers, and HTTP/auth caches for the embedded browser. Saved URLs are kept.', scope: 'global', keywords: ['cookies', 'cache', 'reset', 'logout', 'sign out', 'storage', 'privacy', 'wipe'] },
 
   // ── Shortcuts ──
   { id: 'shortcuts', tabId: 'shortcuts', label: 'Shortcuts', description: 'Custom commands accessible from the task detail dialog', scope: 'project', keywords: ['command', 'shortcut', 'tool', 'open', 'launch', 'tortoisegit', 'vscode', 'terminal', 'explorer', 'quick action'] },
