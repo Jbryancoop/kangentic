@@ -232,6 +232,12 @@
 
   function noop() {}
 
+  // Test override conventions consumed below (set via addInitScript before this mock loads):
+  //   - window.__mockAgentListOverrides: per-agent override of agents.list() entries
+  //   - window.__mockFolderPath: path returned by dialog.selectFolder() (consume-once)
+  //   - window.__mockDefaultAgentOverride: default_agent for the next project created
+  //     via projects.create() or projects.openByPath(); cleared after first use
+  //     (used by agent-tab-auth-warning.spec.ts to seed projects with kimi/opencode/etc.)
   window.electronAPI = {
     projects: {
       list: async function () {
@@ -240,12 +246,14 @@
       create: async function (input) {
         // Shift existing projects down
         projects.forEach(function (p) { p.position = p.position + 1; });
+        var defaultAgentOverride = window.__mockDefaultAgentOverride;
+        if (defaultAgentOverride) window.__mockDefaultAgentOverride = null;
         var project = {
           id: uuid(),
           name: input.name,
           path: input.path,
           github_url: input.github_url || null,
-          default_agent: 'claude',
+          default_agent: defaultAgentOverride || 'claude',
           group_id: null,
           position: 0,
           last_opened: now(),
@@ -316,12 +324,14 @@
         }
         // Shift existing projects down
         projects.forEach(function (p) { p.position = p.position + 1; });
+        var defaultAgentOverride = window.__mockDefaultAgentOverride;
+        if (defaultAgentOverride) window.__mockDefaultAgentOverride = null;
         var project = {
           id: uuid(),
           name: name,
           path: projectPath,
           github_url: null,
-          default_agent: 'claude',
+          default_agent: defaultAgentOverride || 'claude',
           group_id: null,
           position: 0,
           last_opened: now(),
