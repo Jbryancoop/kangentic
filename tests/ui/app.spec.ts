@@ -185,13 +185,12 @@ test.describe('Task CRUD', () => {
 
     await planning.waitFor({ state: 'visible', timeout: 5000 });
 
-    // Scroll Planning column into view
+    // Scroll Planning column into view. boundingBox() forces a layout flush
+    // after the scroll, so no fixed wait is needed.
     await page.evaluate(() => {
       const targetElement = document.querySelector('[data-swimlane-name="Planning"]');
       if (targetElement) targetElement.scrollIntoView({ inline: 'nearest', behavior: 'instant' });
     });
-    // Short wait needed for scroll to complete
-    await page.waitForTimeout(100);
 
     const cardBox = await card.boundingBox();
     const targetBox = await planning.boundingBox();
@@ -207,16 +206,25 @@ test.describe('Task CRUD', () => {
 
     // @dnd-kit PointerSensor requires movement >= 5px to activate
     await page.mouse.move(startX + 10, startY, { steps: 3 });
-    await page.waitForTimeout(100);
+    // Poll for dnd-kit activation: DragOverlay renders a .drag-overlay element
+    // containing "Test Task Beta" once the sensor fires. Filtering by title
+    // avoids strict-mode violations when another overlay is still unmounting.
+    await expect(page.locator('.drag-overlay').filter({ hasText: 'Test Task Beta' })).toBeVisible({ timeout: 2000 });
 
-    // Move to target in steps
-    await page.mouse.move(endX, endY, { steps: 15 });
-    // Wait for @dnd-kit drag animation to settle
+    // Move to target in steps.
+    await page.mouse.move(endX, endY, { steps: 30 });
+    // Intentional fixed wait (dnd-kit collision settle): there is no DOM signal
+    // for "target column is hovered" on regular swimlanes. 200ms gives dnd-kit's
+    // collision detection time to register the drop target before pointerup fires.
+    // This replaces the original 200ms wait; the 500ms post-drop wait is removed
+    // because the toBeVisible assertion below handles post-drop confirmation.
     await page.waitForTimeout(200);
 
     await page.mouse.up();
-    // Wait for drop animation and state update
-    await page.waitForTimeout(500);
+    // Wait for the DragOverlay to detach. dnd-kit calls setActiveTask(null) in
+    // handleDragEnd which removes the .drag-overlay element. Ensures dnd-kit
+    // cleanup completes before the next assertion.
+    await page.locator('.drag-overlay').filter({ hasText: 'Test Task Beta' }).waitFor({ state: 'detached', timeout: 2000 }).catch(() => {});
 
     // Task should appear in Planning and be gone from To Do
     const backlog = page.locator('[data-swimlane-name="To Do"]');
@@ -549,22 +557,28 @@ test.describe('Project Reorder', () => {
 
     // @dnd-kit PointerSensor requires movement >= 5px to activate
     await page.mouse.move(startX, startY + 10, { steps: 3 });
-    await page.waitForTimeout(100);
+    // Intentional fixed wait (sidebar drag activation): the project sidebar
+    // DragOverlay renders a plain div with no stable class to poll. We cannot
+    // use .drag-overlay (that is only emitted by the board DndContext). 150ms
+    // is the minimum budget for the PointerSensor to fire and React to render
+    // the drag overlay before we continue the move.
+    await page.waitForTimeout(150);
 
     // Move to target position in small steps
     await page.mouse.move(endX, endY, { steps: 15 });
-    // Wait for @dnd-kit drag animation
-    await page.waitForTimeout(300);
 
     await page.mouse.up();
-    // Wait for drop animation and state update
-    await page.waitForTimeout(500);
 
-    // After drag, verify order changed -- Alpha should no longer be first
-    const names = await projectItems.locator('.truncate.font-medium').allTextContents();
-    expect(names[0]).not.toBe('Alpha');
-    // Alpha should have moved down at least one position
-    const alphaIndex = names.indexOf('Alpha');
+    // After drag, poll until the sidebar order has updated. allTextContents()
+    // is a snapshot - it does not retry on its own, so we must poll explicitly.
+    await expect.poll(async () => {
+      const names = await projectItems.locator('.truncate.font-medium').allTextContents();
+      return names[0];
+    }, { timeout: 3000 }).not.toBe('Alpha');
+
+    // Snapshot the final order once the poll has confirmed the reorder completed.
+    const finalNames = await projectItems.locator('.truncate.font-medium').allTextContents();
+    const alphaIndex = finalNames.indexOf('Alpha');
     expect(alphaIndex).toBeGreaterThan(0);
   });
 

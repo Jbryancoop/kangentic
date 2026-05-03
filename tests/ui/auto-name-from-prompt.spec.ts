@@ -85,6 +85,10 @@ test.describe('NewTaskDialog - Name from prompt button', () => {
       await w.__zustandStores?.project.getState().loadCurrent();
       await w.__zustandStores?.config.getState().loadAgentList();
     });
+    // Intentional fixed wait: the two IPC awaits above resolve synchronously in
+    // the mock, but React's state flush happens in a microtask after the evaluate
+    // returns. 50ms is a minimal budget to let the render cycle complete before
+    // we assert the button is absent. Cannot use expect.poll for non-occurrence.
     await page.waitForTimeout(50);
 
     await openNewTaskDialog();

@@ -236,10 +236,10 @@ test.describe('Backlog View', () => {
       textarea.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dataTransfer }));
     });
 
-    // Wait for thumbnail to appear
-    await page.waitForTimeout(500);
+    // The toBeVisible assertion polls until the thumbnail renders after the
+    // synchronous paste event is processed by React - no fixed wait needed.
     const thumbnails = page.locator('[data-testid="attachment-thumbnails"]');
-    await expect(thumbnails).toBeVisible();
+    await expect(thumbnails).toBeVisible({ timeout: 2000 });
     await expect(page.locator('text=1 attachment')).toBeVisible();
 
     // Submit the form
@@ -292,8 +292,9 @@ test.describe('Backlog View', () => {
       textarea.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dataTransfer }));
     });
 
-    await page.waitForTimeout(500);
-    await expect(page.locator('[data-testid="attachment-thumbnails"]')).toBeVisible();
+    // The toBeVisible assertion polls until the thumbnail renders after the
+    // synchronous paste event is processed by React - no fixed wait needed.
+    await expect(page.locator('[data-testid="attachment-thumbnails"]')).toBeVisible({ timeout: 2000 });
 
     // Save
     await page.locator('[data-testid="create-backlog-task-btn"]').click();

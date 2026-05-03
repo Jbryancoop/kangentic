@@ -138,12 +138,12 @@ async function dragTaskToColumn(page: Page, taskTitle: string, targetColumn: str
   const target = page.locator(`[data-swimlane-name="${targetColumn}"]`);
   await target.waitFor({ state: 'visible', timeout: 5000 });
 
-  // Scroll so both elements are in view
+  // Scroll so both elements are in view. boundingBox() forces a layout flush
+  // after the scroll, so no fixed wait is needed.
   await page.evaluate((targetCol: string) => {
     const targetElement = document.querySelector(`[data-swimlane-name="${targetCol}"]`);
     if (targetElement) targetElement.scrollIntoView({ inline: 'nearest', behavior: 'instant' });
   }, targetColumn);
-  await page.waitForTimeout(100);
 
   const cardBox = await card.boundingBox();
   const targetBox = await target.boundingBox();
@@ -159,14 +159,25 @@ async function dragTaskToColumn(page: Page, taskTitle: string, targetColumn: str
 
   // Move enough to activate @dnd-kit's PointerSensor (distance >= 5)
   await page.mouse.move(startX + 10, startY, { steps: 3 });
-  await page.waitForTimeout(100);
+  // Poll for dnd-kit activation: DragOverlay renders a .drag-overlay element
+  // containing the task title once the sensor fires. Filtering by title avoids
+  // strict-mode violations when a previous drag's overlay is still unmounting.
+  await expect(page.locator('.drag-overlay').filter({ hasText: taskTitle })).toBeVisible({ timeout: 2000 });
 
-  // Move to target in steps
-  await page.mouse.move(endX, endY, { steps: 15 });
+  // Move to target in steps.
+  await page.mouse.move(endX, endY, { steps: 30 });
+  // Intentional fixed wait (dnd-kit collision settle): there is no DOM signal
+  // for "target column is hovered" on regular swimlanes. 200ms gives dnd-kit's
+  // collision detection time to register the drop target before pointerup fires.
+  // This replaces the original 200ms wait; the 500ms post-drop wait is removed
+  // because the caller's next toBeVisible assertion handles post-drop state.
   await page.waitForTimeout(200);
 
   await page.mouse.up();
-  await page.waitForTimeout(500);
+  // Wait for the DragOverlay to detach. dnd-kit calls setActiveTask(null) in
+  // handleDragEnd which removes the .drag-overlay element. Ensures dnd-kit
+  // cleanup completes before the next assertion.
+  await page.locator('.drag-overlay').filter({ hasText: taskTitle }).waitFor({ state: 'detached', timeout: 2000 }).catch(() => {});
 }
 
 test.describe('User-paused session behavior on column move', () => {
@@ -194,9 +205,6 @@ test.describe('User-paused session behavior on column move', () => {
 
     test('task stays paused after moving to Code Review', async () => {
       await dragTaskToColumn(page, 'Paused Task', 'Code Review');
-
-      // Wait for the move to settle
-      await page.waitForTimeout(300);
 
       // Task should now be in Code Review
       const codeReviewColumn = page.locator('[data-swimlane-name="Code Review"]');
@@ -229,9 +237,6 @@ test.describe('User-paused session behavior on column move', () => {
     test('no stale shimmer overlay after moving paused task to auto_command column', async () => {
       // Move paused task to Code Review (which has auto_command='/code-review')
       await dragTaskToColumn(page, 'Paused Task', 'Code Review');
-
-      // Wait for the move to settle and pendingCommandLabel to clear
-      await page.waitForTimeout(500);
 
       // Task should be in Code Review and still paused
       const codeReviewColumn = page.locator('[data-swimlane-name="Code Review"]');

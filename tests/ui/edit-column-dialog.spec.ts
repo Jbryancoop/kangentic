@@ -30,15 +30,22 @@ test.afterAll(async () => {
 async function openEditDialog(columnName: string) {
   const column = page.locator(`[data-swimlane-name="${columnName}"]`);
   await column.locator(`text=${columnName}`).click();
-  await page.waitForTimeout(300);
-  // Verify dialog opened
+  // Verify dialog opened (auto-retries until visible or timeout)
   await expect(page.locator('text=Edit Column')).toBeVisible({ timeout: 3000 });
 }
 
-/** Close dialog via Escape */
+/** Close dialog via Escape and wait for unmount */
 async function closeDialog() {
   await page.keyboard.press('Escape');
-  await page.waitForTimeout(300);
+  await page.locator('text=Edit Column').waitFor({ state: 'detached', timeout: 2000 });
+}
+
+/** Read the current swimlane row from the IPC mock by name */
+async function getSwimlane(name: string) {
+  return page.evaluate(async (swimlaneName) => {
+    const swimlanes = await window.electronAPI.swimlanes.list();
+    return swimlanes.find((lane) => lane.name === swimlaneName) ?? null;
+  }, name);
 }
 
 test.describe('EditColumnDialog', () => {
@@ -223,7 +230,10 @@ test.describe('EditColumnDialog', () => {
     await effortSelect.selectOption('xhigh');
 
     await page.locator('button:has-text("Save")').click();
-    await page.waitForTimeout(500);
+    await expect.poll(async () => {
+      const lane = await getSwimlane('Code Review');
+      return { model: lane?.model_override, effort: lane?.effort_override };
+    }).toEqual({ model: 'opus', effort: 'xhigh' });
 
     await openEditDialog('Code Review');
     const modelComboboxAfter = page.locator('[data-testid="column-model-override"]');
@@ -235,7 +245,10 @@ test.describe('EditColumnDialog', () => {
     await modelComboboxAfter.clear();
     await effortSelectAfter.selectOption('');
     await page.locator('button:has-text("Save")').click();
-    await page.waitForTimeout(300);
+    await expect.poll(async () => {
+      const lane = await getSwimlane('Code Review');
+      return { model: lane?.model_override, effort: lane?.effort_override };
+    }).toEqual({ model: null, effort: null });
   });
 
   test('Model and Effort dropdowns hide when the active agent does not declare capabilities', async () => {
@@ -255,7 +268,11 @@ test.describe('EditColumnDialog', () => {
     await expect(page.locator('[data-testid="column-effort-override"]')).toHaveCount(0);
 
     // Switch back to project default to clean up state for subsequent tests.
+    // Wait for the model override field to re-render (Claude declares
+    // supportsModelOverride=true) before closing, so the React state has
+    // definitely flipped back from codex.
     await page.locator('[data-testid="column-agent-override"]').selectOption('');
+    await expect(page.locator('[data-testid="column-model-override"]')).toBeVisible();
     await closeDialog();
 
     await page.evaluate(() => {
@@ -294,9 +311,10 @@ test.describe('EditColumnDialog', () => {
 
     // Save - the IPC call must include model_override: null
     await page.locator('button:has-text("Save")').click();
-    // intentional fixed wait: give the mock time to apply the update before
-    // we check the swimlane state via the page store. Cannot poll for absence.
-    await page.waitForTimeout(300);
+    await expect.poll(async () => {
+      const lane = await getSwimlane('Executing');
+      return { agent: lane?.agent_override, model: lane?.model_override };
+    }).toEqual({ agent: 'gemini', model: null });
 
     // Re-open to confirm model_override is null (not a stale value)
     await openEditDialog('Executing');
@@ -307,7 +325,7 @@ test.describe('EditColumnDialog', () => {
     // Clean up - restore column to defaults
     await page.locator('[data-testid="column-agent-override"]').selectOption('');
     await page.locator('button:has-text("Save")').click();
-    await page.waitForTimeout(300);
+    await expect.poll(async () => (await getSwimlane('Executing'))?.agent_override).toBe(null);
 
     await page.evaluate(() => {
       (window as unknown as { __mockAgentListOverrides: undefined }).__mockAgentListOverrides = undefined;
@@ -331,7 +349,7 @@ test.describe('EditColumnDialog', () => {
     const modelCombobox = page.locator('[data-testid="column-model-override"]');
     await modelCombobox.fill('my-custom-model-xyz');
     await page.locator('button:has-text("Save")').click();
-    await page.waitForTimeout(300);
+    await expect.poll(async () => (await getSwimlane('Code Review'))?.model_override).toBe('my-custom-model-xyz');
 
     // Now open a DIFFERENT column that uses the same default agent (Claude)
     // and verify 'my-custom-model-xyz' appears in the dropdown suggestions
@@ -348,7 +366,7 @@ test.describe('EditColumnDialog', () => {
     await openEditDialog('Code Review');
     await page.locator('[data-testid="column-model-override"]').clear();
     await page.locator('button:has-text("Save")').click();
-    await page.waitForTimeout(300);
+    await expect.poll(async () => (await getSwimlane('Code Review'))?.model_override).toBe(null);
   });
 
   test('save persists permission_mode and auto_spawn changes', async () => {
@@ -360,12 +378,14 @@ test.describe('EditColumnDialog', () => {
     // Toggle auto-spawn OFF
     const toggle = page.getByRole('switch', { name: 'Auto-spawn' });
     await toggle.click();
-    await page.waitForTimeout(100);
     await expect(toggle).toHaveAttribute('aria-checked', 'false');
 
     // Save
     await page.locator('button:has-text("Save")').click();
-    await page.waitForTimeout(500);
+    await expect.poll(async () => {
+      const lane = await getSwimlane('Code Review');
+      return { perm: lane?.permission_mode, spawn: lane?.auto_spawn };
+    }).toEqual({ perm: 'plan', spawn: false });
 
     // Reopen and verify persisted values
     await openEditDialog('Code Review');
@@ -384,6 +404,9 @@ test.describe('EditColumnDialog', () => {
     await permSelectAfter.selectOption('');
     await toggleAfter.click();
     await page.locator('button:has-text("Save")').click();
-    await page.waitForTimeout(300);
+    await expect.poll(async () => {
+      const lane = await getSwimlane('Code Review');
+      return { perm: lane?.permission_mode, spawn: lane?.auto_spawn };
+    }).toEqual({ perm: null, spawn: true });
   });
 });

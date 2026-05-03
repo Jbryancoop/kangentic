@@ -193,15 +193,15 @@ test.describe('Project Session Scope', () => {
       // Project A active -- alpha-task visible
       await expect(page.locator('button:has-text("alpha-task")')).toBeVisible();
 
-      // Switch to Project B via sidebar
+      // Switch to Project B via sidebar. The toBeVisible assertion below
+      // self-retries until the store updates - no fixed wait needed.
       await page.locator('[role="button"]:has-text("Project Beta")').click();
-      await page.waitForTimeout(500);
 
       // Now beta-task should be visible, alpha-task hidden
       const betaTab = page.locator('button:has-text("beta-task")');
       const alphaTab = page.locator('button:has-text("alpha-task")');
 
-      await expect(betaTab).toBeVisible();
+      await expect(betaTab).toBeVisible({ timeout: 3000 });
       await expect(alphaTab).not.toBeVisible();
     } finally {
       await browser.close();
@@ -222,12 +222,12 @@ test.describe('Project Session Scope', () => {
       const cost = page.locator('[data-testid="aggregate-cost"]');
       await expect(cost).toContainText('$0.05');
 
-      // Switch to Project B
+      // Switch to Project B. The toContainText assertions below self-retry
+      // until the store updates - no fixed wait needed.
       await page.locator('[role="button"]:has-text("Project Beta")').click();
-      await page.waitForTimeout(500);
 
       // Status bar now shows Project B's session ($0.20)
-      await expect(sessionCount).toContainText('1 agents');
+      await expect(sessionCount).toContainText('1 agents', { timeout: 3000 });
       await expect(cost).toContainText('$0.20');
     } finally {
       await browser.close();
@@ -565,18 +565,16 @@ test.describe('Project Session Scope', () => {
       // Project A -- alpha-task visible
       await expect(page.locator('button:has-text("alpha-task")')).toBeVisible();
 
-      // Switch to Project B
+      // Switch to Project B. toBeVisible self-retries - no fixed wait needed.
       await page.locator('[role="button"]:has-text("Project Beta")').click();
-      await page.waitForTimeout(500);
-      await expect(page.locator('button:has-text("beta-task")')).toBeVisible();
+      await expect(page.locator('button:has-text("beta-task")')).toBeVisible({ timeout: 3000 });
       await expect(page.locator('button:has-text("alpha-task")')).not.toBeVisible();
 
-      // Switch back to Project A
+      // Switch back to Project A. toBeVisible self-retries - no fixed wait needed.
       await page.locator('[role="button"]:has-text("Project Alpha")').click();
-      await page.waitForTimeout(500);
 
       // Alpha session reappears -- it was not cleared
-      await expect(page.locator('button:has-text("alpha-task")')).toBeVisible();
+      await expect(page.locator('button:has-text("alpha-task")')).toBeVisible({ timeout: 3000 });
       await expect(page.locator('button:has-text("beta-task")')).not.toBeVisible();
     } finally {
       await browser.close();

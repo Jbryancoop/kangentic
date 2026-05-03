@@ -195,8 +195,10 @@ test.describe('Board Filters', () => {
     // any modal or trigger a context menu.
     await page.locator('text=Kangentic').first().click();
 
-    // Verify popover closed by checking Priority header is no longer visible
-    // (the only "Priority" text on page should be in the popover)
+    // Intentional fixed wait (negative assertion budget): we cannot poll for
+    // "Priority is gone" because the poll would return true immediately if the
+    // popover has not yet animated open. The 100ms budget gives any pending
+    // React state update time to fire before we assert non-visibility.
     await page.waitForTimeout(100);
     const priorityHeaders = page.locator('text=Priority');
     await expect(priorityHeaders).not.toBeVisible();
