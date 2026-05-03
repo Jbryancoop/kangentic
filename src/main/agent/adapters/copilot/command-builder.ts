@@ -104,7 +104,7 @@ export class CopilotCommandBuilder {
     if (options.nonInteractive) {
       parts.push('-p');
       if (options.prompt) {
-        parts.push(quoteArg(preparePrompt(options.prompt, shell), shell));
+        parts.push(quoteArg(preparePrompt(options.prompt, shell), shell, { multiline: true }));
       }
       return parts.join(' ');
     }
@@ -133,7 +133,7 @@ export class CopilotCommandBuilder {
 
     // Interactive mode with initial prompt
     if (options.prompt && !options.resume) {
-      parts.push('-i', quoteArg(preparePrompt(options.prompt, shell), shell));
+      parts.push('-i', quoteArg(preparePrompt(options.prompt, shell), shell, { multiline: true }));
     }
 
     return parts.join(' ');

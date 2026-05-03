@@ -65,7 +65,7 @@ export class AiderAdapter implements AgentAdapter {
       const safePrompt = needsDoubleQuoteReplacement
         ? options.prompt.replace(/"/g, "'")
         : options.prompt;
-      parts.push('--message', quoteArg(safePrompt, shell));
+      parts.push('--message', quoteArg(safePrompt, shell, { multiline: true }));
     }
 
     // Chat mode: plan → ask (read-only), acceptEdits → architect (two-model)

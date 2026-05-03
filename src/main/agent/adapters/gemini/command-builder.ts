@@ -79,11 +79,11 @@ export class GeminiCommandBuilder {
     if (options.nonInteractive && options.prompt) {
       // Non-interactive: use -p flag
       const safePrompt = sanitizePrompt(options.prompt, shell);
-      parts.push('-p', quoteArg(safePrompt, shell));
+      parts.push('-p', quoteArg(safePrompt, shell, { multiline: true }));
     } else if (options.prompt) {
       // Interactive: prompt as positional argument
       const safePrompt = sanitizePrompt(options.prompt, shell);
-      parts.push(quoteArg(safePrompt, shell));
+      parts.push(quoteArg(safePrompt, shell, { multiline: true }));
     }
 
     return parts.join(' ');

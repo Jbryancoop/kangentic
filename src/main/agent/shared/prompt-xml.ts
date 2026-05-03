@@ -21,15 +21,20 @@ export interface TaskXmlInput {
   description: string;
 }
 
-// <task><title>...</title><description>...</description></task>
-// Self-closes <description> when empty so the envelope stays tidy.
+// <task>
+//   <title>...</title>
+//   <description>...</description>
+// </task>
+//
+// Empty optional sections are omitted entirely (no `<description />`) so an
+// empty tag never gives the agent a "Got it - what would you like me to do?"
+// non-signal. When future fields like <labels> or <acceptance_criteria> are
+// added, follow the same omit-when-empty pattern.
 export function buildTaskXml(input: TaskXmlInput): string {
   const lines: string[] = ['<task>'];
   lines.push(`  <title>${escapeXml(input.title)}</title>`);
   if (input.description.trim()) {
     lines.push(`  <description>${escapeXml(input.description)}</description>`);
-  } else {
-    lines.push('  <description />');
   }
   lines.push('</task>');
   return lines.join('\n');

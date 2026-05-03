@@ -13,6 +13,7 @@ import { isGitRepo, isInsideWorktree, isKangenticWorktree } from '../../git/git-
 import { agentRegistry } from '../../agent/agent-registry';
 import { getProjectDb, closeProjectDb } from '../../db/database';
 import { PATHS } from '../../config/paths';
+import { applyRuntimeConfig } from '../../config/apply-runtime-config';
 import { ensureGitignore } from '../helpers';
 import { searchProjectEntries } from '../helpers/project-entry-search';
 import { trackEvent } from '../../analytics/analytics';
@@ -352,9 +353,7 @@ export async function openProjectByPath(context: IpcContext, projectPath: string
   // any existing file so external Claude sessions stop seeing the tools.
   syncProjectMcpConfig(context, project.id, project.path);
 
-  const config = context.configManager.getEffectiveConfig(project.path);
-  context.sessionManager.setMaxConcurrent(config.agent.maxConcurrentSessions);
-  context.sessionManager.setShell(config.terminal.shell);
+  applyRuntimeConfig(context.sessionManager, context.configManager, project.path);
 
   // Enable transcript capture for cross-agent handoffs
   context.sessionManager.setTranscriptRepository(new TranscriptRepository(getProjectDb(project.id)));
@@ -495,9 +494,7 @@ export function registerProjectHandlers(context: IpcContext): void {
     });
 
     // Apply project config overrides (always -- config may have changed)
-    const config = context.configManager.getEffectiveConfig(project.path);
-    context.sessionManager.setMaxConcurrent(config.agent.maxConcurrentSessions);
-    context.sessionManager.setShell(config.terminal.shell);
+    applyRuntimeConfig(context.sessionManager, context.configManager, project.path);
 
     if (!isReopen) {
       const db = getProjectDb(id);

@@ -470,4 +470,16 @@ describe('QwenCommandBuilder', () => {
       expect(mcpServers['user-server']).toBeDefined();
     });
   });
+
+  // ── Multiline prompt preservation (regression guard) ─────────────────────
+  // Regression guard: `{ multiline: true }` must be passed to quoteArg so
+  // multi-line XML task envelopes survive shell delivery under bash.
+
+  describe('multiline XML prompt under bash', () => {
+    it('preserves newlines in the built command when shell is bash', () => {
+      const xml = '<task>\n  <title>Fix login</title>\n  <description>Step 1.\n\nStep 2.</description>\n</task>';
+      const command = buildCommand({ prompt: xml, shell: 'bash' });
+      expect(command).toContain('\n  <title>Fix login</title>');
+    });
+  });
 });

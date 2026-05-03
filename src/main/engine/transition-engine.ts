@@ -60,13 +60,15 @@ export class TransitionEngine {
     const cleanTitle = sanitizeForPty(task.title);
     const cleanDesc = sanitizeForPty(task.description);
     // {{task_xml}} wraps title/description in a <task> envelope (Anthropic +
-    // OpenAI guidance for clear data/instruction boundaries). {{title}} and
-    // {{description}} stay raw for backward-compat with user-customized
-    // prose templates - {{description}} keeps the leading ": " separator.
+    // OpenAI guidance for clear data/instruction boundaries). The XML body
+    // uses the RAW description so multi-line markdown content survives end
+    // to end - quoteArg's `multiline: true` opt-in keeps newlines through
+    // shell delivery. The legacy `{{description}}` prose var stays sanitized
+    // so user-customized single-line templates don't break.
     await this.executeSpawnAgent({
       promptTemplate: skipPromptTemplate ? undefined : '{{task_xml}}{{attachments}}',
     }, task, {
-      task_xml: buildTaskXml({ title: cleanTitle, description: cleanDesc }),
+      task_xml: buildTaskXml({ title: cleanTitle, description: task.description }),
       title: cleanTitle,
       description: cleanDesc ? `: ${cleanDesc}` : '',
       taskId: task.id,
@@ -102,8 +104,10 @@ export class TransitionEngine {
     const attachmentPaths = this.attachmentRepo?.getPathsForTask(task.id) ?? [];
     const cleanTitle = sanitizeForPty(task.title);
     const cleanDesc = sanitizeForPty(task.description);
+    // task_xml gets the RAW description so multi-line markdown survives;
+    // {{description}} stays sanitized for legacy single-line prose templates.
     const templateVars: Record<string, string> = {
-      task_xml: buildTaskXml({ title: cleanTitle, description: cleanDesc }),
+      task_xml: buildTaskXml({ title: cleanTitle, description: task.description }),
       title: cleanTitle,
       description: cleanDesc ? `: ${cleanDesc}` : '',
       taskId: task.id,

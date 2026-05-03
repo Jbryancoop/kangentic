@@ -139,7 +139,8 @@ export class CommandBuilder {
         : options.prompt;
       // -- (end-of-options) prevents content like -> or --flag from being
       // parsed as CLI options regardless of shell quoting behavior.
-      parts.push('--', quoteArg(safePrompt, shell));
+      // multiline: true preserves newlines in the <task> XML envelope.
+      parts.push('--', quoteArg(safePrompt, shell, { multiline: true }));
     }
 
     return parts.join(' ');

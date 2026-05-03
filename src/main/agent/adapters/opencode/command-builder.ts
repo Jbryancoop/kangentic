@@ -98,7 +98,7 @@ export class OpenCodeCommandBuilder {
       const safePrompt = needsDoubleQuoteReplacement
         ? options.prompt.replace(/"/g, "'")
         : options.prompt;
-      parts.push('--prompt', quoteArg(safePrompt, shell));
+      parts.push('--prompt', quoteArg(safePrompt, shell, { multiline: true }));
     }
 
     return parts.join(' ');

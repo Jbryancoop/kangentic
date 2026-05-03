@@ -37,15 +37,33 @@ describe('buildTaskXml', () => {
     ].join('\n'));
   });
 
-  it('self-closes <description /> when description is empty', () => {
+  it('omits <description> entirely when description is empty', () => {
     const xml = buildTaskXml({ title: 'Just a title', description: '' });
-    expect(xml).toContain('<description />');
-    expect(xml).not.toContain('<description>');
+    expect(xml).toBe([
+      '<task>',
+      '  <title>Just a title</title>',
+      '</task>',
+    ].join('\n'));
+    expect(xml).not.toContain('<description');
   });
 
-  it('self-closes <description /> when description is whitespace-only', () => {
+  it('omits <description> entirely when description is whitespace-only', () => {
     const xml = buildTaskXml({ title: 'Title', description: '   \n\t' });
-    expect(xml).toContain('<description />');
+    expect(xml).not.toContain('<description');
+    expect(xml).toBe([
+      '<task>',
+      '  <title>Title</title>',
+      '</task>',
+    ].join('\n'));
+  });
+
+  it('preserves multi-line description content inside <description>', () => {
+    const description = 'First paragraph.\n\nSecond paragraph with `code`.';
+    const xml = buildTaskXml({ title: 'Multi-line', description });
+    expect(xml).toContain('First paragraph.\n\nSecond paragraph with `code`.');
+    // Wrapper still uses newlines between tags
+    expect(xml.startsWith('<task>\n  <title>')).toBe(true);
+    expect(xml.endsWith('</description>\n</task>')).toBe(true);
   });
 
   it('escapes XML special characters in title', () => {

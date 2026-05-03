@@ -10,6 +10,7 @@ import { deepMergeConfig } from '../../../shared/object-utils';
 import { getProjectDb } from '../../db/database';
 import { HandoffRepository } from '../../db/repositories/handoff-repository';
 import { syncProjectMcpConfig } from './projects';
+import { applyRuntimeConfig } from '../../config/apply-runtime-config';
 import type {
   NotificationInput,
   AgentCommand,
@@ -39,11 +40,7 @@ export function registerSystemHandlers(context: IpcContext): void {
 
   ipcMain.handle(IPC.CONFIG_SET, (_, config) => {
     context.configManager.save(config);
-    // Apply runtime changes
-    const effective = context.configManager.getEffectiveConfig(context.currentProjectPath || undefined);
-    context.sessionManager.setMaxConcurrent(effective.agent.maxConcurrentSessions);
-    context.sessionManager.setShell(effective.terminal.shell);
-    context.sessionManager.setIdleTimeout(effective.agent.idleTimeoutMinutes);
+    applyRuntimeConfig(context.sessionManager, context.configManager, context.currentProjectPath);
     // Invalidate cached detection for all agents so the next detect() call picks up new cliPaths
     if (config.agent) {
       import('../../agent/agent-registry').then(({ agentRegistry }) => {
@@ -71,6 +68,7 @@ export function registerSystemHandlers(context: IpcContext): void {
   ipcMain.handle(IPC.CONFIG_SET_PROJECT, (_, overrides) => {
     if (!context.currentProjectPath) throw new Error('No project open');
     context.configManager.saveProjectOverrides(context.currentProjectPath, overrides);
+    applyRuntimeConfig(context.sessionManager, context.configManager, context.currentProjectPath);
   });
 
   ipcMain.handle(IPC.CONFIG_GET_PROJECT_BY_PATH, (_, projectPath: string) => {
@@ -83,6 +81,11 @@ export function registerSystemHandlers(context: IpcContext): void {
     const known = context.projectRepo.list().some((p) => p.path === projectPath);
     if (!known) throw new Error('Unknown project path');
     context.configManager.saveProjectOverrides(projectPath, overrides);
+    // Background projects pick up changes when they next open; only the
+    // currently-open project needs its in-memory state refreshed now.
+    if (projectPath === context.currentProjectPath) {
+      applyRuntimeConfig(context.sessionManager, context.configManager, projectPath);
+    }
   });
 
   ipcMain.handle(IPC.CONFIG_SYNC_DEFAULT_TO_PROJECTS, (_, partial) => {
@@ -93,6 +96,9 @@ export function registerSystemHandlers(context: IpcContext): void {
       const merged = deepMergeConfig(existing, partial);
       context.configManager.saveProjectOverrides(project.path, merged);
       updatedCount++;
+    }
+    if (context.currentProjectPath) {
+      applyRuntimeConfig(context.sessionManager, context.configManager, context.currentProjectPath);
     }
     return updatedCount;
   });

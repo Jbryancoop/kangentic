@@ -103,7 +103,7 @@ export class QwenCommandBuilder {
     if (options.prompt) {
       const safePrompt = sanitizePrompt(options.prompt, shell);
       const flag = options.nonInteractive ? '-p' : '-i';
-      parts.push(flag, quoteArg(safePrompt, shell));
+      parts.push(flag, quoteArg(safePrompt, shell, { multiline: true }));
     }
 
     return parts.join(' ');

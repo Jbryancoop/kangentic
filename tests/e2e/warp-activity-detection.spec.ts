@@ -109,14 +109,13 @@ test.describe('Warp Agent - Activity Detection', () => {
     // The mock echoes back the -C (cwd) it received - should be the project dir
     expect(scrollback).toContain(`MOCK_WARP_CWD:${tmpDir}`);
 
-    // The prompt line includes the task title within the XML envelope.
-    // Prompts are XML-wrapped (per `feat(prompt): wrap task prompts and
-    // handoff context in XML envelopes`), so look for the title inside a
-    // `<title>...</title>` tag on a MOCK_WARP_PROMPT-prefixed line.
-    const promptLine = scrollback.split('\n').find((line: string) =>
-      line.includes('MOCK_WARP_PROMPT:') && line.includes(`<title>${title}</title>`),
-    );
-    expect(promptLine).toBeDefined();
+    // The prompt envelope is XML-wrapped and now spans multiple lines
+    // (`<task>\n  <title>...\n  <description>...\n</task>`), so the title
+    // tag lands on its own line below the MOCK_WARP_PROMPT: prefix. Assert
+    // both markers appear in scrollback rather than on the same physical
+    // line.
+    expect(scrollback).toContain('MOCK_WARP_PROMPT:');
+    expect(scrollback).toContain(`<title>${title}</title>`);
   });
 });
 

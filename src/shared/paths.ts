@@ -98,6 +98,21 @@ export function isUnixLikeShell(shellName: string): boolean {
 }
 
 /**
+ * True when the shell is cmd.exe (Windows native).
+ *
+ * cmd terminates the command line on a literal newline mid-quote, so
+ * multi-line quoted args have to be flattened before delivery.
+ *
+ * Match is anchored on the basename (stripped of `.exe`) to avoid false
+ * positives on unrelated paths that contain the substring `cmd` (e.g. a
+ * tool installed under `/usr/local/cmd-something/`).
+ */
+export function isCmdShell(shellName: string): boolean {
+  const basename = shellName.toLowerCase().split(/[\\/]/).pop() ?? '';
+  return basename.replace(/\.exe$/, '') === 'cmd';
+}
+
+/**
  * Convert the executable path at the start of a command string for the
  * target shell. Only transforms on Windows; returns unmodified on macOS/Linux.
  *
@@ -156,22 +171,60 @@ export function sanitizeForPty(text: string): string {
  * When `shell` is omitted, falls back to platform detection:
  *  - Windows: double-quotes with backtick, `$`, and `"` escaping
  *  - Unix:    single-quotes, escaped `'`
+ *
+ * Pass `{ multiline: true }` for prompt-style content where newlines must
+ * survive into the quoted output (e.g. the `<task>` XML envelope). Default
+ * behaviour collapses `\r\n\t` into single spaces via `sanitizeForPty`.
+ *
+ * Per-shell multi-line strategy (each preserves newlines as a single physical
+ * input line so the PTY never has to handle continuation):
+ *  - Unix-like shells (bash, zsh, fish, WSL): literal newlines inside `'...'`
+ *    are taken as content. POSIX single-quoted strings handle this natively.
+ *  - PowerShell/pwsh: convert `\n`/`\t` to `` `n ``/`` `t `` escape sequences
+ *    inside `"..."`. PowerShell continuation via PTY is unreliable (PSReadLine
+ *    behaves differently from interactive typing), so we pin everything to one
+ *    physical line and let PowerShell's escape parser produce the newlines.
+ *  - cmd.exe: no escape syntax for embedded newlines; falls back to the
+ *    sanitised single-line form.
  */
-export function quoteArg(arg: string, shell?: string): string {
+export function quoteArg(
+  arg: string,
+  shell?: string,
+  options?: { multiline?: boolean },
+): string {
   if (/^[a-zA-Z0-9_./:-]+$/.test(arg)) {
     return arg;
   }
-  const sanitised = sanitizeForPty(arg);
   const useDoubleQuotes = shell
     ? !isUnixLikeShell(shell)
     : process.platform === 'win32';
+  const isCmd = shell ? isCmdShell(shell) : false;
+  // multiline=true with no shell hint falls back to sanitisation: we can't
+  // tell PowerShell from cmd, and only the unix branch tolerates raw newlines.
+  const preserveNewlines = options?.multiline === true && shell !== undefined && !isCmd;
+
   if (useDoubleQuotes) {
     // PowerShell: ` is escape char, $ triggers variable/subexpression expansion.
     // Escape backticks first (` → ``), then $ ($ → `$), then quotes (" → \").
     // cmd.exe: $ is not special, `` and `$ are harmless literal text.
-    return `"${sanitised.replace(/`/g, '``').replace(/\$/g, '`$').replace(/"/g, '\\"')}"`;
+    const source = preserveNewlines ? arg : sanitizeForPty(arg);
+    let escaped = source.replace(/`/g, '``').replace(/\$/g, '`$').replace(/"/g, '\\"');
+    if (preserveNewlines) {
+      // Convert real newlines/tabs to PowerShell escape sequences. These are
+      // NEW backticks (not literal content), so the parser interprets them as
+      // a single newline/tab character inside the quoted string. Order: CRLF
+      // first (so the LF in CRLF is consumed), then lone LF, then lone CR
+      // (rare classic-Mac line endings), then tabs.
+      escaped = escaped
+        .replace(/\r\n/g, '`n')
+        .replace(/\n/g, '`n')
+        .replace(/\r/g, '`n')
+        .replace(/\t/g, '`t');
+    }
+    return `"${escaped}"`;
   }
-  return `'${sanitised.replace(/'/g, "'\\''")}'`;
+  const source = preserveNewlines ? arg : sanitizeForPty(arg);
+  return `'${source.replace(/'/g, "'\\''")}'`;
 }
 
 // ---------------------------------------------------------------------------

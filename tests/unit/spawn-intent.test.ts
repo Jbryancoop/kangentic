@@ -223,7 +223,9 @@ describe('resolveSpawnIntent', () => {
   });
 
   it('expands {{task_xml}} placeholder through the fresh-spawn path', () => {
-    const taskXmlValue = '<task>\n  <title>Hello</title>\n  <description />\n</task>';
+    // buildTaskXml omits <description> entirely when empty (no self-closing tag).
+    // This value matches what the engine produces for a task with no description.
+    const taskXmlValue = '<task>\n  <title>Hello</title>\n</task>';
     const intent = resolveSpawnIntent({
       taskId: 'task-1',
       sessionType: 'claude_agent',
@@ -236,5 +238,6 @@ describe('resolveSpawnIntent', () => {
     expect(intent.mode).toBe('fresh');
     expect(intent.prompt).toContain('<task>');
     expect(intent.prompt).toContain('<title>Hello</title>');
+    expect(intent.prompt).not.toContain('<description');
   });
 });

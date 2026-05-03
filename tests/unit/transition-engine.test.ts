@@ -1,0 +1,324 @@
+/**
+ * Unit tests for TransitionEngine raw/sanitized description split.
+ *
+ * History: prior to this fix, both `task_xml` and the `{{description}}`
+ * template var received the sanitized (newline-stripped) description. This
+ * meant multi-line markdown in task descriptions was collapsed to a single
+ * line before the XML envelope was built, which garbled structured content
+ * like acceptance criteria and bullet lists.
+ *
+ * The fix (this branch):
+ *   - `task_xml`        uses raw `task.description` (multi-line preserved)
+ *   - `{{description}}` uses `sanitizeForPty(task.description)` (newlines stripped)
+ *
+ * These tests pin that contract by inspecting:
+ *   1. `executeAction` (spawn_agent case) via `executeTransition`
+ *   2. `resumeSuspendedSession`
+ *
+ * Strategy: mock everything the engine touches except the logic under test
+ * (buildTaskXml + sanitizeForPty). We capture the `prompt` field written
+ * to the session repo and the command built by the adapter mock to verify
+ * what was interpolated.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { TransitionEngine } from '../../src/main/engine/transition-engine';
+import { buildTaskXml } from '../../src/main/agent/shared/prompt-xml';
+import { sanitizeForPty } from '../../src/shared/paths';
+
+// ---------------------------------------------------------------------------
+// Minimal mock factories
+// ---------------------------------------------------------------------------
+
+function makeTask(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'task-abc-1',
+    title: 'Fix login flow',
+    description: 'Step 1: check OAuth.\n\nStep 2: refresh token.',
+    session_id: null,
+    worktree_path: null,
+    branch_name: null,
+    pr_url: null,
+    pr_number: null,
+    agent: null,
+    ...overrides,
+  };
+}
+
+function makeAction(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'action-1',
+    type: 'spawn_agent',
+    config_json: JSON.stringify({
+      promptTemplate: '{{task_xml}}{{attachments}}',
+    }),
+    ...overrides,
+  };
+}
+
+function makeSessionRepo() {
+  const insertedRecords: unknown[] = [];
+  return {
+    getLatestForTask: vi.fn(() => null),
+    getLatestForTaskByType: vi.fn(() => null),
+    insert: vi.fn((record: unknown) => { insertedRecords.push(record); }),
+    update: vi.fn(),
+    insertedRecords,
+  };
+}
+
+function makeTaskRepo() {
+  return {
+    update: vi.fn(),
+  };
+}
+
+function makeActionRepo(action: ReturnType<typeof makeAction>) {
+  return {
+    getTransitionsFor: vi.fn(() => [{ action_id: action.id }]),
+    getById: vi.fn(() => action),
+  };
+}
+
+function makeAttachmentRepo() {
+  return {
+    getPathsForTask: vi.fn(() => []),
+  };
+}
+
+/**
+ * Capture the command string built by the adapter so we can inspect the
+ * quoted prompt that would be passed to the shell.
+ */
+function makeSessionManager() {
+  const spawnedSessions: Array<{ command: string; prompt?: string }> = [];
+  return {
+    spawn: vi.fn(async (options: { command: string }) => {
+      spawnedSessions.push({ command: options.command });
+      return { id: 'pty-session-1', status: 'running' };
+    }),
+    getShell: vi.fn(async () => 'bash'),
+    spawnedSessions,
+  };
+}
+
+/**
+ * Stub adapter that:
+ * - Claims to be found
+ * - buildCommand returns its prompt option unchanged (for inspection)
+ * - No filesystem side effects
+ */
+const mockAdapter = {
+  name: 'claude',
+  displayName: 'Claude',
+  sessionType: 'claude_agent',
+  supportsCallerSessionId: true,
+  defaultPermission: 'default',
+  detect: vi.fn(async () => ({ found: true, path: '/usr/bin/claude', version: '1.0.0' })),
+  ensureTrust: vi.fn(async () => {}),
+  buildCommand: vi.fn((options: { prompt?: string }) => {
+    // Return a string that embeds the prompt so we can inspect it from outside
+    return `claude ${options.prompt ?? ''}`;
+  }),
+  buildEnv: undefined,
+  getExitSequence: vi.fn(() => ['\x03']),
+  removeHooks: vi.fn(),
+};
+
+vi.mock('../../src/main/agent/agent-registry', () => ({
+  agentRegistry: {
+    getOrThrow: vi.fn(() => mockAdapter),
+    list: vi.fn(() => ['claude']),
+  },
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...original,
+    mkdirSync: vi.fn(),
+    // Allow other fs calls to pass through for tmp operations
+  };
+});
+
+// ---------------------------------------------------------------------------
+// Engine factory
+// ---------------------------------------------------------------------------
+
+function makeEngine(options: {
+  sessionManager?: ReturnType<typeof makeSessionManager>;
+  sessionRepo?: ReturnType<typeof makeSessionRepo>;
+  action?: ReturnType<typeof makeAction>;
+}) {
+  const sessionManager = options.sessionManager ?? makeSessionManager();
+  const sessionRepo = options.sessionRepo ?? makeSessionRepo();
+  const action = options.action ?? makeAction();
+  const actionRepo = makeActionRepo(action);
+  const taskRepo = makeTaskRepo();
+  const attachmentRepo = makeAttachmentRepo();
+
+  const getConfig = vi.fn(() => ({
+    permissionMode: 'default',
+    projectPath: '/some/project',
+    projectId: 'proj-1',
+    gitConfig: {
+      worktreesEnabled: false,
+      defaultBaseBranch: 'main',
+      autoCleanup: false,
+      copyFiles: [],
+    },
+    mcpServerEnabled: false,
+    mcpServerUrl: undefined,
+    mcpServerToken: undefined,
+    defaultAgent: 'claude',
+    cliPathOverrides: {},
+  }));
+
+  type EngineArgs = ConstructorParameters<typeof TransitionEngine>;
+  const engine = new TransitionEngine(
+    sessionManager as unknown as EngineArgs[0],
+    actionRepo as unknown as EngineArgs[1],
+    taskRepo as unknown as EngineArgs[2],
+    getConfig as unknown as EngineArgs[3],
+    sessionRepo as unknown as EngineArgs[4],
+    attachmentRepo as unknown as EngineArgs[5],
+  );
+
+  return { engine, sessionManager, sessionRepo, taskRepo, actionRepo };
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('TransitionEngine - raw/sanitized description split', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Reset buildCommand to default implementation
+    mockAdapter.buildCommand.mockImplementation((options: { prompt?: string }) => {
+      return `claude ${options.prompt ?? ''}`;
+    });
+  });
+
+  it('executeAction (spawn_agent): task_xml contains raw multi-line description', async () => {
+    const rawDescription = 'Step 1: check OAuth.\n\nStep 2: refresh token.';
+    const task = makeTask({ description: rawDescription });
+
+    let capturedPrompt: string | undefined;
+    mockAdapter.buildCommand.mockImplementation((options: { prompt?: string }) => {
+      capturedPrompt = options.prompt;
+      return `claude ${options.prompt ?? ''}`;
+    });
+
+    const { engine } = makeEngine({});
+    await engine.executeTransition(task as Parameters<typeof engine.executeTransition>[0], 'todo', 'doing');
+
+    expect(capturedPrompt).toBeDefined();
+    // The raw newlines must survive into the XML envelope
+    expect(capturedPrompt).toContain('Step 1: check OAuth.\n\nStep 2: refresh token.');
+    // Verify the full XML shape
+    const expectedXml = buildTaskXml({ title: 'Fix login flow', description: rawDescription });
+    expect(capturedPrompt).toContain(expectedXml);
+  });
+
+  it('executeAction (spawn_agent): {{description}} template var uses sanitized (newline-stripped) text', async () => {
+    const rawDescription = 'Step 1: check OAuth.\n\nStep 2: refresh token.';
+    const task = makeTask({ description: rawDescription });
+    const sanitized = sanitizeForPty(rawDescription);
+
+    let capturedPrompt: string | undefined;
+    mockAdapter.buildCommand.mockImplementation((options: { prompt?: string }) => {
+      capturedPrompt = options.prompt;
+      return `claude ${options.prompt ?? ''}`;
+    });
+
+    // Use a custom action that uses the legacy {{description}} template var
+    const legacyAction = makeAction({
+      config_json: JSON.stringify({
+        promptTemplate: '{{title}}{{description}}',
+      }),
+    });
+
+    const sessionManager = makeSessionManager();
+    const sessionRepo = makeSessionRepo();
+
+    const { engine } = makeEngine({ sessionManager, sessionRepo, action: legacyAction });
+    await engine.executeTransition(task as Parameters<typeof engine.executeTransition>[0], 'todo', 'doing');
+
+    expect(capturedPrompt).toBeDefined();
+    // The sanitized var should not contain raw newlines
+    expect(capturedPrompt).not.toContain('\n');
+    // But should still contain the text content
+    expect(capturedPrompt).toContain('Fix login flow');
+    // sanitized description is prefixed with ': ' when non-empty
+    expect(capturedPrompt).toContain(`: ${sanitized}`);
+  });
+
+  it('resumeSuspendedSession: task_xml contains raw multi-line description', async () => {
+    const rawDescription = 'Acceptance criteria:\n- Must handle 404\n- Must retry 3x';
+    const task = makeTask({ description: rawDescription });
+
+    let capturedPrompt: string | undefined;
+    mockAdapter.buildCommand.mockImplementation((options: { prompt?: string }) => {
+      capturedPrompt = options.prompt;
+      return `claude ${options.prompt ?? ''}`;
+    });
+
+    const { engine } = makeEngine({});
+    await engine.resumeSuspendedSession(task as Parameters<typeof engine.resumeSuspendedSession>[0]);
+
+    expect(capturedPrompt).toBeDefined();
+    // Raw newlines preserved in the XML body
+    expect(capturedPrompt).toContain('Acceptance criteria:\n- Must handle 404\n- Must retry 3x');
+    const expectedXml = buildTaskXml({ title: 'Fix login flow', description: rawDescription });
+    expect(capturedPrompt).toContain(expectedXml);
+  });
+
+  it('resumeSuspendedSession: empty description omits <description> entirely', async () => {
+    const task = makeTask({ description: '' });
+
+    let capturedPrompt: string | undefined;
+    mockAdapter.buildCommand.mockImplementation((options: { prompt?: string }) => {
+      capturedPrompt = options.prompt;
+      return `claude ${options.prompt ?? ''}`;
+    });
+
+    const { engine } = makeEngine({});
+    await engine.resumeSuspendedSession(task as Parameters<typeof engine.resumeSuspendedSession>[0]);
+
+    expect(capturedPrompt).toBeDefined();
+    // buildTaskXml omits <description> entirely when empty - no self-closing tag
+    expect(capturedPrompt).not.toContain('<description');
+    expect(capturedPrompt).toContain('<title>Fix login flow</title>');
+  });
+
+  it('resumeSuspendedSession: whitespace-only description omits <description> entirely', async () => {
+    const task = makeTask({ description: '   \n\t  ' });
+
+    let capturedPrompt: string | undefined;
+    mockAdapter.buildCommand.mockImplementation((options: { prompt?: string }) => {
+      capturedPrompt = options.prompt;
+      return `claude ${options.prompt ?? ''}`;
+    });
+
+    const { engine } = makeEngine({});
+    await engine.resumeSuspendedSession(task as Parameters<typeof engine.resumeSuspendedSession>[0]);
+
+    expect(capturedPrompt).toBeDefined();
+    expect(capturedPrompt).not.toContain('<description');
+  });
+
+  it('session repo receives the raw-description prompt', async () => {
+    const rawDescription = 'Line one.\n\nLine two.';
+    const task = makeTask({ description: rawDescription });
+    const sessionRepo = makeSessionRepo();
+
+    const { engine } = makeEngine({ sessionRepo });
+    await engine.executeTransition(task as Parameters<typeof engine.executeTransition>[0], 'todo', 'doing');
+
+    expect(sessionRepo.insert).toHaveBeenCalledTimes(1);
+    const inserted = sessionRepo.insert.mock.calls[0][0] as { prompt?: string };
+    expect(inserted.prompt).toBeDefined();
+    // The prompt stored in the DB should contain the XML with raw newlines
+    expect(inserted.prompt).toContain(rawDescription);
+  });
+});

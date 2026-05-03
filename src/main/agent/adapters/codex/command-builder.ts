@@ -89,7 +89,7 @@ export class CodexCommandBuilder {
       const safePrompt = needsDoubleQuoteReplacement
         ? options.prompt.replace(/"/g, "'")
         : options.prompt;
-      parts.push(quoteArg(safePrompt, shell));
+      parts.push(quoteArg(safePrompt, shell, { multiline: true }));
     }
 
     return parts.join(' ');

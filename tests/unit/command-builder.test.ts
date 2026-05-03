@@ -12,6 +12,7 @@ import os from 'node:os';
 import {
   quoteArg,
   isUnixLikeShell,
+  isCmdShell,
   adaptCommandForShell,
   convertWindowsExePath,
   sanitizeForPty,
@@ -178,11 +179,80 @@ describe('Command Builder Logic', () => {
     expect(quoted).toMatch(/^["'].*["']$/);
   });
 
-  it('quoteArg sanitises multiline input', () => {
+  it('quoteArg sanitises multiline input by default (regression guard)', () => {
     const multiline = 'line1\nline2\nline3';
     const result = quoteArg(multiline);
     expect(result).not.toContain('\n');
     expect(result).toContain('line1 line2 line3');
+  });
+
+  it('quoteArg with multiline: true preserves newlines under bash', () => {
+    const xml = '<task>\n  <title>Test</title>\n</task>';
+    const result = quoteArg(xml, 'bash', { multiline: true });
+    expect(result).toContain('\n  <title>Test</title>\n');
+    expect(result.startsWith("'<task>")).toBe(true);
+    expect(result.endsWith("</task>'")).toBe(true);
+  });
+
+  it('quoteArg with multiline: true converts newlines to PowerShell `n escape', () => {
+    // PowerShell continuation via PTY is unreliable - pin the input to one
+    // physical line and let PowerShell's escape parser produce the newlines.
+    const xml = '<task>\n  <title>Test</title>\n</task>';
+    const result = quoteArg(xml, 'pwsh', { multiline: true });
+    // Final string is one physical line (no embedded newlines)
+    expect(result).not.toContain('\n');
+    // Newlines are encoded as the PowerShell escape `n
+    expect(result).toBe('"<task>`n  <title>Test</title>`n</task>"');
+  });
+
+  it('quoteArg with multiline: true escapes tabs as PowerShell `t', () => {
+    const result = quoteArg('col1\tcol2', 'powershell', { multiline: true });
+    expect(result).not.toContain('\t');
+    expect(result).toBe('"col1`tcol2"');
+  });
+
+  it('quoteArg with multiline: true preserves literal backticks via doubling under PowerShell', () => {
+    // A literal backtick in the prompt content must NOT collide with the
+    // newline escape we add - existing backticks get doubled first.
+    const result = quoteArg('use `code` here\nline2', 'pwsh', { multiline: true });
+    // ``code`` keeps the literal backticks; `n is the newline escape we add
+    expect(result).toBe('"use ``code`` here`nline2"');
+  });
+
+  it('quoteArg with multiline: true falls back to sanitisation under cmd', () => {
+    // cmd.exe terminates the command on a literal newline mid-quote, so we
+    // accept readability loss to keep the command parseable.
+    const xml = '<task>\n  <title>Test</title>\n</task>';
+    const result = quoteArg(xml, 'cmd', { multiline: true });
+    expect(result).not.toContain('\n');
+    expect(result).toContain('<task>');
+    expect(result).toContain('<title>Test</title>');
+  });
+
+  it('quoteArg with multiline: true falls back to sanitisation when shell is omitted', () => {
+    // Without a shell hint we can't tell PowerShell from cmd, and only the
+    // unix branch tolerates raw newlines. Conservative fallback: sanitise.
+    const xml = '<task>\n  <title>Test</title>\n</task>';
+    const result = quoteArg(xml, undefined, { multiline: true });
+    expect(result).not.toContain('\n');
+    expect(result).toContain('<task>');
+    expect(result).toContain('<title>Test</title>');
+  });
+
+  it('isCmdShell matches cmd basename only, not random paths containing "cmd"', () => {
+    // Anchored basename match so unrelated paths don't trigger the cmd
+    // fallback in quoteArg.
+    expect(isCmdShell('cmd')).toBe(true);
+    expect(isCmdShell('cmd.exe')).toBe(true);
+    expect(isCmdShell('CMD.EXE')).toBe(true);
+    expect(isCmdShell('C:\\Windows\\System32\\cmd.exe')).toBe(true);
+    expect(isCmdShell('/c/windows/system32/cmd.exe')).toBe(true);
+
+    expect(isCmdShell('/usr/local/cmd-tool/sh')).toBe(false);
+    expect(isCmdShell('command.com')).toBe(false);
+    expect(isCmdShell('bash')).toBe(false);
+    expect(isCmdShell('powershell')).toBe(false);
+    expect(isCmdShell('pwsh')).toBe(false);
   });
 
   it('PowerShell call operator prefix', () => {
