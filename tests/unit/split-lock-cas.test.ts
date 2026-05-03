@@ -209,8 +209,8 @@ function createMockContext() {
     boardConfigManager: {
       getDefaultBaseBranch: vi.fn(() => null),
     },
-    commandInjector: {
-      schedule: vi.fn(),
+    terminalSubmitScheduler: {
+      scheduleKeystrokes: vi.fn(),
       cancel: vi.fn(),
     },
     projectRepo: {

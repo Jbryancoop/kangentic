@@ -68,7 +68,7 @@ function makeDeps(options: { sessionStatus?: 'running' | 'queued' } = {}) {
   return {
     getSessionManager: () => sessionManager as never,
     getBoardConfigManager: () => ({ detach: vi.fn() }) as never,
-    getCommandInjector: () => ({ cancelAll: vi.fn() }) as never,
+    getTerminalSubmitScheduler: () => ({ cancelAll: vi.fn() }) as never,
     getCurrentProjectId: () => null,
     deleteProjectFromIndex: vi.fn(),
     stopUpdaterTimers: vi.fn(),

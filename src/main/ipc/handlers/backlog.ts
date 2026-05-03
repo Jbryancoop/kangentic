@@ -250,7 +250,7 @@ export function registerBacklogHandlers(context: IpcContext): void {
       if (!task) throw new Error(`Task ${input.taskId} not found`);
 
       // Cancel any pending auto_command injection before cleanup
-      context.commandInjector.cancel(input.taskId);
+      context.terminalSubmitScheduler.cancel(input.taskId);
 
       // Clean up session, worktree, and branch
       await cleanupTaskResources(context, task, tasks);

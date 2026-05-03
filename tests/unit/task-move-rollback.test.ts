@@ -174,9 +174,9 @@ interface MockContext {
   sessionManager: MockSessionManager;
   configManager: { getEffectiveConfig: ReturnType<typeof vi.fn> };
   boardConfigManager: { getDefaultBaseBranch: ReturnType<typeof vi.fn> };
-  commandInjector: {
+  terminalSubmitScheduler: {
     cancel: ReturnType<typeof vi.fn>;
-    schedule: ReturnType<typeof vi.fn>;
+    scheduleKeystrokes: ReturnType<typeof vi.fn>;
   };
   projectRepo: { getById: ReturnType<typeof vi.fn> };
 }
@@ -288,9 +288,9 @@ function makeContext(
     boardConfigManager: {
       getDefaultBaseBranch: vi.fn(() => null),
     },
-    commandInjector: {
+    terminalSubmitScheduler: {
       cancel: vi.fn(),
-      schedule: vi.fn(),
+      scheduleKeystrokes: vi.fn(),
     },
     projectRepo: {
       getById: vi.fn(() => ({ id: 'proj-test', default_agent: 'claude' })),

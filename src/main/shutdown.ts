@@ -5,12 +5,12 @@ import { markRecordSuspended, markRecordExited } from './engine/session-lifecycl
 import { captureSessionMetrics } from './ipc/handlers/session-metrics';
 import type { SessionManager } from './pty/session-manager';
 import type { BoardConfigManager } from './config/board-config-manager';
-import type { CommandInjector } from './engine/command-injector';
+import type { TerminalSubmitScheduler } from './engine/terminal-submit-scheduler';
 
 interface ShutdownDependencies {
   getSessionManager: () => SessionManager;
   getBoardConfigManager: () => BoardConfigManager;
-  getCommandInjector: () => CommandInjector;
+  getTerminalSubmitScheduler: () => TerminalSubmitScheduler;
   getCurrentProjectId: () => string | null;
   deleteProjectFromIndex: (projectId: string) => void;
   stopUpdaterTimers: () => void;
@@ -41,7 +41,7 @@ export function syncShutdownCleanup(dependencies: ShutdownDependencies): void {
     dependencies.getBoardConfigManager().detach();
 
     const sessionManager = dependencies.getSessionManager();
-    dependencies.getCommandInjector().cancelAll();
+    dependencies.getTerminalSubmitScheduler().cancelAll();
 
     // Mark running DB records as 'suspended' so sessions can resume on next launch.
     // This must happen BEFORE killAll() because killAll sends best-effort exit

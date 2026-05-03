@@ -6,8 +6,8 @@ import type { ConfigManager } from '../config/config-manager';
 import type { BoardConfigManager } from '../config/board-config-manager';
 import type { GitDetector } from '../git/git-detector';
 import type { ShellResolver } from '../pty/spawn/shell-resolver';
-import type { CommandInjector } from '../engine/command-injector';
-import type { PasteEngine } from '../pty/paste-engine';
+import type { TerminalSubmitScheduler } from '../engine/terminal-submit-scheduler';
+import type { TerminalSubmit } from '../pty/terminal-submit';
 import type { McpHttpServerHandle } from '../agent/mcp-http-server';
 
 export interface IpcContext {
@@ -19,13 +19,25 @@ export interface IpcContext {
   boardConfigManager: BoardConfigManager;
   gitDetector: GitDetector;
   shellResolver: ShellResolver;
-  commandInjector: CommandInjector;
   /**
-   * Deterministic text-paste-and-submit primitive used by the embedded
-   * browser pane (and slated to replace the wall-clock submit chains in
-   * `CommandInjector` in a follow-up).
+   * Task-keyed lifecycle wrapper around `TerminalSubmit.submitKeystrokes`.
+   * Owns: cancel-on-rerun, fresh-spawn `'thinking'` wait, drag-burst
+   * coalescing. All `auto_command` and settings-injection callers go
+   * through this. Renamed from `commandInjector` in the TerminalSubmit
+   * unification.
    */
-  pasteEngine: PasteEngine;
+  terminalSubmitScheduler: TerminalSubmitScheduler;
+  /**
+   * Unified byte-pushing engine. `submitContent` for bracketed paste of
+   * free-form text (browser-pane Send), `submitKeystrokes` for slash
+   * commands and anything the TUI must interpret (auto_command, /model,
+   * /effort, send_command). Layered on top by `terminalSubmitScheduler`
+   * for the task-keyed scheduling lifecycle. The bracketed-paste machinery
+   * lives in `pty/paste-engine.ts` as a private implementation detail
+   * consumed only by TerminalSubmit; callers should never reach into
+   * paste-engine directly.
+   */
+  terminalSubmit: TerminalSubmit;
   currentProjectId: string | null;
   currentProjectPath: string | null;
   /**

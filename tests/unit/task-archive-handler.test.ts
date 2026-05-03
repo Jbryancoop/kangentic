@@ -201,8 +201,8 @@ interface MockContext {
   boardConfigManager: {
     getDefaultBaseBranch: ReturnType<typeof vi.fn>;
   };
-  commandInjector: {
-    schedule: ReturnType<typeof vi.fn>;
+  terminalSubmitScheduler: {
+    scheduleKeystrokes: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -278,8 +278,8 @@ function createMockContext(overrides: Partial<MockContext> = {}): MockContext {
     boardConfigManager: {
       getDefaultBaseBranch: vi.fn(() => null),
     },
-    commandInjector: {
-      schedule: vi.fn(),
+    terminalSubmitScheduler: {
+      scheduleKeystrokes: vi.fn(),
     },
     ...overrides,
   };
@@ -402,7 +402,7 @@ describe('task-archive handlers', () => {
       expect(result).toMatchObject({ id: 'task-nospawn' });
       expect(mockEnsureTaskWorktree).not.toHaveBeenCalled();
       expect(mockCreateTransitionEngine).not.toHaveBeenCalled();
-      expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
     });
 
     it('returns task without spawning when ensureTaskWorktree throws', async () => {
@@ -424,7 +424,7 @@ describe('task-archive handlers', () => {
 
       expect(result).toMatchObject({ id: 'task-worktree-err' });
       expect(mockCreateTransitionEngine).not.toHaveBeenCalled();
-      expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
     });
 
     it('returns task without spawning when ensureTaskBranchCheckout throws', async () => {
@@ -447,7 +447,7 @@ describe('task-archive handlers', () => {
 
       expect(result).toMatchObject({ id: 'task-checkout-err' });
       expect(mockCreateTransitionEngine).not.toHaveBeenCalled();
-      expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
     });
 
     it('skips transition engine when no role=done lane exists', async () => {
@@ -472,7 +472,7 @@ describe('task-archive handlers', () => {
 
       expect(result).toMatchObject({ id: 'task-no-done' });
       expect(mockCreateTransitionEngine).not.toHaveBeenCalled();
-      expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
     });
 
     it('calls executeTransition with doneLane -> targetSwimlaneId on happy path', async () => {
@@ -589,10 +589,10 @@ describe('task-archive handlers', () => {
         targetSwimlaneId: 'lane-auto',
       });
 
-      expect(context.commandInjector.schedule).toHaveBeenCalledWith(
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
         'task-auto-cmd',
         'session-xyz',
-        '/run-tests',
+        ['/run-tests'],
         { freshlySpawned: true },
       );
     });
@@ -618,7 +618,7 @@ describe('task-archive handlers', () => {
       });
 
       // targetLane.auto_command is null
-      expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
     });
 
     // -----------------------------------------------------------------------
@@ -757,7 +757,7 @@ describe('task-archive handlers', () => {
       // ensureTaskWorktree must NOT have been called (auto_spawn=false short-circuits)
       expect(mockEnsureTaskWorktree).not.toHaveBeenCalled();
       expect(mockCreateTransitionEngine).not.toHaveBeenCalled();
-      expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
     });
 
     it('continues processing subsequent tasks when one worktree creation fails', async () => {
@@ -860,17 +860,17 @@ describe('task-archive handlers', () => {
         'lane-auto-bulk',
       );
 
-      expect(context.commandInjector.schedule).toHaveBeenCalledTimes(2);
-      expect(context.commandInjector.schedule).toHaveBeenCalledWith(
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledTimes(2);
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
         'task-bulk-cmd-a',
         'session-task-bulk-cmd-a',
-        '/run-ci',
+        ['/run-ci'],
         { freshlySpawned: true },
       );
-      expect(context.commandInjector.schedule).toHaveBeenCalledWith(
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
         'task-bulk-cmd-b',
         'session-task-bulk-cmd-b',
-        '/run-ci',
+        ['/run-ci'],
         { freshlySpawned: true },
       );
     });
@@ -906,7 +906,7 @@ describe('task-archive handlers', () => {
       // resumeSuspendedSession should have been called (no session after transition)
       expect(engine.resumeSuspendedSession).toHaveBeenCalledTimes(1);
       // But schedule must NOT be called since finalTask.session_id is still null
-      expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
     });
   });
 });

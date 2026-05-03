@@ -194,7 +194,7 @@ export async function handleTaskMove(
 
       // --- Priority 1: TARGET IS TO DO → full reset (kill session, remove worktree, delete branch) ---
       if (toLane?.role === 'todo') {
-        context.commandInjector.cancel(task.id);
+        context.terminalSubmitScheduler.cancel(task.id);
         // Clear any lingering spawn progress label from an in-flight spawn
         // that was aborted by this move. The aborted move's catch block also
         // calls clearSpawnProgress, but doing it here too guarantees the
@@ -225,7 +225,7 @@ export async function handleTaskMove(
 
       // --- Priority 2: TARGET IS DONE → suspend + archive (resumable on unarchive) ---
       if (toLane?.role === 'done') {
-        context.commandInjector.cancel(task.id);
+        context.terminalSubmitScheduler.cancel(task.id);
         if (task.session_id) {
           const record = sessionRepo.getLatestForTask(task.id);
           // Accept 'running' AND 'exited' -- exited covers Claude natural exit.
@@ -289,7 +289,7 @@ export async function handleTaskMove(
       // --- Priority 2.5: TARGET HAS auto_spawn=false (and not backlog/done which are handled above) ---
       // → Suspend session if one exists, do NOT spawn new agent
       if (toLane && !toLane.auto_spawn) {
-        context.commandInjector.cancel(task.id);
+        context.terminalSubmitScheduler.cancel(task.id);
         if (task.session_id) {
           const record = sessionRepo.getLatestForTask(task.id);
           if (record && record.agent_session_id
@@ -316,7 +316,7 @@ export async function handleTaskMove(
       //   d) Same agent + no delta and no live-swap: keep session alive
       //      (no-op; preserves auto_command-less moves between custom columns)
       if (task.session_id) {
-        context.commandInjector.cancel(task.id);
+        context.terminalSubmitScheduler.cancel(task.id);
 
         const project = context.projectRepo.getById(resolvedProjectId);
         const { agent: effectiveTargetAgent, isHandoff: isAgentChange } = resolveTargetAgent({
@@ -362,7 +362,7 @@ export async function handleTaskMove(
             autoCommand: interpolatedAuto,
           });
           if (plan) {
-            context.commandInjector.scheduleSequence(task.id, task.session_id, plan.sequence, {
+            context.terminalSubmitScheduler.scheduleKeystrokes(task.id, task.session_id, plan.sequence, {
               verifier: plan.verifier,
               verifiedPrefixLength: plan.verifiedPrefixLength,
             });

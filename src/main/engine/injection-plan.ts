@@ -1,7 +1,7 @@
 import type { Swimlane, Task } from '../../shared/types';
 import type { AgentAdapter } from '../agent/agent-adapter';
 import type { SessionRepository } from '../db/repositories/session-repository';
-import type { CommandVerifier } from './command-injector';
+import type { CommandVerifier } from './terminal-submit-scheduler';
 
 /**
  * Per-agent translation of a column-level model/effort change (and an

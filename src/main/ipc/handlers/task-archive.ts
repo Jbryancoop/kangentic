@@ -96,7 +96,7 @@ export function registerTaskArchiveHandlers(context: IpcContext): void {
           if (finalTask?.session_id && toLane?.auto_command) {
             const vars = buildAutoCommandVars(finalTask);
             const interpolated = interpolateTemplate(toLane.auto_command, vars);
-            context.commandInjector.schedule(finalTask.id, finalTask.session_id, interpolated, { freshlySpawned: true });
+            context.terminalSubmitScheduler.scheduleKeystrokes(finalTask.id, finalTask.session_id, [interpolated], { freshlySpawned: true });
           }
         }
       }
@@ -172,7 +172,7 @@ export function registerTaskArchiveHandlers(context: IpcContext): void {
             if (finalTask?.session_id && toLane?.auto_command) {
               const vars = buildAutoCommandVars(finalTask);
               const interpolated = interpolateTemplate(toLane.auto_command, vars);
-              context.commandInjector.schedule(finalTask.id, finalTask.session_id, interpolated, { freshlySpawned: true });
+              context.terminalSubmitScheduler.scheduleKeystrokes(finalTask.id, finalTask.session_id, [interpolated], { freshlySpawned: true });
             }
           }
         }

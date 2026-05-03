@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import type { CommandVerifier } from '../../../engine/command-injector';
+import type { CommandVerifier } from '../../../engine/terminal-submit-scheduler';
 
 /**
  * Builds a verifier that polls Claude's session JSONL for confirmation that

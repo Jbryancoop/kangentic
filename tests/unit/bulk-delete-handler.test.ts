@@ -207,8 +207,8 @@ interface MockContext {
   boardConfigManager: {
     getDefaultBaseBranch: ReturnType<typeof vi.fn>;
   };
-  commandInjector: {
-    schedule: ReturnType<typeof vi.fn>;
+  terminalSubmitScheduler: {
+    scheduleKeystrokes: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -255,8 +255,8 @@ function createMockContext(): MockContext {
     boardConfigManager: {
       getDefaultBaseBranch: vi.fn(() => null),
     },
-    commandInjector: {
-      schedule: vi.fn(),
+    terminalSubmitScheduler: {
+      scheduleKeystrokes: vi.fn(),
     },
   };
 }

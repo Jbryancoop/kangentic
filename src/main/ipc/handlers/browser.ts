@@ -6,7 +6,7 @@ import { BROWSER_PARTITION } from '../../../shared/browser-partition';
 import type { BrowserCaptureInput } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 import { browserUrlStore } from '../../browser/browser-url-store';
-import { PasteSubmitError } from '../../pty/paste-engine';
+import { PasteSubmitError } from '../../pty/terminal-submit';
 import { agentRegistry } from '../../agent/agent-registry';
 import {
   buildPromptPayload,
@@ -92,10 +92,11 @@ export function registerBrowserHandlers(context: IpcContext): void {
     const adapter = agentName ? agentRegistry.get(agentName) : undefined;
     const verifier = adapter?.getSubmissionVerifier?.('paste') ?? undefined;
 
-    // Engine handles bracketed-paste wrap, drain, paste-to-Enter gap,
-    // and atomic submit. Translate engine errors to renderer-facing toasts.
+    // TerminalSubmit.submitContent handles bracketed-paste wrap, drain,
+    // paste-to-Enter gap, and atomic submit. Translate engine errors to
+    // renderer-facing toasts.
     try {
-      await context.pasteEngine.pasteAndSubmit(input.sessionId, payload, {
+      await context.terminalSubmit.submitContent(input.sessionId, payload, {
         bracketed: true,
         source: 'browser-capture',
         verifier,

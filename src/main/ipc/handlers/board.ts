@@ -109,7 +109,7 @@ export function registerBoardHandlers(context: IpcContext): void {
           toLane: result,
         });
         if (!plan) continue;
-        context.commandInjector.scheduleSequence(task.id, task.session_id, plan.sequence, {
+        context.terminalSubmitScheduler.scheduleKeystrokes(task.id, task.session_id, plan.sequence, {
           verifier: plan.verifier,
           verifiedPrefixLength: plan.verifiedPrefixLength,
         });

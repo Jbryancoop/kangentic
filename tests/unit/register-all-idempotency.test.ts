@@ -232,24 +232,24 @@ describe('registerAllIpc idempotency', () => {
   });
 
   it('second call preserves existing services', async () => {
-    const { registerAllIpc, getSessionManager, getCommandInjector, getBoardConfigManager } = await import('../../src/main/ipc/register-all');
+    const { registerAllIpc, getSessionManager, getTerminalSubmitScheduler, getBoardConfigManager } = await import('../../src/main/ipc/register-all');
 
     const window1 = makeMockWindow(1);
     const window2 = makeMockWindow(2);
 
     registerAllIpc(window1);
     const sessionManager1 = getSessionManager();
-    const commandInjector1 = getCommandInjector();
+    const scheduler1 = getTerminalSubmitScheduler();
     const boardConfigManager1 = getBoardConfigManager();
 
     registerAllIpc(window2);
     const sessionManager2 = getSessionManager();
-    const commandInjector2 = getCommandInjector();
+    const scheduler2 = getTerminalSubmitScheduler();
     const boardConfigManager2 = getBoardConfigManager();
 
     // Same object references (services not recreated)
     expect(sessionManager2).toBe(sessionManager1);
-    expect(commandInjector2).toBe(commandInjector1);
+    expect(scheduler2).toBe(scheduler1);
     expect(boardConfigManager2).toBe(boardConfigManager1);
   });
 });

@@ -207,8 +207,8 @@ interface MockContext {
   boardConfigManager: {
     getDefaultBaseBranch: ReturnType<typeof vi.fn>;
   };
-  commandInjector: {
-    schedule: ReturnType<typeof vi.fn>;
+  terminalSubmitScheduler: {
+    scheduleKeystrokes: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -289,8 +289,8 @@ function createMockContext(overrides: Partial<MockContext> = {}): MockContext {
     boardConfigManager: {
       getDefaultBaseBranch: vi.fn(() => null),
     },
-    commandInjector: {
-      schedule: vi.fn(),
+    terminalSubmitScheduler: {
+      scheduleKeystrokes: vi.fn(),
     },
     ...overrides,
   };
@@ -366,7 +366,7 @@ describe('TASK_CREATE handler', () => {
     expect(result).toMatchObject({ id: 'task-no-spawn' });
     expect(mockEnsureTaskWorktree).not.toHaveBeenCalled();
     expect(mockCreateTransitionEngine).not.toHaveBeenCalled();
-    expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
   });
 
   it('skips lock block when currentProjectPath is null', async () => {
@@ -412,7 +412,7 @@ describe('TASK_CREATE handler', () => {
 
     expect(result).toMatchObject({ id: 'task-new' });
     expect(mockCreateTransitionEngine).not.toHaveBeenCalled();
-    expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
   });
 
   // =========================================================================
@@ -429,7 +429,7 @@ describe('TASK_CREATE handler', () => {
 
     expect(result).toMatchObject({ id: 'task-new' });
     expect(mockCreateTransitionEngine).not.toHaveBeenCalled();
-    expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
   });
 
   // =========================================================================
@@ -534,10 +534,10 @@ describe('TASK_CREATE handler', () => {
       title: 'Auto command task',
     });
 
-    expect(context.commandInjector.schedule).toHaveBeenCalledWith(
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
       'task-auto',
       'session-auto',
-      '/run-tests',
+      ['/run-tests'],
       { freshlySpawned: true },
     );
   });
@@ -568,7 +568,7 @@ describe('TASK_CREATE handler', () => {
       title: 'No session auto task',
     });
 
-    expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
   });
 
   it('does NOT schedule auto-command when lane has no auto_command', async () => {
@@ -583,7 +583,7 @@ describe('TASK_CREATE handler', () => {
     });
 
     // targetLane.auto_command is null
-    expect(context.commandInjector.schedule).not.toHaveBeenCalled();
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
   });
 
   // =========================================================================

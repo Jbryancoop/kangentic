@@ -191,8 +191,8 @@ function createMockContext() {
     boardConfigManager: {
       getDefaultBaseBranch: vi.fn(() => null),
     },
-    commandInjector: {
-      schedule: vi.fn(),
+    terminalSubmitScheduler: {
+      scheduleKeystrokes: vi.fn(),
       cancel: vi.fn(),
     },
     projectRepo: {
@@ -295,7 +295,7 @@ describe('idle-timeout listener - DB side-effect when projectId is present', () 
 
     // Wait for commandInjector.cancel to be called - this is the first
     // observable side-effect inside the locked block, confirming the lock ran.
-    await drainUntil(() => context.commandInjector.cancel.mock.calls.length > 0);
+    await drainUntil(() => context.terminalSubmitScheduler.cancel.mock.calls.length > 0);
 
     // Renderer must be notified regardless of projectId presence.
     expect(context.mainWindow.webContents.send).toHaveBeenCalledWith(
@@ -307,7 +307,7 @@ describe('idle-timeout listener - DB side-effect when projectId is present', () 
     );
 
     // commandInjector.cancel is the first action inside the locked block.
-    expect(context.commandInjector.cancel).toHaveBeenCalledWith('task-idle');
+    expect(context.terminalSubmitScheduler.cancel).toHaveBeenCalledWith('task-idle');
 
     // markRecordSuspended must be called with 'system' as the suspendedBy source.
     expect(vi.mocked(markRecordSuspended)).toHaveBeenCalledWith(
@@ -368,7 +368,7 @@ describe('idle-timeout listener - early exit when projectId is missing', () => {
 
     // commandInjector.cancel is only called inside withTaskLock, which is
     // guarded by `if (!projectId) return;`. Must NOT have been called.
-    expect(context.commandInjector.cancel).not.toHaveBeenCalled();
+    expect(context.terminalSubmitScheduler.cancel).not.toHaveBeenCalled();
 
     // markRecordSuspended must NOT have been called.
     expect(vi.mocked(markRecordSuspended)).not.toHaveBeenCalled();

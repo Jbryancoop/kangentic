@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { Task, Action, ActionConfig, AppConfig, PermissionMode } from '../../shared/types';
 import { sanitizeForPty } from '../../shared/paths';
 import { SessionManager } from '../pty/session-manager';
+import type { TerminalSubmit } from '../pty/terminal-submit';
 import { interpolateTemplate, buildTaskXml } from '../agent/shared';
 import { WorktreeManager } from '../git/worktree-manager';
 import { agentRegistry } from '../agent/agent-registry';
@@ -43,6 +44,7 @@ export interface SpawnOverrides {
 export class TransitionEngine {
   constructor(
     private sessionManager: SessionManager,
+    private terminalSubmit: TerminalSubmit,
     private actionRepo: ActionRepository,
     private taskRepo: TaskRepository,
     private getConfig: () => TransitionEngineConfig,
@@ -320,15 +322,26 @@ export class TransitionEngine {
     }
   }
 
-  private executeSendCommand(config: ActionConfig, task: Task, vars: Record<string, string>): void {
+  private async executeSendCommand(config: ActionConfig, task: Task, vars: Record<string, string>): Promise<void> {
     if (!task.session_id) return;
     const raw = config.command
       ? interpolateTemplate(config.command, vars)
       : '';
     const command = sanitizeForPty(raw);
-    if (command) {
-      this.sessionManager.write(task.session_id, command + '\r');
-    }
+    if (!command) return;
+    // Route through TerminalSubmit so the keystroke pattern (Ctrl+C → text →
+    // Esc → Enter) matches auto_command and settings injection. Sending raw
+    // `text + '\r'` directly leaves the slash-command picker open - the
+    // same regression class that bit auto_command. Fire-and-forget here:
+    // executeSendCommand is called from `executeAction` which has no
+    // back-pressure on the action chain; awaiting would serialize all
+    // transition actions on the keystroke settle.
+    void this.terminalSubmit.submitKeystrokes(task.session_id, [command], {
+      sendCtrlC: true,
+      source: `send_command:${task.id.slice(0, 8)}`,
+    }).catch((error) => {
+      console.error('[TRANSITION] executeSendCommand failed:', error);
+    });
   }
 
   private async executeRunScript(config: ActionConfig, task: Task, vars: Record<string, string>): Promise<void> {

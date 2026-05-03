@@ -395,7 +395,7 @@ export function registerSessionHandlers(context: IpcContext): void {
     // divergence on the next user click - cleaner to fix it here at the source.
     void withTaskLock(taskId, async () => {
       try {
-        context.commandInjector.cancel(taskId);
+        context.terminalSubmitScheduler.cancel(taskId);
         applySuspendDbWrites(context, projectId, taskId, 'system');
       } catch (error) {
         console.error('[idle-timeout] DB sync failed:', error);

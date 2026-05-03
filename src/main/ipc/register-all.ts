@@ -8,8 +8,9 @@ import { ConfigManager } from '../config/config-manager';
 import { BoardConfigManager } from '../config/board-config-manager';
 import { GitDetector } from '../git/git-detector';
 import { ShellResolver } from '../pty/spawn/shell-resolver';
-import { CommandInjector } from '../engine/command-injector';
+import { TerminalSubmitScheduler } from '../engine/terminal-submit-scheduler';
 import { createPasteEngine } from '../pty/paste-engine';
+import { TerminalSubmit } from '../pty/terminal-submit';
 import {
   registerProjectHandlers,
   cleanupProject as cleanupProjectImpl,
@@ -60,12 +61,16 @@ export function registerAllIpc(mainWindow: BrowserWindow, mcpServerHandle: McpHt
     return;
   }
 
-  // Eagerly create SessionManager + PasteEngine + CommandInjector + BoardConfigManager
-  // (lightweight, needed early). CommandInjector depends on PasteEngine for
-  // its delivery primitive, so pasteEngine is constructed first.
+  // Eagerly create SessionManager + PasteEngine + TerminalSubmit +
+  // TerminalSubmitScheduler (lightweight, needed early). TerminalSubmit is
+  // the unified byte-pushing engine (submitContent + submitKeystrokes);
+  // TerminalSubmitScheduler layers task-keyed scheduling (cancel,
+  // fresh-spawn wait, drag-burst coalesce) on top. pasteEngine remains for
+  // now until Step 4 of the migration deletes it.
   const sessionManager = new SessionManager();
   const pasteEngine = createPasteEngine(sessionManager);
-  const commandInjector = new CommandInjector(sessionManager, pasteEngine);
+  const terminalSubmit = new TerminalSubmit(sessionManager, pasteEngine);
+  const terminalSubmitScheduler = new TerminalSubmitScheduler(sessionManager, terminalSubmit);
   const boardConfigManager = new BoardConfigManager({
     ephemeral: process.argv.includes('--ephemeral'),
   });
@@ -101,8 +106,8 @@ export function registerAllIpc(mainWindow: BrowserWindow, mcpServerHandle: McpHt
       if (!shellResolver) shellResolver = new ShellResolver();
       return shellResolver;
     },
-    commandInjector,
-    pasteEngine,
+    terminalSubmitScheduler,
+    terminalSubmit,
     currentProjectId: null,
     currentProjectPath: null,
     mcpServerHandle,
@@ -136,8 +141,8 @@ export function getSessionManager(): SessionManager {
   return requireContext().sessionManager;
 }
 
-export function getCommandInjector(): CommandInjector {
-  return requireContext().commandInjector;
+export function getTerminalSubmitScheduler(): TerminalSubmitScheduler {
+  return requireContext().terminalSubmitScheduler;
 }
 
 export function getBoardConfigManager(): BoardConfigManager {

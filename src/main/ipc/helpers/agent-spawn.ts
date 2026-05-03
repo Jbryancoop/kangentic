@@ -42,7 +42,7 @@ export function createTransitionEngine(
   projectPath: string | null,
 ): TransitionEngine {
   return new TransitionEngine(
-    context.sessionManager, actions, tasks,
+    context.sessionManager, context.terminalSubmit, actions, tasks,
     () => {
       const config = context.configManager.getEffectiveConfig(projectPath || undefined);
       const gitConfig = { ...config.git };
@@ -223,7 +223,7 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
       if (toLane.auto_command?.trim()) {
         const vars = buildAutoCommandVars(currentTask);
         const interpolated = interpolateTemplate(toLane.auto_command, vars);
-        context.commandInjector.schedule(currentTask.id, currentTask.session_id, interpolated, { freshlySpawned: true });
+        context.terminalSubmitScheduler.scheduleKeystrokes(currentTask.id, currentTask.session_id, [interpolated], { freshlySpawned: true });
       }
     }
 
@@ -275,7 +275,7 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
   if (currentTask?.session_id && toLane.auto_command?.trim() && !resumePrompt) {
     const vars = buildAutoCommandVars(currentTask);
     const interpolated = interpolateTemplate(toLane.auto_command, vars);
-    context.commandInjector.schedule(currentTask.id, currentTask.session_id, interpolated, { freshlySpawned: true });
+    context.terminalSubmitScheduler.scheduleKeystrokes(currentTask.id, currentTask.session_id, [interpolated], { freshlySpawned: true });
   }
 }
 
