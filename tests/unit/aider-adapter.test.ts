@@ -26,13 +26,15 @@ vi.mock('which', () => ({
   },
 }));
 
+let mockExistsSyncReturnValue = true;
+
 vi.mock('node:fs', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs')>();
   return {
     ...original,
     default: {
       ...original,
-      existsSync: () => true,
+      existsSync: () => mockExistsSyncReturnValue,
     },
   };
 });
@@ -104,10 +106,15 @@ describe('AiderAdapter', () => {
 
     it('returns found: false when which fails', async () => {
       mockWhichResult = new Error('not found');
-      const result = await adapter.detect();
-      expect(result.found).toBe(false);
-      expect(result.path).toBeNull();
-      expect(result.version).toBeNull();
+      try {
+        mockExistsSyncReturnValue = false;
+        const result = await adapter.detect();
+        expect(result.found).toBe(false);
+        expect(result.path).toBeNull();
+        expect(result.version).toBeNull();
+      } finally {
+        mockExistsSyncReturnValue = true;
+      }
     });
 
     it('returns found: false with the configured path when --version fails on an override', async () => {

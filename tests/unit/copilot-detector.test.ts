@@ -106,11 +106,22 @@ describe('CopilotDetector', () => {
       const which = (await import('which')).default;
       vi.mocked(which).mockRejectedValueOnce(new Error('not found'));
 
-      const freshDetector = new CopilotDetector();
-      const result = await freshDetector.detect();
-      expect(result.found).toBe(false);
-      expect(result.path).toBeNull();
-      expect(result.version).toBeNull();
+      const fs = (await import('node:fs')).default;
+      const fsMock = vi.mocked(fs.existsSync);
+
+      // Temporarily override existsSync to return false for fallback paths
+      fsMock.mockImplementation(() => false);
+
+      try {
+        const freshDetector = new CopilotDetector();
+        const result = await freshDetector.detect();
+        expect(result.found).toBe(false);
+        expect(result.path).toBeNull();
+        expect(result.version).toBeNull();
+      } finally {
+        // Restore the original mock behavior (return true)
+        fsMock.mockImplementation(() => true);
+      }
     });
 
     it('returns found: false with the override path when --version fails', async () => {
