@@ -62,8 +62,13 @@ import { WarpAdapter } from '../../src/main/agent/adapters/warp';
 // Shared test data
 // ---------------------------------------------------------------------------
 
-/** Multi-line XML task envelope - simulates a real task with markdown description. */
-const MULTILINE_XML = '<task>\n  <title>Fix login</title>\n  <description>Step 1.\n\nStep 2.</description>\n</task>';
+/**
+ * Multi-line XML task envelope - simulates a real task with markdown
+ * description. Mirrors the format buildTaskXml emits today: the open and
+ * close <description> tags sit on their own lines for readability when the
+ * body is multi-line.
+ */
+const MULTILINE_XML = '<task>\n  <title>Fix login</title>\n  <description>\nStep 1.\n\nStep 2.\n  </description>\n</task>';
 
 /** The embedded newline we expect to survive quoting under bash. */
 const EXPECTED_FRAGMENT = '\n  <title>Fix login</title>';

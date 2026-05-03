@@ -21,10 +21,28 @@ export interface TaskXmlInput {
   description: string;
 }
 
-// <task>
-//   <title>...</title>
-//   <description>...</description>
-// </task>
+// Single-line description:
+//   <task>
+//     <title>...</title>
+//     <description>short text</description>
+//   </task>
+//
+// Multi-line description (open and close on their own lines so the close
+// tag visually pairs with the opener instead of glueing to the last word):
+//   <task>
+//     <title>...</title>
+//     <description>
+//   first paragraph
+//
+//   second paragraph
+//   </description>
+//   </task>
+//
+// Multi-line content is NOT indented - that would mutate the description
+// body (e.g. silently breaking a markdown code block by adding a 2-space
+// prefix that no longer matches the opening fence). The leading and
+// trailing newline added around the content are harmless: agents trim
+// whitespace inside element bodies.
 //
 // Empty optional sections are omitted entirely (no `<description />`) so an
 // empty tag never gives the agent a "Got it - what would you like me to do?"
@@ -34,7 +52,16 @@ export function buildTaskXml(input: TaskXmlInput): string {
   const lines: string[] = ['<task>'];
   lines.push(`  <title>${escapeXml(input.title)}</title>`);
   if (input.description.trim()) {
-    lines.push(`  <description>${escapeXml(input.description)}</description>`);
+    // Strip trailing whitespace/newlines so the close tag sits on the next
+    // line directly after content - never with a stray blank line between.
+    const body = input.description.replace(/\s+$/, '');
+    if (body.includes('\n')) {
+      lines.push('  <description>');
+      lines.push(escapeXml(body));
+      lines.push('  </description>');
+    } else {
+      lines.push(`  <description>${escapeXml(body)}</description>`);
+    }
   }
   lines.push('</task>');
   return lines.join('\n');

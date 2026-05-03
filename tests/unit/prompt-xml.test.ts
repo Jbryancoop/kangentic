@@ -57,13 +57,55 @@ describe('buildTaskXml', () => {
     ].join('\n'));
   });
 
-  it('preserves multi-line description content inside <description>', () => {
+  it('puts open and close tags on their own lines for multi-line descriptions', () => {
+    // Long descriptions are easier to scan when the closing tag is paired
+    // with the opening tag instead of glued to the last word of content.
     const description = 'First paragraph.\n\nSecond paragraph with `code`.';
     const xml = buildTaskXml({ title: 'Multi-line', description });
-    expect(xml).toContain('First paragraph.\n\nSecond paragraph with `code`.');
-    // Wrapper still uses newlines between tags
-    expect(xml.startsWith('<task>\n  <title>')).toBe(true);
-    expect(xml.endsWith('</description>\n</task>')).toBe(true);
+    expect(xml).toBe([
+      '<task>',
+      '  <title>Multi-line</title>',
+      '  <description>',
+      'First paragraph.',
+      '',
+      'Second paragraph with `code`.',
+      '  </description>',
+      '</task>',
+    ].join('\n'));
+  });
+
+  it('keeps single-line descriptions inline for compactness', () => {
+    const xml = buildTaskXml({ title: 'Compact', description: 'Just one line.' });
+    expect(xml).toBe([
+      '<task>',
+      '  <title>Compact</title>',
+      '  <description>Just one line.</description>',
+      '</task>',
+    ].join('\n'));
+  });
+
+  it('does NOT indent multi-line description body (would mutate code blocks)', () => {
+    // Adding a 2-space prefix to every content line would silently break a
+    // markdown code block by misaligning it from the opening fence.
+    const description = '```ts\nconst x = 1;\n```';
+    const xml = buildTaskXml({ title: 'Code', description });
+    // The triple-backtick fence must appear at column 0, not column 2.
+    expect(xml).toContain('\n```ts\nconst x = 1;\n```\n');
+  });
+
+  it('strips trailing whitespace so close tag never gets a blank line before it', () => {
+    // A description ending in `\n\n` would otherwise render an extra blank
+    // line between the last content line and `  </description>`.
+    const xml = buildTaskXml({ title: 'Trim', description: 'First line.\nSecond line.\n\n' });
+    expect(xml).toBe([
+      '<task>',
+      '  <title>Trim</title>',
+      '  <description>',
+      'First line.',
+      'Second line.',
+      '  </description>',
+      '</task>',
+    ].join('\n'));
   });
 
   it('escapes XML special characters in title', () => {

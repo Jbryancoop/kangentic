@@ -109,11 +109,11 @@ test.describe('Warp Agent - Activity Detection', () => {
     // The mock echoes back the -C (cwd) it received - should be the project dir
     expect(scrollback).toContain(`MOCK_WARP_CWD:${tmpDir}`);
 
-    // The prompt envelope is XML-wrapped and now spans multiple lines
-    // (`<task>\n  <title>...\n  <description>...\n</task>`), so the title
-    // tag lands on its own line below the MOCK_WARP_PROMPT: prefix. Assert
-    // both markers appear in scrollback rather than on the same physical
-    // line.
+    // The prompt envelope is XML-wrapped and spans multiple lines, with
+    // <description> opening and closing on their own lines for readability.
+    // The title tag lands on its own line below the MOCK_WARP_PROMPT: prefix.
+    // Assert both markers appear in scrollback rather than on the same
+    // physical line.
     expect(scrollback).toContain('MOCK_WARP_PROMPT:');
     expect(scrollback).toContain(`<title>${title}</title>`);
   });
