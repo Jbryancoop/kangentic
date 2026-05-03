@@ -7,6 +7,21 @@ import { ActivityStateMachine } from './activity-state-machine';
 const MAX_EVENTS_PER_SESSION = 500; // Cap rendered events in renderer
 const STALE_THINKING_THRESHOLD_MS = 45_000;
 const STALE_THINKING_CHECK_MS = 15_000;
+/**
+ * Maximum wall-clock time a Guard 3 (`pendingIdleWhileBackgroundShell`)
+ * deferral may stay pending before the stale-thinking watchdog assumes
+ * the background shells exited naturally and releases the deferred idle.
+ *
+ * Claude Code does not fire a hook for natural completion of a
+ * `run_in_background: true` Bash, so without this escape hatch the
+ * counter stays positive forever (the "spinner stuck thinking" bug).
+ *
+ * 10 minutes is generous: agents that actively monitor backgrounded
+ * shells via BashOutput regenerate events on every poll, which keeps
+ * the watchdog from firing. Only sessions with NO events at all for
+ * 10 minutes get force-cleared - the intended bug case.
+ */
+const BG_SHELL_DEFER_TIMEOUT_MS = 10 * 60_000;
 
 interface ToolAccumulator {
   callCount: number;
@@ -79,7 +94,13 @@ interface UsageTrackerCallbacks {
  */
 export class UsageTracker {
   private usageCache = new Map<string, SessionUsage>();
-  private activityStateMachine: ActivityStateMachine;
+  // Exposed (readonly field) so tests in `tests/unit/bg-shell-watchdog.test.ts`
+  // can inspect per-session bookkeeping (`deferredIdleAt`, `activeBackgroundShells`,
+  // etc.) after the watchdog fires. Note: `readonly` only prevents reassigning
+  // the field on the UsageTracker instance -- callers can still invoke any
+  // public method on the underlying `ActivityStateMachine`. Production code
+  // should go through `UsageTracker`'s own API; only test code reaches in here.
+  readonly activityStateMachine: ActivityStateMachine;
 
   private sessionParsers = new Map<string, AgentParser>();
   private agentSessionIdChecked = new Set<string>();
@@ -164,6 +185,29 @@ export class UsageTracker {
       if (state.activity !== 'thinking') return;
       if (!this.callbacks.isSessionRunning(sessionId)) return;
 
+      // Guard 3 escape hatch: if a Stop-driven idle has been deferred by
+      // pendingIdleWhileBackgroundShell longer than BG_SHELL_DEFER_TIMEOUT_MS,
+      // assume the background shell exited naturally (Claude Code does not
+      // fire a hook for natural completion) and release the deferred idle.
+      // Uses deferredIdleAt -- the wall-clock moment Guard 3 deferred --
+      // rather than lastThinkingSignal, which gets reset by every event
+      // arrival. Without this escape hatch, the counter would stay positive
+      // forever (the "spinner stuck thinking" bug). See
+      // tests/e2e/background-shell-idle.spec.ts and 1d40a1ef session
+      // events.jsonl for the empirical reproduction.
+      if (state.pendingIdleWhileBackgroundShell && state.deferredIdleAt) {
+        if ((now - state.deferredIdleAt) > BG_SHELL_DEFER_TIMEOUT_MS) {
+          const releaseEvent: SessionEvent = {
+            ts: Date.now(),
+            type: EventType.Idle,
+            detail: IdleReason.Timeout,
+          };
+          this.pushEvent(sessionId, releaseEvent);
+          this.activityStateMachine.releaseDeferredBackgroundIdle(sessionId);
+          return;
+        }
+      }
+
       // Skip sessions still in nucleation (first 45s after entering thinking).
       // During nucleation, agents read local context before making API calls.
       // No hooks fire initially, so the stale threshold doesn't apply yet.
@@ -177,7 +221,8 @@ export class UsageTracker {
         // the agent is busy (not stale). Reset the timer and re-check later
         // instead of force-idling, which would bypass Guard 3
         // (deferStopUntilBackgroundShellsFinish) and flip the state to idle
-        // even though there is real detached work outstanding.
+        // even though there is real detached work outstanding. The escape
+        // hatch above handles the long-deferral case.
         if (state.pendingToolCount > 0 || state.activeBackgroundShells > 0) {
           this.activityStateMachine.markThinkingSignal(sessionId);
           return;

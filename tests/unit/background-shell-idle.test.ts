@@ -181,6 +181,136 @@ describe('Background-shell false-idle bug (Guard 3)', () => {
     machine.processEvent(SESSION_ID, event(EventType.SessionEnd));
     expect(machine.getState(SESSION_ID)?.activeBackgroundShells).toBe(0);
     expect(machine.getState(SESSION_ID)?.pendingIdleWhileBackgroundShell).toBe(false);
+    expect(machine.getState(SESSION_ID)?.deferredIdleAt).toBe(null);
+  });
+
+  it('Guard 3 deferral stamps deferredIdleAt with the deferral timestamp', () => {
+    const { machine } = makeMachine();
+    machine.initSession(SESSION_ID);
+
+    machine.processEvent(SESSION_ID, event(EventType.Prompt));
+    machine.processEvent(SESSION_ID, {
+      ts: Date.now(),
+      type: EventType.BackgroundShellStart,
+      tool: 'Bash',
+    });
+    expect(machine.getState(SESSION_ID)?.deferredIdleAt).toBe(null);
+
+    // Bound assertions are intentionally inclusive (`toBeGreaterThanOrEqual`,
+    // `toBeLessThanOrEqual`): on a fast machine all three Date.now() calls
+    // can return the same millisecond. Do not tighten to strict inequality.
+    const before = Date.now();
+    machine.processEvent(SESSION_ID, event(EventType.Idle));
+    const after = Date.now();
+
+    const deferred = machine.getState(SESSION_ID)?.deferredIdleAt;
+    expect(deferred).not.toBe(null);
+    expect(deferred).toBeGreaterThanOrEqual(before);
+    expect(deferred).toBeLessThanOrEqual(after);
+  });
+
+  it('BackgroundShellEnd clearing the counter also clears deferredIdleAt', () => {
+    const { machine } = makeMachine();
+    machine.initSession(SESSION_ID);
+
+    machine.processEvent(SESSION_ID, event(EventType.Prompt));
+    machine.processEvent(SESSION_ID, {
+      ts: Date.now(),
+      type: EventType.BackgroundShellStart,
+      tool: 'Bash',
+    });
+    machine.processEvent(SESSION_ID, event(EventType.Idle));
+    expect(machine.getState(SESSION_ID)?.deferredIdleAt).not.toBe(null);
+
+    machine.processEvent(SESSION_ID, {
+      ts: Date.now(),
+      type: EventType.BackgroundShellEnd,
+      tool: 'KillBash',
+    });
+    expect(machine.getState(SESSION_ID)?.deferredIdleAt).toBe(null);
+    expect(machine.getState(SESSION_ID)?.pendingIdleWhileBackgroundShell).toBe(false);
+  });
+
+  it('releaseDeferredBackgroundIdle clears state and emits idle when no subagent is active', () => {
+    const { machine, transitions } = makeMachine();
+    machine.initSession(SESSION_ID);
+    transitions.length = 0;
+
+    machine.processEvent(SESSION_ID, event(EventType.Prompt));
+    machine.processEvent(SESSION_ID, {
+      ts: Date.now(),
+      type: EventType.BackgroundShellStart,
+      tool: 'Bash',
+    });
+    machine.processEvent(SESSION_ID, event(EventType.Idle));
+    expect(machine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+    const released = machine.releaseDeferredBackgroundIdle(SESSION_ID);
+
+    expect(released).toBe(true);
+    const state = machine.getState(SESSION_ID);
+    expect(state?.activity).toBe('idle');
+    expect(state?.activeBackgroundShells).toBe(0);
+    expect(state?.pendingIdleWhileBackgroundShell).toBe(false);
+    expect(state?.deferredIdleAt).toBe(null);
+    expect(transitions.at(-1)).toMatchObject({ activity: 'idle' });
+  });
+
+  it('releaseDeferredBackgroundIdle returns false and is a no-op when no Guard 3 deferral is pending', () => {
+    const { machine, transitions } = makeMachine();
+    machine.initSession(SESSION_ID);
+    transitions.length = 0;
+
+    // No bg shell event has fired -- nothing to release.
+    const released = machine.releaseDeferredBackgroundIdle(SESSION_ID);
+
+    expect(released).toBe(false);
+    // No transition should have fired.
+    expect(transitions.length).toBe(0);
+  });
+
+  it('releaseDeferredBackgroundIdle unwinds both guards when subagent is also stale (watchdog escape)', () => {
+    const { machine, transitions } = makeMachine();
+    machine.initSession(SESSION_ID);
+    transitions.length = 0;
+
+    // Both guards active simultaneously.
+    machine.processEvent(SESSION_ID, event(EventType.Prompt));
+    machine.processEvent(SESSION_ID, {
+      ts: Date.now(),
+      type: EventType.SubagentStart,
+      detail: 'general',
+    });
+    machine.processEvent(SESSION_ID, {
+      ts: Date.now(),
+      type: EventType.BackgroundShellStart,
+      tool: 'Bash',
+    });
+    machine.processEvent(SESSION_ID, event(EventType.Idle));
+
+    const state = machine.getState(SESSION_ID);
+    expect(state?.subagentDepth).toBe(1);
+    expect(state?.pendingIdleWhileBackgroundShell).toBe(true);
+    expect(state?.pendingIdleWhileSubagent).toBe(true);
+
+    const released = machine.releaseDeferredBackgroundIdle(SESSION_ID);
+    expect(released).toBe(true);
+
+    const after = machine.getState(SESSION_ID);
+    // Watchdog escape unwinds BOTH pending flags and emits idle. The
+    // subagent is also stale at this point (10+ minutes deferred with no
+    // SubagentStop), and the existing stale-thinking watchdog would
+    // force-idle bypassing Guard 2 on the next tick anyway. Unwinding
+    // here keeps the state machine consistent. subagentDepth itself is
+    // not modified -- a future SubagentStop will still decrement it,
+    // and any new Stop afterwards will not be deferred (counter is 0).
+    expect(after?.activity).toBe('idle');
+    expect(after?.activeBackgroundShells).toBe(0);
+    expect(after?.pendingIdleWhileBackgroundShell).toBe(false);
+    expect(after?.deferredIdleAt).toBe(null);
+    expect(after?.pendingIdleWhileSubagent).toBe(false);
+    expect(after?.subagentDepth).toBe(1);
+    expect(transitions.at(-1)).toMatchObject({ activity: 'idle' });
   });
 
   it('with no bg shell, Idle transitions normally (guard does not over-fire)', () => {
@@ -269,6 +399,83 @@ describe('Guard 2 + Guard 3 composition (both guards active simultaneously)', ()
 
     const idleTransitions = transitions.filter((t) => t.activity === 'idle');
     expect(idleTransitions).toHaveLength(0);
+  });
+
+  it('(b2) SubagentStop hand-off preserves the original deferredIdleAt timestamp', async () => {
+    const { machine } = makeMachine();
+    machine.initSession(COMP_SESSION);
+
+    machine.processEvent(COMP_SESSION, event(EventType.Prompt));
+    machine.processEvent(COMP_SESSION, {
+      ts: Date.now(),
+      type: EventType.SubagentStart,
+      detail: 'general',
+    });
+    machine.processEvent(COMP_SESSION, {
+      ts: Date.now(),
+      type: EventType.BackgroundShellStart,
+      tool: 'Bash',
+    });
+
+    // The original Idle is deferred by BOTH guards. deferredIdleAt is set
+    // to this moment. The bg-shell watchdog 10-min clock starts here.
+    machine.processEvent(COMP_SESSION, event(EventType.Idle));
+    const originalDeferredAt = machine.getState(COMP_SESSION)?.deferredIdleAt;
+    expect(originalDeferredAt).not.toBe(null);
+
+    // Wait at least 1ms so any subsequent Date.now() is strictly greater,
+    // making the regression assertion below unambiguous on fast machines
+    // where back-to-back Date.now() can return the same value.
+    await new Promise((resolve) => setTimeout(resolve, 2));
+
+    // SubagentStop fires later, while Guard 3 was already holding. The
+    // hand-off MUST preserve the original deferredIdleAt -- otherwise the
+    // watchdog clock resets mid-flight and recovery is delayed by however
+    // long the subagent ran.
+    machine.processEvent(COMP_SESSION, { ts: Date.now(), type: EventType.SubagentStop });
+
+    const after = machine.getState(COMP_SESSION);
+    expect(after?.pendingIdleWhileBackgroundShell).toBe(true);
+    expect(after?.deferredIdleAt).toBe(originalDeferredAt);
+  });
+
+  it('(b3) SubagentStop hand-off DOES stamp deferredIdleAt when bg shell started during the subagent run', () => {
+    // Distinguishes from (b2): here the original Idle was deferred ONLY
+    // by Guard 2 (no bg shell at the time). The bg shell started later,
+    // during the subagent's work, so when SubagentStop hands off, this
+    // is genuinely a fresh Guard 3 deferral and the timestamp must stamp.
+    const { machine } = makeMachine();
+    machine.initSession(COMP_SESSION);
+
+    machine.processEvent(COMP_SESSION, event(EventType.Prompt));
+    machine.processEvent(COMP_SESSION, {
+      ts: Date.now(),
+      type: EventType.SubagentStart,
+      detail: 'general',
+    });
+
+    // Idle deferred by Guard 2 only -- no bg shell yet.
+    machine.processEvent(COMP_SESSION, event(EventType.Idle));
+    expect(machine.getState(COMP_SESSION)?.pendingIdleWhileSubagent).toBe(true);
+    expect(machine.getState(COMP_SESSION)?.pendingIdleWhileBackgroundShell).toBe(false);
+    expect(machine.getState(COMP_SESSION)?.deferredIdleAt).toBe(null);
+
+    // bg_shell_start fires during the subagent's run.
+    machine.processEvent(COMP_SESSION, {
+      ts: Date.now(),
+      type: EventType.BackgroundShellStart,
+      tool: 'Bash',
+    });
+    expect(machine.getState(COMP_SESSION)?.deferredIdleAt).toBe(null);
+
+    // SubagentStop hands off -- Guard 3 takes over. This IS a fresh
+    // Guard 3 deferral; the timestamp must stamp.
+    const before = Date.now();
+    machine.processEvent(COMP_SESSION, { ts: Date.now(), type: EventType.SubagentStop });
+    const handed = machine.getState(COMP_SESSION);
+    expect(handed?.pendingIdleWhileBackgroundShell).toBe(true);
+    expect(handed?.deferredIdleAt).not.toBe(null);
+    expect(handed?.deferredIdleAt).toBeGreaterThanOrEqual(before);
   });
 
   it('(c) BackgroundShellEnd fires first while subagent still active: Guard 2 holds, no idle emitted', () => {

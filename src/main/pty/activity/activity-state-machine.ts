@@ -39,12 +39,26 @@ export interface SessionTrackingState {
    * `background_shell_end` (KillBash). Used by Guard 3 to suppress Idle
    * while a detached child is still owned by the agent. Over-estimates
    * when the background shell finishes naturally (no hook fires for
-   * that) -- reset on session_end. See `tests/e2e/background-shell-
-   * idle.spec.ts` for the bug this tracks.
+   * that). Reset paths: `session_end`, an explicit `KillBash` that drops
+   * the counter to zero, or the stale-thinking watchdog escape hatch in
+   * `usage-tracker.ts` when `deferredIdleAt` indicates the deferral has
+   * been pending past `BG_SHELL_DEFER_TIMEOUT_MS`. See
+   * `tests/e2e/background-shell-idle.spec.ts` for the bug this tracks.
    */
   activeBackgroundShells: number;
   /** Guard 3: a Stop-driven idle was deferred because a bg shell is active. */
   pendingIdleWhileBackgroundShell: boolean;
+  /**
+   * Wall-clock timestamp of the most recent Guard 3 deferral. Set when
+   * `pendingIdleWhileBackgroundShell` flips to true; cleared whenever
+   * that flag flips back to false. Distinct from `lastThinkingSignal`
+   * (which is reset by every event arrival) so the stale-thinking
+   * watchdog can measure how long the deferral has actually been
+   * outstanding, independent of spurious events. The watchdog uses this
+   * to release stuck deferrals from background shells that exited
+   * naturally without firing a hook.
+   */
+  deferredIdleAt: number | null;
 }
 
 function createSessionTrackingState(): SessionTrackingState {
@@ -61,6 +75,7 @@ function createSessionTrackingState(): SessionTrackingState {
     pendingPRCommand: false,
     activeBackgroundShells: 0,
     pendingIdleWhileBackgroundShell: false,
+    deferredIdleAt: null,
   };
 }
 
@@ -260,6 +275,46 @@ export class ActivityStateMachine {
   }
 
   /**
+   * Stale-deferral escape hatch for Guard 3. Called by the stale-thinking
+   * watchdog (`checkStaleThinking` in `usage-tracker.ts`) when
+   * `pendingIdleWhileBackgroundShell` has been pending past
+   * `BG_SHELL_DEFER_TIMEOUT_MS`.
+   *
+   * Unlike the `BackgroundShellEnd` release path, this does NOT hand off
+   * to Guard 2 when a subagent is still active. After 10+ minutes of
+   * stale deferral, a subagent that has not yet emitted `subagent_stop`
+   * is itself stuck. The existing stale-thinking force-idle path is
+   * intentionally guard-bypassing for the same reason (it would force
+   * idle even if Guard 2 were holding alone). Unwinding both pending
+   * flags here keeps that semantic consistent and prevents the next
+   * watchdog tick from re-firing through a half-cleared state.
+   *
+   * Returns true if a Guard 3 deferral was released, false if there was
+   * nothing to do. The boolean lets the caller skip emitting a synthetic
+   * Idle event when there was nothing to release.
+   */
+  releaseDeferredBackgroundIdle(sessionId: string): boolean {
+    const state = this.states.get(sessionId);
+    if (!state || !state.pendingIdleWhileBackgroundShell) return false;
+
+    state.activeBackgroundShells = 0;
+    state.pendingIdleWhileBackgroundShell = false;
+    state.deferredIdleAt = null;
+    // The watchdog has waited 10+ minutes; if Guard 2 was also holding,
+    // its subagent is also stale. Drop the flag so the next watchdog
+    // tick does not force-idle on a partially-cleared state.
+    state.pendingIdleWhileSubagent = false;
+
+    if (state.activity !== 'idle') {
+      state.activity = 'idle';
+      state.idleTimestamp = Date.now();
+      state.lastThinkingSignal = null;
+      this.callbacks.onActivityChange(sessionId, 'idle', false);
+    }
+    return true;
+  }
+
+  /**
    * Force a transition to 'idle'. Used by the PTY tracker and the
    * stale-thinking timer. Does NOT set permissionIdle - the caller
    * indicates a synthetic or PTY-based reason, not a hook-driven
@@ -345,6 +400,7 @@ export class ActivityStateMachine {
     if (event.detail === IdleReason.Permission) return false;
     if (state.activeBackgroundShells === 0) return false;
     state.pendingIdleWhileBackgroundShell = true;
+    state.deferredIdleAt = Date.now();
     return true;
   }
 
@@ -407,8 +463,19 @@ export class ActivityStateMachine {
         state.pendingIdleWhileSubagent = false;
         if (state.activeBackgroundShells > 0) {
           // Guard 3 still holds: promote the pending idle to the bg-shell
-          // deferred flag instead of emitting now.
-          state.pendingIdleWhileBackgroundShell = true;
+          // deferred flag instead of emitting now. Only stamp deferredIdleAt
+          // when the flag is actually flipping from false to true (which
+          // happens when a bg_shell_start arrived DURING the subagent's
+          // run, after the original Idle was deferred only by Guard 2).
+          // If the flag was already true (the original Idle was deferred
+          // by BOTH guards simultaneously), preserve the earlier timestamp
+          // so the watchdog measures total time-since-deferred, not
+          // time-since-this-handoff -- otherwise SubagentStop would
+          // reset the 10-min watchdog clock mid-flight.
+          if (!state.pendingIdleWhileBackgroundShell) {
+            state.pendingIdleWhileBackgroundShell = true;
+            state.deferredIdleAt = Date.now();
+          }
         } else if (state.activity !== 'idle') {
           state.activity = 'idle';
           this.callbacks.onActivityChange(sessionId, 'idle', false);
@@ -441,6 +508,7 @@ export class ActivityStateMachine {
       // deferral off to Guard 2 so it can emit when the subagent finishes.
       if (state.activeBackgroundShells === 0 && state.pendingIdleWhileBackgroundShell) {
         state.pendingIdleWhileBackgroundShell = false;
+        state.deferredIdleAt = null;
         if (state.subagentDepth > 0) {
           // Guard 2 still holds: promote the pending idle to the subagent
           // deferred flag instead of emitting now.
@@ -456,6 +524,7 @@ export class ActivityStateMachine {
       // A fresh session should never inherit stale bg-shell state.
       state.activeBackgroundShells = 0;
       state.pendingIdleWhileBackgroundShell = false;
+      state.deferredIdleAt = null;
     }
   }
 
