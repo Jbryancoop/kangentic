@@ -19,6 +19,8 @@ export interface OpenCodeCommandOptions {
   mcpServerEnabled?: boolean;
   mcpServerUrl?: string;
   mcpServerToken?: string;
+  model?: string;
+  effort?: string;
 }
 
 /**
@@ -89,6 +91,11 @@ export class OpenCodeCommandBuilder {
     const agentName = mapPermissionModeToAgent(options.permissionMode);
     if (agentName) {
       parts.push('--agent', quoteArg(agentName, shell));
+    }
+
+    // Per-column model override (format: provider/model, e.g., anthropic/claude-sonnet)
+    if (options.model && options.model.trim().length > 0) {
+      parts.push('--model', quoteArg(options.model.trim(), shell));
     }
 
     if (options.prompt) {

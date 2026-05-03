@@ -4,9 +4,10 @@ import { CopilotCommandBuilder } from './command-builder';
 import { removeSessionConfig } from './hook-manager';
 import { CopilotStatusParser } from './status-parser';
 import { CopilotStreamParser } from './stream-parser';
+import { discoverCopilotCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier } from '../../../../shared/types';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 /**
@@ -67,9 +68,11 @@ export class CopilotAdapter implements AgentAdapter {
   }
 
   buildCommand(options: SpawnCommandOptions): string {
-    const { agentPath, ...rest } = options;
+    const { agentPath, model, effort, ...rest } = options;
     const command = this.commandBuilder.buildCopilotCommand({
       copilotPath: agentPath,
+      model,
+      effort,
       ...rest,
     });
     // Track session config dir keyed by project root for cleanup.
@@ -176,6 +179,23 @@ export class CopilotAdapter implements AgentAdapter {
     // Copilot session history file location is not yet empirically verified.
     // Activity events flow through the hooks pipeline (event-bridge JSONL).
     return null;
+  }
+
+  async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {
+    return discoverCopilotCapabilities(cliPath);
+  }
+
+  getInjectionSequence(spec: SettingsChangeSpec): string[] {
+    const sequence: string[] = [];
+    // Copilot supports `/model <model>` slash command for live model switching
+    if (spec.modelChanged && spec.model) {
+      sequence.push(`/model ${spec.model}`);
+    }
+    // Copilot supports `/reasoning-effort <level>` for live effort switching
+    if (spec.effortChanged && spec.effort) {
+      sequence.push(`/reasoning-effort ${spec.effort}`);
+    }
+    return sequence;
   }
 
   async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {

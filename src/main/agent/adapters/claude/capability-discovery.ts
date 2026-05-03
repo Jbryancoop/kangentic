@@ -172,12 +172,11 @@ function discoverHistoricalModels(): string[] | undefined {
   }
 
   if (models.size === 0) return undefined;
-  // Sort descending so newer versions surface first in the picker (e.g.
-  // `claude-opus-4-7` before `claude-opus-4-6`). Lexicographic descending
-  // is sufficient for Claude's `<family>-<major>-<minor>[-date]` scheme
-  // because higher numbers and later date suffixes compare greater. The
-  // "Default" entry is prepended by the renderer separately.
-  return Array.from(models).sort((a, b) => b.localeCompare(a));
+  // Ascending alphabetical: the family prefix is shared across versions
+  // (e.g. all `claude-opus-*` IDs cluster together) so a simple a-z sort
+  // groups by family for free, and versions within a family land in
+  // increasing order. The "Default" entry is prepended by the renderer.
+  return Array.from(models).sort((a, b) => a.localeCompare(b));
 }
 
 /**

@@ -3,9 +3,10 @@ import { CodexCommandBuilder } from './command-builder';
 import { removeHooks as removeCodexHooks } from './hook-manager';
 import { CodexSessionHistoryParser } from './session-history-parser';
 import { CodexStatusParser } from './status-parser';
+import { discoverCodexCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier } from '../../../../shared/types';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 /**
@@ -50,8 +51,13 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   buildCommand(options: SpawnCommandOptions): string {
-    const { agentPath, ...rest } = options;
-    const command = this.commandBuilder.buildCodexCommand({ codexPath: agentPath, ...rest });
+    const { agentPath, model, effort, ...rest } = options;
+    const command = this.commandBuilder.buildCodexCommand({
+      codexPath: agentPath,
+      model,
+      effort,
+      ...rest,
+    });
     // buildCodexCommand writes hooks into .codex/hooks.json whenever
     // eventsOutputPath is present. Retain a reference keyed by the
     // project root (same key removeHooks uses) so concurrent sessions
@@ -194,6 +200,16 @@ export class CodexAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return CodexSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {
+    return discoverCodexCapabilities(cliPath);
+  }
+
+  getInjectionSequence(_spec: SettingsChangeSpec): string[] {
+    // Codex does not support live `/model` or `/reasoning-effort` slash commands.
+    // Model/effort changes require respawn (handled by task-move.ts fallback).
+    return [];
   }
 
   async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {

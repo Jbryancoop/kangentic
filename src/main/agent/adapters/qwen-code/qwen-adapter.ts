@@ -3,10 +3,11 @@ import { QwenCommandBuilder } from './command-builder';
 import { removeHooks as removeQwenHooks } from './hook-manager';
 import { QwenSessionHistoryParser } from './session-history-parser';
 import { QwenStatusParser } from './status-parser';
+import { discoverQwenCapabilities } from './capability-discovery';
 import { ensureWorktreeTrust } from './trust-manager';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier } from '../../../../shared/types';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 /**
@@ -65,8 +66,13 @@ export class QwenAdapter implements AgentAdapter {
   }
 
   buildCommand(options: SpawnCommandOptions): string {
-    const { agentPath, ...rest } = options;
-    const command = this.commandBuilder.buildQwenCommand({ qwenPath: agentPath, ...rest });
+    const { agentPath, model, effort, ...rest } = options;
+    const command = this.commandBuilder.buildQwenCommand({
+      qwenPath: agentPath,
+      model,
+      effort,
+      ...rest,
+    });
     // buildQwenCommand writes hooks into .qwen/settings.json whenever
     // eventsOutputPath is present. Retain a reference for every such
     // spawn so concurrent sessions in the same cwd serialize cleanup.
@@ -209,6 +215,20 @@ export class QwenAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return QwenSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {
+    return discoverQwenCapabilities(cliPath);
+  }
+
+  getInjectionSequence(spec: SettingsChangeSpec): string[] {
+    const sequence: string[] = [];
+    // Qwen Code supports `/model <model>` slash command for live model switching
+    if (spec.modelChanged && spec.model) {
+      sequence.push(`/model ${spec.model}`);
+    }
+    // Qwen has no effort concept, so skip effort handling
+    return sequence;
   }
 
   async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {

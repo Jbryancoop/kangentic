@@ -5,7 +5,7 @@
  * Codex command shapes (see src/main/agent/adapters/codex/command-builder.ts):
  *   codex --version                                  -> detector probe
  *   codex resume <sessionId> -C <cwd>                -> resume existing
- *   codex -C <cwd> [--full-auto|--sandbox ...] "<prompt>"  -> new session
+ *   codex -C <cwd> [--sandbox ... --ask-for-approval ...] "<prompt>"  -> new session
  *
  * Markers for test assertions (mirrors mock-claude):
  *   MOCK_CODEX_SESSION:<id>   -> new session

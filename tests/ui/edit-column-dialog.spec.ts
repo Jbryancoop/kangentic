@@ -161,15 +161,19 @@ test.describe('EditColumnDialog', () => {
     await openEditDialog('Code Review');
 
     // Default mock agent (Claude) declares effortLevels, supportsModelOverride,
-    // AND a discovered models list, so both should render as dropdowns.
-    const modelSelect = page.locator('[data-testid="column-model-override"]');
-    await expect(modelSelect).toBeVisible();
-    const modelOptions = await modelSelect.locator('option').allTextContents();
-    // Discovered list plus the empty "Default" option.
-    expect(modelOptions).toContain('Default');
-    expect(modelOptions).toContain('opus');
-    expect(modelOptions).toContain('sonnet');
-    expect(modelOptions).toContain('haiku');
+    // AND a discovered models list. Model is now a combobox with autocomplete;
+    // effort still renders as a dropdown.
+    const modelCombobox = page.locator('[data-testid="column-model-override"]');
+    await expect(modelCombobox).toBeVisible();
+    // Combobox is an input; opening the dropdown shows suggestions
+    await expect(modelCombobox).toHaveAttribute('type', 'text');
+    await modelCombobox.click(); // Click to open dropdown
+    // Check that suggestions appear in the dropdown list
+    const dropdownItems = page.locator('[data-model-option]');
+    const modelTexts = await dropdownItems.allTextContents();
+    expect(modelTexts).toContain('opus');
+    expect(modelTexts).toContain('sonnet');
+    expect(modelTexts).toContain('haiku');
 
     const effortSelect = page.locator('[data-testid="column-effort-override"]');
     await expect(effortSelect).toBeVisible();
@@ -202,7 +206,7 @@ test.describe('EditColumnDialog', () => {
     await expect(modelInput).toBeVisible();
     const tag = await modelInput.evaluate((node) => node.tagName.toLowerCase());
     expect(tag).toBe('input');
-    await expect(modelInput).toHaveAttribute('placeholder', /opus|sonnet/i);
+    await expect(modelInput).toHaveAttribute('placeholder', /default/i);
 
     await closeDialog();
     await page.evaluate(() => {
@@ -213,8 +217,8 @@ test.describe('EditColumnDialog', () => {
   test('persists Model and Effort overrides round-trip', async () => {
     await openEditDialog('Code Review');
 
-    const modelSelect = page.locator('[data-testid="column-model-override"]');
-    await modelSelect.selectOption('opus');
+    const modelCombobox = page.locator('[data-testid="column-model-override"]');
+    await modelCombobox.fill('opus');
     const effortSelect = page.locator('[data-testid="column-effort-override"]');
     await effortSelect.selectOption('xhigh');
 
@@ -222,13 +226,13 @@ test.describe('EditColumnDialog', () => {
     await page.waitForTimeout(500);
 
     await openEditDialog('Code Review');
-    const modelSelectAfter = page.locator('[data-testid="column-model-override"]');
-    await expect(modelSelectAfter).toHaveValue('opus');
+    const modelComboboxAfter = page.locator('[data-testid="column-model-override"]');
+    await expect(modelComboboxAfter).toHaveValue('opus');
     const effortSelectAfter = page.locator('[data-testid="column-effort-override"]');
     await expect(effortSelectAfter).toHaveValue('xhigh');
 
     // Reset both so subsequent tests start clean.
-    await modelSelectAfter.selectOption('');
+    await modelComboboxAfter.clear();
     await effortSelectAfter.selectOption('');
     await page.locator('button:has-text("Save")').click();
     await page.waitForTimeout(300);

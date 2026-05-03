@@ -124,14 +124,16 @@ describe('Codex Adapter', () => {
       expect(command).toContain('--ask-for-approval untrusted');
     });
 
-    it("maps 'acceptEdits' to --full-auto", () => {
+    it("maps 'acceptEdits' to --sandbox workspace-write --ask-for-approval never", () => {
       const command = adapter.buildCommand(makeOptions({ permissionMode: 'acceptEdits' }));
-      expect(command).toContain('--full-auto');
+      expect(command).toContain('--sandbox workspace-write');
+      expect(command).toContain('--ask-for-approval never');
     });
 
-    it("maps 'auto' to --full-auto", () => {
+    it("maps 'auto' to --sandbox workspace-write --ask-for-approval on-request", () => {
       const command = adapter.buildCommand(makeOptions({ permissionMode: 'auto' }));
-      expect(command).toContain('--full-auto');
+      expect(command).toContain('--sandbox workspace-write');
+      expect(command).toContain('--ask-for-approval on-request');
     });
 
     it("maps 'bypassPermissions' to --dangerously-bypass-approvals-and-sandbox", () => {

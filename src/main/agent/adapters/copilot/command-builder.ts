@@ -21,6 +21,8 @@ export interface CopilotCommandOptions {
   mcpServerEnabled?: boolean;
   mcpServerUrl?: string;
   mcpServerToken?: string;
+  model?: string;
+  effort?: string;
 }
 
 /**
@@ -106,7 +108,22 @@ export class CopilotCommandBuilder {
       if (options.prompt) {
         parts.push(quoteArg(preparePrompt(options.prompt, shell), shell, { multiline: true }));
       }
+      // Per-column model/effort overrides in non-interactive mode
+      if (options.model && options.model.trim().length > 0) {
+        parts.push('--model', quoteArg(options.model.trim(), shell));
+      }
+      if (options.effort && options.effort.trim().length > 0) {
+        parts.push('--reasoning-effort', quoteArg(options.effort.trim(), shell));
+      }
       return parts.join(' ');
+    }
+
+    // Per-column model/effort overrides
+    if (options.model && options.model.trim().length > 0) {
+      parts.push('--model', quoteArg(options.model.trim(), shell));
+    }
+    if (options.effort && options.effort.trim().length > 0) {
+      parts.push('--reasoning-effort', quoteArg(options.effort.trim(), shell));
     }
 
     // MCP server configuration

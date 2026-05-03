@@ -5,9 +5,10 @@ import { AgentDetector } from '../../shared/agent-detector';
 import { standardUnixFallbackPaths } from '../../shared/fallback-paths';
 import { KimiCommandBuilder } from './command-builder';
 import { KimiSessionHistoryParser } from './session-history-parser';
+import { discoverKimiCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier } from '../../../../shared/types';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 /**
@@ -109,8 +110,13 @@ export class KimiAdapter implements AgentAdapter {
   }
 
   buildCommand(options: SpawnCommandOptions): string {
-    const { agentPath, ...rest } = options;
-    return this.commandBuilder.buildKimiCommand({ kimiPath: agentPath, ...rest });
+    const { agentPath, model, effort, ...rest } = options;
+    return this.commandBuilder.buildKimiCommand({
+      kimiPath: agentPath,
+      model,
+      effort,
+      ...rest,
+    });
   }
 
   interpolateTemplate(template: string, variables: Record<string, string>): string {
@@ -205,6 +211,17 @@ export class KimiAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return KimiSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {
+    return discoverKimiCapabilities(cliPath);
+  }
+
+  getInjectionSequence(_spec: SettingsChangeSpec): string[] {
+    // Kimi likely supports `/model` slash command similar to other agents,
+    // but this is best-effort since research was quota-limited.
+    // For now, return empty array and rely on respawn fallback.
+    return [];
   }
 
   async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {

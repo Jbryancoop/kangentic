@@ -124,6 +124,11 @@ export class KimiCommandBuilder {
     // Permission mapping (--yolo / --plan / nothing).
     parts.push(...mapPermissionMode(options.permissionMode));
 
+    // Per-column model override
+    if (options.model && options.model.trim().length > 0) {
+      parts.push('--model', quoteArg(options.model.trim(), shell));
+    }
+
     // Non-interactive print mode produces stream-json which we feed
     // into the wire-parser pipeline. Without this flag the agent
     // expects an interactive TTY.

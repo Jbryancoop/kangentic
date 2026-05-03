@@ -29,6 +29,8 @@ export interface GeminiCommandOptions {
   mcpServerEnabled?: boolean;
   mcpServerUrl?: string;
   mcpServerToken?: string;
+  model?: string;
+  effort?: string;
 }
 
 export class GeminiCommandBuilder {
@@ -73,6 +75,11 @@ export class GeminiCommandBuilder {
     // For new sessions, no flag is needed (Gemini creates implicitly).
     if (options.resume && options.sessionId) {
       parts.push('--resume', quoteArg(options.sessionId, shell));
+    }
+
+    // Per-column model override
+    if (options.model && options.model.trim().length > 0) {
+      parts.push('--model', quoteArg(options.model.trim(), shell));
     }
 
     // Prompt delivery differs between interactive and non-interactive mode

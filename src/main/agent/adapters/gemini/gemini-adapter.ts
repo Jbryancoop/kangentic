@@ -3,9 +3,10 @@ import { GeminiCommandBuilder } from './command-builder';
 import { removeHooks as removeGeminiHooks } from './hook-manager';
 import { GeminiSessionHistoryParser } from './session-history-parser';
 import { GeminiStatusParser } from './status-parser';
+import { discoverGeminiCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier } from '../../../../shared/types';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 /**
@@ -51,8 +52,13 @@ export class GeminiAdapter implements AgentAdapter {
   }
 
   buildCommand(options: SpawnCommandOptions): string {
-    const { agentPath, ...rest } = options;
-    const command = this.commandBuilder.buildGeminiCommand({ geminiPath: agentPath, ...rest });
+    const { agentPath, model, effort, ...rest } = options;
+    const command = this.commandBuilder.buildGeminiCommand({
+      geminiPath: agentPath,
+      model,
+      effort,
+      ...rest,
+    });
     // buildGeminiCommand writes hooks into .gemini/settings.json whenever
     // eventsOutputPath is present. Retain a reference for every such spawn
     // so concurrent sessions in the same cwd serialize their cleanup.
@@ -185,6 +191,20 @@ export class GeminiAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return GeminiSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {
+    return discoverGeminiCapabilities(cliPath);
+  }
+
+  getInjectionSequence(spec: SettingsChangeSpec): string[] {
+    const sequence: string[] = [];
+    // Gemini supports `/model <model>` slash command for live model switching
+    if (spec.modelChanged && spec.model) {
+      sequence.push(`/model ${spec.model}`);
+    }
+    // Gemini has no effort concept, so skip effort handling
+    return sequence;
   }
 
   async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {

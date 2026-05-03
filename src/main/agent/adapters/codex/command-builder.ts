@@ -19,17 +19,21 @@ export interface CodexCommandOptions {
   mcpServerEnabled?: boolean;
   mcpServerUrl?: string;
   mcpServerToken?: string;
+  model?: string;
+  effort?: string;
 }
 
 /**
  * Map Kangentic's PermissionMode to Codex CLI sandbox + approval flags.
- * Each combination matches a documented Codex preset exactly:
- *   plan        → Safe read-only browsing
- *   dontAsk     → Read-only non-interactive (CI)
- *   default     → Automatically edit, ask for untrusted commands
- *   acceptEdits → Auto (preset)
- *   auto        → Auto (preset)
- *   bypass      → Dangerous full access (--yolo)
+ *
+ * Codex no longer ships `--full-auto`; everything is now expressed via the
+ * pair `--sandbox <mode>` and `--ask-for-approval <policy>`. Mappings:
+ *   plan        → Safe read-only browsing (model can request escalation)
+ *   dontAsk     → Read-only non-interactive (CI; failures returned to model)
+ *   default     → Workspace-write, escalate on untrusted commands
+ *   acceptEdits → Workspace-write, never ask (replaces old --full-auto)
+ *   auto        → Workspace-write, model decides when to ask
+ *   bypass      → Dangerous full access (no sandbox, no approval)
  */
 function mapPermissionMode(mode: PermissionMode): string[] {
   switch (mode) {
@@ -40,8 +44,9 @@ function mapPermissionMode(mode: PermissionMode): string[] {
     case 'default':
       return ['--sandbox', 'workspace-write', '--ask-for-approval', 'untrusted'];
     case 'acceptEdits':
+      return ['--sandbox', 'workspace-write', '--ask-for-approval', 'never'];
     case 'auto':
-      return ['--full-auto'];
+      return ['--sandbox', 'workspace-write', '--ask-for-approval', 'on-request'];
     case 'bypassPermissions':
       return ['--dangerously-bypass-approvals-and-sandbox'];
   }
@@ -80,6 +85,11 @@ export class CodexCommandBuilder {
 
     // Approval mode
     parts.push(...mapPermissionMode(options.permissionMode));
+
+    // Per-column model override
+    if (options.model && options.model.trim().length > 0) {
+      parts.push('--model', quoteArg(options.model.trim(), shell));
+    }
 
     // Prompt as positional argument
     if (options.prompt) {

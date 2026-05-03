@@ -307,10 +307,14 @@ export async function handleTaskMove(
       }
 
       // --- Priority 3: TASK HAS ACTIVE SESSION ---
-      // Three sub-cases:
+      // Four sub-cases (in evaluation order):
       //   a) Agent change (handoff): suspend + fall through to spawnAgent
-      //   b) Same agent + auto_command: inject command directly into running session
-      //   c) Same agent, no auto_command: keep session alive (no-op)
+      //   b) Same agent + adapter has live-swap plan: inject command(s)
+      //      directly into running session (model/effort/auto_command)
+      //   c) Same agent + no live-swap plan + model/effort delta: suspend
+      //      and respawn so the new flags land via command-line args
+      //   d) Same agent + no delta and no live-swap: keep session alive
+      //      (no-op; preserves auto_command-less moves between custom columns)
       if (task.session_id) {
         context.commandInjector.cancel(task.id);
 
@@ -366,12 +370,57 @@ export async function handleTaskMove(
               `[TASK_MOVE] Injecting ${plan.sequence.length} command(s) for task ${task.id.slice(0, 8)}`
               + ` into running session${plan.verifier ? ' (with command verification)' : ''}: ${plan.sequence.join(' | ')}`,
             );
-          } else {
-            console.log(
-              `[TASK_MOVE] Task ${task.id.slice(0, 8)} already has active session`
-              + ` (no model/effort/auto_command delta, same agent). Keeping session alive.`,
-            );
+            return null;
           }
+
+          // If plan is null, check if adapter doesn't support live swap but
+          // settings changed. For adapters with no live swap, trigger respawn
+          // instead of keeping the session alive (respawn applies new flags).
+          const sourceModel = fromLane?.model_override ?? null;
+          const targetModel = toLane?.model_override ?? null;
+          const sourceEffort = fromLane?.effort_override ?? null;
+          const targetEffort = toLane?.effort_override ?? null;
+
+          const hasModelDelta = targetModel !== sourceModel;
+          const hasEffortDelta = targetEffort !== sourceEffort;
+          const hasSettingsDelta = hasModelDelta || hasEffortDelta;
+
+          if (hasSettingsDelta && !interpolatedAuto) {
+            // Settings changed but adapter returned no plan (no live swap).
+            // Suspend and respawn to apply settings via command flags.
+            const sessionRecord = sessionRepo.getLatestForTask(task.id);
+            if (sessionRecord && sessionRecord.agent_session_id
+                && (sessionRecord.status === 'running' || sessionRecord.status === 'exited')) {
+              captureSessionMetrics(context.sessionManager, sessionRepo, task.session_id, sessionRecord.id);
+              markRecordSuspended(sessionRepo, sessionRecord.id, 'system');
+            } else if (sessionRecord && sessionRecord.status === 'queued') {
+              markRecordExited(sessionRepo, sessionRecord.id);
+            }
+            await context.sessionManager.suspend(task.session_id);
+            tasks.update({ id: task.id, session_id: null });
+            console.log(
+              `[TASK_MOVE] Suspending session for task ${task.id.slice(0, 8)}`
+              + ` (model/effort changed, adapter has no live swap). Will respawn with new settings.`,
+            );
+            // Fall through to Phase 2/3 (spawn with new settings)
+            return {
+              task,
+              fromSwimlaneId,
+              originalPosition,
+              toLane,
+              skipPromptTemplate,
+              resolvedProjectId,
+              resolvedProjectPath,
+            };
+          }
+
+          // No live swap plan and no settings delta, or there's an auto_command
+          // without live swap support (treat auto_command as fire-and-forget would
+          // break the semantics - just keep the session alive).
+          console.log(
+            `[TASK_MOVE] Task ${task.id.slice(0, 8)} already has active session`
+            + ` (no model/effort delta or no live swap support, same agent). Keeping session alive.`,
+          );
           return null;
         }
       }

@@ -353,7 +353,8 @@ Resume is a subcommand in Codex (not a flag like Claude).
 | `plan` | `--sandbox read-only --ask-for-approval on-request` | Safe Read-Only Browsing |
 | `dontAsk` | `--sandbox read-only --ask-for-approval never` | Read-Only Non-Interactive (CI) |
 | `default` | `--sandbox workspace-write --ask-for-approval untrusted` | Automatically Edit, Ask for Untrusted |
-| `acceptEdits` / `auto` | `--full-auto` | Auto (Preset) |
+| `acceptEdits` | `--sandbox workspace-write --ask-for-approval never` | Workspace Write, No Approval |
+| `auto` | `--sandbox workspace-write --ask-for-approval on-request` | Workspace Write, Model-Decided |
 | `bypassPermissions` | `--dangerously-bypass-approvals-and-sandbox` | Dangerous Full Access |
 
 ### Hook Integration

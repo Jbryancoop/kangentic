@@ -30,6 +30,8 @@ export interface QwenCommandOptions {
   mcpServerEnabled?: boolean;
   mcpServerUrl?: string;
   mcpServerToken?: string;
+  model?: string;
+  effort?: string;
 }
 
 export class QwenCommandBuilder {
@@ -92,6 +94,11 @@ export class QwenCommandBuilder {
     if (options.sessionId) {
       const flag = options.resume ? '--resume' : '--session-id';
       parts.push(flag, quoteArg(options.sessionId, shell));
+    }
+
+    // Per-column model override
+    if (options.model && options.model.trim().length > 0) {
+      parts.push('--model', quoteArg(options.model.trim(), shell));
     }
 
     // Prompt delivery: Qwen Code requires an explicit flag for prompts.

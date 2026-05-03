@@ -235,13 +235,14 @@ Commands:
 
       const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
       expect(capabilities.supportsModelOverride).toBe(true);
-      // Descending lexicographic sort puts the newest versions and most
-      // recent families first - the renderer prepends a "Default" entry
-      // separately so the picker reads Default -> latest -> ... -> oldest.
+      // Ascending alphabetical groups by family naturally (the shared
+      // `claude-` prefix puts haiku, opus, sonnet in that order) and
+      // keeps versions within a family in increasing order. Order is
+      // consistent across all agent adapters.
       expect(capabilities.models).toEqual([
-        'claude-sonnet-4-6',
-        'claude-opus-4-7',
         'claude-haiku-4-5',
+        'claude-opus-4-7',
+        'claude-sonnet-4-6',
       ]);
     });
 
@@ -273,10 +274,12 @@ Commands:
       // Both forms work for --model but address different builds (dated =
       // pinned, unsuffixed = roll-forward latest). They must surface as
       // separate picker entries so users can choose reproducibility.
+      // Ascending alphabetical: haiku family clusters first, with the
+      // unsuffixed alias before its dated build (alphabetically).
       expect(capabilities.models).toEqual([
-        'claude-opus-4-7-20251022',
-        'claude-haiku-4-5-20251001',
         'claude-haiku-4-5',
+        'claude-haiku-4-5-20251001',
+        'claude-opus-4-7-20251022',
       ]);
     });
 

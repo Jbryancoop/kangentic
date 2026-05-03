@@ -8,6 +8,7 @@ import { useToastStore } from '../../stores/toast-store';
 import { BaseDialog } from './BaseDialog';
 import { ConfirmDialog } from './ConfirmDialog';
 import { IconPickerDialog } from './IconPickerDialog';
+import { ModelCombobox } from './ModelCombobox';
 import { ICON_REGISTRY, ROLE_DEFAULTS, getUsedIcons } from '../../utils/swimlane-icons';
 import { Select } from '../settings/shared';
 import { getPermissionLabel, DEFAULT_PERMISSIONS, DEFAULT_AGENT, getAgentDefaultPermission, resolvePermissionForAgent } from '../../../shared/types';
@@ -83,7 +84,26 @@ export function EditColumnDialog({ swimlane, mode, onClose }: EditColumnDialogPr
   // When the agent ships a curated list (e.g. Claude's `availableModels`),
   // we render a dropdown for nicer UX. Otherwise fall back to a free-form
   // input so the user can type any value the CLI accepts.
-  const discoveredModels = effectiveAgentInfo?.capabilities?.models ?? [];
+  //
+  // Session-level cache: merge in any `model_override` values currently saved
+  // on other columns for the same effective agent. The CLI capability rescan
+  // only sees models that have been written to the agent's session JSONL,
+  // which may lag behind a model the user just typed into another column's
+  // EditColumnDialog. Pulling from the live swimlanes table closes that gap
+  // so the dropdown reflects every model in use across the board.
+  const discoveredModels = (() => {
+    const merged = new Set(effectiveAgentInfo?.capabilities?.models ?? []);
+    for (const lane of swimlanes) {
+      if (!lane.model_override) continue;
+      const laneAgent = lane.agent_override ?? projectDefaultAgent;
+      if (laneAgent !== effectiveAgent) continue;
+      merged.add(lane.model_override);
+    }
+    // Ascending alphabetical: groups by family naturally (the family prefix
+    // is shared across versions, e.g. all `claude-opus-*` cluster together)
+    // and keeps versions within a family in increasing order.
+    return Array.from(merged).sort((a, b) => a.localeCompare(b));
+  })();
 
   const isCustomColor = !PRESET_COLORS.includes(color);
   const usedIcons = getUsedIcons(swimlanes, swimlane?.id);
@@ -440,11 +460,9 @@ export function EditColumnDialog({ swimlane, mode, onClose }: EditColumnDialogPr
               </p>
             </div>
 
-            {/* Model override - capability-gated. When the agent ships a
-                curated `availableModels` list we render a dropdown for nicer
-                UX; otherwise we fall back to a free-form input so the user
-                can type any value the CLI accepts. Either way, no model IDs
-                are hardcoded on Kangentic's side. */}
+            {/* Model override - capability-gated. Combobox supports both
+                autocomplete from discovered models and free-form input for
+                any model ID the CLI accepts. */}
             {supportsModelOverride && (
               <div>
                 <div className="flex items-center justify-between mb-1.5">
@@ -461,28 +479,13 @@ export function EditColumnDialog({ swimlane, mode, onClose }: EditColumnDialogPr
                     </button>
                   )}
                 </div>
-                {discoveredModels.length > 0 ? (
-                  <Select
-                    value={modelOverride}
-                    onChange={(event) => setModelOverride(event.target.value)}
-                    className={DIALOG_SELECT_CLASS}
-                    data-testid="column-model-override"
-                  >
-                    <option value="">Default</option>
-                    {discoveredModels.map((modelId) => (
-                      <option key={modelId} value={modelId}>{modelId}</option>
-                    ))}
-                  </Select>
-                ) : (
-                  <input
-                    type="text"
-                    value={modelOverride}
-                    onChange={(event) => setModelOverride(event.target.value)}
-                    placeholder="Default (e.g. opus, sonnet)"
-                    className="w-full bg-surface border border-edge-input rounded px-3 py-1.5 text-sm text-fg placeholder-fg-faint focus:outline-none focus:border-accent"
-                    data-testid="column-model-override"
-                  />
-                )}
+                <ModelCombobox
+                  value={modelOverride}
+                  onChange={setModelOverride}
+                  availableModels={discoveredModels}
+                  placeholder="Default"
+                  testId="column-model-override"
+                />
                 <p className="text-[11px] text-fg-faint mt-1">
                   Override the model for sessions spawned in this column. Valid values are agent-specific.
                 </p>

@@ -73,8 +73,8 @@ function hexEscape(str, maxLen) {
 
 const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash';
 const shellArgs = process.platform === 'win32'
-  ? ['-NoProfile', '-Command', `& "${codexPath}" -C "${projectDir}" --full-auto "Say hello and nothing else"`]
-  : ['-c', `"${codexPath}" -C "${projectDir}" --full-auto "Say hello and nothing else"`];
+  ? ['-NoProfile', '-Command', `& "${codexPath}" -C "${projectDir}" --sandbox workspace-write --ask-for-approval never "Say hello and nothing else"`]
+  : ['-c', `"${codexPath}" -C "${projectDir}" --sandbox workspace-write --ask-for-approval never "Say hello and nothing else"`];
 
 console.log(`Spawning: ${shell} ${shellArgs.join(' ')}\n`);
 

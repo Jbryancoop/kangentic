@@ -5,8 +5,10 @@ import { interpolateTemplate } from '../../shared/template-utils';
 import { quoteArg, isUnixLikeShell } from '../../../../shared/paths';
 import { CursorStreamParser } from './stream-parser';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
+import { discoverCursorCapabilities } from './capability-discovery';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
 import type {
+  AgentCapabilities,
   AgentPermissionEntry,
   PermissionMode,
   AdapterRuntimeStrategy,
@@ -169,11 +171,19 @@ export class CursorAdapter implements AgentAdapter {
       // sessionId.fromOutput parser can capture the session_id from the
       // init event: {"type":"system","subtype":"init","session_id":"<uuid>",...}
       if (quotedPrompt) parts.push('-p', quotedPrompt);
+      // Per-column model override: apply before output format (flag order doesn't matter)
+      if (options.model && options.model.trim().length > 0) {
+        parts.push('--model', quoteArg(options.model.trim(), shell));
+      }
       parts.push('--output-format', 'stream-json');
     } else {
       // Interactive mode: agent "prompt"
       // User confirms changes in the PTY.
       if (quotedPrompt) parts.push(quotedPrompt);
+      // Per-column model override in interactive mode
+      if (options.model && options.model.trim().length > 0) {
+        parts.push('--model', quoteArg(options.model.trim(), shell));
+      }
     }
 
     return parts.join(' ');
@@ -271,6 +281,31 @@ export class CursorAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(_agentSessionId: string, _cwd: string): Promise<string | null> {
     // Cursor CLI session history location is not yet known.
+    return null;
+  }
+
+  async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {
+    // discoverCursorCapabilities is best-effort and always returns a result
+    return discoverCursorCapabilities(cliPath);
+  }
+
+  getInjectionSequence(spec: SettingsChangeSpec): string[] {
+    const sequence: string[] = [];
+    // Cursor supports `/model <model>` slash command for live model switching
+    if (spec.modelChanged && spec.model) {
+      sequence.push(`/model ${spec.model}`);
+    }
+    // Cursor has no separate effort concept - reasoning is encoded in model names
+    // (e.g., "Claude 4.1 Sonnet" vs "Claude 4.1 Sonnet Thinking")
+    return sequence;
+  }
+
+  getCommandInjectionVerifier() {
+    // Cursor's NDJSON stream contains model information in the init event,
+    // but verifying mid-session model changes via `/model` requires parsing
+    // subsequent NDJSON events for a model-changed signal. This is not yet
+    // documented in Cursor's public schema, so return null to fall back to
+    // time-based settle. Future versions may expose a model-change event.
     return null;
   }
 

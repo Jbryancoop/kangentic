@@ -5,9 +5,10 @@ import { OpenCodeDetector } from './detector';
 import { OpenCodeCommandBuilder } from './command-builder';
 import { OpenCodeSessionHistoryParser } from './session-history-parser';
 import { removeHooks as removeOpenCodeHooks } from './hook-manager';
+import { discoverOpenCodeCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SessionEvent, SubmissionContextType, SubmissionVerifier } from '../../../../shared/types';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SessionEvent, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 // Session-ID regexes hoisted to module scope so they compile once.
@@ -145,8 +146,13 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 
   buildCommand(options: SpawnCommandOptions): string {
-    const { agentPath, ...rest } = options;
-    const command = this.commandBuilder.buildOpenCodeCommand({ opencodePath: agentPath, ...rest });
+    const { agentPath, model, effort, ...rest } = options;
+    const command = this.commandBuilder.buildOpenCodeCommand({
+      opencodePath: agentPath,
+      model,
+      effort,
+      ...rest,
+    });
     // buildOpenCodeCommand copies the activity plugin into
     // `<projectRoot>/.opencode/plugins/` whenever eventsOutputPath is set.
     // Retain a reference keyed by the project root so concurrent sessions
@@ -307,6 +313,16 @@ export class OpenCodeAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return OpenCodeSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {
+    return discoverOpenCodeCapabilities(cliPath);
+  }
+
+  getInjectionSequence(_spec: SettingsChangeSpec): string[] {
+    // OpenCode does not support live `/model` or `/effort` slash commands.
+    // Model changes require respawn (handled by task-move.ts fallback).
+    return [];
   }
 
   async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {

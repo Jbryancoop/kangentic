@@ -1,8 +1,9 @@
 import { DroidDetector } from './detector';
 import { DroidCommandBuilder } from './command-builder';
 import { captureSessionIdFromFilesystem, locateSessionFile } from './session-id-capture';
+import { discoverDroidCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
 import type {
   AgentPermissionEntry,
   PermissionMode,
@@ -10,6 +11,7 @@ import type {
   AgentLiveTelemetryUnsupported,
   SubmissionContextType,
   SubmissionVerifier,
+  AgentCapabilities,
 } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
@@ -151,6 +153,17 @@ export class DroidAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return locateSessionFile({ agentSessionId, cwd });
+  }
+
+  async discoverCapabilities(_cliPath: string): Promise<AgentCapabilities> {
+    // Droid is TUI-first. Model/effort selection stays in the TUI.
+    // Return supportsModelOverride: false to hide the dropdowns.
+    return discoverDroidCapabilities(_cliPath);
+  }
+
+  getInjectionSequence(_spec: SettingsChangeSpec): string[] {
+    // Droid is TUI-first. No per-spawn model/effort override.
+    return [];
   }
 
   async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {
