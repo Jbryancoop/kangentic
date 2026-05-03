@@ -7,7 +7,7 @@ import { KimiCommandBuilder } from './command-builder';
 import { KimiSessionHistoryParser } from './session-history-parser';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionEvidence } from '../../../../shared/types';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 /**
@@ -60,9 +60,6 @@ export class KimiAdapter implements AgentAdapter {
     { mode: 'bypassPermissions', label: 'YOLO (Skip Confirmations)' },
   ];
   readonly defaultPermission: PermissionMode = 'default';
-  /** Kimi has no hook system. 100-byte post-\r floor avoids
-   *  cursor-blip false positives. */
-  readonly submissionEvidence: SubmissionEvidence = { minBytes: 100 };
 
   private readonly detector = new AgentDetector({
     binaryName: 'kimi',
@@ -179,6 +176,12 @@ export class KimiAdapter implements AgentAdapter {
     // Kimi reads ~/.kimi/config.toml's `hooks = []` array but does NOT
     // have a per-project settings file equivalent that we inject into.
     // No hook cleanup needed.
+  }
+
+  getSubmissionVerifier(_contextType: SubmissionContextType): SubmissionVerifier | null {
+    // Kimi has no hooks or structured verification signals.
+    // Callers fall back to time-based settle (paste) or time-settle (command-injection).
+    return null;
   }
 
   clearSettingsCache(): void {

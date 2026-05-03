@@ -7,7 +7,7 @@ import { OpenCodeSessionHistoryParser } from './session-history-parser';
 import { removeHooks as removeOpenCodeHooks } from './hook-manager';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SessionEvent, SubmissionEvidence } from '../../../../shared/types';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SessionEvent, SubmissionContextType, SubmissionVerifier } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 // Session-ID regexes hoisted to module scope so they compile once.
@@ -91,11 +91,6 @@ export class OpenCodeAdapter implements AgentAdapter {
     { mode: 'acceptEdits', label: 'Build' },
   ];
   readonly defaultPermission: PermissionMode = 'acceptEdits';
-  /** OpenCode's plugin (`kangentic-activity.mjs`) emits SessionStart, Idle,
-   *  ToolStart and ToolEnd - none of which represent "user prompt
-   *  accepted." Fall back to a 100-byte post-\r threshold; the activity
-   *  + any-data backstop in the engine still resolve when present. */
-  readonly submissionEvidence: SubmissionEvidence = { minBytes: 100 };
 
   private readonly detector = new OpenCodeDetector();
   private readonly commandBuilder = new OpenCodeCommandBuilder();
@@ -280,6 +275,14 @@ export class OpenCodeAdapter implements AgentAdapter {
       this.hookHolders.delete(directory);
     }
     removeOpenCodeHooks(directory);
+  }
+
+  getSubmissionVerifier(_contextType: SubmissionContextType): SubmissionVerifier | null {
+    // OpenCode plugin fires hooks and emits JSONL events, but coordinating
+    // hook-based paste confirmation with command-injection JSONL parsing
+    // is complex. Callers fall back to time-based settle (paste) or
+    // time-settle (command-injection).
+    return null;
   }
 
   clearSettingsCache(): void {

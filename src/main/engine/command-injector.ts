@@ -1,8 +1,20 @@
 import type { SessionManager } from '../pty/session-manager';
 import type { PasteEngine } from '../pty/paste-engine';
-import type { CommandInjectionVerifier } from '../agent/agent-adapter';
-import { resolveSubmissionEvidence } from '../agent/submission-evidence';
 import { sanitizeForPty } from '../../shared/paths';
+import { agentRegistry } from '../agent/agent-registry';
+
+/**
+ * Per-command verifier the CommandInjector polls between writes when delivering
+ * a chained injection sequence (e.g. `/model X` then `/effort Y`). Returns true
+ * when the agent has confirmed the injected command was processed, false on
+ * single-scan miss. Adapters supply this via `getSubmissionVerifier('command-injection')`,
+ * with the `sentAt` of the most recent Enter so the verifier can bound its scan
+ * window.
+ *
+ * Exported here as the single source of truth - `injection-plan.ts` and
+ * `slash-command-verifier.ts` both import this rather than redeclaring locally.
+ */
+export type CommandVerifier = (command: string, sentAt: number) => Promise<boolean>;
 
 /**
  * Tracks a pending auto-command injection for a single task.
@@ -91,7 +103,7 @@ export class CommandInjector {
     sessionId: string;
     next: {
       commands: string[];
-      verifier: CommandInjectionVerifier | null;
+      verifier: CommandVerifier | null;
       verifiedPrefixLength: number;
     } | null;
   }>();
@@ -123,7 +135,7 @@ export class CommandInjector {
     sessionId: string,
     commands: string[],
     opts: {
-      verifier?: CommandInjectionVerifier | null;
+      verifier?: CommandVerifier | null;
       /**
        * Number of leading commands in `commands` to verify with the supplied
        * verifier. The remaining commands are written and time-settled like
@@ -193,7 +205,7 @@ export class CommandInjector {
     taskId: string,
     sessionId: string,
     commands: string[],
-    verifier: CommandInjectionVerifier | null,
+    verifier: CommandVerifier | null,
     verifiedPrefixLength: number,
   ): Promise<void> {
     const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -292,7 +304,7 @@ export class CommandInjector {
    * until either a write lands cleanly or we exhaust the retry budget.
    */
   private async pollWithRetries(
-    verifier: CommandInjectionVerifier,
+    verifier: CommandVerifier,
     command: string,
     initialSentAt: number,
     sessionId: string,
@@ -499,18 +511,20 @@ export class CommandInjector {
         });
       }
 
-      // Resolve per-adapter evidence so the engine waits on a deterministic
-      // signal instead of any post-\r byte. resolveSubmissionEvidence falls
-      // back to `{ minBytes: 50 }` when the adapter is unknown (extremely
-      // rare - the session exists at this point) so cursor-blip false
-      // positives are still filtered.
-      const evidence = resolveSubmissionEvidence(this.sessionManager, sessionId);
+      // Get the adapter's submission verifier for paste context so the engine
+      // waits on a deterministic signal instead of any post-\r byte. When the
+      // adapter is unknown or has no verifier (extremely rare - the session
+      // exists at this point), the engine falls back to time-based settle.
+      const session = this.sessionManager.getSession(sessionId);
+      const agentName = session ? this.sessionManager.getSessionAgentName(sessionId) : null;
+      const adapter = agentName ? agentRegistry.get(agentName) : undefined;
+      const verifier = adapter?.getSubmissionVerifier?.('paste') ?? undefined;
 
       await this.pasteEngine.pasteAndSubmit(sessionId, sanitized, {
         bracketed: false,
         signal: controller.signal,
         source: `auto_command:${taskId.slice(0, 8)}`,
-        evidence,
+        verifier,
       });
 
       console.log(`[AUTO_COMMAND] Delivered to session ${sessionId.slice(0, 8)} for task ${taskId.slice(0, 8)}`);

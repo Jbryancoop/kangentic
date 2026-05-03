@@ -156,7 +156,7 @@ describe('prepareInjectionPlan', () => {
     expect(plan?.verifiedPrefixLength).toBe(2);
   });
 
-  it('verifier is null when adapter does not implement getCommandInjectionVerifier', () => {
+  it('verifier is null when adapter does not implement getSubmissionVerifier', () => {
     const adapter = fakeAdapter({
       getInjectionSequence: () => ['/x'],
     });
@@ -174,10 +174,10 @@ describe('prepareInjectionPlan', () => {
   });
 
   it('verifier is null when no session record has a captured agent_session_id', () => {
-    const verifierFn = async (): Promise<boolean> => true;
+    const submissionVerifier = async (): Promise<boolean> => true;
     const adapter = fakeAdapter({
       getInjectionSequence: () => ['/x'],
-      getCommandInjectionVerifier: () => verifierFn,
+      getSubmissionVerifier: () => submissionVerifier,
     });
     const plan = prepareInjectionPlan({
       adapter,
@@ -193,13 +193,13 @@ describe('prepareInjectionPlan', () => {
   });
 
   it('wires the adapter verifier when both the hook and a captured session id are available', () => {
-    const verifierFn = async (): Promise<boolean> => true;
-    let capturedInput: { agentSessionId: string; cwd: string } | null = null;
+    const submissionVerifier = async (): Promise<boolean> => true;
+    let capturedContextType: string | null = null;
     const adapter = fakeAdapter({
       getInjectionSequence: () => ['/x'],
-      getCommandInjectionVerifier: (input) => {
-        capturedInput = input;
-        return verifierFn;
+      getSubmissionVerifier: (contextType) => {
+        capturedContextType = contextType;
+        return submissionVerifier;
       },
     });
     const plan = prepareInjectionPlan({
@@ -212,8 +212,8 @@ describe('prepareInjectionPlan', () => {
       fromLane: lane({ model_override: null }),
       toLane: lane({ model_override: 'opus' }),
     });
-    expect(plan?.verifier).toBe(verifierFn);
-    expect(capturedInput).toEqual({ agentSessionId: 'sess-uuid', cwd: '/repo' });
+    expect(plan?.verifier).not.toBeNull();
+    expect(capturedContextType).toBe('command-injection');
   });
 
   it('handles undefined adapter gracefully (no agent or unknown agent name)', () => {
@@ -226,5 +226,65 @@ describe('prepareInjectionPlan', () => {
       autoCommand: 'fallback',
     });
     expect(plan).toEqual({ sequence: ['fallback'], verifier: null, verifiedPrefixLength: 0 });
+  });
+
+  it('verifier is null when sessionRepo is null even if adapter has getSubmissionVerifier', () => {
+    // Regression guard: the null-sessionRepo short-circuit must fire BEFORE
+    // calling adapter.getSubmissionVerifier, even when the adapter would return
+    // a real verifier for the command-injection context.
+    const submissionVerifier = async (): Promise<boolean> => true;
+    let verifierCalled = false;
+    const adapter = fakeAdapter({
+      getInjectionSequence: () => ['/x'],
+      getSubmissionVerifier: () => {
+        verifierCalled = true;
+        return submissionVerifier;
+      },
+    });
+    const plan = prepareInjectionPlan({
+      adapter,
+      sessionRepo: null,
+      task: { id: 't1', agent: 'fake' },
+      fromLane: lane({ model_override: null }),
+      toLane: lane({ model_override: 'opus' }),
+    });
+    expect(plan?.verifier).toBeNull();
+    // The guard short-circuits before the adapter is consulted.
+    expect(verifierCalled).toBe(false);
+  });
+
+  it('wrapper passes sentAt and text through to the inner SubmissionVerifier', async () => {
+    // Regression guard for code-review #5: the plan.verifier wrapper must
+    // forward both `command` (as context.text) and `sentAt` to the inner
+    // SubmissionVerifier so the JSONL scan can bound its window.
+    const capturedContexts: Array<{ text: string; sentAt: number | undefined }> = [];
+    const submissionVerifier = async (context: { text: string; sentAt?: number }): Promise<boolean> => {
+      capturedContexts.push({ text: context.text, sentAt: context.sentAt });
+      return true;
+    };
+    const adapter = fakeAdapter({
+      getInjectionSequence: () => ['/model opus'],
+      getSubmissionVerifier: () => submissionVerifier as never,
+    });
+    const plan = prepareInjectionPlan({
+      adapter,
+      sessionRepo: {
+        // @ts-expect-error stub
+        getLatestForTask: () => ({ agent_session_id: 'sess-abc', cwd: '/project' }),
+      },
+      task: { id: 't1', agent: 'fake' },
+      fromLane: lane({ model_override: null }),
+      toLane: lane({ model_override: 'opus' }),
+    });
+
+    expect(plan?.verifier).not.toBeNull();
+
+    const testSentAt = Date.now();
+    await plan!.verifier!('/model opus', testSentAt);
+
+    // The wrapper must have passed both the command text and sentAt through.
+    expect(capturedContexts).toHaveLength(1);
+    expect(capturedContexts[0].text).toBe('/model opus');
+    expect(capturedContexts[0].sentAt).toBe(testSentAt);
   });
 });

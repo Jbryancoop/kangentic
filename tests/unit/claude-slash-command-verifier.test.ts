@@ -151,3 +151,87 @@ describe('createSlashCommandVerifier', () => {
     expect(result).toBe(true);
   });
 });
+
+describe('createSlashCommandVerifier - single-scan mode (no timeoutMs)', () => {
+  // Production path: injection-plan.ts calls createSlashCommandVerifier(filePath)
+  // with NO options. CommandInjector.pollWithRetries drives the cadence; the
+  // verifier must do exactly ONE immediate scan and return without blocking.
+
+  it('returns true on a single scan when a matching entry is already present', async () => {
+    const sentAt = Date.now() - 100;
+    appendEntry({
+      type: 'system',
+      subtype: 'local_command',
+      content: '<command-name>/model</command-name>\n<command-args>claude-opus-4-7</command-args>',
+      timestamp: nowIso(),
+    });
+
+    const verifier = createSlashCommandVerifier(jsonlPath)!;
+    const start = Date.now();
+    const result = await verifier('/model claude-opus-4-7', sentAt);
+    const elapsed = Date.now() - start;
+
+    expect(result).toBe(true);
+    // Single-scan: must not internally poll. Real polls would need ~25ms minimum
+    // between iterations. 20ms is a generous ceiling for one fs.readFile call.
+    expect(elapsed).toBeLessThan(200);
+  });
+
+  it('returns false immediately when no matching entry exists (does not block)', async () => {
+    // File exists but has no matching content - single-scan must return false
+    // without any internal wait loop.
+    appendEntry({
+      type: 'system',
+      subtype: 'local_command',
+      content: '<command-name>/effort</command-name>\n<command-args>low</command-args>',
+      timestamp: nowIso(),
+    });
+
+    const verifier = createSlashCommandVerifier(jsonlPath)!;
+    const sentAt = Date.now();
+    const start = Date.now();
+    const result = await verifier('/model opus', sentAt);
+    const elapsed = Date.now() - start;
+
+    expect(result).toBe(false);
+    // Without internal polling this should be fast (one fs.readFile).
+    expect(elapsed).toBeLessThan(200);
+  });
+
+  it('returns false immediately when the file does not exist (does not block)', async () => {
+    const verifier = createSlashCommandVerifier(path.join(tmpDir, 'nonexistent.jsonl'))!;
+    const start = Date.now();
+    const result = await verifier('/model opus', Date.now());
+    const elapsed = Date.now() - start;
+
+    expect(result).toBe(false);
+    expect(elapsed).toBeLessThan(200);
+  });
+
+  it('returns true immediately for non-slash text in single-scan mode', async () => {
+    const verifier = createSlashCommandVerifier(jsonlPath)!;
+    const start = Date.now();
+    const result = await verifier('run the tests', Date.now());
+    const elapsed = Date.now() - start;
+
+    expect(result).toBe(true);
+    expect(elapsed).toBeLessThan(100);
+  });
+
+  it('still respects the sentAt window in single-scan mode (stale entry is rejected)', async () => {
+    // Append a matching entry whose timestamp predates sentAt.
+    appendEntry({
+      type: 'system',
+      subtype: 'local_command',
+      content: '<command-name>/model</command-name>\n<command-args>claude-opus-4-7</command-args>',
+      timestamp: nowIso(-2000),
+    });
+
+    const verifier = createSlashCommandVerifier(jsonlPath)!;
+    const sentAt = Date.now();
+    const result = await verifier('/model claude-opus-4-7', sentAt);
+
+    // The entry is older than sentAt - 50ms tolerance, so it must be rejected.
+    expect(result).toBe(false);
+  });
+});

@@ -39,7 +39,7 @@ Every agent implements the `AgentAdapter` interface. Each adapter lives in `src/
 
 | Property | Type | Purpose |
 |----------|------|---------|
-| `submissionEvidence?` | `SubmissionEvidence` | How this agent signals "prompt accepted" after `\r` is sent during paste-and-submit. Read by the paste engine to wait for deterministic post-`\r` evidence (hook event, TUI marker, or post-`\r` byte threshold) instead of any stray byte. Adapters that omit this fall back to a generic `{ minBytes: 50 }` floor in the caller wiring. See [Embedded Browser - Paste Engine](embedded-browser.md#paste-engine) for the full evidence model. |
+| `getSubmissionVerifier?(contextType)` | `(SubmissionContextType) => SubmissionVerifier \| null` | Returns a context-specific verification callback used in two flows: `'paste'` (post-`\r` confirmation in `pasteEngine`) and `'command-injection'` (per-command confirmation in `CommandInjector.scheduleSequence`). The callback receives a `SubmissionContext` and returns `Promise<boolean>`. Adapters return `null` for contexts they cannot verify (most adapters return `null` for both, falling back to time-based settle); Claude returns a JSONL-polling verifier for `'command-injection'`. See [command-injection.md](command-injection.md) and [Embedded Browser - Paste Engine](embedded-browser.md#paste-engine). |
 | `liveTelemetryUnsupported?` | `AgentLiveTelemetryUnsupported` | Set when the agent CLI has no per-session telemetry channel (no status file, session history, or stream output integration is possible). Carries the renderer-facing label and tooltip so all agent-specific copy lives with the adapter. Currently used by Droid. |
 | `buildEnv?(options)` | `(SpawnCommandOptions) => Record<string, string> \| null` | Adapter-specific environment variables to inject into the PTY spawn. Used by adapters whose CLI has no flag-based MCP wiring and must deliver the Kangentic MCP server config via env (e.g. OpenCode's `OPENCODE_CONFIG_CONTENT`). |
 | `getExitSequence?()` | `() => string[]` | Sequence of strings to write to the PTY for a graceful exit. Default is `['\x03']` (Ctrl+C only). Claude overrides with `['\x03', '/exit\r']` to flush conversation state. |
@@ -48,7 +48,6 @@ Every agent implements the `AgentAdapter` interface. Each adapter lives in `src/
 | `probeAuth?()` | `() => Promise<boolean \| null>` | See the methods table above. |
 | `discoverCapabilities?(cliPath)` | `(string) => Promise<AgentCapabilities>` | Probe the live CLI for adapter-specific knobs (e.g. parsing `--help` for valid effort levels and the presence of a `--model` flag). Result is attached to `AgentDetectionInfo.capabilities` and read by the renderer to gate optional UI controls (Model and Effort dropdowns on `EditColumnDialog`). Implementations must never throw - return an empty object on parse failure so the rest of detection still succeeds. |
 | `getInjectionSequence?(spec)` | `(SettingsChangeSpec) => string[]` | Translate a column-level settings change (model / effort) into the writes the `CommandInjector` should push onto the live PTY. Sibling of `getExitSequence` - both return `string[]` of writes. Claude returns `['/model X', '/effort Y']` for changed fields. Adapters with no live-swap slash return `[]` and the caller falls back to suspend+respawn. |
-| `getCommandInjectionVerifier?(input)` | `(CommandInjectionVerifierInput) => CommandInjectionVerifier \| null` | Build a verifier that confirms each command in a chained `scheduleSequence` actually landed before the next is sent. Adapters whose CLI exposes an authoritative "command processed" signal (e.g. Claude's session JSONL) implement this; others fall back to a fixed inter-command settle. Returns null when inputs are insufficient (e.g. `agent_session_id` not yet captured) - caller treats null as "use the time-based fallback". |
 
 ### `AgentCapabilities`
 
@@ -75,7 +74,7 @@ Two recently-added optional fields drive the per-column model/effort override fe
 | `model?` | `string` | Adapter-specific model identifier (e.g. Claude `--model opus`). Empty/undefined leaves the agent default in place. Sourced from `swimlane.model_override` at spawn time by `prepare-spawn.ts`. |
 | `effort?` | `string` | Adapter-specific effort/reasoning level (e.g. Claude `--effort xhigh`). Empty/undefined leaves the agent default in place. Sourced from `swimlane.effort_override` at spawn time by `prepare-spawn.ts`. |
 
-For mid-session overrides (changing model/effort on a live session without respawn), see `getInjectionSequence` and `getCommandInjectionVerifier` in the Optional Properties table above. The adapter declares the slash-command writes; `CommandInjector.scheduleSequence` delivers them with verification.
+For mid-session overrides (changing model/effort on a live session without respawn), see `getInjectionSequence` and `getSubmissionVerifier` in the Optional Properties table above. The adapter declares the slash-command writes; `CommandInjector.scheduleSequence` delivers them with verification via `getSubmissionVerifier('command-injection')`.
 
 ### `AdapterRuntimeStrategy`
 

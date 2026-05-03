@@ -493,41 +493,48 @@ export interface SessionEvent {
   outputTokens?: number;
 }
 
-// === Per-Adapter Submission Evidence (paste-engine) ===
+// === Per-Adapter Submission Verification (paste-engine + command-injector) ===
 
 /**
- * How a specific agent CLI signals "prompt accepted" after `\r` is sent
- * during paste-and-submit. Each AgentAdapter declares its own value;
- * the paste engine reads the declaration and never branches on agent
- * name. All three fields are optional and OR-combined: any match
- * resolves the evidence wait.
+ * Unified submission verification for both paste-and-submit and command-injection contexts.
+ * Each adapter implements `getSubmissionVerifier(contextType)` returning a verifier
+ * callback or null when the context is not supported (caller uses fallback).
  *
- * Strength order (strongest first):
- *   1. hookEventType - dedicated hook fires post-submit. Deterministic.
- *   2. outputMarker - the TUI renders a stable placeholder string for
- *      a queued prompt; we match the post-\r byte stream. Fragile to
- *      TUI version drift but better than blind data.
- *   3. minBytes - threshold of post-\r bytes. Last resort for agents
- *      without hooks or stable markers; filters single-byte cursor
- *      blips that would otherwise trip an unguarded any-data check.
+ * Semantics: a verifier is a strong signal that *complements* (does not replace)
+ * the engine's activity/data fallbacks. Paste-engine races the verifier against
+ * the activity event listener and the post-`\r` data path; the first wins. A
+ * verifier returning false therefore does not block the wait - the fallbacks
+ * remain active for the rest of the window.
  */
-export interface SubmissionEvidence {
-  /** Hook event the adapter's bridge emits when a prompt is accepted.
-   *  The paste engine subscribes to SessionManager's `'event'` channel
-   *  and resolves on the first event whose `type` matches. */
-  hookEventType?: EventType;
 
-  /** Regex matched against post-\r bytes accumulated in a sliding ring
-   *  buffer (~2KB). Useful when no hook exists but the TUI prints a
-   *  stable fragment on submit (e.g. `[Pasted text +N lines]`). */
-  outputMarker?: RegExp;
+/** Discriminated union for verification context. */
+export type SubmissionContext =
+  | { type: 'paste' }
+  | {
+      type: 'command-injection';
+      text: string;
+      agentSessionId?: string;
+      cwd?: string;
+      /**
+       * Wall-clock timestamp (ms since epoch) of the most recent Enter write
+       * that this verifier should match against. Bounds the JSONL scan window
+       * so old entries are not mistakenly treated as confirmation.
+       *
+       * The CommandInjector advances this on each retry-Enter; the verifier
+       * uses it to discard transcript entries older than `sentAt - tolerance`.
+       */
+      sentAt?: number;
+    };
 
-  /** Minimum cumulative post-\r byte count to resolve evidence.
-   *  Filters single-cursor-blip false positives; effective only inside
-   *  the fresh-window (post-write timestamp) so unrelated background
-   *  renders before the submit do not prematurely satisfy it. */
-  minBytes?: number;
-}
+/** Context type for `getSubmissionVerifier()` parameter. */
+export type SubmissionContextType = 'paste' | 'command-injection';
+
+/**
+ * Verifier callback that confirms a submission was processed.
+ * - Paste context: confirms the pasted prompt was accepted by the agent.
+ * - Command-injection context: confirms the injected command was parsed as written.
+ */
+export type SubmissionVerifier = (context: SubmissionContext) => Promise<boolean>;
 
 // === Session Usage (Claude Code Status Line) ===
 

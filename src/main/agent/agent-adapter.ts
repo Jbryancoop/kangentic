@@ -6,7 +6,9 @@ import type {
   SessionContext,
   SessionAttachment,
   AgentLiveTelemetryUnsupported,
-  SubmissionEvidence,
+  SubmissionContext,
+  SubmissionContextType,
+  SubmissionVerifier,
   AgentCapabilities,
 } from '../../shared/types';
 
@@ -27,24 +29,6 @@ export interface SettingsChangeSpec {
   effortChanged: boolean;
 }
 
-/**
- * Per-command verifier the CommandInjector awaits between writes when
- * delivering a chained injection sequence (e.g. `/model X` then `/effort Y`).
- * Returns true when the agent has confirmed the injected command was
- * processed, false on timeout. Adapters supply this from
- * `getCommandInjectionVerifier` to defend against TUI input races
- * (overlay-eaten Enter, autocomplete still showing) that would otherwise
- * concatenate the next command's text into the same prompt buffer.
- */
-export type CommandInjectionVerifier = (command: string, sentAt: number) => Promise<boolean>;
-
-/** Inputs supplied to the adapter when constructing a verifier. */
-export interface CommandInjectionVerifierInput {
-  /** Recorded agent session id (e.g. Claude's --session-id UUID). */
-  agentSessionId: string;
-  /** Working directory at spawn time (used to resolve transcript paths). */
-  cwd: string;
-}
 
 /** CLI detection result returned by all agent detectors. */
 export interface AgentInfo {
@@ -193,24 +177,41 @@ export interface AgentAdapter {
   locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null>;
 
   /**
-   * Optional: build a verifier that confirms each command in a chained
-   * `scheduleSequence` actually landed before the next one is sent.
+   * Optional: return a callback that confirms a submission was processed.
+   * The callback receives a `SubmissionContext` and resolves `Promise<boolean>`.
    *
-   * Adapters whose CLI exposes an authoritative "command processed" signal
-   * (e.g. Claude's session JSONL records every slash invocation) should
-   * implement this. Without it, the injector falls back to a fixed
-   * inter-command settle which is less reliable under TUI input races.
+   * For 'paste' context: confirms a pasted prompt was accepted by the agent.
+   * The paste-engine RACES this callback against its own activity-event and
+   * post-`\r` data fallbacks - a `false` resolution does NOT short-circuit
+   * those, so a verifier may legitimately return false on a single scan.
    *
-   * Return null when the inputs are insufficient to build a verifier
-   * (e.g. agent_session_id not yet captured); the caller treats null as
-   * "use the time-based fallback" rather than as an error.
+   * For 'command-injection' context: confirms an injected slash command was
+   * parsed correctly (defending against Enter-key races that concatenate
+   * commands). The CommandInjector polls this callback in a tight loop and
+   * re-fires `\r` when it stays false past the retry interval. Verifiers
+   * should bound their scan window using `context.sentAt`.
+   *
+   * Return null for unsupported contexts; the caller uses fallback signals
+   * (activity event + 50-byte data floor for paste, time-based settle for
+   * command-injection).
+   *
+   * Example (Claude):
+   *   - 'paste': returns null - the activity backstop covers Claude's hook
+   *     transition; re-implementing event subscription inside a one-shot
+   *     Promise would be redundant.
+   *   - 'command-injection': returns a JSONL-polling verifier that exact-matches
+   *     the slash command in the session transcript.
+   *
+   * Example (Aider, Codex, Gemini, Qwen, etc.):
+   *   - Both contexts: returns null. Activity / data / time-settle fallbacks
+   *     are sufficient given current CLI capabilities.
    */
-  getCommandInjectionVerifier?(input: CommandInjectionVerifierInput): CommandInjectionVerifier | null;
+  getSubmissionVerifier?(contextType: SubmissionContextType): SubmissionVerifier | null;
 
   /**
    * Optional: translate a column-level settings change (model / effort)
    * into the sequence of writes the CommandInjector should push onto the
-   * live PTY to apply it. Pairs with `getCommandInjectionVerifier` for confirmation.
+   * live PTY to apply it. Pairs with `getSubmissionVerifier('command-injection')` for confirmation.
    *
    * Sibling of `getExitSequence` - both return `string[]` of writes the
    * PTY layer consumes, just for different lifecycle events.
@@ -280,13 +281,4 @@ export interface AgentAdapter {
    */
   summarize?(prompt: string, cliPath: string, cwd: string): Promise<string>;
 
-  /**
-   * How this agent signals that a paste-and-submitted prompt was accepted.
-   * Read by the paste engine to wait for deterministic post-\r evidence
-   * (hook event, TUI marker, or post-\r byte threshold) instead of any
-   * stray byte. Adapters that omit this fall back to a generic minBytes
-   * floor in the caller wiring; declaring an explicit value here is
-   * always preferable.
-   */
-  readonly submissionEvidence?: SubmissionEvidence;
 }

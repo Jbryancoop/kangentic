@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import type { CommandInjectionVerifier } from '../../agent-adapter';
+import type { CommandVerifier } from '../../../engine/command-injector';
 
 /**
  * Builds a verifier that polls Claude's session JSONL for confirmation that
@@ -45,7 +45,7 @@ export interface SlashVerifierOptions {
 export function createSlashCommandVerifier(
   jsonlPath: string | null,
   options: SlashVerifierOptions = {},
-): CommandInjectionVerifier | null {
+): CommandVerifier | null {
   if (!jsonlPath) return null;
   const internalTimeout = options.timeoutMs;
   const pollIntervalMs = options.pollIntervalMs ?? 25;
@@ -53,6 +53,11 @@ export function createSlashCommandVerifier(
   return async function verify(command: string, sentAt: number): Promise<boolean> {
     const parsed = parseSlashCommand(command);
     if (!parsed) return true; // Non-slash text: no JSONL signal expected.
+    // sentAt is the timestamp of the Enter the caller is asking us to confirm
+    // (passed through from `pollWithRetries`, advanced on each retry-Enter).
+    // Bounding the JSONL scan to entries at-or-after `sentAt - tolerance`
+    // prevents stale entries from earlier retries / earlier columns from being
+    // treated as confirmation for the current command.
     if (internalTimeout === undefined) {
       // Single-scan mode: caller controls the polling cadence. Returning
       // immediately keeps verification latency tied to file-flush latency

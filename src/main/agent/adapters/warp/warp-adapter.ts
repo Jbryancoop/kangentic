@@ -3,7 +3,7 @@ import { execWarpVersion } from './version-detector';
 import { interpolateTemplate } from '../../shared/template-utils';
 import { quoteArg, isUnixLikeShell } from '../../../../shared/paths';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionEvidence } from '../../../../shared/types';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 /**
@@ -34,9 +34,6 @@ export class WarpAdapter implements AgentAdapter {
     { mode: 'bypassPermissions', label: 'Auto (Skip Confirmations)' },
   ];
   readonly defaultPermission: PermissionMode = 'default';
-  /** Warp has no hook system. 100-byte post-\r floor avoids
-   *  cursor-blip false positives. */
-  readonly submissionEvidence: SubmissionEvidence = { minBytes: 100 };
 
   // Custom detection: oz uses `dump-debug-info` instead of `--version`.
   // Caches and deduplicates like AgentDetector but with a custom version command.
@@ -147,6 +144,12 @@ export class WarpAdapter implements AgentAdapter {
 
   // Warp does not use hooks - no-op
   removeHooks(_directory: string): void {}
+
+  getSubmissionVerifier(_contextType: SubmissionContextType): SubmissionVerifier | null {
+    // Warp has no hooks or structured verification signals.
+    // Callers fall back to time-based settle (paste) or time-settle (command-injection).
+    return null;
+  }
 
   // Warp has no merged settings - no-op
   clearSettingsCache(): void {}

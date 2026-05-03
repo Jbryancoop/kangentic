@@ -1,6 +1,7 @@
 import type { Swimlane, Task } from '../../shared/types';
-import type { AgentAdapter, CommandInjectionVerifier } from '../agent/agent-adapter';
+import type { AgentAdapter } from '../agent/agent-adapter';
 import type { SessionRepository } from '../db/repositories/session-repository';
+import type { CommandVerifier } from './command-injector';
 
 /**
  * Per-agent translation of a column-level model/effort change (and an
@@ -23,8 +24,9 @@ import type { SessionRepository } from '../db/repositories/session-repository';
  * 1. Ask the destination adapter for the writes needed to apply settings
  *    deltas (`getInjectionSequence`).
  * 2. Append the column's auto_command (already interpolated) if any.
- * 3. Ask the adapter for a per-command verifier (`getCommandInjectionVerifier`)
- *    bound to this task's session transcript.
+ * 3. Ask the adapter for a per-command verifier
+ *    (`getSubmissionVerifier('command-injection')`) bound to this task's
+ *    session transcript via the captured `agentSessionId` and `cwd`.
  *
  * Returns null when there is nothing to inject (no settings delta, no
  * auto_command). Callers pass the result straight to
@@ -42,7 +44,7 @@ export interface InjectionPlanInput {
 
 export interface InjectionPlan {
   sequence: string[];
-  verifier: CommandInjectionVerifier | null;
+  verifier: CommandVerifier | null;
   /**
    * Number of leading commands in `sequence` that are safe to verify against
    * the agent's transcript. This covers the deterministic adapter-emitted
@@ -80,14 +82,27 @@ export function prepareInjectionPlan(input: InjectionPlanInput): InjectionPlan |
 
   // Verifier is best-effort: needs adapter support + a captured agent_session_id.
   // null is a documented fallback to time-based settle in CommandInjector.
-  let verifier: CommandInjectionVerifier | null = null;
-  if (adapter?.getCommandInjectionVerifier && sessionRepo) {
+  let verifier: CommandVerifier | null = null;
+  if (adapter?.getSubmissionVerifier && sessionRepo) {
     const record = sessionRepo.getLatestForTask(task.id);
     if (record?.agent_session_id && record.cwd) {
-      verifier = adapter.getCommandInjectionVerifier({
-        agentSessionId: record.agent_session_id,
-        cwd: record.cwd,
-      });
+      const submissionVerifier = adapter.getSubmissionVerifier('command-injection');
+      if (submissionVerifier) {
+        // Wrap the SubmissionVerifier (which expects SubmissionContext) as a
+        // CommandVerifier (which accepts a command string and sentAt). The
+        // wrapper packs both into the SubmissionContext along with the
+        // session metadata, so the underlying verifier can bound its scan
+        // window to entries written after sentAt.
+        verifier = async (command: string, sentAt: number) => {
+          return submissionVerifier({
+            type: 'command-injection',
+            text: command,
+            agentSessionId: record.agent_session_id ?? undefined,
+            cwd: record.cwd ?? undefined,
+            sentAt,
+          });
+        };
+      }
     }
   }
 

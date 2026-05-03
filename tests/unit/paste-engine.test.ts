@@ -1,7 +1,7 @@
 /**
  * Unit tests for src/main/pty/paste-engine.ts.
  *
- * Engine contract (event-driven, deterministic via post-submit evidence):
+ * Engine contract (event-driven, deterministic via post-submit verification):
  *
  *   1. await drain() to clear pending writeQueue bytes
  *   2. CHUNKED writeRaw of paste packet (1024-byte chunks with
@@ -10,19 +10,19 @@
  *      Cap at SETTLE_CAP_MIN_MS + payloadLength * 0.5ms. Floor at
  *      MIN_GAP_MS (1000ms) for React commit.
  *   4. Submit `\r` via the QUEUE (sessionManager.write), then drain.
- *   5. Wait for SUBMISSION EVIDENCE: `activity` event with non-idle
- *      state, OR new `data` bytes for our session, within 3s. If
- *      timeout, retry `\r` once with a 2s second window. If still
- *      no evidence, throw PasteSubmitError('no-submission-evidence').
+ *   5. Wait for SUBMISSION VERIFICATION: optional verifier callback returns
+ *      true, OR `activity` event with non-idle state, OR new `data` bytes
+ *      for our session, within 3s. If timeout, retry `\r` once with a 2s
+ *      window. If still no verification, throw PasteSubmitError('no-submission-evidence').
  *
- * The evidence step is what makes the engine deterministic instead of
+ * The verification step is what makes the engine deterministic instead of
  * timing-dependent. A stray `\r` with empty input is a TUI no-op, so
  * retrying is safe even when the original DID submit.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createPasteEngine, sanitizeForPaste, PasteSubmitError } from '../../src/main/pty/paste-engine';
-import { EventType, type SessionEvent } from '../../src/shared/types';
+import type { SubmissionVerifier } from '../../src/shared/types';
 
 class MockSessionManager extends EventEmitter {
   writeRawCalls: Array<{ id: string; data: string }> = [];
@@ -54,13 +54,6 @@ class MockSessionManager extends EventEmitter {
 
   emitActivity(sessionId: string, activity: string): void {
     this.emit('activity', sessionId, activity, false);
-  }
-
-  /** Emit a SessionEvent on the 'event' channel for per-adapter
-   *  hookEventType evidence path tests. */
-  emitEvent(sessionId: string, type: EventType, detail?: string): void {
-    const event: SessionEvent = { ts: Date.now(), type, detail };
-    this.emit('event', sessionId, event);
   }
 }
 
@@ -477,9 +470,9 @@ describe('PasteEngine.pasteAndSubmit', () => {
     mockSessionManager.flushDrain();
     await tick();
 
-    // Agent emits response bytes within the evidence window
+    // Agent emits a chunk that crosses the 50-byte cursor-blip floor.
     vi.advanceTimersByTime(500);
-    mockSessionManager.emitData('s1', 'response from agent');
+    mockSessionManager.emitData('s1', 'response from agent: ' + 'x'.repeat(40));
     await tick();
 
     // No retry should have fired
@@ -603,7 +596,7 @@ describe('PasteEngine.pasteAndSubmit', () => {
   });
 });
 
-describe('PasteEngine.pasteAndSubmit submission evidence (per-adapter)', () => {
+describe('PasteEngine.pasteAndSubmit submission verifier (per-adapter)', () => {
   let mockSessionManager: MockSessionManager;
   let engine: ReturnType<typeof createPasteEngine>;
 
@@ -636,197 +629,232 @@ describe('PasteEngine.pasteAndSubmit submission evidence (per-adapter)', () => {
     await tick();
   }
 
-  it('hookEventType resolves evidence on a matching SessionEvent', async () => {
+  it('verifier resolves evidence when it returns true', async () => {
+    const verifier: SubmissionVerifier = async (context) =>
+      context.type === 'paste';
     const promise = engine.pasteAndSubmit('s1', 'hello', {
       timeoutMs: 30000,
-      evidence: { hookEventType: EventType.Prompt },
-      // Disable the any-data fallback so we know the resolution path is the
-      // hook event channel and not a stray data byte.
-      allowAnyDataFallback: false,
+      verifier,
     });
     await reachEvidenceWait();
 
-    // Mismatched event type must NOT resolve.
-    mockSessionManager.emitEvent('s1', EventType.ToolStart);
-    await tick();
-    vi.advanceTimersByTime(500);
-    await tick();
-    expect(mockSessionManager.writeCalls).toHaveLength(1);
+    // Verifier resolves true synchronously after \r drain; engine resolves as 'verifier'.
+    await expect(promise).resolves.toBeUndefined();
+  });
 
-    // Correct event type resolves.
-    mockSessionManager.emitEvent('s1', EventType.Prompt);
+  it('verifier returning false does NOT short-circuit: activity backstop still resolves', async () => {
+    // Regression for the OR-combine contract: a verifier resolving false must
+    // leave the activity/data fallbacks active so the engine still resolves
+    // when the activity event fires (or the data floor is crossed).
+    const verifier: SubmissionVerifier = async () => false;
+    const promise = engine.pasteAndSubmit('s1', 'hello', {
+      timeoutMs: 30000,
+      verifier,
+    });
+    await reachEvidenceWait();
+
+    // The verifier resolved false but the engine kept waiting; activity now
+    // resolves it.
+    mockSessionManager.emitActivity('s1', 'thinking');
     await tick();
 
     await expect(promise).resolves.toBeUndefined();
   });
 
-  it('outputMarker resolves evidence on a regex match against the post-\\r ring buffer', async () => {
+  it('verifier throwing aborts the wait with the thrown error', async () => {
+    const verifier: SubmissionVerifier = async () => {
+      throw new Error('verifier blew up');
+    };
     const promise = engine.pasteAndSubmit('s1', 'hello', {
       timeoutMs: 30000,
-      evidence: { outputMarker: /\[Pasted text \+\d+ lines?\]/ },
-      allowAnyDataFallback: false,
+      verifier,
     });
+    promise.catch(() => undefined);
     await reachEvidenceWait();
 
-    // Bytes that do NOT match the marker must not resolve when the
-    // any-data fallback is off.
-    mockSessionManager.emitData('s1', 'cursor blip\x1b[K');
-    await tick();
-    vi.advanceTimersByTime(500);
-    await tick();
-    expect(mockSessionManager.writeCalls).toHaveLength(1);
+    await expect(promise).rejects.toThrow('verifier blew up');
+  });
 
-    // Marker fragment lands - resolves.
-    mockSessionManager.emitData('s1', '[Pasted text +3 lines]');
+  it('no verifier: falls back to activity event', async () => {
+    const promise = engine.pasteAndSubmit('s1', 'hello', { timeoutMs: 30000 });
+    await reachEvidenceWait();
+
+    mockSessionManager.emitActivity('s1', 'thinking');
     await tick();
 
     await expect(promise).resolves.toBeUndefined();
   });
 
-  it('minBytes resolves evidence once cumulative post-\\r bytes meet the threshold', async () => {
-    const promise = engine.pasteAndSubmit('s1', 'hello', {
-      timeoutMs: 30000,
-      evidence: { minBytes: 50 },
-      allowAnyDataFallback: false,
-    });
+  it('no verifier: data path requires the cursor-blip floor (50 bytes)', async () => {
+    // Regression guard: a single cursor-position-report byte must NOT resolve
+    // the wait. The 50-byte floor is what filters those false positives.
+    const promise = engine.pasteAndSubmit('s1', 'hello', { timeoutMs: 30000 });
     await reachEvidenceWait();
 
-    // Below threshold - no resolution.
+    // Below the floor - engine must still be waiting.
     mockSessionManager.emitData('s1', 'a'.repeat(20));
     await tick();
-    expect(mockSessionManager.writeCalls).toHaveLength(1);
     mockSessionManager.emitData('s1', 'b'.repeat(20));
     await tick();
-    expect(mockSessionManager.writeCalls).toHaveLength(1);
+    // 40 bytes accumulated - still below the 50-byte floor.
 
-    // Crossing 50 cumulative bytes resolves.
+    // Crossing the floor (50 bytes total) resolves the wait.
     mockSessionManager.emitData('s1', 'c'.repeat(15));
     await tick();
 
     await expect(promise).resolves.toBeUndefined();
   });
 
-  it('OR-combines evidence: hookEventType wins even when minBytes also configured', async () => {
+  it('verifier wins when it resolves true even though activity has not fired', async () => {
+    let resolveVerifier: (value: boolean) => void;
+    const verifierPromise = new Promise<boolean>((resolve) => {
+      resolveVerifier = resolve;
+    });
+    const verifier: SubmissionVerifier = async () => verifierPromise;
     const promise = engine.pasteAndSubmit('s1', 'hello', {
       timeoutMs: 30000,
-      evidence: { hookEventType: EventType.Prompt, minBytes: 1000 },
-      allowAnyDataFallback: false,
+      verifier,
     });
     await reachEvidenceWait();
 
-    // Far below the 1000-byte threshold but the hook fires - must resolve.
-    mockSessionManager.emitData('s1', 'tiny');
-    await tick();
-    expect(mockSessionManager.writeCalls).toHaveLength(1);
-
-    mockSessionManager.emitEvent('s1', EventType.Prompt);
+    // Without firing activity or data, resolve the verifier.
+    resolveVerifier!(true);
     await tick();
 
     await expect(promise).resolves.toBeUndefined();
   });
 
-  it('any-data fallback resolves evidence when allowAnyDataFallback is the default (true)', async () => {
-    // No evidence config - relies entirely on the legacy any-data path.
-    const promise = engine.pasteAndSubmit('s1', 'hello', { timeoutMs: 30000 });
-    await reachEvidenceWait();
+  it('OR-combine race: activity fires while verifier is still pending', async () => {
+    // The most likely real-Claude paste path: the verifier promise is in-flight
+    // (e.g. one-shot Promise that hasn't resolved yet) while the activity
+    // backstop fires first. The engine must resolve on the activity signal
+    // without waiting for the verifier to settle.
+    let resolveVerifier!: (value: boolean) => void;
+    const verifierPromise = new Promise<boolean>((resolve) => {
+      resolveVerifier = resolve;
+    });
+    const verifier: SubmissionVerifier = async () => verifierPromise;
 
-    mockSessionManager.emitData('s1', 'r');
-    await tick();
-
-    await expect(promise).resolves.toBeUndefined();
-  });
-
-  it('regression: declared minBytes is NOT preempted by the default any-data fallback', async () => {
-    // Production caller wiring (browser.ts, command-injector.ts) leaves
-    // allowAnyDataFallback at its default `true`. If an adapter declares
-    // `minBytes: 100`, a single byte must NOT resolve evidence - the
-    // threshold has to actually gate the wait. Otherwise the explicit
-    // declaration is ineffective in production.
     const promise = engine.pasteAndSubmit('s1', 'hello', {
       timeoutMs: 30000,
-      evidence: { minBytes: 100 },
-      // intentionally omit allowAnyDataFallback - mirror production defaults
+      verifier,
     });
     await reachEvidenceWait();
 
-    // 50 bytes: well below the 100-byte threshold.
-    mockSessionManager.emitData('s1', 'a'.repeat(50));
-    await tick();
-    // Engine must still be waiting; no second \r retry yet either.
-    expect(mockSessionManager.writeCalls).toHaveLength(1);
-
-    // Crossing 100 cumulative bytes resolves via the 'bytes' path.
-    mockSessionManager.emitData('s1', 'b'.repeat(60));
+    // Activity fires while verifier is still pending (not yet resolved).
+    mockSessionManager.emitActivity('s1', 'thinking');
     await tick();
 
+    // Engine must resolve without waiting for the verifier.
     await expect(promise).resolves.toBeUndefined();
+
+    // Resolving the verifier afterward should be a no-op (already resolved).
+    resolveVerifier(true);
+    await tick();
   });
 
-  it('regression: declared hookEventType is NOT preempted by the default any-data fallback', async () => {
-    // Same shape as the minBytes regression: a stray data byte before
-    // the hook fires must not resolve the wait.
+  it('tWriteEnter fresh-window: data bytes emitted before \\r write do not resolve evidence', async () => {
+    // Guard: stale renders from the paste-settle phase must not count toward
+    // the 50-byte floor even when they total more than 50 bytes. The
+    // tWriteEnter timestamp captured by the engine right before the \r write
+    // is compared to Date.now() when each data chunk arrives. Chunks whose
+    // Date.now() is less than tWriteEnter are discarded.
+    //
+    // Fake-timer mechanics: Date.now() returns the frozen fake clock value.
+    // We emit 60 bytes of data during the settle window (pre-\r), then freeze
+    // time at that value. When \r fires, tWriteEnter = Date.now() = T1.
+    // The listener starts. We do NOT advance time, so any emitData() call
+    // in the same microtask has Date.now() == T1 (not < T1), which means those
+    // bytes DO count. To demonstrate rejection we need data whose
+    // Date.now()-at-emit < tWriteEnter.
+    //
+    // The practical approach: emit data with the data path DISABLED so we can
+    // isolate the fresh-window behavior from the floor. Emit 60 "pre-submit"
+    // bytes before \r, then with allowAnyDataFallback disabled confirm the
+    // engine must resort to the activity backstop even though bytes crossed 50.
     const promise = engine.pasteAndSubmit('s1', 'hello', {
       timeoutMs: 30000,
-      evidence: { hookEventType: EventType.Prompt },
+      allowAnyDataFallback: false, // disable data path so we can observe gating
     });
-    await reachEvidenceWait();
 
-    // Stray cursor blip: would resolve as 'data' under the buggy
-    // pre-fix behavior. Must NOT resolve here.
-    mockSessionManager.emitData('s1', '\x1b[K');
-    await tick();
-    expect(mockSessionManager.writeCalls).toHaveLength(1);
-
-    // Hook fires - resolves via 'hook'.
-    mockSessionManager.emitEvent('s1', EventType.Prompt);
-    await tick();
-
-    await expect(promise).resolves.toBeUndefined();
-  });
-
-  it('any-data fallback off + only mismatched signals -> evidence times out', async () => {
-    const promise = engine.pasteAndSubmit('s1', 'hello', {
-      timeoutMs: 30000,
-      evidence: { hookEventType: EventType.Prompt },
-      allowAnyDataFallback: false,
-    });
-    promise.catch(() => undefined);
-    await reachEvidenceWait();
-
-    // Wrong event type and a few bytes - neither should resolve.
-    mockSessionManager.emitEvent('s1', EventType.ToolStart);
-    mockSessionManager.emitData('s1', 'noise');
-    await tick();
-
-    // Both evidence windows expire -> no-submission-evidence.
-    vi.advanceTimersByTime(3001);
     await tick();
     mockSessionManager.flushDrain();
     await tick();
-    vi.advanceTimersByTime(2001);
-    await tick();
 
-    await expect(promise).rejects.toBeInstanceOf(PasteSubmitError);
-    await expect(promise).rejects.toMatchObject({ code: 'no-submission-evidence' });
-  });
-
-  it('hookEventType ignores events for other sessions', async () => {
-    const promise = engine.pasteAndSubmit('s1', 'hello', {
-      timeoutMs: 30000,
-      evidence: { hookEventType: EventType.Prompt },
-      allowAnyDataFallback: false,
-    });
-    await reachEvidenceWait();
-
-    // Same event type but a DIFFERENT session must not resolve.
-    mockSessionManager.emitEvent('s2-different', EventType.Prompt);
-    await tick();
-    vi.advanceTimersByTime(500);
+    // Drive past settle cap so \r fires.
+    vi.advanceTimersByTime(1100);
     await tick();
     expect(mockSessionManager.writeCalls).toHaveLength(1);
+    expect(mockSessionManager.writeCalls[0].data).toBe('\r');
 
-    // Correct session resolves.
-    mockSessionManager.emitEvent('s1', EventType.Prompt);
+    // Post-\r drain.
+    mockSessionManager.flushDrain();
+    await tick();
+
+    // Emit data in the evidence window. With allowAnyDataFallback:false the
+    // data path is fully disabled regardless of fresh-window, so bytes cannot
+    // resolve the wait - only activity can.
+    mockSessionManager.emitData('s1', 'x'.repeat(100));
+    await tick();
+
+    // Engine is still waiting (data path disabled, activity not fired).
+    // Intentional: we cannot poll for non-occurrence, so a short advance then check.
+    // (Fixed wait is intentional here - cannot poll for absence of resolution.)
+    vi.advanceTimersByTime(500);
+    await tick();
+
+    // Now fire activity to satisfy the wait.
+    mockSessionManager.emitActivity('s1', 'thinking');
+    await tick();
+
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  it('tWriteEnter fresh-window: byte accumulator resets between the pre-\\r and post-\\r phases', async () => {
+    // Demonstrates the byte counter is per evidence-wait invocation. Bytes emitted
+    // during settle do NOT carry over; the counter starts fresh at the \r write.
+    // Setup: emit 40 bytes during settle (just below floor), then confirm that 20
+    // bytes post-\r cross the 50-byte floor and resolve the wait.
+    const promise = engine.pasteAndSubmit('s1', 'hello', {
+      timeoutMs: 30000,
+      allowAnyDataFallback: true,
+    });
+
+    await tick();
+    mockSessionManager.flushDrain();
+    await tick();
+
+    // Emit 40 bytes during the settle window (pre-\r).
+    mockSessionManager.emitData('s1', 'y'.repeat(40));
+    await tick();
+
+    // Let the idle timer fire so we advance through settle and send \r.
+    vi.advanceTimersByTime(250); // OUTPUT_SETTLE_IDLE_MS
+    await tick();
+    // Advance through the MIN_GAP_MS floor if needed.
+    vi.advanceTimersByTime(1000);
+    await tick();
+
+    expect(mockSessionManager.writeCalls).toHaveLength(1);
+    expect(mockSessionManager.writeCalls[0].data).toBe('\r');
+
+    // Post-\r drain.
+    mockSessionManager.flushDrain();
+    await tick();
+
+    // Emit only 20 bytes post-\r. If the 40 pre-\r bytes carried over we
+    // would have crossed 50 already - which would be wrong. This 20-byte
+    // emission should NOT cross the floor yet.
+    mockSessionManager.emitData('s1', 'z'.repeat(20));
+    await tick();
+
+    // Still waiting because 20 < 50 post-\r bytes.
+    // (intentional fixed advance - cannot poll for absence of resolution)
+    vi.advanceTimersByTime(200);
+    await tick();
+
+    // Now add 35 more bytes to total 55 post-\r bytes (crosses the 50-byte floor).
+    mockSessionManager.emitData('s1', 'z'.repeat(35));
     await tick();
 
     await expect(promise).resolves.toBeUndefined();

@@ -12,16 +12,16 @@ import type {
   AgentAdapter,
   AgentInfo,
   SpawnCommandOptions,
-  CommandInjectionVerifier,
-  CommandInjectionVerifierInput,
   SettingsChangeSpec,
 } from '../../agent-adapter';
 import type {
   AgentPermissionEntry,
   PermissionMode,
   AdapterRuntimeStrategy,
-  SubmissionEvidence,
   AgentCapabilities,
+  SubmissionContextType,
+  SubmissionVerifier,
+  SubmissionContext,
 } from '../../../../shared/types';
 import { ActivityDetection, EventType } from '../../../../shared/types';
 
@@ -44,10 +44,6 @@ export class ClaudeAdapter implements AgentAdapter {
     { mode: 'bypassPermissions', label: 'Bypass (Unsafe)' },
   ];
   readonly defaultPermission: PermissionMode = 'acceptEdits';
-  /** Claude Code emits EventType.Prompt via its UserPromptSubmit hook the
-   *  moment the agent receives our submitted prompt - the strongest
-   *  possible signal. */
-  readonly submissionEvidence: SubmissionEvidence = { hookEventType: EventType.Prompt };
 
   private readonly detector = new ClaudeDetector();
   private readonly commandBuilder = new CommandBuilder();
@@ -159,17 +155,40 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   /**
-   * Claude writes every slash invocation as a `local_command` entry in the
-   * session JSONL with `<command-name>` and `<command-args>` tags. The
-   * verifier polls that file for an entry matching exactly what we sent,
-   * so combined-args concatenation bugs (overlay-eaten Enter merging
-   * `/effort` into the previous `/model` invocation) are detected and
-   * retried. The transcript file is the only authoritative signal -
-   * PTY echo can be misleading if the TUI rewrites the prompt area.
+   * Claude provides context-specific submission verifiers.
+   *
+   * - paste context: Claude emits EventType.Prompt via the UserPromptSubmit
+   *   hook the moment the agent receives our submitted prompt. That same
+   *   transition flips the session's activity to `thinking`, which the
+   *   paste-engine's `'activity'` listener already resolves on. Returning
+   *   null here keeps the fast path on the activity backstop rather than
+   *   re-implementing event subscription inside a one-shot Promise.
+   *
+   * - command-injection context: Claude writes every slash invocation as
+   *   a `local_command` entry in the session JSONL with `<command-name>`
+   *   and `<command-args>` tags. The verifier polls that file for an entry
+   *   matching exactly what we sent, so combined-args concatenation bugs
+   *   (overlay-eaten Enter merging `/effort` into the previous `/model`
+   *   invocation) are detected and retried. Requires agentSessionId, cwd,
+   *   and sentAt in the context to bound the scan window.
    */
-  getCommandInjectionVerifier(input: CommandInjectionVerifierInput): CommandInjectionVerifier | null {
-    const filePath = locateClaudeTranscriptFile(input.agentSessionId, input.cwd);
-    return createSlashCommandVerifier(filePath);
+  getSubmissionVerifier(contextType: SubmissionContextType): SubmissionVerifier | null {
+    if (contextType === 'command-injection') {
+      return async (context: SubmissionContext) => {
+        if (context.type !== 'command-injection' || !context.agentSessionId || !context.cwd) {
+          return false;
+        }
+        const filePath = locateClaudeTranscriptFile(context.agentSessionId, context.cwd);
+        const verifier = createSlashCommandVerifier(filePath);
+        if (!verifier) return false;
+        // sentAt comes from the CommandInjector's most-recent Enter timestamp,
+        // re-advanced on each retry-Enter. Falling back to Date.now() preserves
+        // single-call use (e.g. ad-hoc verifier invocation in tests) but the
+        // production path always supplies it.
+        return verifier(context.text, context.sentAt ?? Date.now());
+      };
+    }
+    return null;
   }
 
   /**

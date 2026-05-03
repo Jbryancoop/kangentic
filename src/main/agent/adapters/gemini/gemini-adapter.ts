@@ -5,8 +5,8 @@ import { GeminiSessionHistoryParser } from './session-history-parser';
 import { GeminiStatusParser } from './status-parser';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionEvidence } from '../../../../shared/types';
-import { ActivityDetection, EventType } from '../../../../shared/types';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier } from '../../../../shared/types';
+import { ActivityDetection } from '../../../../shared/types';
 
 /**
  * Gemini CLI adapter - wraps GeminiDetector, GeminiCommandBuilder,
@@ -25,11 +25,6 @@ export class GeminiAdapter implements AgentAdapter {
     { mode: 'bypassPermissions', label: 'YOLO (Auto-Approve All)' },
   ];
   readonly defaultPermission: PermissionMode = 'acceptEdits';
-  /** Gemini's hook-manager wires its `BeforeAgent` event to
-   *  EventType.Prompt via the event-bridge - that fires when the agent
-   *  starts processing a submitted prompt, which is exactly the post-\r
-   *  signal we need. */
-  readonly submissionEvidence: SubmissionEvidence = { hookEventType: EventType.Prompt };
 
   private readonly detector = new GeminiDetector();
   private readonly commandBuilder = new GeminiCommandBuilder();
@@ -162,6 +157,14 @@ export class GeminiAdapter implements AgentAdapter {
       this.hookHolders.delete(directory);
     }
     removeGeminiHooks(directory);
+  }
+
+  getSubmissionVerifier(_contextType: SubmissionContextType): SubmissionVerifier | null {
+    // Gemini's hook-manager wires its `BeforeAgent` event to EventType.Prompt,
+    // but coordinating hook-based paste confirmation with command-injection
+    // JSONL parsing is complex. Callers fall back to time-based settle (paste)
+    // or time-settle (command-injection).
+    return null;
   }
 
   clearSettingsCache(): void {

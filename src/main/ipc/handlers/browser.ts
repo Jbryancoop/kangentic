@@ -7,7 +7,7 @@ import type { BrowserCaptureInput } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 import { browserUrlStore } from '../../browser/browser-url-store';
 import { PasteSubmitError } from '../../pty/paste-engine';
-import { resolveSubmissionEvidence } from '../../agent/submission-evidence';
+import { agentRegistry } from '../../agent/agent-registry';
 import {
   buildPromptPayload,
   isValidSessionId,
@@ -87,11 +87,10 @@ export function registerBrowserHandlers(context: IpcContext): void {
     }
     const payload = buildPromptPayload(input, relativePngPath);
 
-    // Look up the session's adapter so the engine knows what evidence to
-    // wait for post-\r. resolveSubmissionEvidence falls back to
-    // `{ minBytes: 50 }` when the adapter is unknown, preserving a
-    // universal safety net against cursor-blip false positives.
-    const evidence = resolveSubmissionEvidence(context.sessionManager, input.sessionId);
+    // Look up the session's adapter to get the submission verifier for paste confirmation.
+    const agentName = context.sessionManager.getSessionAgentName(input.sessionId);
+    const adapter = agentName ? agentRegistry.get(agentName) : undefined;
+    const verifier = adapter?.getSubmissionVerifier?.('paste') ?? undefined;
 
     // Engine handles bracketed-paste wrap, drain, paste-to-Enter gap,
     // and atomic submit. Translate engine errors to renderer-facing toasts.
@@ -99,7 +98,7 @@ export function registerBrowserHandlers(context: IpcContext): void {
       await context.pasteEngine.pasteAndSubmit(input.sessionId, payload, {
         bracketed: true,
         source: 'browser-capture',
-        evidence,
+        verifier,
       });
     } catch (caught) {
       if (caught instanceof PasteSubmitError) {

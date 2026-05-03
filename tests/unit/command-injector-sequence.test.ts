@@ -140,9 +140,9 @@ describe('CommandInjector.scheduleSequence', () => {
   it('with verifier: waits for confirmation before sending the next command', async () => {
     const { injector, manager } = setup();
     // Verifier resolves true on the first call (success) for both commands.
-    const calls: Array<{ command: string; sentAt: number }> = [];
-    const verifier = async (command: string, sentAt: number): Promise<boolean> => {
-      calls.push({ command, sentAt });
+    const calls: string[] = [];
+    const verifier = async (command: string): Promise<boolean> => {
+      calls.push(command);
       return true;
     };
     injector.scheduleSequence('task-1', 'sess-1', ['/model opus', '/effort high'], { verifier });
@@ -150,7 +150,7 @@ describe('CommandInjector.scheduleSequence', () => {
     await drain(3000);
 
     // Verifier called once per command, in order.
-    expect(calls.map((c) => c.command)).toEqual(['/model opus', '/effort high']);
+    expect(calls).toEqual(['/model opus', '/effort high']);
     // Both commands' keypresses were emitted.
     const textWrites = manager.writes.filter((w) => w !== '\x03' && w !== '\x1b' && w !== '\r');
     expect(textWrites).toEqual(['/model opus', '/effort high']);
@@ -158,22 +158,23 @@ describe('CommandInjector.scheduleSequence', () => {
 
   it('with verifier: re-fires Enter when verification stays false past the retry interval', async () => {
     const { injector, manager } = setup();
-    // Track when the second sentAt arrives - that signals a retry-Enter
-    // happened (pollWithRetries advances sentAt on each retry).
-    const observedSentAts: number[] = [];
-    const verifier = async (command: string, sentAt: number): Promise<boolean> => {
+    // Verifier returns false until at least one retry-Enter has been observed.
+    // The retry-Enter fires when the polling window (400ms) expires without
+    // a successful verification. We detect retries by counting '\r' writes
+    // observed AFTER the initial Enter for /model opus.
+    const verifier = async (command: string): Promise<boolean> => {
       if (command !== '/model opus') return true;
-      if (!observedSentAts.includes(sentAt)) observedSentAts.push(sentAt);
-      // Confirm only after a retry has happened (more than one distinct sentAt).
-      return observedSentAts.length >= 2;
+      // Count Enter writes seen in manager.writes. The initial Enter fires
+      // in writeSequence before pollWithRetries, so seeing >= 2 Enter writes
+      // means at least one retry-Enter has fired.
+      const enterCount = manager.writes.filter((w) => w === '\r').length;
+      return enterCount >= 2;
     };
     injector.scheduleSequence('task-1', 'sess-1', ['/model opus', '/effort high'], { verifier });
 
     await drain(8000);
 
-    // We saw at least 2 distinct sentAt values -> at least one retry-Enter fired.
-    expect(observedSentAts.length).toBeGreaterThanOrEqual(2);
-    // Enter writes: 1 initial + N retries + 1 for /effort. Always >= 3.
+    // Enter writes: 1 initial + at least 1 retry + 1 for /effort. Always >= 3.
     const enterWrites = manager.writes.filter((w) => w === '\r');
     expect(enterWrites.length).toBeGreaterThanOrEqual(3);
     const textWrites = manager.writes.filter((w) => w !== '\x03' && w !== '\x1b' && w !== '\r');
@@ -182,7 +183,7 @@ describe('CommandInjector.scheduleSequence', () => {
 
   it('with verifier: continues the sequence even if a command never confirms', async () => {
     const { injector, manager } = setup();
-    const verifier = async (): Promise<boolean> => false;
+    const verifier = async (_command: string): Promise<boolean> => false;
     injector.scheduleSequence('task-1', 'sess-1', ['/model opus', '/effort high'], { verifier });
 
     await drain(15000);

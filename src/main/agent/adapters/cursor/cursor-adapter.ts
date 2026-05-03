@@ -13,7 +13,8 @@ import type {
   SessionUsage,
   SessionContext,
   SessionAttachment,
-  SubmissionEvidence,
+  SubmissionContextType,
+  SubmissionVerifier,
 } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
@@ -98,9 +99,6 @@ export class CursorAdapter implements AgentAdapter {
   // `--resume=<id>` work reliably. Interactive mode is still selectable
   // by the user but produces no machine-readable telemetry.
   readonly defaultPermission: PermissionMode = 'bypassPermissions';
-  /** Cursor CLI has no hook system; rely on a 100-byte post-\r threshold
-   *  to filter cursor-blip false positives. */
-  readonly submissionEvidence: SubmissionEvidence = { minBytes: 100 };
 
   // Cursor CLI uses the shared AgentDetector via composition.
   // The binary is called `agent` - a generic name that may collide
@@ -288,5 +286,11 @@ export class CursorAdapter implements AgentAdapter {
       cwd,
       promptVia: 'arg',
     });
+  }
+
+  getSubmissionVerifier(_contextType: SubmissionContextType): SubmissionVerifier | null {
+    // Cursor CLI has no hooks or structured verification signals.
+    // Callers fall back to time-based settle (paste) or time-settle (command-injection).
+    return null;
   }
 }

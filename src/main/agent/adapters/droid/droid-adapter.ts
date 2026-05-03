@@ -8,7 +8,8 @@ import type {
   PermissionMode,
   AdapterRuntimeStrategy,
   AgentLiveTelemetryUnsupported,
-  SubmissionEvidence,
+  SubmissionContextType,
+  SubmissionVerifier,
 } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
@@ -57,10 +58,6 @@ export class DroidAdapter implements AgentAdapter {
     { mode: 'default', label: 'Default (use Droid TUI controls)' },
   ];
   readonly defaultPermission: PermissionMode = 'default';
-  /** Droid 0.109 ignores hooks injected via --settings, so there is no
-   *  prompt-submit event channel. 100-byte post-\r floor matches the
-   *  PTY-only adapters (Aider, Cursor, Warp). */
-  readonly submissionEvidence: SubmissionEvidence = { minBytes: 100 };
 
   private readonly detector = new DroidDetector();
   private readonly commandBuilder = new DroidCommandBuilder();
@@ -124,6 +121,13 @@ export class DroidAdapter implements AgentAdapter {
 
   removeHooks(_directory: string, _taskId?: string): void {
     // No-op: this adapter does not write any hook config.
+  }
+
+  getSubmissionVerifier(_contextType: SubmissionContextType): SubmissionVerifier | null {
+    // Droid 0.109 ignores hooks injected via --settings, so there is no
+    // prompt-submit event channel. Callers fall back to time-based settle (paste)
+    // or time-settle (command-injection).
+    return null;
   }
 
   clearSettingsCache(): void {

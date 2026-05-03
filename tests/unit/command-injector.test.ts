@@ -13,6 +13,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { CommandInjector } from '../../src/main/engine/command-injector';
+import { agentRegistry } from '../../src/main/agent/agent-registry';
 
 class MockSessionManager extends EventEmitter {
   writes: Array<{ id: string; data: string }> = [];
@@ -70,7 +71,7 @@ class MockPasteEngine {
     bracketed?: boolean;
     source?: string;
     aborted?: boolean;
-    evidence?: unknown;
+    verifier?: unknown;
   }> = [];
   resolveNext: (() => void) | null = null;
   rejectNext: ((error: unknown) => void) | null = null;
@@ -78,14 +79,14 @@ class MockPasteEngine {
   pasteAndSubmit(
     sessionId: string,
     text: string,
-    options: { bracketed?: boolean; signal?: AbortSignal; source?: string; evidence?: unknown } = {},
+    options: { bracketed?: boolean; signal?: AbortSignal; source?: string; verifier?: unknown } = {},
   ): Promise<void> {
     const call = {
       sessionId,
       text,
       bracketed: options.bracketed,
       source: options.source,
-      evidence: options.evidence,
+      verifier: options.verifier,
       aborted: false,
     };
     this.calls.push(call);
@@ -306,62 +307,112 @@ describe('CommandInjector', () => {
     expect(pasteEngine.calls[0].text).toBe('line one line two line three');
   });
 
-  it('forwards claude adapter submissionEvidence (hookEventType only) to pasteEngine', async () => {
-    // Gap 2: previously the mock always returned undefined, exercising only
-    // the fallback path. This test proves that a known adapter name routes
-    // the real submissionEvidence through to pasteAndSubmit.
+  it('looks up the Claude adapter by name and forwards its paste verifier (null today)', async () => {
+    // Concrete regression guard: prove `agentRegistry.get('claude').getSubmissionVerifier('paste')`
+    // is actually consulted, not bypassed. Claude returns null for paste context today, which the
+    // caller coalesces to undefined via `?? undefined` - that exact value lands in pasteEngine.calls[0].
     sessionManager.registry.set('s1', { status: 'running' });
     sessionManager.agentNameOverride = 'claude';
 
-    injector.schedule('task-1', 's1', '/review');
+    const claudeAdapter = agentRegistry.get('claude');
+    if (!claudeAdapter?.getSubmissionVerifier) throw new Error('Claude adapter must implement getSubmissionVerifier');
+    const verifierSpy = vi.spyOn(claudeAdapter, 'getSubmissionVerifier');
 
-    await tick();
-    sessionManager.flushDrain();
-    await tick();
-    vi.advanceTimersByTime(150);
-    await tick();
+    try {
+      injector.schedule('task-1', 's1', '/review');
 
-    expect(pasteEngine.calls).toHaveLength(1);
-    const evidence = pasteEngine.calls[0].evidence as Record<string, unknown>;
-    // Claude uses EventType.Prompt via its UserPromptSubmit hook - no minBytes.
-    expect(evidence?.hookEventType).toBe('prompt');
-    expect(evidence?.minBytes).toBeUndefined();
+      await tick();
+      sessionManager.flushDrain();
+      await tick();
+      vi.advanceTimersByTime(150);
+      await tick();
+
+      expect(pasteEngine.calls).toHaveLength(1);
+      expect(verifierSpy).toHaveBeenCalledWith('paste');
+      // Adapter returned null; the `?? undefined` in command-injector coalesces that to undefined.
+      expect(pasteEngine.calls[0].verifier).toBeUndefined();
+    } finally {
+      verifierSpy.mockRestore();
+    }
   });
 
-  it('forwards codex adapter submissionEvidence (hookEventType + minBytes) to pasteEngine', async () => {
+  it('looks up the Codex adapter by name and forwards its paste verifier (null today)', async () => {
     sessionManager.registry.set('s1', { status: 'running' });
     sessionManager.agentNameOverride = 'codex';
 
-    injector.schedule('task-1', 's1', '/review');
+    const codexAdapter = agentRegistry.get('codex');
+    if (!codexAdapter?.getSubmissionVerifier) throw new Error('Codex adapter must implement getSubmissionVerifier');
+    const verifierSpy = vi.spyOn(codexAdapter, 'getSubmissionVerifier');
 
-    await tick();
-    sessionManager.flushDrain();
-    await tick();
-    vi.advanceTimersByTime(150);
-    await tick();
+    try {
+      injector.schedule('task-1', 's1', '/review');
 
-    expect(pasteEngine.calls).toHaveLength(1);
-    const evidence = pasteEngine.calls[0].evidence as Record<string, unknown>;
-    expect(evidence?.hookEventType).toBe('prompt');
-    expect(evidence?.minBytes).toBe(100);
+      await tick();
+      sessionManager.flushDrain();
+      await tick();
+      vi.advanceTimersByTime(150);
+      await tick();
+
+      expect(pasteEngine.calls).toHaveLength(1);
+      expect(verifierSpy).toHaveBeenCalledWith('paste');
+      expect(pasteEngine.calls[0].verifier).toBeUndefined();
+    } finally {
+      verifierSpy.mockRestore();
+    }
   });
 
-  it('uses { minBytes: 50 } fallback when getSessionAgentName returns undefined', async () => {
-    // Explicit regression guard: the fallback floor must not change to 0 or
-    // be removed, because it filters single-cursor blips.
+  it('skips adapter lookup entirely when getSessionAgentName returns undefined', async () => {
+    // Regression guard for the `agentName ? agentRegistry.get(agentName) : undefined` short-circuit.
+    // When no agent name is captured, the code MUST NOT consult the registry - otherwise an
+    // accidental `agentRegistry.get(undefined)` would hit registry-internal handling.
     sessionManager.registry.set('s1', { status: 'running' });
     // agentNameOverride stays undefined (default)
 
-    injector.schedule('task-1', 's1', '/review');
+    const registrySpy = vi.spyOn(agentRegistry, 'get');
 
-    await tick();
-    sessionManager.flushDrain();
-    await tick();
-    vi.advanceTimersByTime(150);
-    await tick();
+    try {
+      injector.schedule('task-1', 's1', '/review');
 
-    expect(pasteEngine.calls).toHaveLength(1);
-    const evidence = pasteEngine.calls[0].evidence as Record<string, unknown>;
-    expect(evidence).toEqual({ minBytes: 50 });
+      await tick();
+      sessionManager.flushDrain();
+      await tick();
+      vi.advanceTimersByTime(150);
+      await tick();
+
+      expect(pasteEngine.calls).toHaveLength(1);
+      expect(registrySpy).not.toHaveBeenCalled();
+      expect(pasteEngine.calls[0].verifier).toBeUndefined();
+    } finally {
+      registrySpy.mockRestore();
+    }
+  });
+
+  it('passes the verifier through verbatim when the adapter returns a function', async () => {
+    // When a future adapter starts returning a real verifier for paste context, that function
+    // must reach pasteAndSubmit unchanged. Stub Claude's adapter to verify the wiring.
+    sessionManager.registry.set('s1', { status: 'running' });
+    sessionManager.agentNameOverride = 'claude';
+
+    const claudeAdapter = agentRegistry.get('claude');
+    if (!claudeAdapter?.getSubmissionVerifier) throw new Error('Claude adapter must implement getSubmissionVerifier');
+    const stubVerifier = async (): Promise<boolean> => true;
+    const verifierSpy = vi
+      .spyOn(claudeAdapter, 'getSubmissionVerifier')
+      .mockReturnValue(stubVerifier);
+
+    try {
+      injector.schedule('task-1', 's1', '/review');
+
+      await tick();
+      sessionManager.flushDrain();
+      await tick();
+      vi.advanceTimersByTime(150);
+      await tick();
+
+      expect(verifierSpy).toHaveBeenCalledWith('paste');
+      expect(pasteEngine.calls[0].verifier).toBe(stubVerifier);
+    } finally {
+      verifierSpy.mockRestore();
+    }
   });
 });

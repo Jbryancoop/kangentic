@@ -5,7 +5,7 @@ import { quoteArg, isUnixLikeShell, toForwardSlash } from '../../../../shared/pa
 import { resolveBridgeScript } from '../../shared/bridge-utils';
 import { AiderSessionHistoryParser } from './session-history-parser';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions } from '../../agent-adapter';
-import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionEvidence } from '../../../../shared/types';
+import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
 /**
@@ -28,9 +28,6 @@ export class AiderAdapter implements AgentAdapter {
     { mode: 'bypassPermissions', label: 'Auto Yes (Skip Confirmations)' },
   ];
   readonly defaultPermission: PermissionMode = 'bypassPermissions';
-  /** Aider has no hook system - falls back to a 100-byte post-\r threshold
-   *  to filter single-cursor-blip false positives. */
-  readonly submissionEvidence: SubmissionEvidence = { minBytes: 100 };
 
   // Aider uses the shared AgentDetector via composition (keeps the
   // single-file layout while deduplicating detection logic across
@@ -165,5 +162,11 @@ export class AiderAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return AiderSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  getSubmissionVerifier(_contextType: SubmissionContextType): SubmissionVerifier | null {
+    // Aider has no hooks or structured verification signals.
+    // Callers fall back to time-based settle (paste) or time-settle (command-injection).
+    return null;
   }
 }

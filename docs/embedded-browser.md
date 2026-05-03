@@ -47,10 +47,10 @@ Captures live under the session directory so they're cleaned up by existing life
 1. **Chunked atomic write** with `setImmediate` yields between 1KB chunks, sized so Windows ConPTY's child-side ReadFile reliably gets the whole chunk in one read.
 2. **Output settle** with a 250ms idle window after first data, capped per-byte, floored at 1000ms for React's commit cycle.
 3. **`\r` through the queue** (not `writeRaw`). Routing through `sessionManager.write` matches user keystroke delivery, which empirically lands on Claude Code's TUI; `writeRaw` skips the queue and gets misrouted.
-4. **Submission evidence** — after `\r`, wait up to 3s for one of (in declared strength order): a `SessionEvent` matching the adapter's `submissionEvidence.hookEventType` (e.g. Claude/Codex/Gemini/Qwen `UserPromptSubmit` → `EventType.Prompt`), a regex match of `submissionEvidence.outputMarker` against the post-`\r` ring buffer, the `submissionEvidence.minBytes` threshold of post-`\r` bytes, an `activity` event with non-idle state (legacy backstop), or any post-`\r` data byte (final fallback, gated on `allowAnyDataFallback`). On timeout, retry `\r` once with a 2s window. Both timeouts → `PasteSubmitError('no-submission-evidence')` → toast.
+4. **Submission verification** — after `\r`, wait up to 3s for any of three signals racing in parallel: the adapter's `getSubmissionVerifier('paste')` callback resolves `true`, an `activity` event with non-idle state fires, or post-`\r` data bytes cross a 50-byte cursor-blip floor. The signals OR-combine — a verifier resolving `false` does NOT short-circuit the activity / data fallbacks. On timeout, retry `\r` once with a 2s window. Both timeouts → `PasteSubmitError('no-submission-evidence')` → toast.
 5. **Bracketed-paste-mode tracking** — if the agent emits `\e[?2004l` (mode off, indicating a permission prompt or modal took focus) during the call, the retry path is skipped to avoid `\r` confirming a destructive action. Surfaced as a different toast: "Agent has a permission prompt or modal open."
 
-Per-adapter evidence is declared on each `AgentAdapter` via the `submissionEvidence: SubmissionEvidence` field. `BROWSER_CAPTURE_SEND` and `CommandInjector.deliver` both look up the session's adapter via `agentRegistry.get(sessionManager.getSessionAgentName(sessionId))` and forward the evidence to `pasteAndSubmit`. A `?? { minBytes: 50 }` floor at the call site preserves the universal safety net if an adapter ever forgets to declare. Engine code itself never branches on agent name.
+Per-adapter verification is exposed via each `AgentAdapter`'s `getSubmissionVerifier(contextType: 'paste' | 'command-injection')` method. `BROWSER_CAPTURE_SEND` and `CommandInjector.deliver` both look up the session's adapter via `agentRegistry.get(sessionManager.getSessionAgentName(sessionId))` and pass `getSubmissionVerifier('paste')` to `pasteAndSubmit` as the optional `verifier` callback. Adapters may return `null` to fall back to the activity/data-byte signals. Engine code itself never branches on agent name.
 
 **Caller contract:** the session must be subscribed to (in `SessionManager.focusedSessionIds`) when the engine is invoked. Both Browser pane and CommandInjector run alongside an active terminal panel that subscribes via `TERMINAL_SUBSCRIBE`, so they satisfy this naturally.
 
@@ -98,7 +98,7 @@ The Browser tab in `AppSettingsPanel` (per-project, above the separator) exposes
 
 | Item | Status | Tracked |
 |---|---|---|
-| Per-adapter submission evidence (replace heuristic data-byte fallback) | Done | `SubmissionEvidence` declared on every adapter; engine consumes via `PasteOptions.evidence` |
+| Per-adapter submission verification (replace heuristic data-byte fallback) | Done | `getSubmissionVerifier(contextType)` declared on every adapter; engine consumes via `PasteOptions.verifier` |
 | Clear browser data action in settings | Future | follow-up task |
 | Pop-out window for second-monitor workflow | Future | requires child `BrowserWindow` architecture |
 | DOM tree picker (vs free-form `getSelection()`) | Future | nice-to-have |
@@ -110,7 +110,7 @@ The Browser tab in `AppSettingsPanel` (per-project, above the separator) exposes
 
 ## Test coverage
 
-- **Unit** — `tests/unit/paste-engine.test.ts` covers the engine state machine, settle/cap/floor, evidence + retry, bracketed-paste-mode tracking, abort, timeout, and per-adapter evidence paths (`hookEventType`, `outputMarker`, `minBytes`, OR-combined, fallback gating). `tests/unit/write-queue.test.ts` (17 cases) covers bracketed-paste-aware chunking. `tests/unit/command-injector.test.ts` (10 cases) covers the auto_command path.
+- **Unit** — `tests/unit/paste-engine.test.ts` covers the engine state machine, settle/cap/floor, verifier + retry, bracketed-paste-mode tracking, abort, timeout, and per-adapter verifier paths (callback returns true, activity fallback, data-byte fallback). `tests/unit/write-queue.test.ts` (17 cases) covers bracketed-paste-aware chunking. `tests/unit/command-injector.test.ts` (13 cases) covers the auto_command path. `tests/unit/agent-submission-verifier-shape.test.ts` confirms each adapter implements `getSubmissionVerifier`.
 - **UI** — pending. Should cover URL bar, draw/inspect toggles, attachment chips, send disable-on-pending. The mock electron API needs `browser.captureAndSend`, `browser.getUrls`, etc.
 - **E2E** — pending. Should cover Send → paste-engine → mock-claude submission round-trip.
 
@@ -123,7 +123,7 @@ Open questions resolved during the build:
 3. **DevTools exposure** - not enabled. Adds a security surface for the inspect feature; not worth it given Inspect mode covers the common need.
 4. **File downloads** - unhandled. A page with `<a download>` will trigger Chromium's default behavior (likely route through `defaultSession` to `Downloads/`). Future hardening: explicit `will-download` deny.
 5. **Permissions** - inherits the host session. Should be explicitly denied via `setPermissionRequestHandler` on the partition's session. Future hardening.
-6. **Adapter capability shape** - deferred to task #79 (`SubmissionEvidence` for hooks/markers/byte-threshold per adapter).
+6. **Adapter capability shape** - resolved via `getSubmissionVerifier(contextType)` returning a per-context callback. The callback consumes adapter-specific signals (e.g. Claude's JSONL transcript for command-injection) and returns a boolean.
 7. **Pop-out window** - deferred. Side-pane is the shipped surface. If pop-out becomes a hard requirement, build on a child `BrowserWindow` from scratch rather than retrofit re-parenting.
 
 ## Files
