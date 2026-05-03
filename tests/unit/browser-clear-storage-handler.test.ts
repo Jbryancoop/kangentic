@@ -111,14 +111,16 @@ import { BROWSER_PARTITION } from '../../src/shared/browser-partition';
 // ---------------------------------------------------------------------------
 
 function makeContext() {
+  // The clear-storage handler does not exercise the paste path; no
+  // terminalSubmit mock is needed here. If a future browser-handler test
+  // does need paste, mock `terminalSubmit: { submitContent: vi.fn(...) }`
+  // instead - PasteEngine is no longer reachable directly through the
+  // IpcContext.
   return {
     currentProjectPath: null,
     currentProjectId: null,
     configManager: {
       loadProjectOverrides: vi.fn(() => null),
-    },
-    pasteEngine: {
-      pasteAndSubmit: vi.fn(async () => undefined),
     },
   };
 }

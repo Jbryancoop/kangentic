@@ -187,9 +187,10 @@ export interface AgentAdapter {
    *
    * For 'command-injection' context: confirms an injected slash command was
    * parsed correctly (defending against Enter-key races that concatenate
-   * commands). The CommandInjector polls this callback in a tight loop and
-   * re-fires `\r` when it stays false past the retry interval. Verifiers
-   * should bound their scan window using `context.sentAt`.
+   * commands). `TerminalSubmit.submitKeystrokes` polls this callback in a
+   * tight loop and re-fires `\r` when it stays false past the retry
+   * interval. Verifiers should bound their scan window using
+   * `context.sentAt`.
    *
    * Return null for unsupported contexts; the caller uses fallback signals
    * (activity event + 50-byte data floor for paste, time-based settle for
@@ -210,8 +211,9 @@ export interface AgentAdapter {
 
   /**
    * Optional: translate a column-level settings change (model / effort)
-   * into the sequence of writes the CommandInjector should push onto the
-   * live PTY to apply it. Pairs with `getSubmissionVerifier('command-injection')` for confirmation.
+   * into the sequence of writes the TerminalSubmitScheduler should push onto
+   * the live PTY to apply it. Pairs with
+   * `getSubmissionVerifier('command-injection')` for confirmation.
    *
    * Sibling of `getExitSequence` - both return `string[]` of writes the
    * PTY layer consumes, just for different lifecycle events.

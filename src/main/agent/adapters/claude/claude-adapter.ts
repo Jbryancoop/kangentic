@@ -181,10 +181,10 @@ export class ClaudeAdapter implements AgentAdapter {
         const filePath = locateClaudeTranscriptFile(context.agentSessionId, context.cwd);
         const verifier = createSlashCommandVerifier(filePath);
         if (!verifier) return false;
-        // sentAt comes from the CommandInjector's most-recent Enter timestamp,
-        // re-advanced on each retry-Enter. Falling back to Date.now() preserves
-        // single-call use (e.g. ad-hoc verifier invocation in tests) but the
-        // production path always supplies it.
+        // sentAt comes from TerminalSubmit.submitKeystrokes's most-recent
+        // Enter timestamp, re-advanced on each retry-Enter. Falling back to
+        // Date.now() preserves single-call use (e.g. ad-hoc verifier
+        // invocation in tests) but the production path always supplies it.
         return verifier(context.text, context.sentAt ?? Date.now());
       };
     }

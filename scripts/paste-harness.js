@@ -7,7 +7,7 @@
  * every byte the agent emits, and reports whether the agent appeared to
  * receive the prompt and start processing.
  *
- * The harness exists because the embedded browser pane and CommandInjector
+ * The harness exists because the embedded browser pane and TerminalSubmitScheduler
  * both need RELIABLE paste-and-submit across all agents and OSes, and we
  * need to observe ground-truth byte timing to debug it. Pure unit tests
  * can't reproduce ConPTY/Ink/React-commit behavior.
@@ -300,9 +300,8 @@ const STRATEGIES = {
     await new Promise((resolve) => setImmediate(resolve));
     ptyProcess.write('\r');
   },
-  // Single-line auto_command flavour: simulates the CommandInjector path.
-  // Used to validate the engine's `prefix` and `escapeBeforeEnter` options
-  // BEFORE migrating CommandInjector to it.
+  // Single-line auto_command flavour: simulates the TerminalSubmit.submitKeystrokes path.
+  // Used to validate the engine's `prefix` and `escapeBeforeEnter` options.
   'cmd-atomic': async (ptyProcess, text) => {
     // Single atomic write: text + Esc + Enter. No bracketed paste markers
     // (single-line commands don't need them).
@@ -310,7 +309,7 @@ const STRATEGIES = {
     ptyProcess.write(`${safe}\x1b\r`);
   },
   'cmd-atomic-with-ctrlc': async (ptyProcess, text) => {
-    // Full CommandInjector replacement: Ctrl+C + text + Esc + Enter
+    // Full TerminalSubmit.submitKeystrokes flavour: Ctrl+C + text + Esc + Enter
     // in a single atomic write. Validates whether the leading Ctrl+C
     // races against immediately-following text (it shouldn't, since
     // they're parsed in order from one kernel read).
@@ -319,7 +318,7 @@ const STRATEGIES = {
   },
   'cmd-no-escape': async (ptyProcess, text) => {
     // Bare baseline: text + Enter atomically, no Escape, no Ctrl+C.
-    // If this works, the existing CommandInjector's Escape may be
+    // If this works, the existing TerminalSubmit.submitKeystrokes Escape may be
     // unnecessary defensiveness rather than a load-bearing keystroke.
     const safe = sanitize(text);
     ptyProcess.write(`${safe}\r`);

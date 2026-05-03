@@ -63,8 +63,8 @@ export interface ScheduleKeystrokesOptions {
  *
  * Cancellation tears down event listeners + timers AND aborts an in-flight
  * burst via the per-task `AbortController` plumbed through to
- * TerminalSubmit. Re-scheduling for the same task cancels the prior pending
- * injection, mirroring the historical behavior of `CommandInjector`.
+ * TerminalSubmit. Re-scheduling for the same task cancels any prior pending
+ * injection.
  *
  * Used by every column-transition / lifecycle path that injects keystrokes:
  * auto_command on column move, `/model X` + `/effort Y` settings burst,

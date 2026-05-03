@@ -108,9 +108,10 @@ export class TerminalSubmit {
   /**
    * Manual keystroke sequence for one or more commands. Each command is
    * sanitized (CR/LF/Tab → space, then trim) and delivered as
-   * `text → Esc → Enter` with ~40ms between keypresses. The leading Ctrl+C
-   * (default, opt-out via `sendCtrlC: false`) clears any half-typed input
-   * before the first command.
+   * `text → Esc → Enter` with `KEYPRESS_DELAY` ms between keypresses (see
+   * the constant in the body for the current value and the rationale).
+   * The leading Ctrl+C (default, opt-out via `sendCtrlC: false`) clears
+   * any half-typed input before the first command.
    *
    * For chained bursts (e.g. `/model X` then `/effort Y` then auto_command):
    *   - Pass the whole sequence in `commands[]`.
@@ -161,19 +162,22 @@ export class TerminalSubmit {
     const MAX_RETRIES = 4;
 
     const wait = (ms: number): Promise<void> => new Promise((resolve, reject) => {
-      if (opts.signal?.aborted) {
+      const signal = opts.signal;
+      if (signal?.aborted) {
         reject(new Error('aborted'));
         return;
       }
-      const timer = setTimeout(resolve, ms);
-      opts.signal?.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          reject(new Error('aborted'));
-        },
-        { once: true },
-      );
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        reject(new Error('aborted'));
+      };
+      const timer = setTimeout(() => {
+        // Detach the abort listener on success so signals reused across many
+        // waits in a single burst do not accumulate dead listeners.
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
 
     try {
@@ -254,15 +258,15 @@ export class TerminalSubmit {
         reject(new Error('aborted'));
         return;
       }
-      const timer = setTimeout(resolve, ms);
-      signal?.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          reject(new Error('aborted'));
-        },
-        { once: true },
-      );
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        reject(new Error('aborted'));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
 
     let sentAt = initialSentAt;

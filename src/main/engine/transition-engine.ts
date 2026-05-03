@@ -131,7 +131,12 @@ export class TransitionEngine {
         break;
 
       case 'send_command':
-        this.executeSendCommand(config, task, templateVars);
+        // Fire-and-forget: executeSendCommand internally spawns a fire-and-
+        // forget keystroke burst, so awaiting here would just hold the action
+        // chain on the synchronous prefix (interpolate + sanitize). `void`
+        // signals intent to TypeScript and any future no-floating-promises
+        // lint rule.
+        void this.executeSendCommand(config, task, templateVars);
         break;
 
       case 'run_script':

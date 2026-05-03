@@ -30,7 +30,7 @@ export interface SlashVerifierOptions {
    * If set, the verifier polls internally for up to `timeoutMs` before
    * returning false (legacy single-call semantics). When unset (default),
    * the verifier performs a single immediate scan and returns - the caller
-   * (CommandInjector.pollWithRetries) drives the polling cadence.
+   * (TerminalSubmit.pollWithRetries) drives the polling cadence.
    */
   timeoutMs?: number;
   /** Polling interval used only when timeoutMs is set. Default 25ms. */

@@ -6,7 +6,7 @@ import type { CommandVerifier } from './terminal-submit-scheduler';
 /**
  * Per-agent translation of a column-level model/effort change (and an
  * optional auto_command) into a chained sequence of writes plus an
- * appropriate verifier - i.e. the input the CommandInjector needs to
+ * appropriate verifier - i.e. the input TerminalSubmitScheduler needs to
  * actually push the writes onto the PTY.
  *
  * Naming convention across the stack:
@@ -16,7 +16,7 @@ import type { CommandVerifier } from './terminal-submit-scheduler';
  *   downstream consumer.
  * - "plan"     = the assembled artifact (sequence + verifier) handed to
  *   the executor. The plan is what gets injected.
- * - "injector" / "schedule" / "burst" = execution layer (CommandInjector).
+ * - "scheduler" / "burst" = execution layer (TerminalSubmitScheduler).
  *
  * Centralizes what `task-move.ts` and `board.ts` would otherwise both
  * build by hand:
@@ -30,7 +30,7 @@ import type { CommandVerifier } from './terminal-submit-scheduler';
  *
  * Returns null when there is nothing to inject (no settings delta, no
  * auto_command). Callers pass the result straight to
- * `commandInjector.scheduleSequence(task.id, sessionId, plan.sequence, { verifier: plan.verifier })`.
+ * `terminalSubmitScheduler.scheduleKeystrokes(task.id, sessionId, plan.sequence, { verifier: plan.verifier, verifiedPrefixLength: plan.verifiedPrefixLength })`.
  */
 export interface InjectionPlanInput {
   adapter: AgentAdapter | undefined;
@@ -81,7 +81,8 @@ export function prepareInjectionPlan(input: InjectionPlanInput): InjectionPlan |
   if (sequence.length === 0) return null;
 
   // Verifier is best-effort: needs adapter support + a captured agent_session_id.
-  // null is a documented fallback to time-based settle in CommandInjector.
+  // null is a documented fallback to time-based settle in
+  // TerminalSubmit.submitKeystrokes.
   let verifier: CommandVerifier | null = null;
   if (adapter?.getSubmissionVerifier && sessionRepo) {
     const record = sessionRepo.getLatestForTask(task.id);

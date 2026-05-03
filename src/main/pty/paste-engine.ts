@@ -2,8 +2,11 @@ import type { SessionManager } from './session-manager';
 import type { SessionEvent, SubmissionContext, SubmissionVerifier } from '../../shared/types';
 
 /**
- * PasteEngine: deterministic paste-and-submit for TUI agents. Used by the
- * browser pane and CommandInjector.
+ * PasteEngine: deterministic paste-and-submit for TUI agents. Private
+ * implementation detail of `TerminalSubmit.submitContent` - external
+ * callers should never reach into this module directly. The browser pane
+ * goes through `terminalSubmit.submitContent`, which forwards to
+ * `pasteAndSubmit` here.
  *
  * Algorithm:
  *   1. drain pending writeQueue bytes
@@ -31,9 +34,10 @@ import type { SessionEvent, SubmissionContext, SubmissionVerifier } from '../../
  * and evidence (step 5) only resolve via the data path when the session
  * is focused. Both fall back to wall-clock floors and activity events
  * respectively, but the engine is meaningfully slower and less
- * deterministic without subscription. Browser pane and CommandInjector
- * both run alongside an active terminal panel that subscribes via
- * `TERMINAL_SUBSCRIBE`, so they satisfy this naturally.
+ * deterministic without subscription. Browser pane and the keystroke
+ * delivery path (TerminalSubmit) both run alongside an active terminal
+ * panel that subscribes via `TERMINAL_SUBSCRIBE`, so they satisfy this
+ * naturally.
  */
 
 export interface PasteOptions {
@@ -129,7 +133,8 @@ export function sanitizeForPaste(text: string): string {
  * queue, so any caller routing user input through `sessionManager.write`
  * during a paste-engine call can interleave bytes at the OS pipe level,
  * splitting the bracketed-paste packet. Browser pane (Send button blocks)
- * and CommandInjector (auto_command path) both naturally satisfy this.
+ * and the keystroke delivery path (which uses sessionManager.write
+ * exclusively, not writeRaw) both naturally satisfy this.
  *
  * PLATFORM NOTE: on Windows ConPTY, each `pty.write` traverses an IPC
  * channel to conhost (1-5ms per write). For 100KB+ payloads (~100 chunks)

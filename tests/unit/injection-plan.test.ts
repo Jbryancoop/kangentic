@@ -2,7 +2,7 @@
  * Tests for prepareInjectionPlan - the central per-task helper that
  * task-move and SWIMLANE_UPDATE both use to translate column-level
  * model/effort/auto_command changes into a chained sequence (with the
- * right per-adapter verifier) for the CommandInjector to push onto the PTY.
+ * right per-adapter verifier) for TerminalSubmitScheduler.scheduleKeystrokes to push onto the PTY.
  *
  * The whole point of this helper is to keep IPC handlers agent-agnostic.
  * These tests verify that:

@@ -493,7 +493,7 @@ export interface SessionEvent {
   outputTokens?: number;
 }
 
-// === Per-Adapter Submission Verification (paste-engine + command-injector) ===
+// === Per-Adapter Submission Verification (TerminalSubmit: submitContent + submitKeystrokes) ===
 
 /**
  * Unified submission verification for both paste-and-submit and command-injection contexts.
@@ -520,8 +520,9 @@ export type SubmissionContext =
        * that this verifier should match against. Bounds the JSONL scan window
        * so old entries are not mistakenly treated as confirmation.
        *
-       * The CommandInjector advances this on each retry-Enter; the verifier
-       * uses it to discard transcript entries older than `sentAt - tolerance`.
+       * `TerminalSubmit.submitKeystrokes` advances this on each retry-Enter;
+       * the verifier uses it to discard transcript entries older than
+       * `sentAt - tolerance`.
        */
       sentAt?: number;
     };

@@ -352,6 +352,67 @@ describe('Gemini Adapter - concurrent-session hook reference counting', () => {
   });
 });
 
+// -- getInjectionSequence -----------------------------------------------------
+
+describe('GeminiAdapter - getInjectionSequence', () => {
+  let adapter: GeminiAdapter;
+
+  beforeEach(() => {
+    adapter = new GeminiAdapter();
+  });
+
+  it('emits /model <name> when modelChanged is true', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: 'gemini-2.5-pro',
+      modelChanged: true,
+      effort: null,
+      effortChanged: false,
+    });
+    expect(sequence).toEqual(['/model gemini-2.5-pro']);
+  });
+
+  it('returns empty array when only effortChanged (Gemini has no effort concept)', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: false,
+      effort: 'high',
+      effortChanged: true,
+    });
+    expect(sequence).toEqual([]);
+  });
+
+  it('emits only /model when both model and effort change (effort still ignored)', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: 'gemini-2.0-flash',
+      modelChanged: true,
+      effort: 'high',
+      effortChanged: true,
+    });
+    expect(sequence).toEqual(['/model gemini-2.0-flash']);
+  });
+
+  it('returns empty array when neither field changed', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: false,
+      effort: null,
+      effortChanged: false,
+    });
+    expect(sequence).toEqual([]);
+  });
+
+  it('returns empty array when modelChanged is true but model value is null', () => {
+    // Clearing model override -> no command emitted
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: true,
+      effort: null,
+      effortChanged: false,
+    });
+    expect(sequence).toEqual([]);
+  });
+});
+
 // -- agent-display-name - gemini entry ----------------------------------------
 
 describe('agent-display-name - gemini entry', () => {

@@ -81,10 +81,17 @@ vi.mock('../../src/main/config/board-config-manager', () => ({
     detach = vi.fn();
   },
 }));
-vi.mock('../../src/main/engine/command-injector', () => ({
-  CommandInjector: class {
+vi.mock('../../src/main/engine/terminal-submit-scheduler', () => ({
+  TerminalSubmitScheduler: class {
     constructor() {}
     cancelAll = vi.fn();
+  },
+}));
+vi.mock('../../src/main/pty/terminal-submit', () => ({
+  TerminalSubmit: class {
+    constructor() {}
+    submitContent = vi.fn();
+    submitKeystrokes = vi.fn();
   },
 }));
 vi.mock('../../src/main/pty/spawn/shell-resolver', () => ({

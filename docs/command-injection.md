@@ -1,6 +1,6 @@
 # Command Injection
 
-Kangentic injects per-column "auto-commands" and per-column model/effort settings into a live agent session when a task moves between columns. The `CommandInjector` (`src/main/engine/command-injector.ts`) owns this flow. This document covers how the **command-injection** verification context confirms each chained command lands cleanly on the agent's TUI.
+Kangentic injects per-column "auto-commands" and per-column model/effort settings into a live agent session when a task moves between columns. `TerminalSubmitScheduler` (`src/main/engine/terminal-submit-scheduler.ts`) schedules each task's burst, and `TerminalSubmit.submitKeystrokes` (`src/main/pty/terminal-submit.ts`) executes the byte-level `Ctrl+C → text → Esc → Enter` pattern. This document covers how the **command-injection** verification context confirms each chained command lands cleanly on the agent's TUI.
 
 ## Why verification exists
 
@@ -39,9 +39,9 @@ A combined-args entry like `claude-opus-4-7\n/effort xhigh` is **not** a match b
 
 The scan is bounded by a 50ms tolerance window around the send time (`Date.now()` at the moment of the Enter), so the polling cadence (~25ms) lands on the expected entry within ~50-100ms in the happy path.
 
-## Retry semantics in `CommandInjector`
+## Retry semantics in `TerminalSubmit`
 
-`CommandInjector.scheduleSequence` chains commands with the following timing:
+`TerminalSubmitScheduler.scheduleKeystrokes` hands a chain of commands to `TerminalSubmit.submitKeystrokes`, which delivers them with the following timing:
 
 1. Initial write of command text + Escape + Enter (text → `\x1b` → `\r`).
 2. **If the command falls within `verifiedPrefixLength`**: poll the verifier every 25ms for up to 400ms. If unconfirmed, re-fire `\r` and try again. After 4 retries, log a warning, send Ctrl+C to clear the prompt buffer, and continue with the next command.
@@ -53,15 +53,15 @@ The `verifiedPrefixLength` distinction is critical: deterministic adapter-emitte
 
 | Context | Caller | What gets verified | Latency |
 |---------|--------|-------------------|---------|
-| `'paste'` | `pasteEngine.pasteAndSubmit` (browser captures, single auto-command paste) | "the agent acknowledged this prompt" | 100-500ms |
-| `'command-injection'` | `CommandInjector.scheduleSequence` (chained slash commands) | "this exact command was processed as a discrete invocation" | 50-150ms typical, ~2s worst case |
+| `'paste'` | `TerminalSubmit.submitContent` (browser captures, single auto-command paste) | "the agent acknowledged this prompt" | 100-500ms |
+| `'command-injection'` | `TerminalSubmit.submitKeystrokes` (chained slash commands) | "this exact command was processed as a discrete invocation" | 50-150ms typical, ~2s worst case |
 
 The two contexts solve different problems: `'paste'` confirms one-shot paste submissions of arbitrary user prompts, while `'command-injection'` confirms each link in a multi-command chain landed cleanly. They share an interface (`getSubmissionVerifier`) so adapters declare what they support per context, and the renderer/IPC layer never has to branch on agent name.
 
 **OR-combine vs poll-and-retry.** The two contexts also differ in how the engine consumes the verifier:
 
 - `'paste'` runs the verifier **in parallel** with the activity-event listener and post-`\r` data path. The first signal to resolve wins. A verifier resolving `false` does not short-circuit the fallbacks — they remain active for the rest of the wait window. This matches the "best-effort confirmation" model: a verifier strengthens evidence but cannot weaken the existing fallback path.
-- `'command-injection'` runs the verifier in a **tight poll loop** inside `CommandInjector.pollWithRetries`. On each iteration the verifier is invoked with the current `sentAt`; if it returns `false`, the loop sleeps `pollMs` and retries. Past the retry interval (with no confirmation), Enter is re-fired and `sentAt` advances. This matches the "deterministic chain" model: each command must be confirmed before the next.
+- `'command-injection'` runs the verifier in a **tight poll loop** inside `TerminalSubmit.pollWithRetries`. On each iteration the verifier is invoked with the current `sentAt`; if it returns `false`, the loop sleeps `pollMs` and retries. Past the retry interval (with no confirmation), Enter is re-fired and `sentAt` advances. This matches the "deterministic chain" model: each command must be confirmed before the next.
 
 ## Per-adapter support matrix
 
@@ -81,13 +81,14 @@ A non-Claude adapter could implement `'command-injection'` verification once its
 ## Test coverage
 
 - `tests/unit/agent-submission-verifier-shape.test.ts` enforces every registered adapter implements `getSubmissionVerifier`.
-- `tests/unit/command-injector.test.ts` covers the single-command path including `getSubmissionVerifier('paste')` wiring.
-- `tests/unit/command-injector-sequence.test.ts` covers chained sequences with verifier success, retry-on-unconfirmed, and `verifiedPrefixLength` behavior.
-- `tests/unit/injection-plan.test.ts` covers `prepareInjectionPlan` wiring the verifier to `CommandInjector.scheduleSequence`.
+- `tests/unit/terminal-submit.test.ts` covers the byte-level keystroke contract (Ctrl+C → text → Esc → Enter), sanitization, abort handling, and verifier integration including retry-on-Enter.
+- `tests/unit/terminal-submit-scheduler.test.ts` covers task-keyed scheduling: immediate delivery, drag-burst coalesce, freshlySpawned wait, queued wait, cancel/cancelAll.
+- `tests/unit/injection-plan.test.ts` covers `prepareInjectionPlan` building the sequence + verifier the scheduler consumes.
 
 ## Files
 
 - `src/main/engine/injection-plan.ts` -- builds the chained sequence + verifier from a column transition spec.
-- `src/main/engine/command-injector.ts` -- delivers the sequence to the PTY with retry-on-unconfirmed semantics.
+- `src/main/engine/terminal-submit-scheduler.ts` -- task-keyed lifecycle wrapper: cancel-on-rerun, freshlySpawned wait, drag-burst coalesce.
+- `src/main/pty/terminal-submit.ts` -- byte-level engine: `submitContent` (bracketed paste) + `submitKeystrokes` (manual keypress sequence with retry-on-unconfirmed).
 - `src/main/agent/adapters/claude/slash-command-verifier.ts` -- Claude-specific JSONL-polling implementation.
 - `src/shared/types.ts` -- `SubmissionContext`, `SubmissionContextType`, `SubmissionVerifier` type definitions.

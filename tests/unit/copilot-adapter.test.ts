@@ -352,6 +352,80 @@ describe('CopilotStatusParser', () => {
   });
 });
 
+// ── CopilotAdapter getInjectionSequence ─────────────────────────────────────
+
+describe('CopilotAdapter - getInjectionSequence', () => {
+  let adapter: CopilotAdapter;
+
+  beforeEach(() => {
+    adapter = new CopilotAdapter();
+  });
+
+  it('emits /model <name> when modelChanged is true', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: 'gpt-4o',
+      modelChanged: true,
+      effort: null,
+      effortChanged: false,
+    });
+    expect(sequence).toEqual(['/model gpt-4o']);
+  });
+
+  it('emits /reasoning-effort <level> when effortChanged is true', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: false,
+      effort: 'medium',
+      effortChanged: true,
+    });
+    expect(sequence).toEqual(['/reasoning-effort medium']);
+  });
+
+  it('emits both /model and /reasoning-effort when both change', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: 'o3',
+      modelChanged: true,
+      effort: 'high',
+      effortChanged: true,
+    });
+    expect(sequence).toEqual(['/model o3', '/reasoning-effort high']);
+  });
+
+  it('returns empty array when neither field changed', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: false,
+      effort: null,
+      effortChanged: false,
+    });
+    expect(sequence).toEqual([]);
+  });
+
+  it('returns empty array when effortChanged is true but effort value is null', () => {
+    // Clearing effort override -> no command emitted
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: false,
+      effort: null,
+      effortChanged: true,
+    });
+    expect(sequence).toEqual([]);
+  });
+
+  it('uses /reasoning-effort (not /effort) for Copilot effort changes', () => {
+    // Copilot-specific: verify the correct slash command name is used.
+    // Claude uses /effort; Copilot uses /reasoning-effort per its CLI docs.
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: false,
+      effort: 'low',
+      effortChanged: true,
+    });
+    expect(sequence).toContain('/reasoning-effort low');
+    expect(sequence.some((s) => s.startsWith('/effort '))).toBe(false);
+  });
+});
+
 // ── agent-display-name ───────────────────────────────────────────────────────
 
 describe('agent-display-name - copilot entry', () => {

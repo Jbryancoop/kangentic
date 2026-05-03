@@ -22,7 +22,7 @@ Priority 3 has three sub-cases, checked in order:
 
 **a) Agent change (handoff):** If `resolveTargetAgent()` returns a different agent than the current session's agent, the session is suspended and the engine falls through to the `spawnAgent` path. The `agentOverride` parameter is set on the spawn request to prevent the new session from resuming the old agent's session. If the target column has `handoff_context` enabled, prior work context (transcript, git diff, metrics) is packaged and delivered to the new agent. If disabled (the default), the new agent starts fresh with just the task title/description. See [Cross-Agent Handoff](#cross-agent-handoff) below.
 
-**b) Same agent + auto_command:** If the target column has an `auto_command` configured, the command is injected directly into the running session via `CommandInjector`. No suspend/resume cycle occurs.
+**b) Same agent + auto_command:** If the target column has an `auto_command` configured, the command is injected directly into the running session via `TerminalSubmitScheduler.scheduleKeystrokes`. No suspend/resume cycle occurs.
 
 **c) Same agent, no auto_command:** The session stays alive with no interruption. Permission mode differences alone do not trigger suspend/resume.
 
@@ -167,9 +167,9 @@ When a task moves to a column with `auto_command` set, the command delivery depe
 - This is deterministic: the command is the first thing the agent sees on resume
 
 **Fresh spawns** (priority 4, no suspended session to resume):
-- `CommandInjector` schedules the command for deferred PTY injection
+- `TerminalSubmitScheduler.scheduleKeystrokes` schedules the command for deferred PTY injection
 - Interpolates the `auto_command` template with task variables
-- Writes to PTY stdin with `\r` terminator after the session is ready
+- Waits for the CLI's first `'thinking'` activity event, then writes Ctrl+C → text → Esc → Enter via `TerminalSubmit.submitKeystrokes`
 
 This enables workflows like moving a task from "Running" to "Code Review" to automatically send a review prompt to the agent.
 

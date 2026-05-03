@@ -52,7 +52,7 @@ export class SessionManager extends EventEmitter {
    * Per-session FIFO write queue. Every `write()` call appends to the same
    * buffer and is drained by a single loop that yields via setImmediate
    * between 4KB chunks. Guarantees byte order across concurrent callers
-   * (user input, paste, command-injector) so bracketed-paste sequences
+   * (user input, paste, terminal-submit keystrokes) so bracketed-paste sequences
    * cannot be fragmented by interleaved writes.
    */
   private writeQueues = new Map<string, WriteQueue>();

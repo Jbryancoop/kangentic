@@ -713,6 +713,68 @@ describe('CursorAdapter', () => {
   });
 });
 
+// ── getInjectionSequence ─────────────────────────────────────────────────────
+
+describe('CursorAdapter - getInjectionSequence', () => {
+  let adapter: CursorAdapter;
+
+  beforeEach(() => {
+    adapter = new CursorAdapter();
+  });
+
+  it('emits /model <name> when modelChanged is true', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: 'claude-4-sonnet',
+      modelChanged: true,
+      effort: null,
+      effortChanged: false,
+    });
+    expect(sequence).toEqual(['/model claude-4-sonnet']);
+  });
+
+  it('returns empty array when only effortChanged (Cursor has no effort concept)', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: false,
+      effort: 'high',
+      effortChanged: true,
+    });
+    expect(sequence).toEqual([]);
+  });
+
+  it('emits only /model when both model and effort change (effort still ignored)', () => {
+    // Cursor encodes reasoning strength in model names (e.g. "Thinking" variants),
+    // so effort changes alone produce no injection command.
+    const sequence = adapter.getInjectionSequence({
+      model: 'claude-4.1-sonnet-thinking',
+      modelChanged: true,
+      effort: 'high',
+      effortChanged: true,
+    });
+    expect(sequence).toEqual(['/model claude-4.1-sonnet-thinking']);
+  });
+
+  it('returns empty array when neither field changed', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: false,
+      effort: null,
+      effortChanged: false,
+    });
+    expect(sequence).toEqual([]);
+  });
+
+  it('returns empty array when modelChanged is true but model value is null', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: true,
+      effort: null,
+      effortChanged: false,
+    });
+    expect(sequence).toEqual([]);
+  });
+});
+
 // ── Registry integration ─────────────────────────────────────────────────────
 
 describe('Agent Registry - Cursor', () => {

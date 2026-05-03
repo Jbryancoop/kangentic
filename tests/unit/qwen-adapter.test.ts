@@ -346,3 +346,64 @@ describe('Qwen Adapter - MCP-only spawn (no eventsOutputPath)', () => {
     expect(result.mcpServers?.['user-server']).toBeDefined();
   });
 });
+
+// -- QwenAdapter getInjectionSequence -----------------------------------------
+
+describe('QwenAdapter - getInjectionSequence', () => {
+  let adapter: QwenAdapter;
+
+  beforeEach(() => {
+    adapter = new QwenAdapter();
+  });
+
+  it('emits /model <name> when modelChanged is true', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: 'qwen2.5-coder-32b',
+      modelChanged: true,
+      effort: null,
+      effortChanged: false,
+    });
+    expect(sequence).toEqual(['/model qwen2.5-coder-32b']);
+  });
+
+  it('returns empty array when only effortChanged (Qwen has no effort concept)', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: false,
+      effort: 'high',
+      effortChanged: true,
+    });
+    expect(sequence).toEqual([]);
+  });
+
+  it('emits only /model when both model and effort change (effort still ignored)', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: 'qwen3-coder',
+      modelChanged: true,
+      effort: 'xhigh',
+      effortChanged: true,
+    });
+    expect(sequence).toEqual(['/model qwen3-coder']);
+  });
+
+  it('returns empty array when neither field changed', () => {
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: false,
+      effort: null,
+      effortChanged: false,
+    });
+    expect(sequence).toEqual([]);
+  });
+
+  it('returns empty array when modelChanged is true but model value is null', () => {
+    // Clearing model override -> no command emitted (same as Gemini)
+    const sequence = adapter.getInjectionSequence({
+      model: null,
+      modelChanged: true,
+      effort: null,
+      effortChanged: false,
+    });
+    expect(sequence).toEqual([]);
+  });
+});

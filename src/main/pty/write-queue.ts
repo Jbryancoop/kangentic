@@ -8,7 +8,7 @@
  * `setImmediate` between chunks so libuv can flush the named pipe.
  *
  * Concurrent enqueues append to the same buffer, so byte order is FIFO
- * regardless of how many callers (user input, command-injector, paste)
+ * regardless of how many callers (user input, terminal-submit keystrokes, paste)
  * write to the same session at once. This is the invariant that prevents
  * bracketed-paste sequences from being fragmented by interleaved writes -
  * the regression that caused Ctrl+V truncation.

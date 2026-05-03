@@ -154,7 +154,7 @@ describe('createSlashCommandVerifier', () => {
 
 describe('createSlashCommandVerifier - single-scan mode (no timeoutMs)', () => {
   // Production path: injection-plan.ts calls createSlashCommandVerifier(filePath)
-  // with NO options. CommandInjector.pollWithRetries drives the cadence; the
+  // with NO options. TerminalSubmit.pollWithRetries drives the cadence; the
   // verifier must do exactly ONE immediate scan and return without blocking.
 
   it('returns true on a single scan when a matching entry is already present', async () => {

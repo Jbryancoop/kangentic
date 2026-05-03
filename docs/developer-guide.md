@@ -65,7 +65,7 @@ src/
         swimlane-repository.ts
         task-repository.ts
     engine/                # Transition engine and session recovery
-      command-injector.ts  # Deferred PTY command injection for auto_command
+      terminal-submit-scheduler.ts # Task-keyed lifecycle wrapper around TerminalSubmit (cancel-on-rerun, freshlySpawned wait, drag-burst coalesce)
       resource-cleanup.ts  # Task resource cleanup (session, worktree, files)
       session-paths.ts     # Session directory path utilities
       session-recovery.ts  # Orphan detection, dedup, resume on app relaunch
@@ -101,11 +101,13 @@ src/
         tasks.ts           # Task handler orchestrator, bulk operations
         transient-sessions.ts # Ephemeral command-bar sessions (spawn/kill)
     pty/                   # Terminal session management
+      paste-engine.ts      # Bracketed-paste primitive (driven by TerminalSubmit.submitContent)
       pty-buffer-manager.ts # Output buffering, scrollback ring buffer (512KB)
       session-file-watcher.ts # fs.watch for status.json and events.jsonl
       session-manager.ts   # PTY spawn, output streaming, lifecycle
       session-queue.ts     # Concurrency limiter with reentrancy-safe promotion
       shell-resolver.ts    # Cross-platform shell detection
+      terminal-submit.ts   # Unified byte-pushing engine: submitContent (paste) + submitKeystrokes (slash-command burst with verifier)
       usage-tracker.ts     # Token usage, activity state, idle timeout, event capping
   preload/
     preload.ts             # Context bridge (window.electronAPI)
