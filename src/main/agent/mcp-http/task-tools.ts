@@ -28,7 +28,7 @@ export function registerTaskTools(
   server.registerTool(
     'kangentic_create_task',
     {
-      description: 'Create a task on the Kangentic board (default: the To Do column on the active board) or in the backlog. This is the only task-creation tool - use it whenever the user asks to "create a task", "add a todo", "add to backlog", or similar. With no `column` argument, the task always lands in the active board\'s To Do column - never the backlog. Pass `column: "Backlog"` (case-insensitive) to create a backlog item instead. Pass any other column name (e.g. "Planning", "Code Review") to land directly in that board column. Board tasks get a git branch and are ready to work on immediately. If the user\'s prompt names a different Kangentic project (e.g. "create a task in X to fix ..."), pass that name as `project` to route the task to that project instead of the active default - do not rely on the active default when the user clearly targeted another project. Use kangentic_list_projects to find valid selectors.',
+      description: 'Create a task on the Kangentic board (default: the To Do column on the active board) or in the backlog. This is the only task-creation tool - use it whenever the user asks to "create a task", "add a todo", "add to backlog", or similar. ATTACHMENTS RULE: When the user\'s prompt references local files by absolute path (design handoffs, mockups, screenshots, specs, READMEs, transcripts), pass those paths in `attachments` on this same call. Default to attaching, not omitting. Do not require a second user request to add them. The only exception is files the user explicitly named as "for context only, don\'t attach." With no `column` argument, the task always lands in the active board\'s To Do column - never the backlog. Pass `column: "Backlog"` (case-insensitive) to create a backlog item instead. Pass any other column name (e.g. "Planning", "Code Review") to land directly in that board column. Board tasks get a git branch and are ready to work on immediately. If the user\'s prompt names a different Kangentic project (e.g. "create a task in X to fix ..."), pass that name as `project` to route the task to that project instead of the active default - do not rely on the active default when the user clearly targeted another project. Use kangentic_list_projects to find valid selectors.',
       inputSchema: z.object({
         title: z.string().max(200).describe('Task title (max 200 characters)'),
         description: z.string().max(10000).optional().describe('Task description. Supports markdown.'),
@@ -47,7 +47,7 @@ export function registerTaskTools(
         attachments: z.array(z.object({
           filePath: z.string().describe('Absolute path to the file to attach'),
           filename: z.string().optional().describe('Override display filename'),
-        })).optional().describe('File attachments (array of file paths)'),
+        })).optional().describe('File attachments. Always include here any local files the user referenced in the prompt by absolute path - reading a file for context does not replace attaching it. Each entry needs `filePath` (absolute) and may override the display `filename`. Skip only when the user explicitly said the file is "for context only, don\'t attach."'),
         project: z.string().optional().describe(PROJECT_SELECTOR_DESCRIPTION),
       }),
     },

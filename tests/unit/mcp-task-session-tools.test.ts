@@ -80,11 +80,21 @@ type AnyToolHandler = (args: Record<string, unknown>) => Promise<{
   isError?: boolean;
 }>;
 
+// Full config shape captured from registerTool's second argument.
+// `inputSchema` is a Zod object whose `.shape` property maps field names to
+// Zod schemas; each schema exposes a `.description` string set by `.describe()`.
+interface ToolConfig {
+  description?: string;
+  inputSchema?: {
+    shape: Record<string, { description: string | undefined }>;
+  };
+}
+
 function makeFakeServer() {
   const handlers: Record<string, AnyToolHandler> = {};
-  const configs: Record<string, { description?: string }> = {};
+  const configs: Record<string, ToolConfig> = {};
   return {
-    registerTool: vi.fn((name: string, config: { description?: string }, handler: AnyToolHandler) => {
+    registerTool: vi.fn((name: string, config: ToolConfig, handler: AnyToolHandler) => {
       handlers[name] = handler;
       configs[name] = config;
     }),
@@ -93,7 +103,7 @@ function makeFakeServer() {
       if (!handler) throw new Error(`Tool "${name}" was not registered`);
       return handler;
     },
-    getConfig(name: string): { description?: string } {
+    getConfig(name: string): ToolConfig {
       const config = configs[name];
       if (!config) throw new Error(`Tool "${name}" was not registered`);
       return config;
@@ -258,6 +268,34 @@ describe('routing-cue hints in tool descriptions', () => {
     expect(description).toBeDefined();
     expect(description).toMatch(/names a different Kangentic project/i);
     expect(description).toContain('`project`');
+  });
+
+  // Regression guard for the ATTACHMENTS RULE clause added to the
+  // kangentic_create_task description. Without these assertions a simple
+  // description revert would silently drop the auto-attach guidance.
+  it('kangentic_create_task description contains the ATTACHMENTS RULE clause', () => {
+    const { description } = server.getConfig('kangentic_create_task');
+    expect(description).toBeDefined();
+    expect(description).toContain('attachments');
+    expect(description).toContain('absolute path');
+    expect(description).toMatch(/default to attaching/i);
+  });
+
+  // Regression guard for the attachments Zod field description. The field-level
+  // description is what MCP clients surface as parameter documentation, so it
+  // must carry the "always include local files" directive independently of the
+  // top-level tool description.
+  //
+  // Zod v4 exposes `.description` directly on each schema node in the shape.
+  it('kangentic_create_task attachments field description carries the auto-attach directive', () => {
+    const { inputSchema } = server.getConfig('kangentic_create_task');
+    expect(inputSchema).toBeDefined();
+    const attachmentsField = inputSchema?.shape['attachments'];
+    expect(attachmentsField).toBeDefined();
+    const fieldDescription = attachmentsField?.description;
+    expect(fieldDescription).toBeDefined();
+    expect(fieldDescription).toMatch(/any local files the user referenced/i);
+    expect(fieldDescription).toContain('absolute path');
   });
 });
 
