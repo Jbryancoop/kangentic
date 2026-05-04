@@ -288,3 +288,99 @@ describe('prepareInjectionPlan', () => {
     expect(capturedContexts[0].sentAt).toBe(testSentAt);
   });
 });
+
+describe('prepareInjectionPlan -- per-task override wins over column override', () => {
+  // The ContextBar popover writes `tasks.model_override` / `tasks.effort_override`
+  // and the user-confirmed semantic is "task override fully wins over column
+  // override". The injection plan must respect this: if the task carries its
+  // own override for a field, that field's source = target = task value, so the
+  // delta is zero and no slash command fires for that field on column move.
+  // Without this rule, every column transition would re-inject /model X /effort Y
+  // and undo the user's pinned choice.
+
+  it('does not emit /model when the task pins a model override (even if columns differ)', () => {
+    let capturedSpec: SettingsChangeSpec | null = null;
+    const adapter = fakeAdapter({
+      getInjectionSequence: (spec) => {
+        capturedSpec = spec;
+        return spec.modelChanged ? [`/model ${spec.model}`] : [];
+      },
+    });
+    const plan = prepareInjectionPlan({
+      adapter,
+      sessionRepo: null,
+      task: { id: 't1', agent: 'fake', model_override: 'opus', effort_override: null },
+      fromLane: lane({ model_override: 'haiku' }),
+      toLane: lane({ model_override: 'sonnet' }),
+    });
+    // Task pinned 'opus', so source=target='opus' -> modelChanged is false.
+    expect(capturedSpec).toMatchObject({ model: 'opus', modelChanged: false });
+    expect(plan).toBeNull();
+  });
+
+  it('does not emit /effort when the task pins an effort override (even if columns differ)', () => {
+    let capturedSpec: SettingsChangeSpec | null = null;
+    const adapter = fakeAdapter({
+      getInjectionSequence: (spec) => {
+        capturedSpec = spec;
+        return spec.effortChanged ? [`/effort ${spec.effort}`] : [];
+      },
+    });
+    const plan = prepareInjectionPlan({
+      adapter,
+      sessionRepo: null,
+      task: { id: 't1', agent: 'fake', model_override: null, effort_override: 'xhigh' },
+      fromLane: lane({ effort_override: 'low' }),
+      toLane: lane({ effort_override: 'high' }),
+    });
+    expect(capturedSpec).toMatchObject({ effort: 'xhigh', effortChanged: false });
+    expect(plan).toBeNull();
+  });
+
+  it('still emits /model when only effort is pinned per-task (mixed override)', () => {
+    let capturedSpec: SettingsChangeSpec | null = null;
+    const adapter = fakeAdapter({
+      getInjectionSequence: (spec) => {
+        capturedSpec = spec;
+        const out: string[] = [];
+        if (spec.modelChanged && spec.model) out.push(`/model ${spec.model}`);
+        if (spec.effortChanged && spec.effort) out.push(`/effort ${spec.effort}`);
+        return out;
+      },
+    });
+    const plan = prepareInjectionPlan({
+      adapter,
+      sessionRepo: null,
+      task: { id: 't1', agent: 'fake', model_override: null, effort_override: 'xhigh' },
+      fromLane: lane({ model_override: 'haiku', effort_override: 'low' }),
+      toLane: lane({ model_override: 'opus', effort_override: 'high' }),
+    });
+    // model: column delta haiku -> opus is honored (no task pin)
+    // effort: task-pinned xhigh wins, no slash fires
+    expect(capturedSpec).toMatchObject({
+      model: 'opus',
+      modelChanged: true,
+      effort: 'xhigh',
+      effortChanged: false,
+    });
+    expect(plan?.sequence).toEqual(['/model opus']);
+  });
+
+  it('falls back to column override when the task has no per-task override (existing behavior)', () => {
+    let capturedSpec: SettingsChangeSpec | null = null;
+    const adapter = fakeAdapter({
+      getInjectionSequence: (spec) => {
+        capturedSpec = spec;
+        return spec.modelChanged && spec.model ? [`/model ${spec.model}`] : [];
+      },
+    });
+    prepareInjectionPlan({
+      adapter,
+      sessionRepo: null,
+      task: { id: 't1', agent: 'fake', model_override: null, effort_override: null },
+      fromLane: lane({ model_override: 'haiku' }),
+      toLane: lane({ model_override: 'opus' }),
+    });
+    expect(capturedSpec).toMatchObject({ model: 'opus', modelChanged: true });
+  });
+});

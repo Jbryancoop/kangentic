@@ -164,13 +164,13 @@ IPC channels for shortcuts are in the Board Config group: `boardConfig:getShortc
 |-----|------|---------|-------------|
 | `contextBar.showShell` | boolean | `true` | Show the shell name (e.g., pwsh, bash) in the context bar |
 | `contextBar.showVersion` | boolean | `true` | Show the agent CLI version |
-| `contextBar.showModel` | boolean | `true` | Show the active model name (e.g., Claude Sonnet 4) |
-| `contextBar.showEffort` | boolean | `true` | Show the active Claude reasoning effort level next to the model name (Claude only) |
 | `contextBar.showCost` | boolean | `true` | Show the cumulative session cost in dollars |
 | `contextBar.showTokens` | boolean | `true` | Show token usage (input + output) |
 | `contextBar.showContextFraction` | boolean | `true` | Show the context window usage percentage |
 | `contextBar.showProgressBar` | boolean | `true` | Show the context window progress bar |
 | `contextBar.showRateLimits` | boolean | `true` | Show adapter-reported plan-usage quota bars. Each window is self-described by the agent adapter (e.g. Claude reports a 5-hour session and 7-day weekly window). Hidden for adapters that do not report rate limits. |
+
+The model and effort pills are intentionally NOT toggleable. They double as in-place picker triggers (clicking them opens a popover that lets the user switch models/effort without restarting the session), so a "hide" toggle would silently disable that feature. They render whenever a session reports a model.
 
 All context bar settings are global-only and cannot be overridden per-project.
 

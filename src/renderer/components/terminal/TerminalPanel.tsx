@@ -240,7 +240,7 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
 
           {/* Context bar for individual session tabs (hidden when dialog owns the session) */}
           {effectiveActiveId && effectiveActiveId !== ACTIVITY_TAB && effectiveActiveId !== dialogSessionId && (
-            <ContextBar sessionId={effectiveActiveId} compact />
+            <ContextBar sessionId={effectiveActiveId} />
           )}
         </>
       )}

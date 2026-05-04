@@ -1,12 +1,11 @@
 /**
- * UI tests for the ContextBar effort suffix on the model pill.
+ * UI tests for the ContextBar effort suffix/pill.
  *
  * Claude Code 2.1.119+ emits `effort.level` (low/medium/high/xhigh) in
  * status.json. ClaudeStatusParser surfaces it as `usage.model.effort`,
- * and ContextBar renders it inline next to the model name (e.g.
- * "Opus 4.7  xhigh"). The suffix is gated by the `contextBar.showEffort`
- * toggle, so toggling it off must hide the suffix even when the data
- * is present.
+ * and ContextBar renders it next to the model name. The effort pill is a
+ * permanent fixture - it doubles as the in-place picker trigger, so there
+ * is no toggle to hide it.
  *
  * Mirrors the cursor-context-bar pattern: drive the renderer by calling
  * session-store updateUsage directly (the same path the IPC 'usage'
@@ -145,31 +144,6 @@ test.describe('ContextBar effort suffix', () => {
       // Model name and effort suffix both appear inside the same usage bar
       await expect.poll(async () => usageBar.textContent(), { timeout: 5000 }).toMatch(/Opus 4\.7/);
       await expect(usageBar).toContainText('xhigh');
-    } finally {
-      await browser.close();
-    }
-  });
-
-  test('hides effort suffix when contextBar.showEffort is false', async () => {
-    const { browser, page } = await launchWithState(CLAUDE_RUNNING_PRECONFIG);
-    try {
-      await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
-
-      // Flip the global config flag before usage arrives
-      await page.evaluate(() => {
-        const stores = (window as unknown as {
-          __zustandStores?: {
-            config: { getState: () => { updateConfig: (patch: unknown) => Promise<void> } };
-          };
-        }).__zustandStores;
-        return stores?.config.getState().updateConfig({ contextBar: { showEffort: false } });
-      });
-
-      await applyClaudeUsage(page, SESSION_ID, 'xhigh');
-
-      const usageBar = page.locator('[data-testid="usage-bar"].min-h-8');
-      await expect.poll(async () => usageBar.textContent(), { timeout: 5000 }).toMatch(/Opus 4\.7/);
-      await expect(usageBar).not.toContainText('xhigh');
     } finally {
       await browser.close();
     }

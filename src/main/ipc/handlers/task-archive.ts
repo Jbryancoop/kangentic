@@ -8,6 +8,7 @@ import {
   ensureTaskWorktree,
   ensureTaskBranchCheckout,
   createTransitionEngine,
+  resolveSpawnOverrides,
 } from '../helpers';
 import { guardActiveNonWorktreeSessions } from './task-move';
 import { interpolateTemplate } from '../../agent/shared';
@@ -71,11 +72,9 @@ export function registerTaskArchiveHandlers(context: IpcContext): void {
           const sessionRepo = new SessionRepository(db);
           const engine = createTransitionEngine(context, actions, tasks, sessionRepo, attachmentRepo, resolvedProjectId, resolvedProjectPath);
 
-          const laneOverrides = toLane
-            ? { model: toLane.model_override, effort: toLane.effort_override }
-            : undefined;
+          const overrides = resolveSpawnOverrides(task, toLane);
           try {
-            await engine.executeTransition(task, doneLane.id, input.targetSwimlaneId, toLane?.permission_mode, true, undefined, undefined, laneOverrides);
+            await engine.executeTransition(task, doneLane.id, input.targetSwimlaneId, toLane?.permission_mode, true, undefined, undefined, overrides);
           } catch (err) {
             console.error('[TASK_UNARCHIVE] Transition engine error:', err);
           }
@@ -85,7 +84,7 @@ export function registerTaskArchiveHandlers(context: IpcContext): void {
           if (finalTask && !finalTask.session_id && toLane?.auto_spawn) {
             console.log(`[TASK_UNARCHIVE] Ensuring agent for task ${task.id.slice(0, 8)}`);
             try {
-              await engine.resumeSuspendedSession(finalTask, toLane.permission_mode, true, undefined, undefined, undefined, undefined, laneOverrides);
+              await engine.resumeSuspendedSession(finalTask, toLane.permission_mode, true, undefined, undefined, undefined, undefined, resolveSpawnOverrides(finalTask, toLane));
               finalTask = tasks.getById(task.id);
             } catch (err) {
               console.error('[TASK_UNARCHIVE] Failed to start session:', err);
@@ -150,11 +149,9 @@ export function registerTaskArchiveHandlers(context: IpcContext): void {
             const sessionRepo = new SessionRepository(db);
             const engine = createTransitionEngine(context, actions, tasks, sessionRepo, attachmentRepo, resolvedProjectId, resolvedProjectPath);
 
-            const laneOverrides = toLane
-              ? { model: toLane.model_override, effort: toLane.effort_override }
-              : undefined;
+            const overrides = resolveSpawnOverrides(task, toLane);
             try {
-              await engine.executeTransition(task, doneLane.id, targetSwimlaneId, toLane?.permission_mode, true, undefined, undefined, laneOverrides);
+              await engine.executeTransition(task, doneLane.id, targetSwimlaneId, toLane?.permission_mode, true, undefined, undefined, overrides);
             } catch (error) {
               console.error('[TASK_BULK_UNARCHIVE] Transition engine error:', error);
             }
@@ -162,7 +159,7 @@ export function registerTaskArchiveHandlers(context: IpcContext): void {
             let finalTask = tasks.getById(task.id);
             if (finalTask && !finalTask.session_id && toLane?.auto_spawn) {
               try {
-                await engine.resumeSuspendedSession(finalTask, toLane.permission_mode, true, undefined, undefined, undefined, undefined, laneOverrides);
+                await engine.resumeSuspendedSession(finalTask, toLane.permission_mode, true, undefined, undefined, undefined, undefined, resolveSpawnOverrides(finalTask, toLane));
                 finalTask = tasks.getById(task.id);
               } catch (error) {
                 console.error('[TASK_BULK_UNARCHIVE] Failed to start session:', error);

@@ -1,6 +1,6 @@
 import { type StateCreator } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
-import type { Task, TaskCreateInput, TaskUpdateInput, TaskMoveInput } from '../../../shared/types';
+import type { Task, TaskCreateInput, TaskUpdateInput, TaskMoveInput, TaskSetRuntimeOverrideResult } from '../../../shared/types';
 import { useConfigStore } from '../config-store';
 import { useSessionStore } from '../session-store';
 import { useToastStore } from '../toast-store';
@@ -17,6 +17,13 @@ export interface TaskSlice {
   getTasksBySwimlane: (swimlaneId: string) => Task[];
   reorderTaskInColumn: (taskId: string, swimlaneId: string, activeId: string, overId: string) => Promise<void>;
   updateAttachmentCount: (taskId: string, delta: number) => void;
+  /**
+   * Apply a per-task model and/or effort override. Optimistically updates the
+   * task row so the ContextBar pill changes immediately; rolls back on IPC
+   * error. Either field can be omitted to leave it unchanged; pass `null` to
+   * explicitly clear the override (so the task falls back to its swimlane).
+   */
+  setTaskRuntimeOverride: (taskId: string, patch: { model?: string | null; effort?: string | null }) => Promise<TaskSetRuntimeOverrideResult>;
 }
 
 /**
@@ -61,6 +68,77 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
       archivedTasks: s.archivedTasks.map((t) => (t.id === task.id ? task : t)),
     }));
     return task;
+  },
+
+  setTaskRuntimeOverride: async (taskId, patch) => {
+    // Snapshot for rollback. We only rollback when the IPC layer itself
+    // throws (network/serialization error - extremely rare on the local
+    // bridge) OR the handler returned `ok: false` BEFORE persisting (task
+    // not found, no project open, unknown agent on a live session). Once the
+    // handler crosses its DB write, `ok: false` means "saved but not yet
+    // live" - the renderer must keep the optimistic UI so the visible state
+    // matches the DB. The handler's reason strings starting with
+    // 'suspend failed', 'respawn failed', or 'respawn aborted' indicate the
+    // post-persist failure modes; these surface a toast but no rollback.
+    const previous = get().tasks.find((t) => t.id === taskId);
+
+    // Optimistic: update the pill immediately.
+    set((s) => ({
+      tasks: s.tasks.map((t) => {
+        if (t.id !== taskId) return t;
+        return {
+          ...t,
+          ...(patch.model !== undefined ? { model_override: patch.model } : {}),
+          ...(patch.effort !== undefined ? { effort_override: patch.effort } : {}),
+        };
+      }),
+    }));
+
+    let result: TaskSetRuntimeOverrideResult;
+    try {
+      result = await window.electronAPI.tasks.setRuntimeOverride({ taskId, ...patch });
+    } catch (err) {
+      // IPC bridge itself threw - the handler never ran, no DB write
+      // happened, rollback is correct.
+      if (previous) {
+        set((s) => ({ tasks: s.tasks.map((t) => (t.id === taskId ? previous : t)) }));
+      }
+      useToastStore.getState().addToast({
+        message: `Failed to apply override: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        variant: 'error',
+      });
+      throw err;
+    }
+
+    if (!result.ok) {
+      // Distinguish pre-persist failures (rollback) from post-persist
+      // failures (keep UI aligned with DB; just toast). The handler's
+      // post-persist reasons all start with one of these prefixes - any
+      // other reason is a pre-persist validation failure.
+      const isPostPersistFailure = result.reason.startsWith('suspend failed')
+        || result.reason.startsWith('respawn failed')
+        || result.reason === 'respawn aborted';
+
+      if (!isPostPersistFailure && previous) {
+        set((s) => ({ tasks: s.tasks.map((t) => (t.id === taskId ? previous : t)) }));
+      }
+      useToastStore.getState().addToast({
+        message: isPostPersistFailure
+          ? `Saved, but couldn't apply to the live session: ${result.reason}. Resume the task to retry.`
+          : `Could not apply model/effort: ${result.reason}`,
+        variant: 'error',
+      });
+    } else if (result.mode === 'restart') {
+      // The handler suspended the old PTY and spawned a new one with a new
+      // session_id. The board store still has the OLD session_id on the
+      // task row, so any selector that looks up the task by session_id
+      // (ContextBar, TerminalPanel) won't find it until we re-fetch. Reload
+      // serializes against any concurrent moveTask via the structural-sharing
+      // merge in board-hydration-slice.
+      await get().loadBoard();
+    }
+
+    return result;
   },
 
   deleteTask: async (id) => {

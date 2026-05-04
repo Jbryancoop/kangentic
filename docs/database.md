@@ -109,6 +109,8 @@ Valid role values: `todo`, `done`, or NULL (custom column).
 | use_worktree | INTEGER | | NULL |
 | labels | TEXT | NOT NULL | '[]' |
 | priority | INTEGER | NOT NULL | 0 |
+| model_override | TEXT | | NULL |
+| effort_override | TEXT | | NULL |
 | archived_at | TEXT | | NULL |
 | created_at | TEXT | NOT NULL | |
 | updated_at | TEXT | NOT NULL | |
@@ -318,7 +320,7 @@ Listed in execution order within `runProjectMigrations()`:
 29. **`agent_override` column on swimlanes** -- adds per-column agent override support. When set, tasks moving into this column use the specified agent instead of the project default.
 30. **`handoff_context` column on swimlanes** -- adds per-column toggle for cross-agent handoff context packaging. Default `0` (off) - users must opt in. When enabled, agent transitions package transcript, git diff, and metrics for the target agent.
 31. **Performance indices on sessions and tasks** -- adds four idempotent hot-path indices: `idx_sessions_task_started` on (task_id, started_at DESC) for per-task session lookups and cost summaries, `idx_sessions_status` on (status) for getResumable/getOrphaned/markRunningAsOrphaned, `idx_sessions_agent_session_id` on (agent_session_id) for the resume-by-agent-id path, and `idx_tasks_session_id` on (session_id) for session-change IPC events. Targets startup reconciliation and live board state lookups under accumulated session history.
-32. **`model_override` and `effort_override` columns on swimlanes** -- adds per-column model and effort/reasoning level overrides. Both default to NULL (inherit agent default). Read at spawn time by `prepare-spawn.ts` to set `--model` / `--effort` CLI flags. Live-applied to running sessions via adapter-specific slash injection (`getInjectionSequence`) on column transition; falls back to suspend+respawn for adapters without live-swap support.
+32. **`model_override` and `effort_override` columns on swimlanes and tasks** -- adds per-column model and effort/reasoning level overrides. Both default to NULL (inherit agent default). Read at spawn time by `prepare-spawn.ts` to set `--model` / `--effort` CLI flags. Live-applied to running sessions via adapter-specific slash injection (`getInjectionSequence`) on column transition; falls back to suspend+respawn for adapters without live-swap support. The same migration block also adds `model_override` and `effort_override` columns to the **tasks** table for per-task overrides set via the ContextBar popover. Per-task values take precedence over the swimlane override; NULL falls through to the swimlane and ultimately to the agent default.
 
 ### Key Migrations (Global DB)
 

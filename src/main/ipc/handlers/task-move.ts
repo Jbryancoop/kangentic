@@ -376,10 +376,12 @@ export async function handleTaskMove(
           // If plan is null, check if adapter doesn't support live swap but
           // settings changed. For adapters with no live swap, trigger respawn
           // instead of keeping the session alive (respawn applies new flags).
-          const sourceModel = fromLane?.model_override ?? null;
-          const targetModel = toLane?.model_override ?? null;
-          const sourceEffort = fromLane?.effort_override ?? null;
-          const targetEffort = toLane?.effort_override ?? null;
+          // Mirror the per-task-override-wins rule from prepareInjectionPlan
+          // so we don't trigger a respawn when the task pinned the field.
+          const sourceModel = task.model_override ?? fromLane?.model_override ?? null;
+          const targetModel = task.model_override ?? toLane?.model_override ?? null;
+          const sourceEffort = task.effort_override ?? fromLane?.effort_override ?? null;
+          const targetEffort = task.effort_override ?? toLane?.effort_override ?? null;
 
           const hasModelDelta = targetModel !== sourceModel;
           const hasEffortDelta = targetEffort !== sourceEffort;

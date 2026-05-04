@@ -451,6 +451,21 @@ export function runProjectMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE swimlanes ADD COLUMN effort_override TEXT DEFAULT NULL');
   }
 
+  // Migration: add per-task model_override and effort_override columns. Set
+  // by the ContextBar popover; takes precedence over the swimlane override
+  // (so the user's explicit "use Sonnet for this task" choice is sticky
+  // across column moves). NULL means "inherit from the swimlane".
+  const hasTaskModelOverride = (db.pragma('table_info(tasks)') as Array<{ name: string }>)
+    .some((col) => col.name === 'model_override');
+  if (!hasTaskModelOverride) {
+    db.exec('ALTER TABLE tasks ADD COLUMN model_override TEXT DEFAULT NULL');
+  }
+  const hasTaskEffortOverride = (db.pragma('table_info(tasks)') as Array<{ name: string }>)
+    .some((col) => col.name === 'effort_override');
+  if (!hasTaskEffortOverride) {
+    db.exec('ALTER TABLE tasks ADD COLUMN effort_override TEXT DEFAULT NULL');
+  }
+
   // Migration: session_transcripts table for agent-agnostic PTY output capture.
   // No FK on session_id - the transcript row may be created before the sessions
   // row exists (PTY data arrives during spawn, before executeSpawnAgent inserts

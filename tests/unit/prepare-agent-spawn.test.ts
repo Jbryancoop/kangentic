@@ -249,6 +249,117 @@ beforeEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Helper: build a capture adapter whose buildCommand records what it receives.
+// ---------------------------------------------------------------------------
+
+function makeCaptureAdapter(
+  options: {
+    name?: string;
+    supportsCallerSessionId?: boolean;
+  } = {},
+): { adapter: AgentAdapter; capturedCommandOptions: SpawnCommandOptions[] } {
+  const capturedCommandOptions: SpawnCommandOptions[] = [];
+  const adapterName = options.name ?? 'opencode';
+
+  const adapter: Partial<AgentAdapter> = {
+    name: adapterName,
+    displayName: adapterName,
+    sessionType: `${adapterName}_agent` as AgentAdapter['sessionType'],
+    supportsCallerSessionId: options.supportsCallerSessionId ?? false,
+    permissions: [],
+    defaultPermission: 'default',
+    async detect(_overridePath?: string | null) {
+      return { found: true, path: `/usr/bin/${adapterName}`, version: '1.0.0' };
+    },
+    invalidateDetectionCache() {},
+    async ensureTrust(_workingDirectory: string) {},
+    buildCommand(commandOptions: SpawnCommandOptions) {
+      capturedCommandOptions.push(commandOptions);
+      return `/usr/bin/${adapterName}`;
+    },
+    interpolateTemplate(template: string, _variables: Record<string, string>) {
+      return template;
+    },
+    removeHooks(_directory: string, _taskId?: string) {},
+    clearSettingsCache() {},
+    detectFirstOutput(_data: string) {
+      return false;
+    },
+    async locateSessionHistoryFile(_agentSessionId: string, _cwd: string) {
+      return null;
+    },
+    runtime: {
+      activity: { kind: 'pty' },
+      sessionId: undefined,
+    },
+  };
+
+  return { adapter: adapter as AgentAdapter, capturedCommandOptions };
+}
+
+describe('prepareAgentSpawn - model/effort override passthrough', () => {
+  it('passes task model_override to buildCommand when the task has an override and the lane does not', async () => {
+    const { adapter, capturedCommandOptions } = makeCaptureAdapter();
+    agentRegistryGetMock.mockReturnValue(adapter);
+
+    const taskWithOverride = makeTask({ model_override: 'sonnet', effort_override: null } as Partial<Task>);
+    const laneWithNoOverride = makeSwimlane({ model_override: null, effort_override: null } as Partial<Swimlane>);
+
+    const result = await prepareAgentSpawn(makeSpawnInput({ task: taskWithOverride, swimlane: laneWithNoOverride }));
+
+    expect(result.ok).toBe(true);
+    expect(capturedCommandOptions).toHaveLength(1);
+    expect(capturedCommandOptions[0].model).toBe('sonnet');
+    expect(capturedCommandOptions[0].effort).toBeUndefined();
+  });
+
+  it('passes lane model_override to buildCommand when the task has no override (null falls through)', async () => {
+    const { adapter, capturedCommandOptions } = makeCaptureAdapter();
+    agentRegistryGetMock.mockReturnValue(adapter);
+
+    const taskWithNoOverride = makeTask({ model_override: null, effort_override: null } as Partial<Task>);
+    const laneWithOverride = makeSwimlane({ model_override: 'opus', effort_override: null } as Partial<Swimlane>);
+
+    const result = await prepareAgentSpawn(makeSpawnInput({ task: taskWithNoOverride, swimlane: laneWithOverride }));
+
+    expect(result.ok).toBe(true);
+    expect(capturedCommandOptions).toHaveLength(1);
+    expect(capturedCommandOptions[0].model).toBe('opus');
+  });
+
+  it('passes task effort_override to buildCommand, with task winning over the lane', async () => {
+    const { adapter, capturedCommandOptions } = makeCaptureAdapter();
+    agentRegistryGetMock.mockReturnValue(adapter);
+
+    const taskWithOverride = makeTask({ model_override: null, effort_override: 'high' } as Partial<Task>);
+    const laneWithOverride = makeSwimlane({ model_override: null, effort_override: 'low' } as Partial<Swimlane>);
+
+    const result = await prepareAgentSpawn(makeSpawnInput({ task: taskWithOverride, swimlane: laneWithOverride }));
+
+    expect(result.ok).toBe(true);
+    expect(capturedCommandOptions).toHaveLength(1);
+    expect(capturedCommandOptions[0].effort).toBe('high');
+  });
+
+  it('passes undefined for model and effort when both task and lane have no overrides', async () => {
+    const { adapter, capturedCommandOptions } = makeCaptureAdapter();
+    agentRegistryGetMock.mockReturnValue(adapter);
+
+    const taskWithNoOverride = makeTask({ model_override: null, effort_override: null } as Partial<Task>);
+    const laneWithNoOverride = makeSwimlane({ model_override: null, effort_override: null } as Partial<Swimlane>);
+
+    const result = await prepareAgentSpawn(makeSpawnInput({ task: taskWithNoOverride, swimlane: laneWithNoOverride }));
+
+    expect(result.ok).toBe(true);
+    expect(capturedCommandOptions).toHaveLength(1);
+    // Both null coalesced with ?? undefined produces undefined, which is what
+    // the adapter's buildCommand expects when no override is active.
+    expect(capturedCommandOptions[0].model).toBeUndefined();
+    expect(capturedCommandOptions[0].effort).toBeUndefined();
+  });
+});
+
 describe('prepareAgentSpawn - extraEnv field', () => {
   it('returns extraEnv=null when adapter does not implement buildEnv', async () => {
     const adapterWithoutBuildEnv = makeAdapter({ buildEnvResult: 'omit' });

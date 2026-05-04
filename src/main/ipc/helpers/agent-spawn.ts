@@ -31,6 +31,24 @@ export function buildAutoCommandVars(task: Task): Record<string, string> {
   };
 }
 
+/**
+ * Resolve the model/effort overrides handed to `engine.resumeSuspendedSession`
+ * and `engine.executeTransition`. Per-task override (set via the ContextBar
+ * popover) wins over the swimlane override - the user's explicit choice is
+ * sticky across column moves and respawns. Returns the undefined values
+ * unchanged so a fully-unset (undefined / undefined) row produces `undefined`
+ * rather than `null` and downstream `?? undefined` coalescing stays a no-op.
+ */
+export function resolveSpawnOverrides(
+  task: Pick<Task, 'model_override' | 'effort_override'>,
+  lane: Pick<Swimlane, 'model_override' | 'effort_override'> | null | undefined,
+): { model: string | null | undefined; effort: string | null | undefined } {
+  return {
+    model: task.model_override ?? lane?.model_override,
+    effort: task.effort_override ?? lane?.effort_override,
+  };
+}
+
 /** Create a TransitionEngine wired to explicit project context (not singletons). */
 export function createTransitionEngine(
   context: IpcContext,
@@ -197,7 +215,7 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
         task, toLane.permission_mode, skipPromptTemplate, undefined, signal,
         targetAgent,
         handoffPromptPrefix,
-        { model: toLane.model_override, effort: toLane.effort_override },
+        resolveSpawnOverrides(task, toLane),
       );
     } catch (error) {
       if (isAbortError(error)) throw error;
@@ -236,7 +254,7 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
   try {
     await engine.executeTransition(
       task, fromSwimlaneId, toLane.id, toLane.permission_mode, skipPromptTemplate, signal, targetAgent,
-      { model: toLane.model_override, effort: toLane.effort_override },
+      resolveSpawnOverrides(task, toLane),
     );
   } catch (error) {
     if (isAbortError(error)) throw error;
@@ -262,7 +280,7 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
       currentTask, toLane.permission_mode, skipPromptTemplate, resumePrompt, signal,
       targetAgent,
       undefined,
-      { model: toLane.model_override, effort: toLane.effort_override },
+      resolveSpawnOverrides(currentTask, toLane),
     );
   } catch (error) {
     if (isAbortError(error)) throw error;

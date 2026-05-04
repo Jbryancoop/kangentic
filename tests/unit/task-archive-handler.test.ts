@@ -119,6 +119,10 @@ vi.mock('../../src/main/ipc/helpers', () => ({
   createTransitionEngine: (...args: unknown[]) => mockCreateTransitionEngine(...args),
   interpolateTemplate: vi.fn((template: string) => template),
   cleanupTaskResources: vi.fn(async () => {}),
+  resolveSpawnOverrides: vi.fn((task: { model_override?: string | null; effort_override?: string | null } | undefined, lane: { model_override?: string | null; effort_override?: string | null } | null | undefined) => ({
+    model: task?.model_override ?? lane?.model_override,
+    effort: task?.effort_override ?? lane?.effort_override,
+  })),
 }));
 
 vi.mock('../../src/main/agent/shared', () => ({

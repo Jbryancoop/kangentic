@@ -24,6 +24,7 @@ import { registerTaskCrudHandlers } from './handlers/task-crud';
 import { registerTaskArchiveHandlers } from './handlers/task-archive';
 import { registerTaskMoveHandlers } from './handlers/task-move';
 import { registerTaskBranchHandlers } from './handlers/task-branch';
+import { registerTaskRuntimeOverrideHandlers } from './handlers/task-runtime-override';
 import { registerSessionHandlers } from './handlers/sessions';
 import { registerTransientSessionHandlers } from './handlers/transient-sessions';
 import { registerBoardHandlers } from './handlers/board';
@@ -118,6 +119,7 @@ export function registerAllIpc(mainWindow: BrowserWindow, mcpServerHandle: McpHt
   registerTaskArchiveHandlers(context);
   registerTaskMoveHandlers(context);
   registerTaskBranchHandlers(context);
+  registerTaskRuntimeOverrideHandlers(context);
   registerSessionHandlers(context);
   registerTransientSessionHandlers(context);
   registerBoardHandlers(context);

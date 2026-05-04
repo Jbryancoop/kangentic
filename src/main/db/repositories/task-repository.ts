@@ -90,6 +90,8 @@ export class TaskRepository {
       use_worktree: input.useWorktree != null ? (input.useWorktree ? 1 : 0) : null,
       labels,
       priority,
+      model_override: null,
+      effort_override: null,
       attachment_count: 0,
       archived_at: null,
       created_at: now,
@@ -97,9 +99,9 @@ export class TaskRepository {
     };
 
     this.db.prepare(`
-      INSERT INTO tasks (id, display_id, title, description, swimlane_id, position, agent, session_id, worktree_path, branch_name, pr_number, pr_url, base_branch, use_worktree, labels, priority, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(task.id, task.display_id, task.title, task.description, task.swimlane_id, task.position, task.agent, task.session_id, task.worktree_path, task.branch_name, task.pr_number, task.pr_url, task.base_branch, task.use_worktree, JSON.stringify(labels), task.priority, task.created_at, task.updated_at);
+      INSERT INTO tasks (id, display_id, title, description, swimlane_id, position, agent, session_id, worktree_path, branch_name, pr_number, pr_url, base_branch, use_worktree, labels, priority, model_override, effort_override, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(task.id, task.display_id, task.title, task.description, task.swimlane_id, task.position, task.agent, task.session_id, task.worktree_path, task.branch_name, task.pr_number, task.pr_url, task.base_branch, task.use_worktree, JSON.stringify(labels), task.priority, task.model_override, task.effort_override, task.created_at, task.updated_at);
 
     return task;
   }
@@ -115,11 +117,27 @@ export class TaskRepository {
     };
 
     this.db.prepare(`
-      UPDATE tasks SET title = ?, description = ?, swimlane_id = ?, position = ?, agent = ?, session_id = ?, worktree_path = ?, branch_name = ?, pr_number = ?, pr_url = ?, base_branch = ?, use_worktree = ?, labels = ?, priority = ?, updated_at = ?
+      UPDATE tasks SET title = ?, description = ?, swimlane_id = ?, position = ?, agent = ?, session_id = ?, worktree_path = ?, branch_name = ?, pr_number = ?, pr_url = ?, base_branch = ?, use_worktree = ?, labels = ?, priority = ?, model_override = ?, effort_override = ?, updated_at = ?
       WHERE id = ?
-    `).run(updated.title, updated.description, updated.swimlane_id, updated.position, updated.agent, updated.session_id, updated.worktree_path, updated.branch_name, updated.pr_number, updated.pr_url, updated.base_branch, updated.use_worktree, JSON.stringify(updated.labels), updated.priority, updated.updated_at, updated.id);
+    `).run(updated.title, updated.description, updated.swimlane_id, updated.position, updated.agent, updated.session_id, updated.worktree_path, updated.branch_name, updated.pr_number, updated.pr_url, updated.base_branch, updated.use_worktree, JSON.stringify(updated.labels), updated.priority, updated.model_override, updated.effort_override, updated.updated_at, updated.id);
 
     return updated;
+  }
+
+  /**
+   * Update only the model/effort override fields on a task. Any field omitted
+   * from `patch` is left untouched; passing `null` clears that override.
+   * Used by the ContextBar popover (`task:setRuntimeOverride` IPC) so that
+   * we don't have to load the full task and re-write every column.
+   */
+  updateOverrides(taskId: string, patch: { model_override?: string | null; effort_override?: string | null }): void {
+    const existing = this.getById(taskId);
+    if (!existing) throw new Error(`Task ${taskId} not found`);
+    const newModel = patch.model_override !== undefined ? patch.model_override : existing.model_override;
+    const newEffort = patch.effort_override !== undefined ? patch.effort_override : existing.effort_override;
+    this.db.prepare(
+      'UPDATE tasks SET model_override = ?, effort_override = ?, updated_at = ? WHERE id = ?',
+    ).run(newModel, newEffort, new Date().toISOString(), taskId);
   }
 
   move(input: TaskMoveInput): void {

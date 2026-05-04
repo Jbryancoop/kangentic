@@ -70,8 +70,6 @@
     contextBar: {
       showShell: true,
       showVersion: true,
-      showModel: true,
-      showEffort: true,
       showCost: true,
       showTokens: true,
       showContextFraction: true,
@@ -479,6 +477,8 @@
           use_worktree: input.useWorktree != null ? (input.useWorktree ? 1 : 0) : null,
           labels: input.labels || [],
           priority: input.priority || 0,
+          model_override: null,
+          effort_override: null,
           attachment_count: 0,
           archived_at: null,
           created_at: now(),
@@ -768,6 +768,27 @@
             tasks.push(task);
           }
         }
+      },
+      setRuntimeOverride: async function (input) {
+        // Test hook: spec can override the response (e.g. to assert error
+        // handling) by setting window.__mockSetRuntimeOverrideResult before
+        // calling. Defaults to a successful 'live' apply when the task has a
+        // session_id, otherwise 'persisted'.
+        if (typeof window !== 'undefined') {
+          if (!window.__mockSetRuntimeOverrideCalls) window.__mockSetRuntimeOverrideCalls = [];
+          window.__mockSetRuntimeOverrideCalls.push(input);
+        }
+        if (typeof window !== 'undefined' && typeof window.__mockSetRuntimeOverrideResult === 'function') {
+          return window.__mockSetRuntimeOverrideResult(input);
+        }
+        var idx = tasks.findIndex(function (t) { return t.id === input.taskId; });
+        if (idx < 0) return { ok: false, reason: 'task not found' };
+        var patch = {};
+        if (input.model !== undefined) patch.model_override = input.model;
+        if (input.effort !== undefined) patch.effort_override = input.effort;
+        tasks[idx] = Object.assign({}, tasks[idx], patch, { updated_at: now() });
+        var mode = tasks[idx].session_id ? 'live' : 'persisted';
+        return { ok: true, mode: mode };
       },
     },
 

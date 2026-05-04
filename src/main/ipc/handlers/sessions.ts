@@ -4,7 +4,7 @@ import { withTaskLock } from '../task-lifecycle-lock';
 import { SessionRepository } from '../../db/repositories/session-repository';
 import { TaskRepository } from '../../db/repositories/task-repository';
 import { getProjectDb } from '../../db/database';
-import { getProjectRepos, ensureTaskWorktree, createTransitionEngine } from '../helpers';
+import { getProjectRepos, ensureTaskWorktree, createTransitionEngine, resolveSpawnOverrides } from '../helpers';
 import { handleTaskMove } from './task-move';
 import { trackEvent } from '../../analytics/analytics';
 import { captureSessionMetrics } from './session-metrics';
@@ -149,10 +149,8 @@ export function registerSessionHandlers(context: IpcContext): void {
             resolvedProjectId, resolvedProjectPath,
           );
 
-          const laneOverrides = currentLane
-            ? { model: currentLane.model_override, effort: currentLane.effort_override }
-            : undefined;
-          await engine.resumeSuspendedSession(current, currentLane?.permission_mode, undefined, resumePrompt, signal, undefined, undefined, laneOverrides);
+          const overrides = resolveSpawnOverrides(current, currentLane);
+          await engine.resumeSuspendedSession(current, currentLane?.permission_mode, undefined, resumePrompt, signal, undefined, undefined, overrides);
 
           const updated = tasks.getById(taskId);
           if (!updated?.session_id) throw new Error('Session resume failed - no session_id on task');

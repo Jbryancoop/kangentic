@@ -138,6 +138,9 @@ vi.mock('../../src/main/ipc/handlers/task-move', () => ({
 vi.mock('../../src/main/ipc/handlers/task-branch', () => ({
   registerTaskBranchHandlers: vi.fn(),
 }));
+vi.mock('../../src/main/ipc/handlers/task-runtime-override', () => ({
+  registerTaskRuntimeOverrideHandlers: vi.fn(),
+}));
 vi.mock('../../src/main/ipc/handlers/sessions', () => ({
   registerSessionHandlers: vi.fn(),
 }));
@@ -179,6 +182,7 @@ describe('registerAllIpc idempotency', () => {
     const { registerTaskArchiveHandlers } = await import('../../src/main/ipc/handlers/task-archive');
     const { registerTaskMoveHandlers } = await import('../../src/main/ipc/handlers/task-move');
     const { registerTaskBranchHandlers } = await import('../../src/main/ipc/handlers/task-branch');
+    const { registerTaskRuntimeOverrideHandlers } = await import('../../src/main/ipc/handlers/task-runtime-override');
 
     const window = makeMockWindow(1);
     registerAllIpc(window);
@@ -189,6 +193,7 @@ describe('registerAllIpc idempotency', () => {
     expect(registerTaskArchiveHandlers).toHaveBeenCalledTimes(1);
     expect(registerTaskMoveHandlers).toHaveBeenCalledTimes(1);
     expect(registerTaskBranchHandlers).toHaveBeenCalledTimes(1);
+    expect(registerTaskRuntimeOverrideHandlers).toHaveBeenCalledTimes(1);
 
     // Context is initialized (wrappers don't throw)
     expect(() => getSessionManager()).not.toThrow();
@@ -201,6 +206,7 @@ describe('registerAllIpc idempotency', () => {
     const { registerTaskArchiveHandlers } = await import('../../src/main/ipc/handlers/task-archive');
     const { registerTaskMoveHandlers } = await import('../../src/main/ipc/handlers/task-move');
     const { registerTaskBranchHandlers } = await import('../../src/main/ipc/handlers/task-branch');
+    const { registerTaskRuntimeOverrideHandlers } = await import('../../src/main/ipc/handlers/task-runtime-override');
     const { registerSessionHandlers } = await import('../../src/main/ipc/handlers/sessions');
     const { registerTransientSessionHandlers } = await import('../../src/main/ipc/handlers/transient-sessions');
     const { registerBoardHandlers } = await import('../../src/main/ipc/handlers/board');
@@ -230,6 +236,7 @@ describe('registerAllIpc idempotency', () => {
     expect(registerTaskArchiveHandlers).toHaveBeenCalledTimes(1);
     expect(registerTaskMoveHandlers).toHaveBeenCalledTimes(1);
     expect(registerTaskBranchHandlers).toHaveBeenCalledTimes(1);
+    expect(registerTaskRuntimeOverrideHandlers).toHaveBeenCalledTimes(1);
     expect(registerSessionHandlers).toHaveBeenCalledTimes(1);
     expect(registerTransientSessionHandlers).toHaveBeenCalledTimes(1);
     expect(registerBoardHandlers).toHaveBeenCalledTimes(1);

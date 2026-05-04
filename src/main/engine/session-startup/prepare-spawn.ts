@@ -120,8 +120,11 @@ export async function prepareAgentSpawn(input: {
     mcpServerEnabled: config.mcpServer?.enabled ?? true,
     mcpServerUrl: input.mcpServerHandle?.urlForProject(projectId),
     mcpServerToken: input.mcpServerHandle?.token,
-    model: swimlane?.model_override ?? undefined,
-    effort: swimlane?.effort_override ?? undefined,
+    // Task-level override (set by the ContextBar popover) wins over the
+    // swimlane override - once a user has expressed an explicit per-task
+    // preference, it sticks across column moves until they clear it.
+    model: task.model_override ?? swimlane?.model_override ?? undefined,
+    effort: task.effort_override ?? swimlane?.effort_override ?? undefined,
   };
 
   const command = adapter.buildCommand(commandOptions);

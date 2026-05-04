@@ -135,7 +135,7 @@ describe('deepMerge', () => {
 
     it('dictionaryPaths replaces flat maps at explicit paths even when replaceFlatMaps is false', () => {
       const target = {
-        contextBar: { showShell: true, showVersion: true, showModel: true, showCost: true },
+        contextBar: { showShell: true, showVersion: true, showCost: true },
         backlog: { labelColors: { foo: '#ff0000', bar: '#00ff00' } },
       };
       // Toggle a single contextBar key AND delete a labelColor at the same time
@@ -148,7 +148,7 @@ describe('deepMerge', () => {
         dictionaryPaths: ['backlog.labelColors'],
       });
       // contextBar is a typed struct -> merge: only showCost changes, others preserved
-      expect(result.contextBar).toEqual({ showShell: true, showVersion: true, showModel: true, showCost: false });
+      expect(result.contextBar).toEqual({ showShell: true, showVersion: true, showCost: false });
       // backlog.labelColors is in dictionaryPaths -> replaced: 'bar' is gone
       expect(result.backlog.labelColors).toEqual({ foo: '#ff0000' });
       expect('bar' in result.backlog.labelColors).toBe(false);
@@ -177,7 +177,6 @@ describe('deepMerge', () => {
         contextBar: {
           showShell: true,
           showVersion: true,
-          showModel: true,
           showCost: true,
           showTokens: true,
           showContextFraction: true,
@@ -201,7 +200,6 @@ describe('deepMerge', () => {
         contextBar: {
           showShell: true,
           showVersion: true,
-          showModel: true,
           showCost: true,
           showTokens: true,
           showContextFraction: true,

@@ -131,6 +131,10 @@ export interface Task {
   use_worktree: number | null;
   labels: string[];
   priority: number;
+  /** Per-task model override set via the ContextBar popover. Takes precedence over the swimlane's `model_override`; null inherits the swimlane (or agent default). */
+  model_override: string | null;
+  /** Per-task effort override set via the ContextBar popover. Takes precedence over the swimlane's `effort_override`; null inherits the swimlane (or agent default). */
+  effort_override: string | null;
   attachment_count: number;
   archived_at: string | null;
   created_at: string;
@@ -798,8 +802,10 @@ export interface AppConfig {
   contextBar: {
     showShell: boolean;
     showVersion: boolean;
-    showModel: boolean;
-    showEffort: boolean;
+    // `showModel` / `showEffort` removed: those pills double as the
+    // model/effort picker triggers. Hiding them via toggle would silently
+    // disable a feature, not just minimize chrome. The other toggles below
+    // are pure cosmetic noise filters and keep their toggles.
     showCost: boolean;
     showTokens: boolean;
     showContextFraction: boolean;
@@ -889,8 +895,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   contextBar: {
     showShell: true,
     showVersion: true,
-    showModel: true,
-    showEffort: true,
     showCost: true,
     showTokens: true,
     showContextFraction: true,
@@ -1182,7 +1186,31 @@ export interface TaskUpdateInput {
   use_worktree?: number | null;
   labels?: string[];
   priority?: number;
+  model_override?: string | null;
+  effort_override?: string | null;
 }
+
+/**
+ * Input for `IPC.TASK_SET_RUNTIME_OVERRIDE`. Either field can be omitted to
+ * leave it unchanged; pass `null` to explicitly clear the override (so the
+ * task falls back to its swimlane's `model_override`/`effort_override` and
+ * ultimately to the agent default).
+ */
+export interface TaskSetRuntimeOverrideInput {
+  taskId: string;
+  model?: string | null;
+  effort?: string | null;
+}
+
+/**
+ * Result of `IPC.TASK_SET_RUNTIME_OVERRIDE`. `mode` describes how the change
+ * was applied: `live` = slash-command injected into the running PTY,
+ * `restart` = session suspended and respawned with `--resume`, `persisted` =
+ * task has no live session so the override is saved for next spawn.
+ */
+export type TaskSetRuntimeOverrideResult =
+  | { ok: true; mode: 'live' | 'restart' | 'persisted' }
+  | { ok: false; reason: string };
 
 export interface TaskSwitchBranchInput {
   taskId: string;
@@ -1715,6 +1743,7 @@ export interface ElectronAPI {
     bulkDelete: (ids: string[]) => Promise<TaskBulkDeleteResult>;
     bulkUnarchive: (ids: string[], targetSwimlaneId: string) => Promise<void>;
     switchBranch: (input: TaskSwitchBranchInput) => Promise<Task>;
+    setRuntimeOverride: (input: TaskSetRuntimeOverrideInput) => Promise<TaskSetRuntimeOverrideResult>;
     onAutoMoved: (callback: (taskId: string, targetSwimlaneId: string, taskTitle: string, projectId?: string) => void) => () => void;
     onCreatedByAgent: (callback: (taskId: string, taskTitle: string, columnName: string, projectId?: string) => void) => () => void;
     onUpdatedByAgent: (callback: (taskId: string, taskTitle: string, projectId?: string) => void) => () => void;

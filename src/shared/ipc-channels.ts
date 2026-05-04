@@ -38,6 +38,7 @@ export const IPC = {
   TASK_UPDATED_BY_AGENT: 'task:updatedByAgent',
   TASK_DELETED_BY_AGENT: 'task:deletedByAgent',
   TASK_SPAWN_PROGRESS: 'task:spawnProgress',
+  TASK_SET_RUNTIME_OVERRIDE: 'task:setRuntimeOverride',
 
   // Attachments
   ATTACHMENT_LIST: 'attachment:list',

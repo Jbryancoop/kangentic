@@ -54,7 +54,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `projectGroup:reorder` | invoke | Reorder groups by ID array |
 | `projectGroup:setCollapsed` | invoke | Toggle group collapsed state |
 
-### Tasks (16 channels)
+### Tasks (17 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `task:list` | invoke | Fetch tasks, optionally by swimlane |
@@ -68,6 +68,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `task:bulk-delete-progress` | on | Event: progress payload during bulk task delete (completed/total/failures) |
 | `task:bulk-unarchive` | invoke | Restore multiple archived tasks to a target swimlane |
 | `task:switchBranch` | invoke | Switch base branch or enable worktree for a task |
+| `task:setRuntimeOverride` | invoke | Set per-task model/effort override; applies live via slash injection, suspend+respawn, or persisted-only depending on session state and adapter capability |
 | `task:autoMoved` | on | Event: task was auto-moved by transition engine |
 | `task:createdByAgent` | on | Event: task was created by an agent via MCP tool call |
 | `task:updatedByAgent` | on | Event: task was updated by an agent via MCP tool call |
