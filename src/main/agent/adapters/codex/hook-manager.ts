@@ -1,39 +1,15 @@
-import fs from 'node:fs';
 import path from 'node:path';
-import { toForwardSlash } from '../../../../shared/paths';
-import { EventType } from '../../../../shared/types';
-import { resolveBridgeScript } from '../../shared/bridge-utils';
-import { isKangenticHookCommand, buildBridgeCommand, safelyUpdateSettingsFile } from '../../shared/hook-utils';
+import { isKangenticHookCommand, safelyUpdateSettingsFile } from '../../shared/hook-utils';
 
-/** A single entry in Codex's .codex/hooks.json array. */
-export interface CodexHookEntry {
+/**
+ * Shape of an entry in the legacy project-local `.codex/hooks.json` array.
+ * Retained only for cleanup of files written by older Kangentic builds.
+ */
+interface CodexLegacyHookEntry {
   event: string;
   command: string;
   timeout_secs?: number;
 }
-
-/**
- * Codex hook events mapped to event-bridge event types with extraction
- * directives. Directives tell event-bridge how to extract fields from
- * Codex's hook stdin JSON format.
- */
-export const CODEX_HOOK_EVENTS: Array<{
-  event: string;
-  bridgeEventType: EventType;
-  /** Extraction directives for event-bridge (tool:, detail:, env:, etc). */
-  directives?: string[];
-}> = [
-  {
-    event: 'SessionStart',
-    bridgeEventType: EventType.SessionStart,
-    // Codex injects CODEX_THREAD_ID into child process env (openai/codex#10096).
-    directives: ['env:thread_id=CODEX_THREAD_ID'],
-  },
-  { event: 'UserPromptSubmit', bridgeEventType: EventType.Prompt },
-  { event: 'PreToolUse', bridgeEventType: EventType.ToolStart, directives: ['tool:tool_name'] },
-  { event: 'PostToolUse', bridgeEventType: EventType.ToolEnd, directives: ['tool:tool_name'] },
-  { event: 'Stop', bridgeEventType: EventType.Idle },
-];
 
 /** Path to .codex/hooks.json for a given project directory. */
 function codexHooksPath(directory: string): string {
@@ -41,54 +17,44 @@ function codexHooksPath(directory: string): string {
 }
 
 /**
- * Write Kangentic event-bridge hooks into .codex/hooks.json at the project
- * root. Merges with any existing user-defined hooks (our entries are filtered
- * out first to avoid duplicates).
+ * Codex 0.128 redesigned the hook system. User hooks now live in
+ * `~/.codex/config.toml` under `[[hooks]]` tables (TOML, snake_case event
+ * names like `pre_tool_use`, camelCase fields `eventName`/`timeoutSec`), or
+ * inside a Codex plugin folder referenced from a `plugin.json` manifest.
+ *
+ * The legacy project-local `.codex/hooks.json` (top-level JSON array) is no
+ * longer recognized. Codex 0.128 surfaces a yellow `failed to parse hooks
+ * config ... trailing characters` warning at startup whenever it finds one.
+ *
+ * Older Kangentic builds wrote that file as forward-compat for a hook pipeline
+ * that 0.118 also ignored in practice, so removing the writer reverts to
+ * the same effective behavior we already had on 0.118 with no functional loss.
+ *
+ * `buildHooks` is invoked from the spawn path; we use it to clean up any stale
+ * Kangentic-owned entries left over from a pre-upgrade Kangentic install. We
+ * never write the file ourselves any more.
+ *
+ * Re-enabling Codex hook integration via the new TOML/plugin format is a
+ * separate effort tracked by the task this fix originated from.
  */
-export function buildHooks(projectRoot: string, eventsOutputPath: string): void {
-  const hooksFile = codexHooksPath(projectRoot);
-  const eventBridge = toForwardSlash(resolveBridgeScript('event-bridge'));
-  const eventsPath = toForwardSlash(eventsOutputPath);
-
-  // Read existing hooks and filter out stale Kangentic entries
-  let existingHooks: CodexHookEntry[] = [];
-  try {
-    const raw = fs.readFileSync(hooksFile, 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      existingHooks = (parsed as CodexHookEntry[]).filter(
-        entry => !isKangenticHookCommand(entry.command),
-      );
-    }
-  } catch {
-    // No existing hooks file or invalid JSON - start fresh
-  }
-
-  // Build our hook entries
-  const kangenticHooks: CodexHookEntry[] = CODEX_HOOK_EVENTS.map(({ event, bridgeEventType, directives }) => ({
-    event,
-    command: buildBridgeCommand(eventBridge, eventsPath, bridgeEventType, ...(directives || [])),
-    timeout_secs: 10,
-  }));
-
-  const merged = [...existingHooks, ...kangenticHooks];
-
-  // Ensure .codex/ directory exists
-  const codexDir = path.dirname(hooksFile);
-  fs.mkdirSync(codexDir, { recursive: true });
-
-  fs.writeFileSync(hooksFile, JSON.stringify(merged, null, 2));
+export function buildHooks(projectRoot: string): void {
+  cleanupLegacyHooks(projectRoot);
 }
 
 /**
- * Strip ALL Kangentic hook entries from .codex/hooks.json at the given
- * directory. Preserves all other user hooks.
+ * Strip ALL Kangentic hook entries from a legacy `.codex/hooks.json` at the
+ * given directory. Preserves any user-defined hooks; deletes the file if
+ * only Kangentic-owned entries remained.
  */
 export function removeHooks(directory: string): void {
+  cleanupLegacyHooks(directory);
+}
+
+function cleanupLegacyHooks(directory: string): void {
   safelyUpdateSettingsFile(codexHooksPath(directory), (parsed) => {
     if (!Array.isArray(parsed)) return null;
-    const hooks = parsed as CodexHookEntry[];
+    const hooks = parsed as CodexLegacyHookEntry[];
     const filtered = hooks.filter(entry => !isKangenticHookCommand(entry.command));
     return filtered.length === hooks.length ? null : filtered;
-  }, 'removeHooks');
+  }, 'cleanupLegacyHooks');
 }

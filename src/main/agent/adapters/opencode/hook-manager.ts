@@ -5,11 +5,11 @@ import { resolvePluginScript } from '../../shared/bridge-utils';
 
 /**
  * OpenCode plugin events mapped to event-bridge event types. Documented
- * here for symmetry with `CODEX_HOOK_EVENTS` and to give tests a
- * canonical mapping to assert against. The actual event-handler logic
- * lives inside the plugin file (`plugin/kangentic-activity.mjs`),
- * because OpenCode plugins run inline in the OpenCode process and write
- * JSONL directly rather than shelling out to event-bridge.
+ * here to give tests a canonical mapping to assert against. The actual
+ * event-handler logic lives inside the plugin file
+ * (`plugin/kangentic-activity.mjs`), because OpenCode plugins run inline
+ * in the OpenCode process and write JSONL directly rather than shelling
+ * out to event-bridge.
  *
  * OpenCode plugin event names (verified against
  * https://opencode.ai/docs/plugins/, April 2026):

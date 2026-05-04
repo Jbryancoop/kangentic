@@ -32,7 +32,6 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('../../src/main/agent/adapters/codex/hook-manager', () => ({
   buildHooks: vi.fn(),
   removeHooks: vi.fn(),
-  CODEX_HOOK_EVENTS: {},
 }));
 
 // OpenCode installs a plugin file on spawn - mock to skip it.

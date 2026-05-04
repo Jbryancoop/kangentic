@@ -160,22 +160,46 @@ test.describe('Claude Agent -- Browser Send evidence/retry paths', () => {
     try {
       await openBrowserPaneForNewTask(ctx.page, 'No Evidence');
 
-      await ctx.page.locator('[data-testid="browser-send"]').click();
+      const sendButton = ctx.page.locator('[data-testid="browser-send"]');
+      await sendButton.click();
 
-      // Engine waits ~5s before declaring no-evidence. The handler in
-      // src/main/ipc/handlers/browser.ts:96-109 translates
-      // PasteSubmitError to "Paste landed but Enter did not submit. Press
-      // Enter in the terminal to submit.". Both the inline error strip and
-      // a toast surface the message; assert on the first match.
+      // Engine drains both evidence windows (3s + 2s) + settle (>= 1s, scales
+      // with packet size up to ~5s for the browser_context envelope) + chunked
+      // write before throwing. Under full E2E suite load on Windows the IPC
+      // round-trip can land at ~12-15s. Wait for the Send button to leave
+      // its disabled (sending) state so we know the IPC cycle finished AND
+      // the renderer has had a turn to commit the error - asserting on the
+      // text directly with a fixed timeout was flaky when the cycle hugged
+      // the previous 20s assertion budget.
+      await expect(sendButton).toBeEnabled({ timeout: 30000 });
+
+      // Handler translates PasteSubmitError to "Paste landed but Enter did
+      // not submit. Press Enter in the terminal to submit." (browser.ts:96-109).
+      // Both the inline error strip and a toast surface the message; assert
+      // on the first match.
       await expect(
         ctx.page.getByText('Paste landed but Enter did not submit', { exact: false }).first(),
-      ).toBeVisible({ timeout: 20000 });
+      ).toBeVisible({ timeout: 5000 });
     } finally {
       await ctx.cleanup();
     }
   });
 
+  // Windows-only platform limitation: ConPTY consumes the bracketed-paste
+  // start/end markers (\x1b[200~ / \x1b[201~) before they reach the slave
+  // program. The mock-claude-bracketed-paste-off fixture watches stdin for
+  // `\x1b[200~` to fire its `\x1b[?2004l` response - on Windows that marker
+  // never arrives, so paste-engine's `pasteModeOff` flag never flips and
+  // the engine takes the no-evidence retry path instead of the
+  // permission-prompt branch this test asserts on.
+  //
+  // The path under test is exercised cleanly by the unit-tier coverage at
+  // `tests/unit/browser-handler-error-translation.test.ts` (PasteSubmitError
+  // code -> user-message mapping with and without bracketed-paste mode).
+  // E2E re-validation requires a Linux/macOS PTY where bracketed-paste
+  // markers are not absorbed by the terminal layer.
   test('bracketed-paste-mode-off skips retry and surfaces the permission-prompt error', async () => {
+    test.fixme(process.platform === 'win32', 'ConPTY filters bracketed-paste markers; covered at unit tier instead.');
     const ctx = await setupVariant('bracketed-paste-off');
     try {
       await openBrowserPaneForNewTask(ctx.page, 'Modal Focus Path');

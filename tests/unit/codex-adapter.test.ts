@@ -173,7 +173,12 @@ describe('Codex Adapter', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     });
 
-    it('writes hooks.json when eventsOutputPath is provided', () => {
+    // Codex 0.128 redesigned the hook system; project-local `.codex/hooks.json`
+    // is no longer recognized and emits a "trailing characters" warning at
+    // session start. Kangentic does not write that file any more - the spawn
+    // path only sweeps stale entries left over by older Kangentic installs.
+
+    it('does not create .codex/hooks.json on spawn (Codex 0.128 redesign)', () => {
       const eventsPath = path.join(tempDir, '.kangentic', 'sessions', 'task-001', 'events.jsonl');
       adapter.buildCommand(makeOptions({
         cwd: tempDir,
@@ -181,39 +186,22 @@ describe('Codex Adapter', () => {
       }));
 
       const hooksFile = path.join(tempDir, '.codex', 'hooks.json');
-      expect(fs.existsSync(hooksFile)).toBe(true);
-
-      const hooks = JSON.parse(fs.readFileSync(hooksFile, 'utf-8'));
-      expect(Array.isArray(hooks)).toBe(true);
-      expect(hooks.length).toBe(5); // SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop
-
-      // Verify hook event names
-      const eventNames = hooks.map((hook: { event: string }) => hook.event);
-      expect(eventNames).toContain('SessionStart');
-      expect(eventNames).toContain('UserPromptSubmit');
-      expect(eventNames).toContain('PreToolUse');
-      expect(eventNames).toContain('PostToolUse');
-      expect(eventNames).toContain('Stop');
-
-      // Each hook should have a command referencing event-bridge
-      for (const hook of hooks) {
-        expect(hook.command).toContain('event-bridge');
-        expect(hook.timeout_secs).toBe(10);
-      }
+      expect(fs.existsSync(hooksFile)).toBe(false);
     });
 
-    it('does not write hooks.json when eventsOutputPath is omitted', () => {
+    it('does not create .codex/hooks.json when eventsOutputPath is omitted', () => {
       adapter.buildCommand(makeOptions({ cwd: tempDir }));
       const hooksFile = path.join(tempDir, '.codex', 'hooks.json');
       expect(fs.existsSync(hooksFile)).toBe(false);
     });
 
-    it('preserves existing user hooks when writing', () => {
+    it('leaves existing user hooks untouched on spawn', () => {
       const codexDir = path.join(tempDir, '.codex');
       fs.mkdirSync(codexDir, { recursive: true });
 
       const userHook = { event: 'PreToolUse', command: 'echo user-hook', timeout_secs: 5 };
-      fs.writeFileSync(path.join(codexDir, 'hooks.json'), JSON.stringify([userHook]));
+      const original = JSON.stringify([userHook]);
+      fs.writeFileSync(path.join(codexDir, 'hooks.json'), original);
 
       const eventsPath = path.join(tempDir, '.kangentic', 'sessions', 'task-001', 'events.jsonl');
       adapter.buildCommand(makeOptions({
@@ -221,17 +209,17 @@ describe('Codex Adapter', () => {
         eventsOutputPath: eventsPath,
       }));
 
-      const hooks = JSON.parse(fs.readFileSync(path.join(codexDir, 'hooks.json'), 'utf-8'));
-      // User hook should be preserved + 5 Kangentic hooks
-      expect(hooks.length).toBe(6);
-      expect(hooks[0]).toEqual(userHook);
+      // The existing user file is left exactly as it was - we do not append
+      // entries any more, and a file with no Kangentic-owned commands is
+      // signaled as "no change" by safelyUpdateSettingsFile.
+      expect(fs.readFileSync(path.join(codexDir, 'hooks.json'), 'utf-8')).toBe(original);
     });
 
-    it('replaces stale Kangentic hooks on re-write', () => {
+    it('cleans up stale Kangentic-owned legacy entries on spawn', () => {
       const codexDir = path.join(tempDir, '.codex');
       fs.mkdirSync(codexDir, { recursive: true });
 
-      // Simulate stale Kangentic hook from a previous session
+      // Pre-existing legacy file written by an older Kangentic build.
       const staleHook = {
         event: 'PreToolUse',
         command: 'node "/path/.kangentic/event-bridge.js" "/old/events.jsonl" tool_start',
@@ -245,9 +233,66 @@ describe('Codex Adapter', () => {
         eventsOutputPath: eventsPath,
       }));
 
-      const hooks = JSON.parse(fs.readFileSync(path.join(codexDir, 'hooks.json'), 'utf-8'));
-      // Stale hook should be replaced, not duplicated
-      expect(hooks.length).toBe(5);
+      // Only Kangentic-owned entries existed, so the file should be deleted
+      // outright (no resurrection of the warning-producing format).
+      expect(fs.existsSync(path.join(codexDir, 'hooks.json'))).toBe(false);
+    });
+
+    it('strips Kangentic-owned legacy entries while keeping user entries', () => {
+      const codexDir = path.join(tempDir, '.codex');
+      fs.mkdirSync(codexDir, { recursive: true });
+
+      const userHook = { event: 'Stop', command: 'echo done', timeout_secs: 5 };
+      const staleHook = {
+        event: 'PreToolUse',
+        command: 'node "/path/.kangentic/event-bridge.js" "/old/events.jsonl" tool_start',
+        timeout_secs: 10,
+      };
+      fs.writeFileSync(
+        path.join(codexDir, 'hooks.json'),
+        JSON.stringify([userHook, staleHook]),
+      );
+
+      const eventsPath = path.join(tempDir, '.kangentic', 'sessions', 'task-001', 'events.jsonl');
+      adapter.buildCommand(makeOptions({
+        cwd: tempDir,
+        eventsOutputPath: eventsPath,
+      }));
+
+      const remaining = JSON.parse(fs.readFileSync(path.join(codexDir, 'hooks.json'), 'utf-8'));
+      expect(remaining).toEqual([userHook]);
+    });
+
+    it('does not touch a non-array user config (Codex 0.128+ migrated format)', () => {
+      // REGRESSION GUARD: a Codex 0.128 user (or third-party tooling) may
+      // already have migrated `.codex/hooks.json` to the new object-shape
+      // format (e.g. `{ "hooks": [...] }`). The legacy cleanup path must
+      // not destroy that config - the `!Array.isArray(parsed)` guard in
+      // `cleanupLegacyHooks` should signal "no change" so the file stays
+      // byte-identical. Without this test, a future refactor that removes
+      // or weakens the array check would silently overwrite user data on
+      // every spawn.
+      const codexDir = path.join(tempDir, '.codex');
+      fs.mkdirSync(codexDir, { recursive: true });
+
+      const migratedConfig = JSON.stringify(
+        {
+          hooks: [
+            { eventName: 'pre_tool_use', command: 'echo user-hook', timeoutSec: 5 },
+          ],
+        },
+        null,
+        2,
+      );
+      fs.writeFileSync(path.join(codexDir, 'hooks.json'), migratedConfig);
+
+      const eventsPath = path.join(tempDir, '.kangentic', 'sessions', 'task-001', 'events.jsonl');
+      adapter.buildCommand(makeOptions({
+        cwd: tempDir,
+        eventsOutputPath: eventsPath,
+      }));
+
+      expect(fs.readFileSync(path.join(codexDir, 'hooks.json'), 'utf-8')).toBe(migratedConfig);
     });
 
     it('removeHooks removes Kangentic entries and preserves user hooks', () => {

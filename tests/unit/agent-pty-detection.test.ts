@@ -584,7 +584,15 @@ describe('Agent hook bridge (real CLI invocation)', () => {
       expect(path.dirname(sessionDir)).toBe(path.join(tempDir, '.kangentic', 'sessions'));
     });
 
-    it('CodexAdapter writes .codex/hooks.json with all 5 expected events', () => {
+    it('CodexAdapter does not create .codex/hooks.json on spawn (Codex 0.128 redesign)', () => {
+      // Codex 0.128 redesigned the hook system - hooks now live in
+      // ~/.codex/config.toml under [[hooks]] tables (TOML, snake_case event
+      // names like pre_tool_use, camelCase fields eventName/timeoutSec) or
+      // inside a Codex plugin folder. The legacy project-local
+      // .codex/hooks.json (top-level JSON array) is no longer recognized
+      // and emits a "trailing characters" warning at session start.
+      // Kangentic no longer writes that file - the spawn path only sweeps
+      // stale entries left by older Kangentic installs.
       const adapter = new CodexAdapter();
       const ptySessionId = uuidv4();
       const sessionDir = path.join(tempDir, '.kangentic', 'sessions', ptySessionId);
@@ -599,38 +607,19 @@ describe('Agent hook bridge (real CLI invocation)', () => {
       });
 
       const hooksFile = path.join(tempDir, '.codex', 'hooks.json');
-      expect(fs.existsSync(hooksFile)).toBe(true);
-
-      const hooks = JSON.parse(fs.readFileSync(hooksFile, 'utf-8'));
-      expect(Array.isArray(hooks)).toBe(true);
-      const eventNames = hooks.map((entry: { event: string }) => entry.event).sort();
-      expect(eventNames).toEqual(
-        ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit'].sort(),
-      );
-
-      // Every entry must invoke event-bridge.js with the same events.jsonl
-      // path the file watcher reads from. Path comparison uses forward
-      // slashes because hook-utils calls toForwardSlash() on the events
-      // path before embedding it in the command (Windows paths get
-      // normalized so the bridge can find the file regardless of shell).
-      const expectedPathFragment = eventsPath.replace(/\\/g, '/');
-      for (const entry of hooks) {
-        expect(entry.command).toContain('event-bridge');
-        expect(entry.command).toContain(expectedPathFragment);
-      }
-      // Sanity: the path embedded in the command MUST end with the same
-      // filename the renderer's session-file-watcher expects.
-      expect(expectedPathFragment).toMatch(/\/events\.jsonl$/);
+      expect(fs.existsSync(hooksFile)).toBe(false);
     });
 
     // Worktree mode: production passes cwd=worktree, projectRoot=main repo,
     // and eventsOutputPath under main repo. This test mirrors the exact
-    // call shape transition-engine.ts:213-238 uses, so the hook config
-    // ends up where the live CLI will actually look (Gemini reads from
-    // cwd, Codex hooks live under projectRoot - though Codex 0.118 doesn't
-    // fire them) and the embedded events path is the absolute path the
-    // renderer file watcher reads from.
-    it('worktree mode: Codex hooks live under projectRoot, Gemini settings under cwd, events under projectRoot', () => {
+    // call shape transition-engine.ts:213-238 uses to make sure Gemini's
+    // settings file lands in the cwd where the live CLI will actually look
+    // and that the embedded events path is the absolute path the renderer
+    // file watcher reads from. Codex no longer writes a hook config (see
+    // Codex 0.128 redesign in hook-manager.ts) so the assertion for that
+    // adapter is purely negative - the legacy file must NOT appear under
+    // either projectRoot or the worktree.
+    it('worktree mode: Codex writes no hook config, Gemini settings live under cwd, events under projectRoot', () => {
       const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kangentic-main-repo-'));
       const worktreeCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'kangentic-worktree-'));
       try {
@@ -667,12 +656,12 @@ describe('Agent hook bridge (real CLI invocation)', () => {
           eventsOutputPath: eventsPath,
         });
 
-        // Codex writes to <projectRoot>/.codex/hooks.json (NOT the worktree).
-        // This is the behavior of codex-adapter command-builder.ts:55:
-        //   const projectRoot = options.projectRoot || options.cwd;
-        const codexHooks = path.join(projectRoot, '.codex', 'hooks.json');
+        // Codex 0.128 redesigned hooks: the legacy `.codex/hooks.json`
+        // file is no longer recognized and emits a parse warning. We do
+        // not write it from either projectRoot or the worktree any more.
+        const codexHooksInProjectRoot = path.join(projectRoot, '.codex', 'hooks.json');
         const codexHooksInWorktree = path.join(worktreeCwd, '.codex', 'hooks.json');
-        expect(fs.existsSync(codexHooks)).toBe(true);
+        expect(fs.existsSync(codexHooksInProjectRoot)).toBe(false);
         expect(fs.existsSync(codexHooksInWorktree)).toBe(false);
 
         // Gemini writes to <cwd>/.gemini/settings.json (the WORKTREE, not
@@ -685,17 +674,14 @@ describe('Agent hook bridge (real CLI invocation)', () => {
         expect(fs.existsSync(geminiSettings)).toBe(true);
         expect(fs.existsSync(geminiSettingsInRoot)).toBe(false);
 
-        // CRITICAL: both hook configs must embed the SAME absolute events
-        // path - the one under projectRoot. Otherwise the bridge writes
-        // to a file the renderer isn't watching.
+        // CRITICAL: Gemini's hook config must embed the absolute events
+        // path under projectRoot. Otherwise the bridge writes to a file
+        // the renderer isn't watching.
         const expectedFragment = eventsPath.replace(/\\/g, '/');
-        const codexContent = fs.readFileSync(codexHooks, 'utf-8');
         const geminiContent = fs.readFileSync(geminiSettings, 'utf-8');
-        expect(codexContent).toContain(expectedFragment);
         expect(geminiContent).toContain(expectedFragment);
-        // Negative: neither config should reference a path under the worktree.
+        // Negative: the Gemini config should not reference a path under the worktree.
         const worktreeFragment = worktreeCwd.replace(/\\/g, '/');
-        expect(codexContent.includes(worktreeFragment + '/.kangentic')).toBe(false);
         expect(geminiContent.includes(worktreeFragment + '/.kangentic')).toBe(false);
       } finally {
         try { fs.rmSync(projectRoot, { recursive: true, force: true }); } catch { /* ignore */ }

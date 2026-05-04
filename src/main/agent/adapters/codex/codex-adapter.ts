@@ -29,13 +29,15 @@ export class CodexAdapter implements AgentAdapter {
 
   private readonly detector = new CodexDetector();
   private readonly commandBuilder = new CodexCommandBuilder();
-  // Set of taskIds currently holding hook injections per project root.
-  // Codex writes hooks to a project-shared `.codex/hooks.json`, so we must
-  // avoid stripping hooks while another concurrent session still needs
-  // them. See GeminiAdapter.hookHolders for the same pattern. Note: Codex
-  // 0.118 does not honor `.codex/hooks.json` in practice today, but the
-  // refcount is kept for forward compatibility with future Codex versions
-  // that may enable the hook pipeline.
+  // Set of taskIds currently active per project root. Originally tracked
+  // ownership of a project-shared `.codex/hooks.json` we wrote on spawn.
+  // Codex 0.128 redesigned the hook system (hooks now live in
+  // `~/.codex/config.toml` or in a Codex plugin folder), so Kangentic no
+  // longer writes that file - `buildHooks` only sweeps stale legacy
+  // entries from pre-upgrade installs. The refcount is retained because
+  // multiple concurrent sessions in the same cwd still race on that
+  // legacy cleanup, and serializing via holders keeps removeHooks
+  // idempotent. See GeminiAdapter.hookHolders for the same pattern.
   private readonly hookHolders = new Map<string, Set<string>>();
 
   async detect(overridePath?: string | null): Promise<AgentInfo> {
@@ -58,10 +60,10 @@ export class CodexAdapter implements AgentAdapter {
       effort,
       ...rest,
     });
-    // buildCodexCommand writes hooks into .codex/hooks.json whenever
-    // eventsOutputPath is present. Retain a reference keyed by the
-    // project root (same key removeHooks uses) so concurrent sessions
-    // serialize their cleanup.
+    // buildCodexCommand sweeps any stale legacy `.codex/hooks.json` whenever
+    // eventsOutputPath is present. Retain a reference keyed by the project
+    // root (same key removeHooks uses) so concurrent sessions serialize
+    // their cleanup.
     if (options.eventsOutputPath) {
       const projectRoot = options.projectRoot || options.cwd;
       this.retainHooks(projectRoot, options.taskId);
@@ -98,12 +100,13 @@ export class CodexAdapter implements AgentAdapter {
    *   for real-time model, context window, and token counts. See CodexSessionHistoryParser.
    */
   readonly runtime: AdapterRuntimeStrategy = {
-    // Hook-driven events.jsonl pipeline. Codex has no status line
-    // (parseStatus returns null), but the event-bridge hook output is
-    // parsed via parseEvent so tool_start/idle events drive activity
-    // transitions when hooks fire. Codex 0.118 does not honor
-    // .codex/hooks.json, but newer versions may - this wiring ensures
-    // hook events flow into the state machine when available.
+    // Codex has no status line (parseStatus returns null). The
+    // hook-driven events.jsonl pipeline is currently dormant: 0.118
+    // ignored the project-local `.codex/hooks.json` we used to write,
+    // and 0.128 redesigned hooks entirely (TOML in ~/.codex/config.toml
+    // or plugin manifests). parseEvent is wired up so the pipeline
+    // re-activates automatically once we adopt the new hook format,
+    // but no events flow through it today.
     statusFile: {
       parseStatus: CodexStatusParser.parseStatus,
       parseEvent: CodexStatusParser.parseEvent,
@@ -145,11 +148,12 @@ export class CodexAdapter implements AgentAdapter {
         return resumeMatch ? resumeMatch[1] : null;
       },
       // Codex 0.118 neither prints the session UUID in PTY output nor
-      // fires `.codex/hooks.json` (both verified empirically - see the
-      // fixtures in tests/fixtures/agent-pty/codex.txt). The only
-      // source-of-truth for the session ID is the rollout JSONL file
-      // Codex writes synchronously at session start. This scan is
-      // what actually captures the ID on real spawns today.
+      // fires hooks (both verified empirically - see the fixtures in
+      // tests/fixtures/agent-pty/codex.txt). 0.128 added a `session id:`
+      // line to the startup banner (caught by fromOutput above), but the
+      // rollout-file scan remains the authoritative fallback for older
+      // versions and for cases where the banner scrolls before we can
+      // capture it.
       fromFilesystem: CodexSessionHistoryParser.captureSessionIdFromFilesystem,
     },
     sessionHistory: {
@@ -173,9 +177,10 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   getSubmissionVerifier(_contextType: SubmissionContextType): SubmissionVerifier | null {
-    // Codex declares a UserPromptSubmit hook that emits EventType.Prompt, but
-    // Codex 0.118 does not actually honor `.codex/hooks.json` in practice.
-    // Callers fall back to time-based settle (paste) or time-settle (command-injection).
+    // Codex's hook pipeline is currently dormant for Kangentic (see runtime
+    // comment above): 0.118 ignored the legacy hooks.json, and 0.128
+    // redesigned hooks into a format we don't write yet. Callers fall back
+    // to time-based settle (paste) or time-settle (command-injection).
     return null;
   }
 

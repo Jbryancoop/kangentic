@@ -94,7 +94,18 @@ async function dragTaskToColumn(taskTitle: string, targetColumn: string): Promis
 }
 
 test.describe('Claude Agent -- Browser Send round-trip', () => {
+  // Windows-only platform limitation: this test asserts the paste content
+  // (`<browser_context>` envelope) appears in PTY scrollback, relying on
+  // line-discipline echo of pasted bytes. ConPTY does not echo input the
+  // way Linux/macOS PTYs do - it absorbs bracketed-paste markers and does
+  // not surface the wrapped content as visible terminal output. The IPC
+  // handler -> capture-file -> paste-engine wiring is covered at unit tier
+  // (`tests/unit/browser-handler-error-translation.test.ts` and
+  // `attachment-chips`); the capture-file existence path is also covered
+  // by the `eats-first-cr` case in `browser-evidence-retry.spec.ts`. This
+  // E2E remains valuable on POSIX PTYs to prove the full round-trip.
   test('Send composites capture and submits the prompt envelope to the agent PTY', async () => {
+    test.fixme(process.platform === 'win32', 'ConPTY does not echo paste content into scrollback; round-trip covered at unit tier.');
     const title = `Browser Send ${runId}`;
     const description = 'browser send round-trip';
     await createTask(page, title, description);

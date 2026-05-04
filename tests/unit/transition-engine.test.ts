@@ -102,6 +102,17 @@ function makeSessionManager() {
 }
 
 /**
+ * The PTY-refactor commit (4721400) added `TerminalSubmit` as the 2nd
+ * constructor argument. The spawn / resume paths exercised by these tests
+ * never hit `submitKeystrokes`, so a no-op stub is sufficient.
+ */
+function makeTerminalSubmit() {
+  return {
+    submitKeystrokes: vi.fn(),
+  };
+}
+
+/**
  * Stub adapter that:
  * - Claims to be found
  * - buildCommand returns its prompt option unchanged (for inspection)
@@ -173,14 +184,16 @@ function makeEngine(options: {
     cliPathOverrides: {},
   }));
 
+  const terminalSubmit = makeTerminalSubmit();
   type EngineArgs = ConstructorParameters<typeof TransitionEngine>;
   const engine = new TransitionEngine(
     sessionManager as unknown as EngineArgs[0],
-    actionRepo as unknown as EngineArgs[1],
-    taskRepo as unknown as EngineArgs[2],
-    getConfig as unknown as EngineArgs[3],
-    sessionRepo as unknown as EngineArgs[4],
-    attachmentRepo as unknown as EngineArgs[5],
+    terminalSubmit as unknown as EngineArgs[1],
+    actionRepo as unknown as EngineArgs[2],
+    taskRepo as unknown as EngineArgs[3],
+    getConfig as unknown as EngineArgs[4],
+    sessionRepo as unknown as EngineArgs[5],
+    attachmentRepo as unknown as EngineArgs[6],
   );
 
   return { engine, sessionManager, sessionRepo, taskRepo, actionRepo };

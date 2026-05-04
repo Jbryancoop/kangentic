@@ -56,11 +56,16 @@ export class CodexCommandBuilder {
   buildCodexCommand(options: CodexCommandOptions): string {
     const { shell } = options;
 
-    // Inject event-bridge hooks before building the command (analogous to
-    // Claude's createMergedSettings side effect in buildClaudeCommand)
+    // Codex 0.128 redesigned the hook system; the legacy `.codex/hooks.json`
+    // we used to write is no longer parsed and now produces a yellow warning
+    // banner at session start. `buildHooks` is now a cleanup-only call that
+    // strips Kangentic-owned entries from any pre-upgrade legacy file.
+    // See hook-manager.ts for the full context. The eventsOutputPath gate
+    // is preserved so non-hookable spawns (no events pipeline requested)
+    // skip the disk sweep entirely.
     if (options.eventsOutputPath) {
       const projectRoot = options.projectRoot || options.cwd;
-      buildHooks(projectRoot, options.eventsOutputPath);
+      buildHooks(projectRoot);
     }
 
     const parts: string[] = [];
