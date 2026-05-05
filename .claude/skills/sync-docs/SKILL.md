@@ -13,17 +13,18 @@ Each doc file and the source files that are its authority:
 
 | Doc | Primary Source Files |
 |-----|---------------------|
-| `architecture.md` | `src/shared/ipc-channels.ts`, `src/preload/preload.ts`, `src/renderer/stores/`, `src/main/pty/session-manager.ts` |
-| `session-lifecycle.md` | `src/main/pty/session-manager.ts`, `src/main/pty/session-queue.ts`, `src/main/engine/session-recovery.ts` |
+| `architecture.md` | `src/shared/ipc-channels.ts`, `src/preload/preload.ts`, `src/renderer/stores/`, `src/main/pty/session-manager.ts`, `src/main/engine/transition-engine.ts`, `src/main/boards/board-registry.ts` |
+| `session-lifecycle.md` | `src/main/pty/session-manager.ts`, `src/main/pty/session-queue.ts`, `src/main/engine/session-lifecycle.ts`, `src/main/engine/resource-cleanup.ts` |
 | `configuration.md` | `src/shared/types.ts` (AppConfig, DEFAULT_CONFIG, GLOBAL_ONLY_PATHS), `src/main/config/config-manager.ts` |
-| `agent-integration.md` | `src/main/agent/agent-adapter.ts`, `src/main/agent/adapters/claude/command-builder.ts`, `src/main/agent/adapters/claude/hook-manager.ts`, `src/main/agent/adapters/claude/trust-manager.ts`, `src/main/agent/adapters/codex/command-builder.ts`, `src/main/agent/adapters/gemini/command-builder.ts`, `src/main/agent/adapters/aider/aider-adapter.ts`, `src/main/engine/agent-resolver.ts` |
-| `handoff.md` | `src/main/agent/handoff/`, `src/main/ipc/helpers/agent-spawn.ts` (handoff path) |
+| `agent-integration.md` | `src/main/agent/agent-adapter.ts`, `src/main/agent/agent-registry.ts`, `src/main/agent/adapters/**` (per-adapter command builders, hook managers, trust managers, capability-discovery, detectors), `src/main/engine/agent-resolver.ts` |
+| `handoff.md` | `src/main/agent/handoff/**`, `src/main/db/repositories/handoff-repository.ts`, `src/main/ipc/helpers/agent-spawn.ts` (handoff path) |
 | `transition-engine.md` | `src/main/engine/transition-engine.ts`, `src/shared/types.ts` (ActionType, ActionConfig) |
-| `database.md` | `src/main/db/migrations.ts`, `src/main/db/database.ts`, `src/main/db/repositories/*.ts` |
-| `cross-platform.md` | `src/main/pty/shell-resolver.ts`, `electron-builder.yml`, `scripts/build.js` |
+| `command-injection.md` | `src/main/engine/injection-plan.ts`, `src/main/engine/terminal-submit-scheduler.ts`, `src/main/pty/terminal-submit.ts`, `src/main/agent/adapters/claude/slash-command-verifier.ts` |
+| `database.md` | `src/main/db/migrations/**`, `src/main/db/database.ts`, `src/main/db/repositories/*.ts` |
+| `cross-platform.md` | `src/main/pty/spawn/shell-resolver.ts`, `src/main/pty/session-manager.ts` (adaptCommandForShell), `electron-builder.yml`, `scripts/build.js` |
 | `worktree-strategy.md` | `src/main/git/worktree-manager.ts`, `src/main/agent/adapters/claude/hook-manager.ts`, `src/main/agent/adapters/claude/trust-manager.ts` |
 | `activity-detection.md` | `src/main/agent/event-bridge.js`, `src/shared/types.ts` (EventType, EventTypeActivity, HookEvent) |
-| `mcp-server.md` | `src/main/ipc/handlers/mcp-handlers.ts`, `src/main/mcp/`, `src/shared/types.ts` (MCP types) |
+| `mcp-server.md` | `src/main/agent/mcp-http-server.ts`, `src/main/agent/mcp-http/**`, `src/main/agent/commands/`, `src/main/ipc/handlers/sessions.ts`, `src/shared/types.ts` (MCP types) |
 | `overview.md` | `README.md`, high-level features |
 | `user-guide.md` | `src/renderer/components/`, `src/renderer/stores/`, `src/shared/types.ts` |
 | `developer-guide.md` | `scripts/`, `tests/`, `electron-builder.yml`, `package.json` |
@@ -100,7 +101,7 @@ Anchors are enumerable source-code structures that must be exhaustively listed i
 | IPC channels | All string values from `IPC` object | architecture.md (per-group tables) |
 | IPC group counts | Count per section header | architecture.md (section headers) |
 
-### Database Anchors (src/main/db/migrations.ts)
+### Database Anchors (src/main/db/migrations/)
 
 | Anchor | What to extract | Target doc |
 |--------|----------------|------------|
@@ -121,14 +122,15 @@ Anchors are enumerable source-code structures that must be exhaustively listed i
 |--------|---------------|------------|
 | AgentAdapter interface methods | `src/main/agent/agent-adapter.ts` | agent-integration.md (interface table) |
 | AgentAdapter required properties | `src/main/agent/agent-adapter.ts` | agent-integration.md (properties table) |
+| Registered adapters list | `src/main/agent/agent-registry.ts` | agent-integration.md (supported agents table) |
 | Supported agents table | `src/main/agent/adapters/*/` (one adapter per agent) | agent-integration.md (supported agents table) |
 | Per-agent permission modes | `src/main/agent/adapters/claude/claude-adapter.ts`, `src/main/agent/adapters/codex/codex-adapter.ts`, `src/main/agent/adapters/gemini/gemini-adapter.ts`, `src/main/agent/adapters/aider/aider-adapter.ts` | agent-integration.md (per-agent permission tables) |
 | Per-agent CLI flag mappings | `src/main/agent/adapters/codex/command-builder.ts`, `src/main/agent/adapters/gemini/command-builder.ts`, `src/main/agent/adapters/aider/aider-adapter.ts` | agent-integration.md (per-agent permission tables) |
+| Per-agent capability discovery | `src/main/agent/adapters/*/capability-discovery.ts` | agent-integration.md (model/effort tables) |
 | First-output detection strategies | All adapter files (`detectFirstOutput` method) | agent-integration.md (first-output detection table) |
 | Exit sequences | All adapter files (`getExitSequence` method) | agent-integration.md (exit sequences table) |
 | Handoff prompt transforms | All adapter files (`transformHandoffPrompt` method) | agent-integration.md (handoff prompt transform table) |
-| ContextPacket fields | `src/main/agent/handoff/context-packet.ts` | handoff.md (context packet section) |
-| HandoffMetrics fields | `src/main/agent/handoff/context-packet.ts` | handoff.md (metrics table) |
+| Per-agent transcript cleanup | `src/main/agent/handoff/transcript-cleanup.ts`, `src/main/agent/adapters/*/transcript-cleanup.ts` | handoff.md (per-agent transcript cleanup section) |
 | Handoff DB columns | `src/main/db/repositories/handoff-repository.ts` | handoff.md (database storage table) |
 
 ### Template Anchors
@@ -170,17 +172,94 @@ Determine what source files changed:
 
 ### Step 2 - Anchor Point Verification
 
-Check if any changed source files are anchor sources (see Anchor Points section above):
+This is the **canonical anchor source list**. Both `/sync-docs` and `/merge-back` consult this list. When updating, never duplicate — `/merge-back` reads it from here.
+
+Each entry has a one-line rationale so future edits know what the entry was protecting. Do not remove an entry without checking that its rationale no longer applies.
+
+**Single-file anchors:**
+
 - `src/shared/types.ts`
+  WHY: union types, interfaces, and config defaults (PermissionMode, ActionType, SessionStatus, AppConfig, BoardConfig, EventType, etc.) are enumerated across configuration.md, database.md, session-lifecycle.md, transition-engine.md, agent-integration.md, activity-detection.md.
+
 - `src/shared/ipc-channels.ts`
-- `src/main/db/migrations.ts`
-- `src/renderer/components/settings/AppSettingsPanel.tsx`
-- `src/renderer/components/settings/settings-registry.ts`
+  WHY: every IPC channel string is enumerated by group in architecture.md (per-group tables, group counts in section headers).
+
 - `src/shared/template-vars.ts`
+  WHY: template variable list is mirrored in configuration.md (canonical) and cross-referenced in transition-engine.md and agent-integration.md.
+
 - `src/main/agent/agent-adapter.ts`
-- `src/main/agent/adapters/*/` (any adapter file)
-- `src/main/agent/handoff/context-packet.ts`
+  WHY: AgentAdapter interface methods (discoverCapabilities, getInjectionSequence, getCommandInjectionVerifier, summarize, transformHandoffPrompt, getExitSequence, detectFirstOutput) are tabulated in agent-integration.md. Catches drift that types.ts re-exports miss.
+
+- `src/main/agent/agent-registry.ts`
+  WHY: canonical list of registered adapters; adding/removing an adapter is a docs-affecting event for agent-integration.md "Supported agents" table.
+
+- `src/main/agent/mcp-http-server.ts`
+  WHY: MCP server entry point and tool registration; backs mcp-server.md component table.
+
 - `src/main/db/repositories/handoff-repository.ts`
+  WHY: handoff DB column list is tabulated in handoff.md "Database Storage" table.
+
+- `src/main/engine/transition-engine.ts`
+  WHY: spawn/transition/handoff state machine is described in transition-engine.md and architecture.md. Action types and transition flow are enumerated here.
+
+- `src/main/engine/injection-plan.ts`
+  WHY: command-injection precedence rules (per-task model/effort overrides, swimlane defaults) are described in command-injection.md and architecture.md.
+
+- `src/main/engine/terminal-submit-scheduler.ts`
+  WHY: keystroke submission lifecycle wrapper enumerated in command-injection.md pipeline table.
+
+- `src/main/engine/session-lifecycle.ts`
+  WHY: session state transitions enumerated in session-lifecycle.md.
+
+- `src/main/pty/session-manager.ts`
+  WHY: session lifecycle states, events, and shell adaptations are enumerated in session-lifecycle.md, architecture.md, cross-platform.md.
+
+- `src/main/pty/spawn/shell-resolver.ts`
+  WHY: per-platform shell detection order is enumerated in cross-platform.md.
+
+- `src/main/git/worktree-manager.ts`
+  WHY: worktree lifecycle (create, cleanup, slug generation) is described in worktree-strategy.md.
+
+- `src/main/config/config-manager.ts`
+  WHY: config load/save/merge logic backs configuration.md.
+
+- `src/main/agent/event-bridge.js`
+  WHY: hook → JSONL → store pipeline backs activity-detection.md.
+
+- `src/renderer/components/settings/AppSettingsPanel.tsx`
+  WHY: settings tab order, separator position, and visibility rules are mirrored in user-guide.md and configuration.md.
+
+- `src/renderer/components/settings/settings-registry.ts`
+  WHY: settings registry entries and their defaults are enumerated in configuration.md.
+
+- `electron-builder.yml`
+  WHY: native deps allowlist, asarUnpack, signing, and packaging targets are described in cross-platform.md and developer-guide.md.
+
+- `package.json`
+  WHY: version, native deps, build scripts surface in developer-guide.md.
+
+**Glob anchors** (any file in the directory tree):
+
+- `src/main/db/migrations/**`
+  WHY: every CREATE TABLE column, ALTER TABLE, and seed data block is enumerated in database.md schema tables and migration history. Glob covers global-schema.ts, project-schema.ts, default-data.ts, spawn-agent-config-migration.ts, and any future migration file. (Note: `src/main/db/migrations.ts` is a 2-line re-export shim — do not rely on it.)
+
+- `src/main/agent/adapters/**`
+  WHY: per-adapter capability declarations (claude-adapter.ts, codex-adapter.ts, etc.), command-builders, capability-discovery.ts, detectors, hook-managers, trust-managers, transcript-cleanup.ts all drive per-adapter tables in agent-integration.md, adapter-session-history.md, command-injection.md, and handoff.md. Glob covers all 11 adapters and all their internal files.
+
+- `src/main/agent/handoff/**`
+  WHY: handoff orchestration (session-history-reference.ts, transcript-cleanup.ts) backs handoff.md sections. Small directory; safe to glob.
+
+- `src/main/agent/shared/**`
+  WHY: shared agent helpers (auto-name.ts, prompt-xml.ts, agent-detector.ts, bridge-utils.ts, hook-utils.ts, exec-version.ts) back multiple feature docs (configuration.md, agent-integration.md, cross-platform.md). Small directory; safe to glob.
+
+- `src/main/agent/mcp-http/**`
+  WHY: MCP tool registrations (task-tools.ts, session-tools.ts, search-tools.ts, project-tools.ts) are enumerated in mcp-server.md. Adding a new tool is a docs-affecting event.
+
+- `src/main/agent/commands/**`
+  WHY: MCP command implementations (column-resolver.ts, handoff-commands.ts, task-commands.ts, backlog-commands.ts, search-commands.ts, etc.) are cited in mcp-server.md component table and architecture.md board-integration section. Adding or renaming a command file is a docs-affecting event. Small directory (13 files); safe to glob.
+
+- `src/main/ipc/handlers/**`
+  WHY: handler files register IPC channels, emit event payloads, and define handler-level behavior. A new handler that registers a channel without changing ipc-channels.ts (e.g., event-only ipcMain.on) would slip through the channel-constants anchor. Currently 17 files; glob avoids list-rot.
 
 If any anchor source files appear in the changed-file list:
 

@@ -64,7 +64,7 @@ When an anchor maps to multiple target docs, one doc is the **canonical** locati
 ## Database Schema Anchors
 
 ### Table Schemas
-1. Read `src/main/db/migrations.ts`
+1. Read every file in `src/main/db/migrations/` (`global-schema.ts`, `project-schema.ts`, `default-data.ts`, `spawn-agent-config-migration.ts`, and any future migration file). Note: `src/main/db/migrations.ts` is only a 2-line re-export shim -- the real content lives in the directory.
 2. Walk all migrations in order
 3. For each `CREATE TABLE`, extract all column definitions (name, type, constraints)
 4. For each `ALTER TABLE ... ADD COLUMN`, add the column to the table
@@ -74,7 +74,7 @@ When an anchor maps to multiple target docs, one doc is the **canonical** locati
 8. Compare: report missing columns, extra columns, type mismatches
 
 ### Seed Data
-1. In the same migrations file, find all `INSERT` statements in migration functions
+1. In the migration files (especially `default-data.ts`), find all `INSERT` statements in migration functions
 2. Extract default swimlanes (name, role, position), actions, and transitions
 3. Read `docs/database.md`
 4. Find the seed data section

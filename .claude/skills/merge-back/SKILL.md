@@ -66,11 +66,8 @@ If there are uncommitted changes (non-empty `git status --porcelain` output):
 3. **Update documentation before staging** — targeted anchor check (do NOT invoke `/sync-docs` as a skill call):
    a. Identify changed source files (exclude `docs/`, `.claude/`, `tests/`).
    b. If no source files changed, skip to step 4.
-   c. Check if any changed file is an anchor source (see `.claude/skills/sync-docs/SKILL.md` Anchor Points):
-      - `src/shared/types.ts`, `src/shared/ipc-channels.ts`, `src/main/db/migrations.ts`
-      - `src/renderer/components/settings/AppSettingsPanel.tsx`, `src/renderer/components/settings/settings-registry.ts`
-      - `src/shared/template-vars.ts`
-   d. If anchor source files changed: spawn a `doc-auditor` agent with those files.
+   c. Read the canonical anchor list from `.claude/skills/sync-docs/SKILL.md` Step 2 ("Anchor Point Verification"). That file is the single source of truth — do not maintain a duplicate list here. The list contains both single-file anchors (e.g., `src/shared/types.ts`, `src/main/agent/agent-adapter.ts`) and glob anchors (e.g., `src/main/db/migrations/**`, `src/main/agent/adapters/**`, `src/main/ipc/handlers/**`).
+   d. If any changed file matches an anchor entry (single file or glob), spawn a `doc-auditor` agent with the matching files.
    e. If the agent reports gaps, fix them inline using the `Edit` tool.
    f. No general prose review here (that is `/sync-docs`'s job).
 4. Stage changes: `git add -A`
