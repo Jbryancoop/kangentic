@@ -4,8 +4,8 @@ import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { GripVertical, Pencil, Plus, ClipboardPlus } from 'lucide-react';
 import { TaskCard } from './TaskCard';
 import { NewTaskDialog } from '../dialogs/NewTaskDialog';
-import { EditColumnDialog } from '../dialogs/EditColumnDialog';
 import { getSwimlaneIcon } from '../../utils/swimlane-icons';
+import { useBoardStore } from '../../stores/board-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useColumnWidthClass } from './column-width';
 import { CountBadge } from '../CountBadge';
@@ -20,7 +20,7 @@ export interface SwimlaneProps {
 
 export const Swimlane = React.memo(function Swimlane({ swimlane, tasks, dragHandleProps }: SwimlaneProps) {
   const [showNewTask, setShowNewTask] = useState(false);
-  const [showEditColumn, setShowEditColumn] = useState(false);
+  const openBoardManager = useBoardStore((state) => state.openBoardManager);
   const { setNodeRef } = useDroppable({
     id: swimlane.id,
     data: { type: 'swimlane' },
@@ -58,7 +58,7 @@ export const Swimlane = React.memo(function Swimlane({ swimlane, tasks, dragHand
       {/* Column header */}
       <div
         className="px-3 py-2 flex items-center gap-2 border-b border-edge/50 w-full text-left hover:bg-surface-hover/30 transition-colors cursor-pointer"
-        onClick={() => setShowEditColumn(true)}
+        onClick={() => openBoardManager(swimlane.id)}
       >
         {/* Drag handle for custom columns */}
         {isDraggable && (
@@ -99,7 +99,7 @@ export const Swimlane = React.memo(function Swimlane({ swimlane, tasks, dragHand
           aria-label={`Edit ${swimlane.name} column`}
           onClick={(e: React.MouseEvent) => {
             e.stopPropagation();
-            setShowEditColumn(true);
+            openBoardManager(swimlane.id);
           }}
           className="flex-shrink-0 p-0.5 text-fg-disabled hover:text-fg-muted transition-colors"
         >
@@ -159,13 +159,6 @@ export const Swimlane = React.memo(function Swimlane({ swimlane, tasks, dragHand
         <NewTaskDialog
           swimlaneId={swimlane.id}
           onClose={() => setShowNewTask(false)}
-        />
-      )}
-
-      {showEditColumn && (
-        <EditColumnDialog
-          swimlane={swimlane}
-          onClose={() => setShowEditColumn(false)}
         />
       )}
     </div>

@@ -9,6 +9,7 @@ import { createBoardHydrationSlice } from './board-store/board-hydration-slice';
 import { createTaskMoveConfirmSlice } from './board-store/task-move-confirm-slice';
 import { createDoneDropConfirmSlice } from './board-store/done-drop-confirm-slice';
 import { createActiveViewSlice } from './board-store/active-view-slice';
+import { createBoardManagerSlice } from './board-store/board-manager-slice';
 
 /**
  * Board store composition. Slice interfaces and implementations live
@@ -37,4 +38,5 @@ export const useBoardStore = create<BoardStore>((...args) => ({
   ...createTaskMoveConfirmSlice(...args),
   ...createDoneDropConfirmSlice(...args),
   ...createActiveViewSlice(...args),
+  ...createBoardManagerSlice(...args),
 }));

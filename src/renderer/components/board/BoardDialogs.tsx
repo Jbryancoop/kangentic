@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { Check } from 'lucide-react';
 import { ConfirmDialog } from '../dialogs/ConfirmDialog';
+import { BoardManagerDialog } from '../dialogs/BoardManagerDialog';
 import { useBoardStore } from '../../stores/board-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useProjectStore } from '../../stores/project-store';
@@ -81,6 +82,11 @@ export function BoardDialogs() {
   const pendingDoneConfirm = useBoardStore((s) => s.pendingDoneConfirm);
   const confirmPendingDone = useBoardStore((s) => s.confirmPendingDone);
   const cancelPendingDone = useBoardStore((s) => s.cancelPendingDone);
+  const boardManagerOpen = useBoardStore((s) => s.boardManagerOpen);
+  const boardManagerInitialId = useBoardStore((s) => s.boardManagerInitialId);
+  const boardManagerSeedNew = useBoardStore((s) => s.boardManagerSeedNew);
+  const boardManagerAddDraftRequest = useBoardStore((s) => s.boardManagerAddDraftRequest);
+  const closeBoardManager = useBoardStore((s) => s.closeBoardManager);
   const updateConfig = useConfigStore((s) => s.updateConfig);
 
   const handleConfigConfirm = useCallback((dontAskAgain: boolean) => {
@@ -164,6 +170,15 @@ export function BoardDialogs() {
             void confirmPendingDone();
           }}
           onCancel={cancelPendingDone}
+        />
+      )}
+
+      {boardManagerOpen && (
+        <BoardManagerDialog
+          initialColumnId={boardManagerInitialId}
+          seedNewDraft={boardManagerSeedNew}
+          addDraftRequest={boardManagerAddDraftRequest}
+          onClose={closeBoardManager}
         />
       )}
     </>

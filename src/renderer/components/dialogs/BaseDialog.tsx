@@ -23,6 +23,12 @@ interface BaseDialogProps {
 
   // Behavior
   preventBackdropClose?: boolean; // When true, clicking the backdrop does not close the dialog
+  // Synchronous backdrop-click hook. When set, the consumer takes full
+  // control of the close decision: this fires immediately on click without
+  // the exit animation, so the consumer can interrupt close (e.g. show a
+  // dirty-changes confirm) without leaving the dialog visually faded out.
+  // Takes precedence over preventBackdropClose.
+  onBackdropClick?: () => void;
 
   // Content mouse tracking (for callers that need hover state)
   onContentMouseEnter?: () => void;
@@ -44,6 +50,7 @@ export function BaseDialog({
   header,
   footer,
   preventBackdropClose,
+  onBackdropClick,
   rawBody,
   onContentMouseEnter,
   onContentMouseLeave,
@@ -92,7 +99,13 @@ export function BaseDialog({
       onAnimationEnd={handleBackdropAnimationEnd}
       onMouseDown={(e) => { backdropMouseDown.current = e.target === e.currentTarget; }}
       onMouseUp={(e) => {
-        if (e.target === e.currentTarget && backdropMouseDown.current && !preventBackdropClose) requestClose();
+        if (e.target === e.currentTarget && backdropMouseDown.current) {
+          if (onBackdropClick) {
+            onBackdropClick();
+          } else if (!preventBackdropClose) {
+            requestClose();
+          }
+        }
         backdropMouseDown.current = false;
       }}
     >

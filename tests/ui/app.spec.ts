@@ -296,25 +296,28 @@ test.describe('Column Management', () => {
     await ensureBoardVisible();
   });
 
-  test('clicking column header opens edit dialog', async () => {
+  test('clicking column header opens board manager dialog with that tab active', async () => {
     const col = page.locator('[data-swimlane-name="Code Review"]');
     await col.locator('text=Code Review').click();
-    await page.locator('text=Edit Column').waitFor({ state: 'visible', timeout: 3000 });
-    await expect(page.locator('text=Edit Column')).toBeVisible();
+    await page.locator('[data-testid="board-manager-dialog"]').waitFor({ state: 'visible', timeout: 3000 });
+    const codeReviewTab = page.locator('[data-testid="board-manager-tab"][data-tab-name="Code Review"]');
+    await expect(codeReviewTab).toHaveAttribute('aria-selected', 'true');
     await page.keyboard.press('Escape');
-    await page.locator('text=Edit Column').waitFor({ state: 'hidden', timeout: 2000 });
+    await page.locator('[data-testid="board-manager-dialog"]').waitFor({ state: 'detached', timeout: 2000 });
   });
 
   test('can add a new custom column', async () => {
-    const addColumnBtn = page.locator('button:has-text("Add column")');
+    const addColumnBtn = page.locator('[data-testid="add-column-button"]');
     if (await addColumnBtn.isVisible()) {
       await addColumnBtn.click();
 
-      // New Column dialog opens
-      await expect(page.locator('text=New Column')).toBeVisible({ timeout: 3000 });
-      const nameInput = page.locator('input[placeholder="Column name"]');
+      // Manager opens with a fresh draft tab active in General section
+      await expect(page.locator('[data-testid="board-manager-dialog"]')).toBeVisible({ timeout: 3000 });
+      const nameInput = page.locator('[data-testid="board-manager-name"]');
+      await expect(nameInput).toHaveValue('New column');
       await nameInput.fill('Custom Stage');
-      await page.locator('button:has-text("Create")').click();
+      await page.locator('[data-testid="board-manager-save"]').click();
+      await page.locator('[data-testid="board-manager-dialog"]').waitFor({ state: 'detached', timeout: 3000 });
       await expect(page.locator('[data-swimlane-name="Custom Stage"]')).toBeVisible({ timeout: 3000 });
     }
   });
@@ -342,19 +345,15 @@ test.describe('Session & Column Details', () => {
   });
 
   test('system columns cannot be deleted via UI', async () => {
-    const planning = page.locator('[data-swimlane-name="Planning"]');
-    await planning.locator('text=Planning').click();
-    await page.locator('text=Edit Column').waitFor({ state: 'visible', timeout: 3000 });
+    const todoCol = page.locator('[data-swimlane-name="To Do"]');
+    await todoCol.locator('text=To Do').click();
+    await page.locator('[data-testid="board-manager-dialog"]').waitFor({ state: 'visible', timeout: 3000 });
 
-    const lockIndicator = page.locator('text=System column');
-    const hasLock = await lockIndicator.isVisible().catch(() => false);
-    if (hasLock) {
-      const deleteBtn = page.locator('button:has-text("Delete column")');
-      await expect(deleteBtn).not.toBeVisible();
-    }
+    // To Do is role-pinned: Delete column button must be hidden.
+    await expect(page.locator('[data-testid="board-manager-delete"]')).toBeHidden();
 
     await page.keyboard.press('Escape');
-    await page.locator('text=Edit Column').waitFor({ state: 'hidden', timeout: 2000 });
+    await page.locator('[data-testid="board-manager-dialog"]').waitFor({ state: 'detached', timeout: 2000 });
   });
 
   test('tasks in To Do have no branch info', async () => {

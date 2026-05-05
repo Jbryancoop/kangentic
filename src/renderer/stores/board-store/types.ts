@@ -8,6 +8,7 @@ import type { BoardHydrationSlice } from './board-hydration-slice';
 import type { TaskMoveConfirmSlice } from './task-move-confirm-slice';
 import type { DoneDropConfirmSlice } from './done-drop-confirm-slice';
 import type { ActiveViewSlice } from './active-view-slice';
+import type { BoardManagerSlice } from './board-manager-slice';
 
 /**
  * Rect captured from the task card at drag start so the FlyingCard
@@ -43,4 +44,4 @@ export type PendingDoneConfirm =
  */
 export type BoardStore = TaskSlice & SwimlaneSlice & ArchivedTasksSlice & TaskCompletionSlice
   & BoardConfigSlice & BoardHydrationSlice & TaskMoveConfirmSlice
-  & DoneDropConfirmSlice & ActiveViewSlice;
+  & DoneDropConfirmSlice & ActiveViewSlice & BoardManagerSlice;

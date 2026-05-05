@@ -1,18 +1,16 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Plus } from 'lucide-react';
 import { CountBadge } from '../CountBadge';
 import { LabelsPopover } from '../backlog/manage-labels/LabelsPopover';
 import { PrioritiesPopover } from '../backlog/manage-labels/PrioritiesPopover';
-import { EditColumnDialog } from '../dialogs/EditColumnDialog';
 import { useBoardStore } from '../../stores/board-store';
 import { useBacklogStore } from '../../stores/backlog-store';
 
 export const ViewToggle = React.memo(function ViewToggle() {
   const activeView = useBoardStore((state) => state.activeView);
   const setActiveView = useBoardStore((state) => state.setActiveView);
+  const openBoardManager = useBoardStore((state) => state.openBoardManager);
   const backlogCount = useBacklogStore((state) => state.items.length);
-
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
 
   return (
     <div className="flex items-center px-4 pt-2 pb-2 border-b border-edge" data-testid="view-toggle">
@@ -56,20 +54,13 @@ export const ViewToggle = React.memo(function ViewToggle() {
       {activeView === 'board' && (
         <button
           type="button"
-          onClick={() => setShowCreateDialog(true)}
+          onClick={() => openBoardManager(null, true)}
           className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md text-fg-muted hover:text-fg hover:bg-surface-hover/40 transition-colors"
           data-testid="add-column-button"
         >
           <Plus size={16} />
           <span>Add column</span>
         </button>
-      )}
-
-      {showCreateDialog && (
-        <EditColumnDialog
-          mode="create"
-          onClose={() => setShowCreateDialog(false)}
-        />
       )}
     </div>
   );

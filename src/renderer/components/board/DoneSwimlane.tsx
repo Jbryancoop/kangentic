@@ -3,7 +3,6 @@ import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { Pencil, ArrowDownToLine, Maximize2, ClipboardList } from 'lucide-react';
 import { TaskCard } from './TaskCard';
-import { EditColumnDialog } from '../dialogs/EditColumnDialog';
 import { CompletedTasksDialog } from '../dialogs/CompletedTasksDialog';
 import { ConfirmDialog } from '../dialogs/ConfirmDialog';
 import { getSwimlaneIcon } from '../../utils/swimlane-icons';
@@ -23,10 +22,10 @@ export interface DoneSwimlaneProps {
 const MAX_RENDERED_PREVIEW = 15;
 
 export const DoneSwimlane = React.memo(function DoneSwimlane({ swimlane, tasks }: DoneSwimlaneProps) {
-  const [showEditColumn, setShowEditColumn] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [showCompletedDialog, setShowCompletedDialog] = useState(false);
 
+  const openBoardManager = useBoardStore((state) => state.openBoardManager);
   const archivedTasks = useBoardStore((state) => state.archivedTasks);
   const deleteArchivedTask = useBoardStore((state) => state.deleteArchivedTask);
   const recentlyArchivedId = useBoardStore((state) => state.recentlyArchivedId);
@@ -99,7 +98,7 @@ export const DoneSwimlane = React.memo(function DoneSwimlane({ swimlane, tasks }
 
         <button
           type="button"
-          onClick={() => setShowEditColumn(true)}
+          onClick={() => openBoardManager(swimlane.id)}
           className="flex items-center gap-2 flex-1 min-w-0"
         >
           <span className="text-sm font-medium truncate text-fg">
@@ -115,7 +114,7 @@ export const DoneSwimlane = React.memo(function DoneSwimlane({ swimlane, tasks }
           aria-label={`Edit ${swimlane.name} column`}
           onClick={(e: React.MouseEvent) => {
             e.stopPropagation();
-            setShowEditColumn(true);
+            openBoardManager(swimlane.id);
           }}
           className="flex-shrink-0 p-0.5 text-fg-disabled hover:text-fg-muted transition-colors"
         >
@@ -227,13 +226,6 @@ export const DoneSwimlane = React.memo(function DoneSwimlane({ swimlane, tasks }
           showDontAskAgain
           onConfirm={handleConfirmDelete}
           onCancel={() => setPendingDeleteId(null)}
-        />
-      )}
-
-      {showEditColumn && (
-        <EditColumnDialog
-          swimlane={swimlane}
-          onClose={() => setShowEditColumn(false)}
         />
       )}
 
