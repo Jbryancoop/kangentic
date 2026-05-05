@@ -46,21 +46,27 @@ import type { Task } from '../../src/shared/types';
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-1234',
+    display_id: 1,
     title: 'Test task',
     description: '',
     swimlane_id: 'lane-1',
     position: 0,
+    agent: null,
     session_id: null,
     worktree_path: null,
     branch_name: null,
+    pr_number: null,
+    pr_url: null,
     base_branch: null,
     use_worktree: null,
-    agent: null,
-    pr_url: null,
+    labels: [],
+    priority: 0,
+    attachment_count: 0,
+    archived_at: null,
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
     ...overrides,
-  } as Task;
+  };
 }
 
 // ── checkoutBranch tests ───────────────────────────────────────────────────

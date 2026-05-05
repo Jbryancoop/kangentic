@@ -46,27 +46,29 @@ function makeTask(overrides: Partial<Task>): Task {
     updated_at: '2026-01-01T00:00:00Z',
     attachment_count: 0,
     ...overrides,
-  } as Task;
+  };
 }
 
 function makeSwimlane(id: string, name: string): Swimlane {
   return {
     id,
     name,
+    role: null,
     position: 0,
     color: '#000',
     icon: null,
-    role: 'custom',
     is_archived: false,
+    is_ghost: false,
+    permission_mode: null,
     auto_spawn: false,
     auto_command: null,
+    plan_exit_target_id: null,
     agent_override: null,
-    permission_mode: null,
-    handoff_context: null,
-    plan_exit_target_column: null,
+    model_override: null,
+    effort_override: null,
+    handoff_context: false,
     created_at: '2026-01-01T00:00:00Z',
-    updated_at: '2026-01-01T00:00:00Z',
-  } as Swimlane;
+  };
 }
 
 const context: CommandContext = {

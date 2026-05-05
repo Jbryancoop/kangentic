@@ -222,6 +222,8 @@ function makeSwimlane(id: string, overrides: Partial<Swimlane> = {}): Swimlane {
     auto_command: null,
     plan_exit_target_id: null,
     agent_override: null,
+    model_override: null,
+    effort_override: null,
     handoff_context: false,
     created_at: '2025-01-01T00:00:00.000Z',
     ...overrides,
