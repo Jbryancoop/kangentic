@@ -144,11 +144,18 @@ vi.mock('../../src/main/agent/agent-registry', () => ({
 
 vi.mock('node:fs', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:fs')>();
-  return {
+  // The source under test uses `import fs from 'node:fs'` (default import).
+  // Without an explicit `default` field, Vitest's factory leaves the default
+  // export pointing at the real module, so `fs.mkdirSync` runs unmocked and
+  // creates real directories under cwd. This was silent on Windows (where
+  // `/some/project` resolves under the current drive and is writable) but
+  // failed with EACCES on Linux CI.
+  const mocked = {
     ...original,
     mkdirSync: vi.fn(),
     // Allow other fs calls to pass through for tmp operations
   };
+  return { ...mocked, default: mocked };
 });
 
 // ---------------------------------------------------------------------------
