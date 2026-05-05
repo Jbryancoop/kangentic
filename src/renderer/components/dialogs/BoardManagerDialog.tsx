@@ -144,13 +144,12 @@ function SettingField({ label, description, hint, children }: {
   hint?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  // The whole field block (header, description, input) is constrained to
-  // max-w-md so the Reset hint hugs the actual field width instead of
-  // floating off to the section's right edge. `flex flex-col h-full` +
+  // Field block fills the section's content width so inputs don't look
+  // stranded against a wide empty gutter. `flex flex-col h-full` +
   // `mt-auto` keeps inputs aligned to the bottom of their grid cell when
   // descriptions in the same row vary in line count.
   return (
-    <div className="flex flex-col h-full max-w-md">
+    <div className="flex flex-col h-full">
       <div className="flex items-center justify-between gap-2">
         <label className="text-sm font-medium text-fg-secondary">{label}</label>
         {hint}
@@ -190,22 +189,26 @@ function FirstClassToggle({
   onChange: (next: boolean) => void;
   ariaLabel: string;
 }) {
+  // The whole card is the click target — the visual switch is just an
+  // indicator. This converts the wide gap between label and switch from
+  // "empty space next to a small control" into "interior of one large
+  // control," which reads as intentional rather than disconnected.
   return (
-    // max-w-md keeps the switch visually paired with the label and description
-    // even though the dialog body is ~800px wide. Without a cap, justify-between
-    // would push the toggle to the far right and disconnect it from the text.
-    <div className="flex items-start justify-between gap-4 max-w-md">
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      onClick={() => onChange(!checked)}
+      className="flex items-start justify-between gap-4 w-full text-left cursor-pointer bg-surface/40 hover:bg-surface/70 border border-edge/40 hover:border-edge rounded-md px-3.5 py-2.5 transition-colors focus:outline-none focus-visible:border-accent"
+    >
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium text-fg-secondary">{label}</div>
         <p className="text-xs text-fg-faint mt-0.5">{description}</p>
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={ariaLabel}
-        onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 ${
+      <span
+        aria-hidden="true"
+        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 mt-0.5 ${
           checked ? 'bg-accent' : 'bg-edge-input'
         }`}
       >
@@ -214,8 +217,8 @@ function FirstClassToggle({
             checked ? 'translate-x-[18px]' : 'translate-x-[3px]'
           }`}
         />
-      </button>
-    </div>
+      </span>
+    </button>
   );
 }
 
@@ -780,7 +783,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
     <BaseDialog
       onClose={onClose}
       testId="board-manager-dialog"
-      className="w-[1040px] max-w-[95vw] max-h-[90vh]"
+      className="w-[880px] max-w-[95vw] max-h-[90vh]"
       preventBackdropClose
       onBackdropClick={requestCancel}
       header={
@@ -965,7 +968,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
                     onChange={(event) => updateDraft((current) => ({ ...current, name: event.target.value }))}
                     onKeyDown={(event) => { if (event.key === 'Enter') void handleSave(); }}
                     data-testid="board-manager-name"
-                    className="max-w-md w-full bg-surface-hover border border-edge-input rounded px-3 py-1.5 text-sm text-fg placeholder-fg-faint focus:outline-none focus:border-accent"
+                    className="w-full bg-surface-hover border border-edge-input rounded px-3 py-1.5 text-sm text-fg placeholder-fg-faint focus:outline-none focus:border-accent"
                   />
                 </SettingField>
 
@@ -1007,7 +1010,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
                     </button>
                   </div>
                   {showCustomPicker && (
-                    <div className="mt-3 space-y-2 max-w-md">
+                    <div className="mt-3 space-y-2">
                       <HexColorPicker
                         color={draft.color}
                         onChange={(nextColor) => {
@@ -1044,7 +1047,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
                     onClick={() => setShowIconPicker(true)}
                     data-testid="board-manager-icon"
                     aria-label={`Choose icon${draft.icon ? `: ${draft.icon}` : ''}`}
-                    className="max-w-md w-full flex items-center gap-2.5 bg-surface-hover border border-edge-input hover:border-fg-faint rounded px-3 py-1.5 transition-colors group"
+                    className="w-full flex items-center gap-2.5 bg-surface-hover border border-edge-input hover:border-fg-faint rounded px-3 py-1.5 transition-colors group"
                   >
                     <div className="flex-shrink-0">
                       {(() => {
@@ -1072,15 +1075,13 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
                 </SettingField>
 
                 {!isTodoOrDone && (
-                  <div className="mt-4 border-t border-edge/50 pt-5">
-                    <FirstClassToggle
-                      label="Auto-spawn"
-                      description="Start an agent automatically when a task enters this column."
-                      checked={draft.auto_spawn}
-                      onChange={(next) => updateDraft((current) => ({ ...current, auto_spawn: next }))}
-                      ariaLabel="Auto-spawn"
-                    />
-                  </div>
+                  <FirstClassToggle
+                    label="Auto-spawn"
+                    description="Start an agent automatically when a task enters this column."
+                    checked={draft.auto_spawn}
+                    onChange={(next) => updateDraft((current) => ({ ...current, auto_spawn: next }))}
+                    ariaLabel="Auto-spawn"
+                  />
                 )}
               </div>
             )}
@@ -1119,7 +1120,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
                           return { ...current, agent_override: nextAgent, permission_mode: nextPermission };
                         });
                       }}
-                      wrapperClassName="relative max-w-md"
+                      wrapperClassName="relative"
                       className={DIALOG_SELECT_CLASS}
                       data-testid="column-agent-override"
                     >
@@ -1143,7 +1144,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
                         />
                       ) : undefined}
                     >
-                      <div className="max-w-md">
+                      <div>
                         <ModelCombobox
                           value={draft.model_override ?? ''}
                           onChange={(nextValue) => updateDraft((current) => ({ ...current, model_override: nextValue }))}
@@ -1169,7 +1170,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
                       <Select
                         value={draft.effort_override ?? ''}
                         onChange={(event) => updateDraft((current) => ({ ...current, effort_override: event.target.value || null }))}
-                        wrapperClassName="relative max-w-md"
+                        wrapperClassName="relative"
                         className={DIALOG_SELECT_CLASS}
                         data-testid="column-effort-override"
                       >
@@ -1197,7 +1198,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
                         ...current,
                         permission_mode: event.target.value ? (event.target.value as PermissionMode) : null,
                       }))}
-                      wrapperClassName="relative max-w-md"
+                      wrapperClassName="relative"
                       className={DIALOG_SELECT_CLASS}
                       data-testid="column-permission-mode"
                     >
@@ -1218,7 +1219,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
                       <Select
                         value={draft.plan_exit_target_id ?? ''}
                         onChange={(event) => updateDraft((current) => ({ ...current, plan_exit_target_id: event.target.value || null }))}
-                        wrapperClassName="relative max-w-md"
+                        wrapperClassName="relative"
                         className={DIALOG_SELECT_CLASS}
                         data-testid="plan-exit-target"
                       >
