@@ -182,7 +182,7 @@ describe('removeNodeModulesPath', () => {
     setPlatform('linux');
     mockLstat.mockReturnValue(makeStat({ isDirectory: true }));
     // Real-directory case now goes through `removeWithRetry`, which retries
-    // `fs.promises.rm` on every failure across a [0, 100, 500, 2000] ms
+    // `fs.promises.rm` on every failure across a [0, 200, 500, 1000, 2000] ms
     // schedule. `mockRejectedValue` (persistent) makes every attempt fail
     // so the outer catch in `removeNodeModulesPath` logs its warning once
     // the retries are exhausted.
@@ -191,8 +191,8 @@ describe('removeNodeModulesPath', () => {
     );
 
     const resultPromise = removeNodeModulesPath('/protected/node_modules');
-    // Drive the full 0 + 100 + 500 + 2000 = 2600 ms retry window.
-    await vi.advanceTimersByTimeAsync(2600);
+    // Drive the full 0 + 200 + 500 + 1000 + 2000 = 3700 ms retry window.
+    await vi.advanceTimersByTimeAsync(3700);
     await resultPromise;
 
     expect(warnSpy).toHaveBeenCalledTimes(1);

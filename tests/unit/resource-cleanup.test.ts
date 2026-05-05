@@ -356,7 +356,7 @@ describe('cleanupStaleResources', () => {
       expect.any(Function),
     );
     // Async rm fallback
-    expect(mockRm).toHaveBeenCalledWith(worktreePath, { recursive: true, force: true });
+    expect(mockRm).toHaveBeenCalledWith(worktreePath, expect.objectContaining({ recursive: true, force: true }));
   });
 
   it('cleans both DB-recorded and expected paths when they differ (renamed task)', async () => {
@@ -733,7 +733,7 @@ describe('pruneOrphanedDirectories -- pruneDirectory warn-and-continue', () => {
     });
 
     // bad-session: fs.promises.rm always rejects (simulates a locked handle that
-    // never releases). removeWithRetry retries over [0, 100, 500, 2000] ms.
+    // never releases). removeWithRetry retries over [0, 200, 500, 1000, 2000] ms.
     // good-session: fs.promises.rm succeeds.
     mockRm.mockImplementation(async (_path: string) => {
       if (String(_path).includes('bad-session')) {
@@ -755,10 +755,10 @@ describe('pruneOrphanedDirectories -- pruneDirectory warn-and-continue', () => {
       sessionManager as never,
     );
 
-    // Drive the full 0 + 100 + 500 + 2000 = 2600 ms retry window for bad-session.
-    // The retry loop for bad-session runs first; once exhausted, the loop
-    // continues to good-session which resolves immediately.
-    await vi.advanceTimersByTimeAsync(2600);
+    // Drive the full 0 + 200 + 500 + 1000 + 2000 = 3700 ms retry window for
+    // bad-session. The retry loop for bad-session runs first; once exhausted,
+    // the loop continues to good-session which resolves immediately.
+    await vi.advanceTimersByTimeAsync(3700);
     await resultPromise;
 
     // A warning must be emitted for the failing orphan.
@@ -835,8 +835,8 @@ describe('cleanupStaleResources -- removeWorktreeDirectory exhaustion path', () 
       sessionManager as never,
     );
 
-    // Drive the full 0 + 100 + 500 + 2000 = 2600 ms retry window.
-    await vi.advanceTimersByTimeAsync(2600);
+    // Drive the full 0 + 200 + 500 + 1000 + 2000 = 3700 ms retry window.
+    await vi.advanceTimersByTimeAsync(3700);
     await resultPromise;
 
     // A warning must be emitted - the exhaustion path in removeWorktreeDirectory

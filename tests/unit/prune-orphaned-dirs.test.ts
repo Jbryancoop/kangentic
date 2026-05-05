@@ -160,7 +160,7 @@ describe('pruneStaleResources -- async background cleanup', () => {
 
     expect(mockRm).toHaveBeenCalledWith(
       path.join(WORKTREES_DIR, 'stale-abcd1234'),
-      { recursive: true, force: true },
+      expect.objectContaining({ recursive: true, force: true }),
     );
     expect(logSpy).toHaveBeenCalledWith(
       expect.stringContaining('Removing orphaned worktree directory: stale-abcd1234'),
@@ -183,7 +183,7 @@ describe('pruneStaleResources -- async background cleanup', () => {
 
     expect(mockRm).toHaveBeenCalledWith(
       path.join(SESSIONS_DIR, 'dead-session-uuid'),
-      { recursive: true, force: true },
+      expect.objectContaining({ recursive: true, force: true }),
     );
     logSpy.mockRestore();
   });
@@ -203,7 +203,7 @@ describe('pruneStaleResources -- async background cleanup', () => {
 
     expect(mockRm).toHaveBeenCalledWith(
       path.join(TASKS_DIR, 'dead-task-uuid'),
-      { recursive: true, force: true },
+      expect.objectContaining({ recursive: true, force: true }),
     );
     logSpy.mockRestore();
   });

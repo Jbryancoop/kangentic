@@ -1,15 +1,21 @@
 /**
  * Unit tests for `removeWithRetry`.
  *
- * The function is a thin retry loop around `fs.promises.rm({ recursive:
- * true, force: true })`, so tests cover the retry surface only - the tree
- * walk itself is Node's responsibility and is exercised by the real-fs
+ * The function is a two-layer retry around `fs.promises.rm({ recursive:
+ * true, force: true })`. Tests cover the outer retry loop and the options
+ * forwarded to `fs.rm` (Node's inner per-file retry is its own
+ * responsibility). The tree walk itself is exercised by the real-fs
  * integration points (worktree-manager, node-modules-link).
  *
- *   - ENOENT is absorbed by `force: true` so a missing path resolves
- *   - Happy path: one `fs.rm` call, resolves
+ * Locks in the retry budget that stabilizes
+ * tests/e2e/bulk-delete-worktrees.spec.ts on Windows. The E2E test cannot
+ * deterministically reproduce the race; this unit test does.
+ *
+ *   - Happy path: one `fs.rm` call, resolves, options forwarded
  *   - Transient failure then success: retries honored
- *   - Exhaustion: last error is rethrown after the full 0/100/500ms schedule
+ *   - ENOENT absorbed by `force: true`
+ *   - Exhaustion: last error is rethrown after the full
+ *     0/200/500/1000/2000ms schedule (5 outer attempts)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -18,7 +24,11 @@ const { mockFsRm } = vi.hoisted(() => ({
   mockFsRm: vi.fn(),
 }));
 
-vi.mock('node:fs', () => ({
+// Mock the helper's `original-fs` boundary directly. Mocking `node:fs`
+// would only work transitively (original-fs.ts falls back to node:fs in
+// vitest where the Electron `original-fs` package is absent), and that
+// indirection breaks if the fallback ever changes.
+vi.mock('../../src/main/git/original-fs', () => ({
   default: {
     promises: {
       rm: (path: string, options: unknown) => mockFsRm(path, options),
@@ -41,7 +51,7 @@ describe('removeWithRetry', () => {
     vi.useRealTimers();
   });
 
-  it('resolves on the first attempt when fs.rm succeeds', async () => {
+  it('resolves on the first attempt and forwards inner-retry options to fs.rm', async () => {
     mockFsRm.mockResolvedValue(undefined);
 
     await expect(removeWithRetry('/tmp/target')).resolves.toBeUndefined();
@@ -49,7 +59,12 @@ describe('removeWithRetry', () => {
     expect(mockFsRm).toHaveBeenCalledTimes(1);
     expect(mockFsRm).toHaveBeenCalledWith(
       '/tmp/target',
-      expect.objectContaining({ recursive: true, force: true }),
+      expect.objectContaining({
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 200,
+      }),
     );
   });
 
@@ -58,17 +73,17 @@ describe('removeWithRetry', () => {
     mockFsRm
       .mockRejectedValueOnce(eperm('transient lock 1'))
       .mockRejectedValueOnce(eperm('transient lock 2'))
+      .mockRejectedValueOnce(eperm('transient lock 3'))
       .mockResolvedValueOnce(undefined);
 
     const resultPromise = removeWithRetry('/tmp/flaky');
 
-    // Attempt 1 fires immediately (0ms), attempt 2 after 100ms, attempt 3 after 500ms.
-    await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(100);
-    await vi.advanceTimersByTimeAsync(500);
+    // Schedule: 0 / 200 / 500 / 1000 / 2000 ms between attempts.
+    // Drain the queue so each scheduled retry fires.
+    await vi.runAllTimersAsync();
 
     await expect(resultPromise).resolves.toBeUndefined();
-    expect(mockFsRm).toHaveBeenCalledTimes(3);
+    expect(mockFsRm).toHaveBeenCalledTimes(4);
   });
 
   it('resolves without retrying when the path is already gone (ENOENT absorbed by force:true)', async () => {
@@ -97,10 +112,11 @@ describe('removeWithRetry', () => {
     // Silence unhandled-rejection warnings while we drive timers.
     resultPromise.catch(() => {});
 
-    // Drive the full 0 + 100 + 500 = 600 ms schedule.
-    await vi.advanceTimersByTimeAsync(600);
+    // Drive the full schedule: 0 + 200 + 500 + 1000 + 2000 = 3700 ms.
+    await vi.runAllTimersAsync();
 
     await expect(resultPromise).rejects.toThrow(/persistent lock/);
-    expect(mockFsRm).toHaveBeenCalledTimes(3);
+    // Five outer attempts in [0, 200, 500, 1000, 2000].
+    expect(mockFsRm).toHaveBeenCalledTimes(5);
   });
 });
