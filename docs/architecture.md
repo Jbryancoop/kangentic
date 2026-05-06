@@ -304,6 +304,12 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 |---------|---------|---------|
 | `search:everything` | invoke | Unified search across tasks, backlog items, session events (`events.jsonl`), and registered projects. Powers the global search palette (Ctrl+Shift+F / Ctrl+F). |
 
+### Diagnostics (2 channels)
+| Channel | Pattern | Purpose |
+|---------|---------|---------|
+| `diagnostics:logAppend` | invoke | Renderer / preload forwards a `LogEntry` to the main process. The main-side log mirror persists `error` and `warn` levels unconditionally and `info` / `debug` / `log` when `developer.persistConsoleLogs` is on. NDJSON written to `<projectRoot>/.kangentic/logs/<YYYY-MM-DD>.log`. |
+| `diagnostics:crashReport` | invoke | Renderer forwards a `CrashRecord` (window.onerror, unhandledrejection) to the main process. Crash capture writes one JSON file per record to `<projectRoot>/.kangentic/logs/crashes/<ts>.json`. Always-on - no toggle. |
+
 ## Database
 
 Two SQLite databases using better-sqlite3 with WAL mode and foreign keys enabled.

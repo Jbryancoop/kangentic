@@ -1,6 +1,22 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/ipc-channels';
 import type { ElectronAPI, NotificationInput, Project, Session, SessionUsage, ActivityState, ActivityReason, SessionEvent, UpdateDownloadedInfo, UsageTimePeriod, TaskBulkDeleteProgress } from '../shared/types';
+import { installConsoleCapture } from './diagnostics/console-capture';
+import { installDevtoolsPreloadHooks } from '../devtools/preload/install-globals';
+
+// Forward renderer console.* + window error events to the main-process
+// diagnostics subsystem. The main side decides whether to persist based on
+// the `developer.persistConsoleLogs` toggle. Crashes are always captured.
+// Runs at preload time so it survives even if `index.tsx` throws on boot.
+installConsoleCapture();
+
+// Dev-only: install window.__kangenticPreviewMutations and
+// __kangenticPreviewReact globals so the localhost inspection bridge
+// can read DOM mutations + React fiber state via Runtime.evaluate.
+// Production builds drop the import + call via `__KANGENTIC_DEV__`.
+if (__KANGENTIC_DEV__) {
+  installDevtoolsPreloadHooks();
+}
 
 const api: ElectronAPI = {
   projects: {

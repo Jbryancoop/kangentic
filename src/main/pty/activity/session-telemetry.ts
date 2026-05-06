@@ -59,14 +59,20 @@ export interface SessionTelemetryOptions {
   /** Custom process-tree probe. Tests inject mocks. */
   processTreeProbe?: ProcessTreeProbe;
   /**
-   * Directory for activity-engine debug snapshots. When set, the
-   * engine writes the latest stats snapshot to
+   * Directory for activity-engine debug snapshots, or a resolver
+   * function returning the directory. When the value resolves to a
+   * string, the engine writes the latest stats snapshot to
    * `<dir>/<sessionId>.json` on every state change. Used for
    * post-mortem diagnostics ("what was the engine doing 5 minutes
-   * ago?") without needing the live overlay open. Disabled (no
-   * writes) when undefined.
+   * ago?") without needing the live overlay open.
+   *
+   * Function form lets callers tie the path to a runtime toggle
+   * (e.g. `developer.activityDebugOverlay`); the resolver is invoked
+   * before each write, so toggling on/off takes effect live without
+   * reconstructing SessionTelemetry. Disabled (no writes) when
+   * undefined or when the resolver returns undefined.
    */
-  debugDumpDir?: string;
+  debugDumpDir?: string | (() => string | undefined);
 }
 
 /**
@@ -95,7 +101,14 @@ export class SessionTelemetry {
   private readonly ptyTracker: PtyActivityTracker;
   private readonly usage = new UsageAccumulator();
   private readonly prCommandDetector = new PRCommandDetector();
-  private readonly snapshotWriter: ActivitySnapshotWriter | null;
+  /**
+   * Live snapshot writer. Recreated on demand when the resolver returns a
+   * different path so toggle changes (e.g. `developer.activityDebugOverlay`)
+   * take effect mid-session. Null when no path is currently configured.
+   */
+  private snapshotWriter: ActivitySnapshotWriter | null;
+  private snapshotWriterPath: string | null = null;
+  private readonly debugDumpDirResolver: (() => string | undefined) | null;
   private readonly userInterrupts: UserInterruptCoordinator;
 
   private readonly sessionParsers = new Map<string, AgentParser>();
@@ -112,7 +125,23 @@ export class SessionTelemetry {
   ) {
     this.callbacks = callbacks;
     const activityEngineOptions = options.activityEngineOptions ?? {};
-    this.snapshotWriter = options.debugDumpDir ? new ActivitySnapshotWriter(options.debugDumpDir) : null;
+    // Two equivalent forms: a literal string path (legacy / test usage) or
+    // a resolver function (production hookup, lets the path follow a
+    // runtime toggle). Static strings are normalized into a resolver so
+    // the writeDebugSnapshot path is uniform.
+    if (typeof options.debugDumpDir === 'function') {
+      this.debugDumpDirResolver = options.debugDumpDir;
+      const initialPath = options.debugDumpDir();
+      this.snapshotWriter = initialPath ? new ActivitySnapshotWriter(initialPath) : null;
+      this.snapshotWriterPath = initialPath ?? null;
+    } else if (typeof options.debugDumpDir === 'string') {
+      this.debugDumpDirResolver = null;
+      this.snapshotWriter = new ActivitySnapshotWriter(options.debugDumpDir);
+      this.snapshotWriterPath = options.debugDumpDir;
+    } else {
+      this.debugDumpDirResolver = null;
+      this.snapshotWriter = null;
+    }
 
     this.activityEngine = new ActivityEngine({
       onActivityChange: (sessionId, activity, reason) => {
@@ -626,11 +655,28 @@ export class SessionTelemetry {
   }
 
   /**
-   * Refresh the on-disk activity-engine snapshot for diagnostics.
-   * No-op when `debugDumpDir` wasn't set at construction time. Best
-   * effort - errors are swallowed inside the writer.
+   * Refresh the on-disk activity-engine snapshot for diagnostics. No-op
+   * when no `debugDumpDir` is currently configured. Best effort - errors
+   * are swallowed inside the writer.
+   *
+   * Resolves the dump directory via the resolver each call (when one was
+   * provided), so toggling `developer.activityDebugOverlay` on/off takes
+   * effect on the next state change without restarting SessionTelemetry.
+   * Recreates the underlying ActivitySnapshotWriter when the resolved
+   * path changes; ActivitySnapshotWriter caches a single output dir per
+   * instance so reusing the previous writer would write to the wrong
+   * place.
    */
   private writeDebugSnapshot(sessionId: string): void {
+    if (this.debugDumpDirResolver) {
+      const currentPath = this.debugDumpDirResolver() ?? null;
+      if (currentPath !== this.snapshotWriterPath) {
+        this.snapshotWriterPath = currentPath;
+        this.snapshotWriter = currentPath
+          ? new ActivitySnapshotWriter(currentPath)
+          : null;
+      }
+    }
     if (!this.snapshotWriter) return;
     const snapshot = this.activityEngine.getStatsSnapshot(sessionId);
     if (snapshot) this.snapshotWriter.write(sessionId, snapshot);

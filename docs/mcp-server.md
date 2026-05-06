@@ -32,6 +32,7 @@ Claude Code agent calls MCP tool (e.g. kangentic_create_task)
 | MCP Config Delivery | `src/main/agent/adapters/claude/command-builder.ts` | Writes session `mcp.json` and adds `--mcp-config` flag to CLI command. |
 | Trust Manager | `src/main/agent/adapters/claude/trust-manager.ts` | Pre-approves kangentic MCP server in `~/.claude.json`. |
 | Board Refresh | `src/main/ipc/handlers/sessions.ts` | Forwards task-created/updated/backlog-changed events to renderer via IPC. |
+| Diagnostics Tools | `src/main/agent/mcp-http/diagnostics-tools.ts` | Read-only product tools backing crash records, persistent console logs, process metrics, IPC traffic recordings, and worktree state. Annotated `readOnlyHint: true, idempotentHint: true` per the MCP spec. |
 
 ### Discovery
 
@@ -289,6 +290,68 @@ Run a read-only SQL query against the project database. The connection uses `PRA
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `sql` | string | Yes | SQL query to execute |
+
+### kangentic_tail_logs
+
+Read recent lines from the kangentic console log at `<projectRoot>/.kangentic/logs/<YYYY-MM-DD>.log`. Errors and warnings are always captured; `info`, `debug`, and `log` levels are captured only when `developer.persistConsoleLogs` is on. Useful for diagnosing "the action didn't work" or following up on a `console.error` trace. Returns formatted text lines plus structured `items: LogEntry[]` for typed access.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `date` | string | No | Log date in `YYYY-MM-DD` format. Defaults to today (UTC). |
+| `since` | string | No | Return only entries with `ts >= since` (ISO 8601). |
+| `level` | `error` \| `warn` \| `info` \| `debug` \| `log` | No | Filter by log level. |
+| `source` | `main` \| `renderer` \| `preload` | No | Filter by log source process. |
+| `limit` | number | No | Maximum entries to return. Default 200, max 2000. |
+| `project` | string | No | Project selector (name or UUID). Defaults to URL-path project. |
+
+### kangentic_get_recent_crashes
+
+List recent crash records from `<projectRoot>/.kangentic/logs/crashes/`. Each record contains the timestamp, kind (`main-uncaught-exception`, `main-unhandled-rejection`, `render-process-gone`, `preload-error`, `renderer-window-error`, `renderer-unhandled-rejection`), source-mapped stack, and version info captured at crash time. Always-on capture - no toggle required.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | number | No | Maximum records to return. Default 10, max 50. |
+| `sinceTs` | string | No | Return only crashes with `ts >= sinceTs` (ISO 8601). |
+| `project` | string | No | Project selector. |
+
+### kangentic_get_process_metrics
+
+Live snapshot of memory + CPU usage per Electron process (main, renderer, GPU, utility) plus version + uptime info. Useful when investigating "why is kangentic slow / heavy" or filing a bug report. Reads `app.getMetrics()` on demand; not project-scoped. No parameters.
+
+### kangentic_get_ipc_log
+
+Read recent IPC handler invocations from `<projectRoot>/.kangentic/logs/ipc-<YYYY-MM-DD>.jsonl`. Each entry has `channel`, `args`, `result`, `durationMs`, and (on failure) `error`. Only available when `developer.recordIpcTraffic` is on. Channels carrying secrets (settings writes, MCP config, auth) are stored as `{ redacted: true, channel }`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `date` | string | No | Log date in `YYYY-MM-DD` format. Defaults to today (UTC). |
+| `since` | string | No | Return only entries with `ts >= since` (ISO 8601). |
+| `channel` | string | No | Filter to a single IPC channel (e.g. `task:create`). |
+| `limit` | number | No | Maximum entries to return. Default 200, max 2000. |
+| `project` | string | No | Project selector. |
+
+### kangentic_list_worktrees
+
+Enumerate worktrees for one or every registered project. Each `WorktreeRecord` carries path, branch, baseRef, dirty flag, commits ahead/behind upstream, and last-commit timestamp. Pure read-only, useful for finding a task's branch, locating dirty work, or reasoning about merge state.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project` | string | No | Project selector. When omitted, enumerates worktrees across every registered project. |
+
+## Dev-only tool surface (`kangentic_devtools_*`)
+
+When `developer.previewInspectionServer` is enabled in dev builds (the toggle is excluded from production binaries via `__KANGENTIC_DEV__` esbuild dead-code elimination), 22 additional `kangentic_devtools_*` tools are registered against the same MCP server. They wrap a localhost-only HTTP inspection bridge that powers agent-driven UI inspection and interaction. Implementation lives in `src/devtools/mcp/preview-tools.ts` (build-excluded from production).
+
+Tool categories:
+- **Discovery:** `list_instances` - enumerate running preview instances by lockfile
+- **State:** `engine_state`, `renderer_state` - live ActivityStatsSnapshot and Zustand store snapshots
+- **Visual / DOM:** `screenshot`, `screenshot_element`, `screenshot_diff`, `query_dom`, `computed_style`, `bounding_box`, `accessibility_tree`, `mutations`
+- **React:** `react_query`, `react_tree`, `react_recent_renders` - fiber walker via `__REACT_DEVTOOLS_GLOBAL_HOOK__`
+- **Console:** `console` - CDP `Console.messageAdded` ring buffer (separate from product `tail_logs`)
+- **Drive (interaction):** `click`, `type`, `keypress`, `drag`, `wait`, `script` - dispatched via Chrome DevTools Protocol
+- **Sessions:** `pty_input`, `inject_session_event` - gated additionally by `developer.previewEvalEnabled`
+
+These tools are excluded from production builds at compile time and have no effect in shipped binaries.
 
 ## Configuration
 

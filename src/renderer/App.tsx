@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { AppLayout } from './components/layout/AppLayout';
 import { ActivityDebugOverlay } from './components/debug/ActivityDebugOverlay';
+import { DevtoolsBootstrap } from '../devtools/renderer/install';
 import { useProjectStore } from './stores/project-store';
 import { useBoardStore } from './stores/board-store';
 import { useConfigStore } from './stores/config-store';
@@ -613,6 +614,13 @@ export function App() {
     <>
       <AppLayout />
       <ActivityDebugOverlay />
+      {/*
+        Dev-only: installs window.__kangenticPreviewSnapshot and subscribes
+        to a few stores for ring-buffer accumulation. Renders nothing.
+        Production builds drop both the import and this conditional via
+        `__KANGENTIC_DEV__` dead-code elimination + Vite tree-shaking.
+      */}
+      {__KANGENTIC_DEV__ && <DevtoolsBootstrap />}
     </>
   );
 }

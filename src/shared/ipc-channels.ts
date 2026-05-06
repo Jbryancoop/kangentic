@@ -220,4 +220,10 @@ export const IPC = {
 
   // Search
   SEARCH_EVERYTHING: 'search:everything',
+
+  // Diagnostics (product, all builds): renderer console + window error
+  // forwarding to main, where they are persisted to .kangentic/logs/.
+  // See src/main/diagnostics/ for the consumers.
+  LOG_APPEND: 'diagnostics:logAppend',
+  CRASH_REPORT: 'diagnostics:crashReport',
 } as const;

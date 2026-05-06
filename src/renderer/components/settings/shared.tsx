@@ -341,15 +341,30 @@ export function Select({
 
 /* ── Toggle Switch ── */
 
-export function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {
+export function ToggleSwitch({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  /**
+   * When true, the switch renders in its current `checked` state but does
+   * not respond to clicks. Used for "always on / always off" settings
+   * (e.g. crash capture) where visual consistency with neighbouring rows
+   * matters but the user is not allowed to change the value.
+   */
+  disabled?: boolean;
+}) {
   return (
     <button
       role="switch"
       aria-checked={checked}
-      onClick={() => onChange(!checked)}
+      disabled={disabled}
+      onClick={disabled ? undefined : () => onChange(!checked)}
       className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
         checked ? 'bg-accent' : 'bg-edge-input'
-      }`}
+      } ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
     >
       <span
         className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${

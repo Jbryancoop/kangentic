@@ -15,6 +15,10 @@ const esbuildCommon = {
   define: {
     'MAIN_WINDOW_VITE_DEV_SERVER_URL': JSON.stringify(''),
     'MAIN_WINDOW_VITE_NAME': JSON.stringify('main_window'),
+    // Build-time constant gating dev-only code. `false` in production drops
+    // src/devtools/ entirely from the production main + preload bundles
+    // via esbuild's dead-code elimination. See scripts/dev.js for the dev value.
+    '__KANGENTIC_DEV__': 'false',
   },
   sourcemap: false,
   minify: true,

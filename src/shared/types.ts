@@ -941,9 +941,41 @@ export interface AppConfig {
      * Show the activity-engine debug overlay (floating panel showing
      * live counters, current reason, recent transitions). Useful for
      * diagnosing "stuck thinking" or "missed idle" reports.
-     * Default false.
+     * Default false. Always rendered in product builds.
      */
     activityDebugOverlay?: boolean;
+    /**
+     * Persist info/debug-level renderer + main console logs to
+     * `<projectRoot>/.kangentic/logs/<date>.log`. errors/warnings are
+     * always captured regardless of this toggle. Default false.
+     * Always rendered in product builds.
+     */
+    persistConsoleLogs?: boolean;
+    /**
+     * Record every IPC handler invocation to
+     * `<projectRoot>/.kangentic/logs/ipc-<date>.jsonl`. Includes channel,
+     * args (with redaction for known-sensitive channels), result,
+     * duration. Useful for "why didn't this action work?" debugging
+     * but generates non-trivial disk I/O. Default false. Always
+     * rendered in product builds.
+     */
+    recordIpcTraffic?: boolean;
+    /**
+     * Bind a localhost-only HTTP inspection bridge for the dev-only
+     * `kangentic_devtools_*` MCP tools to connect to. Master switch for
+     * the inspection bridge, lockfile writing, and the dev-only MCP
+     * tools that hit it. Only meaningful in dev builds; the toggle
+     * key persists across builds for type compatibility but the UI
+     * affordance is gated on `__KANGENTIC_DEV__`. Default false.
+     */
+    previewInspectionServer?: boolean;
+    /**
+     * Stricter gate for the inspection bridge: enables `eval`,
+     * `inject_session_event`, and the `pty-input.bytes` form. Allows
+     * arbitrary-code surfaces. Off by default; only meaningful when
+     * `previewInspectionServer` is also on. Dev-only.
+     */
+    previewEvalEnabled?: boolean;
   };
 
   hasCompletedFirstRun: boolean;
@@ -2198,6 +2230,134 @@ export type SearchHit =
     });
 
 export type SearchHitKind = SearchHit['kind'];
+
+
+// =============================================================================
+// Product diagnostics types
+// =============================================================================
+// Backing types for the `src/main/diagnostics/` product subsystem and the MCP
+// tools that read its output. These ship in all builds.
+
+/**
+ * One line of captured console output. Persisted as NDJSON to
+ * `<projectRoot>/.kangentic/logs/<YYYY-MM-DD>.log`.
+ *
+ * `args` is the result of stringifying each `console.*` argument. Errors are
+ * captured with name + message + (source-mapped) stack. Plain objects are
+ * `JSON.stringify`d with a circular-safe replacer.
+ */
+export interface LogEntry {
+  /** ISO 8601 timestamp. */
+  ts: string;
+  level: 'error' | 'warn' | 'info' | 'debug' | 'log';
+  source: 'main' | 'renderer' | 'preload';
+  /** Stringified arguments passed to the `console.*` call. */
+  args: string[];
+}
+
+/**
+ * One captured fatal error. Persisted as a single JSON file at
+ * `<projectRoot>/.kangentic/logs/crashes/<ts>.json`. Always written, no toggle.
+ */
+export interface CrashRecord {
+  /** ISO 8601 timestamp. */
+  ts: string;
+  kind:
+    | 'main-uncaught-exception'
+    | 'main-unhandled-rejection'
+    | 'render-process-gone'
+    | 'preload-error'
+    | 'renderer-window-error'
+    | 'renderer-unhandled-rejection';
+  /** Process source. For renderer errors this is the webContents id. */
+  source: 'main' | 'renderer' | 'preload';
+  message: string;
+  /** Source-mapped stack when available. */
+  stack: string | null;
+  /** Renderer-window URL or main-process module path at the time of error. */
+  origin: string | null;
+  /** Additional context (e.g. render-process-gone reason+exitCode). */
+  context: Record<string, unknown> | null;
+  /** Versions captured for bug-report reproducibility. */
+  versions: { kangentic: string; electron: string; node: string; chrome: string };
+}
+
+/**
+ * Per-process resource usage snapshot. Returned by
+ * `kangentic_get_process_metrics`. Wraps `app.getMetrics()` and adds platform
+ * + uptime context.
+ */
+export interface ProcessMetrics {
+  ts: string;
+  uptimeSec: number;
+  platform: NodeJS.Platform;
+  arch: string;
+  versions: { kangentic: string; electron: string; node: string; chrome: string };
+  processes: {
+    pid: number;
+    type: string;
+    name?: string;
+    cpu: { percentCPUUsage: number };
+    memory: { workingSetSize: number; peakWorkingSetSize: number; privateBytes?: number };
+    creationTime?: number;
+  }[];
+}
+
+/**
+ * One IPC handler invocation. Persisted as NDJSON to
+ * `<projectRoot>/.kangentic/logs/ipc-<YYYY-MM-DD>.jsonl` only when the
+ * `developer.recordIpcTraffic` toggle is on. Channels in the
+ * known-sensitive allowlist (settings writes, MCP config, auth) appear
+ * with `args: { redacted: true, channel }` instead of the real payload.
+ */
+export interface IpcLogEntry {
+  ts: string;
+  channel: string;
+  /** Either the captured args array or a redaction placeholder. */
+  args: unknown[] | { redacted: true; channel: string };
+  /** Either the captured result or a redaction placeholder. Omitted on error. */
+  result?: unknown | { redacted: true; channel: string };
+  durationMs: number;
+  /** When set, the handler threw; `result` is omitted. */
+  error?: { name: string; message: string };
+}
+
+/**
+ * Per-project worktree summary. Returned by `kangentic_list_worktrees`.
+ * Includes the main checkout plus every git worktree. Pure read-only.
+ */
+export interface WorktreeRecord {
+  /** Absolute path to the worktree root. */
+  path: string;
+  /** Currently checked-out branch name, or null for detached HEAD. */
+  branch: string | null;
+  /**
+   * Configured base branch the worktree compares against (if recorded
+   * in kangentic state for this worktree's task). null for the main
+   * checkout or unmapped worktrees.
+   */
+  baseRef: string | null;
+  /** True when the working tree has uncommitted modifications. */
+  dirty: boolean;
+  /** Commits ahead of `baseRef` (or upstream when no base). null when unknown. */
+  commitsAhead: number | null;
+  /** Commits behind `baseRef` (or upstream when no base). null when unknown. */
+  commitsBehind: number | null;
+  /** ISO 8601 timestamp of the last commit on the current branch. */
+  lastCommitTs: string | null;
+  /** True when this is the project's main checkout (not a worktree under .kangentic/). */
+  isMainCheckout: boolean;
+}
+
+/**
+ * One project's worktree set. Top-level shape of `kangentic_list_worktrees`.
+ */
+export interface ProjectWorktrees {
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  worktrees: WorktreeRecord[];
+}
 
 
 declare global {

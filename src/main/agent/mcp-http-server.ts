@@ -26,6 +26,8 @@ import { registerTaskTools } from './mcp-http/task-tools';
 import { registerSessionTools } from './mcp-http/session-tools';
 import { registerProjectTools } from './mcp-http/project-tools';
 import { registerSearchTools } from './mcp-http/search-tools';
+import { registerDiagnosticsTools } from './mcp-http/diagnostics-tools';
+import { registerDevtoolsMcpTools } from '../../devtools/mcp/register';
 import { buildServerInstructions } from './mcp-http/server-instructions';
 import type { RequestResolver } from './mcp-http/project-resolver';
 
@@ -187,6 +189,14 @@ async function handleHttpRequest(
   registerSessionTools(mcpServer, resolver);
   registerProjectTools(mcpServer, resolver);
   registerSearchTools(mcpServer, resolver);
+  registerDiagnosticsTools(mcpServer, resolver);
+
+  // Dev-only: register the kangentic_devtools_* tools that drive the
+  // localhost inspection bridge. Production builds drop both the import
+  // (above) and this call via `__KANGENTIC_DEV__` dead-code elimination.
+  if (__KANGENTIC_DEV__) {
+    registerDevtoolsMcpTools(mcpServer);
+  }
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

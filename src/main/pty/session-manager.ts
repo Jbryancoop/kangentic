@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
-import * as path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
+import { resolveDebugDumpDir } from '../diagnostics/debug-dump-resolver';
 import { ShellResolver } from './spawn/shell-resolver';
 import { SessionQueue } from './session-queue';
 import { PtyBufferManager } from './buffer/pty-buffer-manager';
@@ -174,14 +174,17 @@ export class SessionManager extends EventEmitter {
       },
     }, {
       activityEngineOptions: this.activityEngineOptions,
-      // Activity-engine debug snapshots land at `<.kangentic>/debug/<sessionId>.json`
-      // when KANGENTIC_DATA_DIR is set. Production installs do set
-      // this env var, so disk dumps are always available for
-      // post-mortem diagnostics; cost is one tiny JSON write per
-      // engine state change (a few KB, gitignored).
-      debugDumpDir: process.env.KANGENTIC_DATA_DIR
-        ? path.resolve(process.env.KANGENTIC_DATA_DIR, '..', 'debug')
-        : undefined,
+      // Activity-engine debug snapshots land at `<projectRoot>/.kangentic/debug/<sessionId>.json`
+      // when `developer.activityDebugOverlay` is on (toggled in Settings →
+      // Developer). When that toggle is off, falls back to the existing
+      // env-based path used by production installs. Returns `undefined` when
+      // neither applies, disabling the dump entirely. The resolver is
+      // configured by `installDiagnostics()` at process startup.
+      //
+      // Pass the function (not its current return value) so SessionTelemetry
+      // re-resolves on every snapshot write - this lets toggle changes flip
+      // the dump on/off live without restarting the session.
+      debugDumpDir: resolveDebugDumpDir,
     });
 
     this.sessionHistoryReader = new SessionHistoryReader({

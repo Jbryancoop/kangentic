@@ -3,7 +3,16 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import rendererOptimizeDeps from './scripts/renderer-optimize-deps.json';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  // Build-time constant gating dev-only renderer code (DevtoolsBootstrap,
+  // DevToolsSections). `mode === 'production'` happens during `npm run build`,
+  // dropping the conditional blocks from the production renderer bundle.
+  // The dev path (Vite's dev server, started via scripts/dev.js) sets the
+  // same constant inline at createServer time for worktrees, or via this
+  // function for non-worktree dev.
+  define: {
+    __KANGENTIC_DEV__: JSON.stringify(mode !== 'production'),
+  },
   plugins: [tailwindcss(), react()],
   resolve: {
     alias: {
@@ -34,4 +43,4 @@ export default defineConfig({
     },
     chunkSizeWarningLimit: 3000,
   },
-});
+}));

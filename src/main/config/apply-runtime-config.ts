@@ -1,5 +1,6 @@
 import type { SessionManager } from '../pty/session-manager';
 import type { ConfigManager } from './config-manager';
+import { notifyDevtoolsRefresh } from '../../devtools/install';
 
 /**
  * Push the effective config for `projectPath` into all in-memory services
@@ -21,4 +22,15 @@ export function applyRuntimeConfig(
   sessionManager.setMaxConcurrent(effective.agent.maxConcurrentSessions);
   sessionManager.setShell(effective.terminal.shell);
   sessionManager.setIdleTimeout(effective.agent.idleTimeoutMinutes);
+
+  // Dev-only: re-evaluate whether the localhost inspection bridge should
+  // be running. This fires from PROJECT_OPEN (so the bridge starts after
+  // the IPC context is live), CONFIG_SET (so toggling
+  // `developer.previewInspectionServer` takes effect without restart), and
+  // every other path that calls applyRuntimeConfig. Production builds drop
+  // both the import and this call via __KANGENTIC_DEV__ dead-code
+  // elimination.
+  if (__KANGENTIC_DEV__) {
+    notifyDevtoolsRefresh();
+  }
 }

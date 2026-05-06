@@ -35,7 +35,7 @@ These settings appear only in App Settings and cannot be overridden per-project:
 - `contextBar.*` (all context bar visibility toggles)
 - `notifications.*` (all notification settings)
 - `agent.idleTimeoutMinutes`
-- `developer.activityDebugOverlay`
+- `developer.activityDebugOverlay`, `developer.persistConsoleLogs`, `developer.recordIpcTraffic`, `developer.previewInspectionServer`, `developer.previewEvalEnabled`
 
 ### Per-Project Overridable Settings
 
@@ -207,7 +207,11 @@ Power-user settings for diagnosing the activity engine and other internal subsys
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `developer.activityDebugOverlay` | boolean | `false` | Show the floating activity-engine debug overlay. Renders live counters (pendingToolCount, subagentDepth, bg shells), the current `ActivityReason`, and a ring buffer of recent transitions for every running session in the current project. Polls `getActivityStats` every 2 seconds while open; lazy-disables the IPC when closed. |
+| `developer.activityDebugOverlay` | boolean | `false` | Show the floating activity-engine debug overlay. Renders live counters (pendingToolCount, subagentDepth, bg shells), the current `ActivityReason`, and a ring buffer of recent transitions for every running session in the current project. Polls `getActivityStats` every 2 seconds while open; lazy-disables the IPC when closed. With this on, the engine also writes a per-session JSON snapshot to `<projectRoot>/.kangentic/debug/<sessionId>.json` on every state change for post-mortem reads. |
+| `developer.persistConsoleLogs` | boolean | `false` | Persist `info`, `debug`, and `log`-level console output to `<projectRoot>/.kangentic/logs/<YYYY-MM-DD>.log`. Errors and warnings are always persisted regardless of this toggle. NDJSON one file per day. Read via the `kangentic_tail_logs` MCP tool. |
+| `developer.recordIpcTraffic` | boolean | `false` | Record every IPC handler invocation (channel, args, result, durationMs, errors) to `<projectRoot>/.kangentic/logs/ipc-<YYYY-MM-DD>.jsonl`. Mutating channels (settings writes, MCP config, attachments) appear as `{ redacted: true, channel }` to keep secrets out of disk logs. Off by default - non-trivial disk impact when enabled. Read via `kangentic_get_ipc_log`. |
+| `developer.previewInspectionServer` | boolean | dev: `true`, prod: `false` (UI absent in prod) | Bind a localhost-only HTTP inspection bridge that powers the dev-only `kangentic_devtools_*` MCP tools (screenshot, click, type, drag, query DOM, React fiber walker, console, engine + renderer state). Writes a per-worktree lockfile to `<projectRoot>/.kangentic/preview.lock` for cross-instance discovery. Bound to 127.0.0.1 on a random port; no auth (localhost is the boundary). UI affordance excluded from production builds entirely; the key persists in `AppConfig` for type compatibility but has no effect in shipped binaries. |
+| `developer.previewEvalEnabled` | boolean | `false` | Stricter gate on top of `previewInspectionServer`. Enables three high-risk inspection-bridge endpoints: `eval` (run any JavaScript in the renderer), `inject_session_event` (synthesize fake activity-engine events without spawning a real CLI), and `raw PTY input` (write any byte sequence directly to a session terminal, including control codes). Off by default even in dev. |
 
 ## Swimlane-Level Configuration
 

@@ -1,72 +1,113 @@
-import { Bug } from 'lucide-react';
+import { Bug, FileText, AlertTriangle, Activity } from 'lucide-react';
 import type { AppConfig } from '../../../../shared/types';
-import { SectionHeader, ToggleSwitch, useScopedUpdate } from '../shared';
+import { useScopedUpdate } from '../shared';
+import { Code, Description, GroupHeading, ToggleRow } from './dev-tab-primitives';
+import { DevToolsSections } from '../../../../devtools/renderer/DevToolsSections';
 
 /**
- * Global developer / diagnostic settings. Lives below the
- * shared-settings separator in `AppSettingsPanel.APP_TABS`. The debug
- * overlay is a per-machine dev affordance, not something that varies
- * per project.
+ * Global developer / diagnostic settings. Lives below the shared-settings
+ * separator in `AppSettingsPanel.APP_TABS`. Always visible to all users.
+ * Dev-only sections (preview inspection bridge, eval) live in
+ * `src/devtools/renderer/DevToolsSections.tsx` and are rendered here only
+ * when `__KANGENTIC_DEV__` is true at compile time.
  *
- * Layout mirrors McpServerTab: header card with primary toggle, then
- * "What it shows" and "How it works" sections explaining the feature.
+ * Each setting renders as a tight toggle row + a single 1-2 sentence
+ * description. The verbose explanations that used to live here moved to
+ * `docs/configuration.md` and the MCP tool descriptions; this surface is
+ * for skim + flip-toggle, not learn-everything-about-each-flag.
  */
 export function DeveloperTab({ globalConfig }: { globalConfig: AppConfig }) {
   const updateGlobal = useScopedUpdate('global');
   const developerConfig = globalConfig.developer ?? {};
   const overlayEnabled = developerConfig.activityDebugOverlay === true;
+  const persistConsoleLogsEnabled = developerConfig.persistConsoleLogs === true;
+  const recordIpcTrafficEnabled = developerConfig.recordIpcTraffic === true;
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3 rounded-lg bg-surface-hover px-4 py-3">
-        <Bug className="size-5 text-fg-muted shrink-0" />
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-fg-primary">Activity Engine Debug Overlay</div>
-          <div className="text-xs text-fg-muted">Floating panel with live state for every running session</div>
-        </div>
-        <ToggleSwitch
+    <div className="space-y-3">
+      <GroupHeading>Diagnostics</GroupHeading>
+
+      <section className="space-y-2">
+        <ToggleRow
+          icon={Bug}
+          title="Activity Engine Debug Overlay"
+          subtitle="Floating panel with live state per session"
           checked={overlayEnabled}
           onChange={(value) => updateGlobal({ developer: { activityDebugOverlay: value } })}
         />
-      </div>
+        <KbdHint prefix="Toggle anywhere with" keys={['Ctrl', 'Shift', 'D']} />
+        <Description>
+          Shows current activity, dominant reason, counters, and the last 10 transitions per session.
+          The overlay polls every 2s while open. Independently, with this on the engine writes a
+          per-session snapshot to <Code>.kangentic/debug/&lt;sessionId&gt;.json</Code> on every state
+          change for post-mortem reads.
+        </Description>
+      </section>
 
-      <div className="flex items-center gap-2 text-xs text-fg-muted px-1">
-        <span>Toggle anywhere with</span>
-        <kbd className="px-1.5 py-0.5 bg-surface-raised border border-edge rounded text-[10px] font-mono">Ctrl</kbd>
-        <span className="text-fg-disabled">+</span>
-        <kbd className="px-1.5 py-0.5 bg-surface-raised border border-edge rounded text-[10px] font-mono">Shift</kbd>
-        <span className="text-fg-disabled">+</span>
-        <kbd className="px-1.5 py-0.5 bg-surface-raised border border-edge rounded text-[10px] font-mono">D</kbd>
-      </div>
+      <section className="space-y-2">
+        <ToggleRow
+          icon={FileText}
+          title="Persistent Console Logs"
+          subtitle="Capture info / debug / log output to .kangentic/logs/"
+          checked={persistConsoleLogsEnabled}
+          onChange={(value) => updateGlobal({ developer: { persistConsoleLogs: value } })}
+        />
+        <Description>
+          Errors and warnings are <strong>always</strong> persisted; this toggle additionally captures
+          info / debug / log levels. NDJSON, one file per day at{' '}
+          <Code>.kangentic/logs/&lt;YYYY-MM-DD&gt;.log</Code>. Read via <Code>kangentic_tail_logs</Code>.
+        </Description>
+      </section>
 
-      <div className={overlayEnabled ? '' : 'opacity-40 pointer-events-none'}>
-        <SectionHeader label="What It Shows" searchIds={['developer.activityDebugOverlay']} />
-        <ul className="list-disc list-inside text-sm text-fg-muted space-y-1 ml-1">
-          <li><strong className="text-fg-secondary">Activity state</strong> - thinking / idle / permission badge per session</li>
-          <li><strong className="text-fg-secondary">Dominant reason</strong> - which counter is keeping the session non-idle (tool, subagent, background-shell, turn-active)</li>
-          <li><strong className="text-fg-secondary">Counters</strong> - pending tool count, subagent depth, tracked + anonymous bg-shell counts, turn flag, permission flag</li>
-          <li><strong className="text-fg-secondary">Pending idle</strong> - whether the 400ms stability window is currently armed</li>
-          <li><strong className="text-fg-secondary">Recent transitions</strong> - last 10 from→to changes with relative time, reason kind, and the trigger that caused them (event, timer, force path)</li>
-        </ul>
+      <section className="space-y-2">
+        <ToggleRow
+          icon={AlertTriangle}
+          title="Crash Reports"
+          subtitle="Always on - captures fatal errors and crash stacks"
+          checked
+          disabled
+          onChange={() => {}}
+        />
+        <Description>
+          Every uncaught exception, unhandled rejection, render-process-gone event, and preload error
+          writes one record to <Code>.kangentic/logs/crashes/&lt;ts&gt;.json</Code> with timestamp, kind,
+          source-mapped stack, and version info. Read via <Code>kangentic_get_recent_crashes</Code>.
+        </Description>
+      </section>
 
-        <SectionHeader label="How It Works" searchIds={['developer.activityDebugOverlay']} />
-        <p className="text-sm text-fg-muted leading-relaxed">
-          The overlay subscribes to the main process's activity engine via IPC and polls every 2 seconds while open.
-          It does not consume engine resources when the toggle is off. Use it to diagnose &quot;stuck thinking&quot; or &quot;missed idle&quot; reports:
-          look at the dominant reason and counters to see what is keeping the predicate non-idle, then read the recent
-          transitions to trace which event or timer drove the most recent change. The trigger label distinguishes hook events
-          (<code className="text-[11px] bg-surface-raised px-1 py-0.5 rounded">event:tool_start</code>) from timer-driven changes
-          (<code className="text-[11px] bg-surface-raised px-1 py-0.5 rounded">timer:stability</code>) and force paths
-          (<code className="text-[11px] bg-surface-raised px-1 py-0.5 rounded">force-thinking</code>).
-        </p>
+      <section className="space-y-2">
+        <ToggleRow
+          icon={Activity}
+          title="Record IPC Traffic"
+          subtitle="Log every IPC call to .kangentic/logs/ipc-<date>.jsonl"
+          checked={recordIpcTrafficEnabled}
+          onChange={(value) => updateGlobal({ developer: { recordIpcTraffic: value } })}
+        />
+        <Description>
+          Records channel, args, result, durationMs, and any thrown errors. Mutating channels
+          (settings writes, MCP config, attachments) are stored as{' '}
+          <Code>{'{ redacted: true, channel }'}</Code> to keep secrets out of disk logs. Off by default
+          (non-trivial disk impact). Read via <Code>kangentic_get_ipc_log</Code>.
+        </Description>
+      </section>
 
-        <SectionHeader label="Filing a Bug" searchIds={['developer.activityDebugOverlay']} />
-        <p className="text-sm text-fg-muted leading-relaxed">
-          When reporting an activity-detection bug, screenshot the overlay alongside the agent&apos;s TUI so the engine&apos;s
-          view of the world can be compared against what the agent actually shows. Mismatches between the two are the
-          most useful diagnostic signal.
-        </p>
-      </div>
+      {__KANGENTIC_DEV__ && <DevToolsSections globalConfig={globalConfig} />}
+    </div>
+  );
+}
+
+function KbdHint({ prefix, keys }: { prefix: string; keys: string[] }) {
+  return (
+    <div className="flex items-center gap-1.5 text-xs text-fg-muted px-1">
+      <span>{prefix}</span>
+      {keys.map((key, index) => (
+        <span key={key} className="flex items-center gap-1.5">
+          <kbd className="px-1.5 py-0.5 bg-surface-raised border border-edge rounded text-[11px] font-mono">
+            {key}
+          </kbd>
+          {index < keys.length - 1 && <span className="text-fg-disabled">+</span>}
+        </span>
+      ))}
     </div>
   );
 }

@@ -1,0 +1,77 @@
+import { Network, Code2 } from 'lucide-react';
+import type { AppConfig } from '../../shared/types';
+import { useScopedUpdate } from '../../renderer/components/settings/shared';
+import {
+  Code,
+  Description,
+  GroupHeading,
+  ToggleRow,
+} from '../../renderer/components/settings/tabs/dev-tab-primitives';
+
+/**
+ * Dev-only sections appended to the bottom of the product Developer
+ * settings tab. Rendered only when `__KANGENTIC_DEV__` is true at compile
+ * time; production builds tree-shake this entire file out.
+ *
+ * Reuses primitives from `dev-tab-primitives.tsx` so the visual rhythm
+ * matches the product-tier sections above. Importing from a third file
+ * (rather than from `DeveloperTab.tsx` directly) avoids a circular module
+ * graph - DeveloperTab also renders `<DevToolsSections />`. The boundary
+ * between product and dev surfaces is the `Dev Inspection Bridge` heading
+ * + thin top border.
+ */
+export function DevToolsSections({ globalConfig }: { globalConfig: AppConfig }) {
+  const updateGlobal = useScopedUpdate('global');
+  const developerConfig = globalConfig.developer ?? {};
+  // Inspection bridge defaults ON in dev builds when the user has never
+  // touched the toggle. `??` returns the right-hand side only when the
+  // stored value is null/undefined; explicit `false` is respected. Mirror
+  // of `safeReadDeveloperFlag` in `src/main/index.ts` so the displayed
+  // toggle state matches the actual bridge state.
+  const inspectionEnabled = developerConfig.previewInspectionServer ?? __KANGENTIC_DEV__;
+  // Eval stays default-off even in dev. Genuinely dangerous surface
+  // (arbitrary JS in the renderer, raw bytes to PTY, synthetic engine
+  // events); devs opt in deliberately when stress-testing.
+  const evalEnabled = developerConfig.previewEvalEnabled === true;
+
+  return (
+    <div className="space-y-3 pt-4 mt-2 border-t border-edge">
+      <GroupHeading>Dev Inspection Bridge</GroupHeading>
+
+      <section className="space-y-2">
+        <ToggleRow
+          icon={Network}
+          title="Inspection Bridge"
+          subtitle="Localhost HTTP bridge that powers the kangentic_devtools_* MCP tools"
+          checked={inspectionEnabled}
+          onChange={(value) => updateGlobal({ developer: { previewInspectionServer: value } })}
+        />
+        <Description>
+          When on, exposes screenshot, click, type, drag, DOM query, React fiber query, console + log
+          tail, and engine + renderer state via the <Code>kangentic_devtools_*</Code> MCP tools.
+          Writes a per-worktree lockfile at <Code>.kangentic/preview.lock</Code>. Bound to 127.0.0.1
+          on a random port, no auth. Defaults on in dev; excluded from production builds entirely.
+        </Description>
+      </section>
+
+      <section className="space-y-2">
+        <ToggleRow
+          icon={Code2}
+          title="Allow Unsafe Operations"
+          subtitle="Lets the agent run JavaScript, fake activity events, or send raw input to a session"
+          checked={evalEnabled}
+          onChange={(value) => updateGlobal({ developer: { previewEvalEnabled: value } })}
+        />
+        <Description>
+          Off by default. Three high-risk endpoints are gated behind this toggle:{' '}
+          <strong>eval</strong> (run any JavaScript in the renderer process),{' '}
+          <strong>inject session event</strong> (synthesize fake activity-engine events to test
+          watchdogs and predicates without spawning a real CLI), and{' '}
+          <strong>raw PTY input</strong> (write any byte sequence directly to a session's terminal,
+          including control codes that bypass the click/type input path). Flip on for stress-testing
+          and hard-to-reach UI paths; leave off otherwise.
+        </Description>
+      </section>
+    </div>
+  );
+}

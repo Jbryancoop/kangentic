@@ -4,6 +4,8 @@ import { app, BrowserWindow, clipboard, Menu, nativeImage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { registerAllIpc, getSessionManager, getTerminalSubmitScheduler, getBoardConfigManager, getCurrentProjectId, getOptionalIpcContext, openProjectByPath, deleteProjectFromIndex, pruneStaleWorktreeProjects, activateAllProjects, getLastOpenedProject } from './ipc/register-all';
+import { installDiagnostics } from './diagnostics/install';
+import { installDevtools } from '../devtools/install';
 import { startMcpHttpServer, type McpHttpServerHandle } from './agent/mcp-http-server';
 import { createRequestResolver } from './agent/mcp-project-context';
 import { IPC } from '../shared/ipc-channels';
@@ -19,6 +21,77 @@ import { restoreShellEnv } from './shell-env';
 
 initStartupTimer(PROCESS_START);
 mark('process_start');
+
+// Install product diagnostics (log mirror, crash capture, IPC recorder,
+// debug-dump path resolver) BEFORE any IPC handler registers. The recorder
+// patches `ipcMain.handle` once and every subsequent registration flows
+// through the patched path - must happen before `registerAllIpc()` runs.
+//
+// The lazy callbacks defer the actual project-root and toggle reads until
+// the moment something is being persisted, so this is safe to call before
+// the IPC context or any project is initialized.
+installDiagnostics({
+  getProjectRoot: () => getOptionalIpcContext()?.currentProjectPath ?? null,
+  getActivityDebugOverlayEnabled: () =>
+    safeReadDeveloperFlag('activityDebugOverlay'),
+  getPersistConsoleLogs: () =>
+    safeReadDeveloperFlag('persistConsoleLogs'),
+  getRecordIpcTraffic: () =>
+    safeReadDeveloperFlag('recordIpcTraffic'),
+});
+
+function safeReadDeveloperFlag(
+  key:
+    | 'activityDebugOverlay'
+    | 'persistConsoleLogs'
+    | 'recordIpcTraffic'
+    | 'previewInspectionServer'
+    | 'previewEvalEnabled',
+): boolean {
+  try {
+    const ctx = getOptionalIpcContext();
+    const manager = ctx?.configManager ?? windowConfigManager;
+    const stored = manager.load().developer?.[key];
+    if (stored !== undefined) return stored === true;
+    // Default values when the user has never touched the toggle. The
+    // inspection bridge defaults ON in dev builds because anyone running
+    // `npm start` is by definition a kangentic dev session and almost
+    // certainly wants the bridge available to their agent. Every other
+    // toggle (overlay, log mirror, IPC recorder, eval) defaults OFF
+    // because they have non-zero cost (UI overlay on screen, disk I/O,
+    // arbitrary-code surface) and the user should opt in deliberately.
+    if (key === 'previewInspectionServer') return __KANGENTIC_DEV__;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// Dev-only: register the localhost inspection bridge's shutdown hook +
+// store the runtime context. The bridge does NOT start here - it starts
+// when `applyRuntimeConfig()` fires after PROJECT_OPEN (or when the
+// `developer.previewInspectionServer` toggle flips ON later, since
+// applyRuntimeConfig also runs on every CONFIG_SET). The whole
+// `src/devtools/` tree is dropped from production builds via
+// `__KANGENTIC_DEV__` dead-code elimination + esbuild tree-shaking.
+if (__KANGENTIC_DEV__) {
+  // `mainWindow` is declared as `let` lower in this file (around line 230)
+  // and assigned inside `createWindow()`. The arrow-function callbacks
+  // below close over it but only READ at call time (not at definition);
+  // every caller (notifyDevtoolsRefresh, the inspection server's HTTP
+  // handlers, the before-quit hook) runs strictly after createWindow has
+  // assigned the variable, so the TDZ never trips at runtime.
+  installDevtools({
+    app,
+    getMainWindow: () => mainWindow,
+    getProjectRoot: () => getOptionalIpcContext()?.currentProjectPath ?? null,
+    getProjectId: () => getOptionalIpcContext()?.currentProjectId ?? null,
+    getWorktreePath: () => getOptionalIpcContext()?.currentProjectPath ?? null,
+    getSessionManager: () => getOptionalIpcContext()?.sessionManager ?? null,
+    getInspectionServerEnabled: () => safeReadDeveloperFlag('previewInspectionServer'),
+    getEvalEnabled: () => safeReadDeveloperFlag('previewEvalEnabled'),
+  });
+}
 
 // Global error handlers -- keep the app running through transient IPC/PTY errors.
 // During shutdown, skip analytics calls to avoid new network requests that block exit.

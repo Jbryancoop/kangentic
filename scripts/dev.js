@@ -27,6 +27,11 @@ const esbuildCommon = {
   define: {
     'MAIN_WINDOW_VITE_DEV_SERVER_URL': JSON.stringify(`http://localhost:${port}`),
     'MAIN_WINDOW_VITE_NAME': JSON.stringify('main_window'),
+    // Build-time constant gating dev-only code (src/devtools/, devtools MCP
+    // tools, dev-only Developer settings sections). esbuild's dead-code
+    // elimination drops `if (__KANGENTIC_DEV__) { ... }` blocks in production
+    // builds where this is `false`. See scripts/build.js for the prod value.
+    '__KANGENTIC_DEV__': 'true',
   },
   sourcemap: true,
 };
@@ -66,6 +71,11 @@ async function start() {
       },
       optimizeDeps: {
         include: rendererOptimizeDeps,
+      },
+      define: {
+        // Match the esbuild define so renderer code can use the same
+        // build-time constant. See vite.config.mts for the non-worktree path.
+        __KANGENTIC_DEV__: 'true',
       },
       server: { port, strictPort: true, watch: { ignored: ignorePatterns } },
     });
