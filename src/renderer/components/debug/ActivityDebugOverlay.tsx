@@ -15,6 +15,10 @@ const POLL_INTERVAL_MS = 2_000;
  * every Ctrl+Shift+D toggle. `null` until the user drags - on first
  * open the overlay defaults to a centered position. Resets only on
  * full page reload.
+ *
+ * Only the drag-end handler writes to this. The window-resize clamp
+ * deliberately does NOT persist here so a clamp from a centered start
+ * is not mistaken for a user-set position on the next mount.
  */
 let cachedPosition: OverlayPosition | null = null;
 
@@ -107,9 +111,9 @@ export function computeGridLayout(sessionCount: number): GridLayout {
  * immediately on enabling debug mode; subsequent drags persist via
  * `cachedPosition`.
  */
-function computeCenteredPosition(panelWidthPx: number): OverlayPosition {
+function computeCenteredPosition(panelWidthPx: number, panelHeightPx: number = PANEL_ESTIMATED_HEIGHT_PX): OverlayPosition {
   const left = Math.max(20, (window.innerWidth - panelWidthPx) / 2);
-  const top = Math.max(20, (window.innerHeight - PANEL_ESTIMATED_HEIGHT_PX) / 2);
+  const top = Math.max(20, (window.innerHeight - panelHeightPx) / 2);
   return { left, top };
 }
 
@@ -263,6 +267,13 @@ function ActivityDebugOverlayContent() {
   const [position, setPosition] = useState<OverlayPosition>(
     () => cachedPosition ?? computeCenteredPosition(computeGridLayout(Math.max(projectSessionIds.length, 1)).widthPx),
   );
+  // True once the panel has been positioned for the current mount. When
+  // false the panel renders with `visibility: hidden` so the user never
+  // sees a flash at the className-anchored top-left position before the
+  // transform commits. Starts true if a cached drag position exists
+  // (we trust that immediately) or false on a fresh launch (waiting for
+  // the centering layout effect to measure real dimensions).
+  const [isPositioned, setIsPositioned] = useState<boolean>(cachedPosition !== null);
   const positionRef = useRef<OverlayPosition>(position);
   const dragRef = useRef<{
     pointerId: number;
@@ -370,6 +381,23 @@ function ActivityDebugOverlayContent() {
   useLayoutEffect(() => {
     applyPositionToDom(position.left, position.top);
   }, [position, applyPositionToDom]);
+
+  // First-mount centering using REAL measured panel dimensions. The lazy
+  // useState initializer falls back to PANEL_ESTIMATED_HEIGHT_PX (300px)
+  // because it runs before the panel exists in the DOM, which can leave
+  // the panel off-center vertically. This effect runs once on mount,
+  // measures the actual rendered panel, and recenters precisely. Only
+  // runs on the very first launch (no cached drag position); a user
+  // who has dragged the overlay keeps their position across reopens.
+  useLayoutEffect(() => {
+    if (isPositioned) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    const centered = computeCenteredPosition(rect.width, rect.height);
+    setPosition(centered);
+    setIsPositioned(true);
+  }, [isPositioned]);
 
   // rAF coalescing: pointermove can fire at 1000Hz on Windows, but we
   // only paint at the display refresh rate (60-144 fps). Storing the
@@ -499,9 +527,12 @@ function ActivityDebugOverlayContent() {
       const clampedLeft = Math.min(prev.left, maxLeft);
       const clampedTop = Math.min(prev.top, maxTop);
       if (clampedLeft === prev.left && clampedTop === prev.top) return prev;
-      const next = { left: clampedLeft, top: clampedTop };
-      cachedPosition = next;
-      return next;
+      // Do not persist clamp results to cachedPosition. cachedPosition
+      // is reserved for explicit drag-end commits so the next mount can
+      // distinguish "user has placed this" from "system clamped a
+      // centered default" - the former should be respected, the latter
+      // should be re-centered against real dimensions on reopen.
+      return { left: clampedLeft, top: clampedTop };
     });
   }, [gridLayout.widthPx]);
 
@@ -529,8 +560,15 @@ function ActivityDebugOverlayContent() {
         // - touchAction:'none': prevents browser from swallowing the
         //   pointer stream for native scroll/pan, which would stutter
         //   the drag on touch devices.
+        // - visibility: kept hidden until the centering layout effect
+        //   has measured the real panel and committed a centered
+        //   transform. Without this gate, the className anchors the
+        //   panel at top-0 left-0 for one paint before the transform
+        //   commits - that is the "tucked into the top-left corner"
+        //   flash users were seeing on first launch.
         willChange: 'transform',
         touchAction: 'none',
+        visibility: isPositioned ? 'visible' : 'hidden',
       }}
       data-testid="activity-debug-overlay"
     >
