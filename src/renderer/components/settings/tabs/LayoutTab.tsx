@@ -1,5 +1,5 @@
 import type { AppConfig } from '../../../../shared/types';
-import { SettingRow, Select, ToggleSwitch, useScopedUpdate } from '../shared';
+import { SettingRow, SettingToggleRow, Select, useScopedUpdate } from '../shared';
 import { settingProps } from '../settings-registry';
 
 export function LayoutTab({ globalConfig }: { globalConfig: AppConfig }) {
@@ -26,30 +26,26 @@ export function LayoutTab({ globalConfig }: { globalConfig: AppConfig }) {
           <option value="wide">Wide</option>
         </Select>
       </SettingRow>
-      <SettingRow {...settingProps('terminalPanelVisible')}>
-        <ToggleSwitch
-          checked={globalConfig.terminalPanelVisible !== false}
-          onChange={(value) => updateGlobal({ terminalPanelVisible: value })}
-        />
-      </SettingRow>
-      <SettingRow {...settingProps('statusBarVisible')}>
-        <ToggleSwitch
-          checked={globalConfig.statusBarVisible !== false}
-          onChange={(value) => updateGlobal({ statusBarVisible: value })}
-        />
-      </SettingRow>
-      <SettingRow {...settingProps('restoreWindowPosition')}>
-        <ToggleSwitch
-          checked={globalConfig.restoreWindowPosition}
-          onChange={(value) => updateGlobal({ restoreWindowPosition: value })}
-        />
-      </SettingRow>
-      <SettingRow {...settingProps('animationsEnabled')}>
-        <ToggleSwitch
-          checked={globalConfig.animationsEnabled}
-          onChange={(value) => updateGlobal({ animationsEnabled: value })}
-        />
-      </SettingRow>
+      <SettingToggleRow
+        {...settingProps('terminalPanelVisible')}
+        checked={globalConfig.terminalPanelVisible !== false}
+        onChange={(value) => updateGlobal({ terminalPanelVisible: value })}
+      />
+      <SettingToggleRow
+        {...settingProps('statusBarVisible')}
+        checked={globalConfig.statusBarVisible !== false}
+        onChange={(value) => updateGlobal({ statusBarVisible: value })}
+      />
+      <SettingToggleRow
+        {...settingProps('restoreWindowPosition')}
+        checked={globalConfig.restoreWindowPosition}
+        onChange={(value) => updateGlobal({ restoreWindowPosition: value })}
+      />
+      <SettingToggleRow
+        {...settingProps('animationsEnabled')}
+        checked={globalConfig.animationsEnabled}
+        onChange={(value) => updateGlobal({ animationsEnabled: value })}
+      />
     </>
   );
 }

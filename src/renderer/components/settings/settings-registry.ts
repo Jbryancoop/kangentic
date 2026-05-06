@@ -72,7 +72,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   { id: 'shortcuts', tabId: 'shortcuts', label: 'Shortcuts', description: 'Custom commands accessible from the task detail dialog', scope: 'project', keywords: ['command', 'shortcut', 'tool', 'open', 'launch', 'tortoisegit', 'vscode', 'terminal', 'explorer', 'quick action'] },
 
   // ── MCP Server ──
-  { id: 'mcpServer.enabled', tabId: 'mcpServer', label: 'Kangentic MCP Server', description: 'Give agents tools to create tasks, query the board, and view session stats', scope: 'global', keywords: ['mcp', 'tools', 'create task', 'agent', 'board', 'query'] },
+  { id: 'mcpServer.enabled', tabId: 'mcpServer', label: 'Kangentic MCP Server', description: 'Give agents tools to interact with your board', scope: 'global', keywords: ['mcp', 'tools', 'create task', 'agent', 'board', 'query', 'session', 'stats'] },
 
   // ── Behavior > Session Limits ──
   { id: 'agent.maxConcurrentSessions', tabId: 'behavior', label: 'Max Concurrent Sessions', description: 'Limit how many agents can run at the same time', scope: 'global', section: 'Session Limits', keywords: ['parallel', 'limit'] },

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown, Search, X } from 'lucide-react';
 import { useSettingVisible, useSettingsSearch } from './settings-search';
 import { Pill } from '../Pill';
+import { ToggleCard, ToggleIndicator } from '../ToggleCard';
 
 // Re-export scope primitives so consumers can import everything from './shared'.
 export { SettingsPanelProvider, useScopedUpdate } from './setting-scope';
@@ -359,6 +360,37 @@ export function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange
   );
 }
 
+/* ── Setting Toggle Row ── */
+
+interface SettingToggleRowProps {
+  label: string;
+  description: string;
+  searchId?: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  /** Optional left-side icon. */
+  icon?: React.ReactNode;
+}
+
+/**
+ * Settings-panel wrapper around `<ToggleCard>` that hides the row when the
+ * settings search filter excludes its `searchId`.
+ */
+export function SettingToggleRow({ label, description, searchId, checked, onChange, icon }: SettingToggleRowProps) {
+  const visible = useSettingVisible(searchId);
+  if (!visible) return null;
+
+  return (
+    <ToggleCard
+      label={label}
+      description={description}
+      checked={checked}
+      onChange={onChange}
+      icon={icon}
+    />
+  );
+}
+
 /* ── Compact Toggle List ── */
 
 export interface CompactToggleItem {
@@ -372,7 +404,9 @@ export interface CompactToggleItem {
 
 /**
  * Single-column list of label + toggle pairs. Material Design-style compact
- * rows for dense boolean groups (e.g. context bar visibility toggles).
+ * rows for dense boolean groups (e.g. context bar visibility toggles). Each
+ * row is a click-anywhere button so the whole row toggles, not just the
+ * switch on the right.
  */
 export function CompactToggleList({ items }: { items: CompactToggleItem[] }) {
   const { isSearching, matchingIds } = useSettingsSearch();
@@ -385,17 +419,25 @@ export function CompactToggleList({ items }: { items: CompactToggleItem[] }) {
   if (visibleItems.length === 0) return null;
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-0.5">
       {visibleItems.map((item) => (
-        <div key={item.label} className="flex items-center justify-between gap-4 py-1.5">
+        <button
+          key={item.label}
+          type="button"
+          role="switch"
+          aria-checked={item.checked}
+          aria-label={item.label}
+          onClick={() => item.onChange(!item.checked)}
+          className="flex items-center justify-between gap-4 w-full text-left cursor-pointer rounded px-2 py-1.5 hover:bg-surface/60 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent"
+        >
           <div className="min-w-0">
             <div className="text-sm text-fg-secondary leading-tight">{item.label}</div>
             {item.description && (
               <div className="text-xs text-fg-faint leading-tight">{item.description}</div>
             )}
           </div>
-          <ToggleSwitch checked={item.checked} onChange={item.onChange} />
-        </div>
+          <ToggleIndicator checked={item.checked} />
+        </button>
       ))}
     </div>
   );

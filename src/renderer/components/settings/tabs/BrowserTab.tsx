@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Loader2, Trash2 } from 'lucide-react';
 import type { AppConfig } from '../../../../shared/types';
-import { SettingRow, ToggleSwitch, INPUT_CLASS, useScopedUpdate } from '../shared';
+import { SettingRow, SettingToggleRow, INPUT_CLASS, useScopedUpdate } from '../shared';
 import { settingProps } from '../settings-registry';
 import { ConfirmDialog } from '../../dialogs/ConfirmDialog';
 import { useToastStore } from '../../../stores/toast-store';
@@ -35,12 +35,11 @@ export function BrowserTab({ config }: { config: AppConfig }) {
 
   return (
     <>
-      <SettingRow {...settingProps('browser.enabled')}>
-        <ToggleSwitch
-          checked={enabled}
-          onChange={(value) => updateProject({ browser: { enabled: value } })}
-        />
-      </SettingRow>
+      <SettingToggleRow
+        {...settingProps('browser.enabled')}
+        checked={enabled}
+        onChange={(value) => updateProject({ browser: { enabled: value } })}
+      />
       <SettingRow {...settingProps('browser.defaultUrl')}>
         <input
           type="text"

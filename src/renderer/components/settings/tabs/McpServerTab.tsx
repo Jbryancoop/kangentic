@@ -1,23 +1,19 @@
 import { Plug } from 'lucide-react';
 import type { AppConfig } from '../../../../shared/types';
-import { SectionHeader, ToggleSwitch, useScopedUpdate } from '../shared';
+import { SectionHeader, SettingToggleRow, useScopedUpdate } from '../shared';
+import { settingProps } from '../settings-registry';
 
 export function McpServerTab({ globalConfig }: { globalConfig: AppConfig }) {
   const updateGlobal = useScopedUpdate('global');
   const enabled = globalConfig.mcpServer?.enabled ?? true;
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3 rounded-lg bg-surface-hover px-4 py-3">
-        <Plug className="size-5 text-fg-muted shrink-0" />
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium text-fg-primary">Kangentic MCP Server</div>
-          <div className="text-xs text-fg-muted">Give agents tools to interact with your board</div>
-        </div>
-        <ToggleSwitch
-          checked={enabled}
-          onChange={(value) => updateGlobal({ mcpServer: { enabled: value } })}
-        />
-      </div>
+      <SettingToggleRow
+        {...settingProps('mcpServer.enabled')}
+        icon={<Plug className="size-5" />}
+        checked={enabled}
+        onChange={(value) => updateGlobal({ mcpServer: { enabled: value } })}
+      />
 
       <div className={enabled ? '' : 'opacity-40 pointer-events-none'}>
         <SectionHeader label="Available Tools" searchIds={['mcpServer.enabled']} />

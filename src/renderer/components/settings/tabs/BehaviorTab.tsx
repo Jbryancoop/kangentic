@@ -1,5 +1,5 @@
 import type { AppConfig } from '../../../../shared/types';
-import { SectionHeader, SettingRow, Select, ToggleSwitch, INPUT_CLASS, useScopedUpdate } from '../shared';
+import { SectionHeader, SettingRow, SettingToggleRow, Select, INPUT_CLASS, useScopedUpdate } from '../shared';
 import { settingProps } from '../settings-registry';
 
 export function BehaviorTab({ globalConfig }: { globalConfig: AppConfig }) {
@@ -28,18 +28,16 @@ export function BehaviorTab({ globalConfig }: { globalConfig: AppConfig }) {
           <option value="reject">Reject</option>
         </Select>
       </SettingRow>
-      <SettingRow {...settingProps('autoFocusIdleSession')}>
-        <ToggleSwitch
-          checked={globalConfig.autoFocusIdleSession}
-          onChange={(value) => updateGlobal({ autoFocusIdleSession: value })}
-        />
-      </SettingRow>
-      <SettingRow {...settingProps('agent.autoResumeSessionsOnRestart')}>
-        <ToggleSwitch
-          checked={globalConfig.agent.autoResumeSessionsOnRestart}
-          onChange={(value) => updateGlobal({ agent: { autoResumeSessionsOnRestart: value } })}
-        />
-      </SettingRow>
+      <SettingToggleRow
+        {...settingProps('autoFocusIdleSession')}
+        checked={globalConfig.autoFocusIdleSession}
+        onChange={(value) => updateGlobal({ autoFocusIdleSession: value })}
+      />
+      <SettingToggleRow
+        {...settingProps('agent.autoResumeSessionsOnRestart')}
+        checked={globalConfig.agent.autoResumeSessionsOnRestart}
+        onChange={(value) => updateGlobal({ agent: { autoResumeSessionsOnRestart: value } })}
+      />
     </>
   );
 }

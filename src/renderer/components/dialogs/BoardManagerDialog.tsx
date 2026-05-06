@@ -14,6 +14,7 @@ import { IconPickerDialog } from './IconPickerDialog';
 import { ModelCombobox } from './ModelCombobox';
 import { ICON_REGISTRY, ROLE_DEFAULTS, getUsedIcons } from '../../utils/swimlane-icons';
 import { Select } from '../settings/shared';
+import { ToggleCard } from '../ToggleCard';
 import {
   getPermissionLabel,
   DEFAULT_PERMISSIONS,
@@ -172,52 +173,6 @@ function ResetHint({ onClick, title }: { onClick: () => void; title: string }) {
     >
       <RotateCcw size={11} />
       Reset
-    </button>
-  );
-}
-
-function FirstClassToggle({
-  label,
-  description,
-  checked,
-  onChange,
-  ariaLabel,
-}: {
-  label: string;
-  description: string;
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  ariaLabel: string;
-}) {
-  // The whole card is the click target — the visual switch is just an
-  // indicator. This converts the wide gap between label and switch from
-  // "empty space next to a small control" into "interior of one large
-  // control," which reads as intentional rather than disconnected.
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={ariaLabel}
-      onClick={() => onChange(!checked)}
-      className="flex items-start justify-between gap-4 w-full text-left cursor-pointer bg-surface/40 hover:bg-surface/70 border border-edge/40 hover:border-edge rounded-md px-3.5 py-2.5 transition-colors focus:outline-none focus-visible:border-accent"
-    >
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium text-fg-secondary">{label}</div>
-        <p className="text-xs text-fg-faint mt-0.5">{description}</p>
-      </div>
-      <span
-        aria-hidden="true"
-        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 mt-0.5 ${
-          checked ? 'bg-accent' : 'bg-edge-input'
-        }`}
-      >
-        <span
-          className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-            checked ? 'translate-x-[18px]' : 'translate-x-[3px]'
-          }`}
-        />
-      </span>
     </button>
   );
 }
@@ -1075,12 +1030,11 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
                 </SettingField>
 
                 {!isTodoOrDone && (
-                  <FirstClassToggle
+                  <ToggleCard
                     label="Auto-spawn"
                     description="Start an agent automatically when a task enters this column."
                     checked={draft.auto_spawn}
                     onChange={(next) => updateDraft((current) => ({ ...current, auto_spawn: next }))}
-                    ariaLabel="Auto-spawn"
                   />
                 )}
               </div>
@@ -1283,12 +1237,11 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
 
             {activeSection === 'handoff' && (
               <div className="space-y-5">
-                <FirstClassToggle
+                <ToggleCard
                   label="Receive context from prior agent"
                   description="On cross-agent moves into this column, hand the previous agent's conversation to the new one."
                   checked={draft.handoff_context}
                   onChange={(next) => updateDraft((current) => ({ ...current, handoff_context: next }))}
-                  ariaLabel="Receive context from prior agent"
                 />
 
                 <div className="border-t border-edge/50 pt-4 max-w-md space-y-3">

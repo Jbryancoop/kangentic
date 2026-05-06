@@ -1,24 +1,22 @@
 import type { AppConfig } from '../../../../shared/types';
 import { BranchPicker } from '../../dialogs/BranchPicker';
-import { SettingRow, ToggleSwitch, INPUT_CLASS, useScopedUpdate } from '../shared';
+import { SettingRow, SettingToggleRow, INPUT_CLASS, useScopedUpdate } from '../shared';
 import { settingProps } from '../settings-registry';
 
 export function GitTab({ config }: { config: AppConfig }) {
   const updateProject = useScopedUpdate('project');
   return (
     <>
-      <SettingRow {...settingProps('git.worktreesEnabled')}>
-        <ToggleSwitch
-          checked={config.git.worktreesEnabled}
-          onChange={(value) => updateProject({ git: { worktreesEnabled: value } })}
-        />
-      </SettingRow>
-      <SettingRow {...settingProps('git.autoCleanup')}>
-        <ToggleSwitch
-          checked={config.git.autoCleanup}
-          onChange={(value) => updateProject({ git: { autoCleanup: value } })}
-        />
-      </SettingRow>
+      <SettingToggleRow
+        {...settingProps('git.worktreesEnabled')}
+        checked={config.git.worktreesEnabled}
+        onChange={(value) => updateProject({ git: { worktreesEnabled: value } })}
+      />
+      <SettingToggleRow
+        {...settingProps('git.autoCleanup')}
+        checked={config.git.autoCleanup}
+        onChange={(value) => updateProject({ git: { autoCleanup: value } })}
+      />
       <SettingRow {...settingProps('git.defaultBaseBranch')}>
         <BranchPicker
           variant="input"
