@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import { Bell, Bot, GitBranch, Globe, LayoutGrid, Palette, Plug, ShieldCheck, SlidersHorizontal, Terminal, Zap } from 'lucide-react';
+import { Bell, Bot, Bug, GitBranch, Globe, LayoutGrid, Palette, Plug, ShieldCheck, SlidersHorizontal, Terminal, Zap } from 'lucide-react';
 import { useConfigStore } from '../../stores/config-store';
 import { SettingsPanelProvider, SearchTabGroupHeader, NoSearchResults } from './shared';
 import type { SettingsTabDefinition, SettingScope, SettingsContentProps } from './shared';
@@ -16,6 +16,7 @@ import { BehaviorTab } from './tabs/BehaviorTab';
 import { McpServerTab } from './tabs/McpServerTab';
 import { NotificationsTab } from './tabs/NotificationsTab';
 import { PrivacyTab } from './tabs/PrivacyTab';
+import { DeveloperTab } from './tabs/DeveloperTab';
 
 /**
  * Settings tab layout:
@@ -41,6 +42,7 @@ export const APP_TABS: SettingsTabDefinition[] = [
   { id: 'mcpServer', label: 'MCP Server', icon: Plug, tooltip: 'Applies to all projects' },
   { id: 'notifications', label: 'Notifications', icon: Bell, tooltip: 'Applies to all projects' },
   { id: 'privacy', label: 'Privacy', icon: ShieldCheck, tooltip: 'Applies to all projects' },
+  { id: 'developer', label: 'Developer', icon: Bug, tooltip: 'Applies to all projects' },
 ];
 
 /** Separator index: tabs before this are per-project, tabs at/after are shared. */
@@ -92,6 +94,7 @@ export function SettingsContent({ activeTab, isSearching, searchQuery, matchingT
       case 'git': return <GitTab config={effectiveConfig} />;
       case 'browser': return <BrowserTab config={effectiveConfig} />;
       case 'shortcuts': return <ShortcutsTab />;
+      case 'developer': return <DeveloperTab globalConfig={globalConfig} />;
       case 'layout': return <LayoutTab globalConfig={globalConfig} />;
       case 'behavior': return <BehaviorTab globalConfig={globalConfig} />;
       case 'mcpServer': return <McpServerTab globalConfig={globalConfig} />;

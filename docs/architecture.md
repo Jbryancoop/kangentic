@@ -152,7 +152,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `transition:set` | invoke | Set action chain for lane A→B |
 | `transition:getFor` | invoke | Get transitions for lane pair (exact match, then wildcard) |
 
-### Sessions (27 channels)
+### Sessions (30 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `session:spawn` | invoke | Spawn PTY session (may queue) |
@@ -166,9 +166,12 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `session:getScrollback` | invoke | Get terminal scrollback buffer |
 | `session:getUsage` | invoke | Fetch session usage (tokens, cost). Optional `projectId` scopes to one project. |
 | `session:getActivity` | invoke | Fetch activity state (thinking/idle). Optional `projectId` scopes to one project. |
+| `session:getActivityReason` | invoke | Fetch the current `ActivityReason` discriminated-union value for one session |
+| `session:getActivityStats` | invoke | Fetch a raw engine-counter snapshot for the debug overlay |
 | `session:getEvents` | invoke | Fetch activity log events for one session |
 | `session:getEventsCache` | invoke | Fetch cached event arrays. Optional `projectId` scopes to one project. |
 | `session:setFocused` | invoke | Set which sessions are visible in the renderer (optimizes IPC traffic) |
+| `session:notifyUserInterrupt` | invoke | Notify telemetry of a user Ctrl+C; arms the 3-second settle timer that synthesizes Interrupted if hooks don't recover |
 | `session:data` | on | Terminal output available (includes `projectId`) |
 | `session:firstOutput` | on | Alternate screen buffer detected - TUI ready (includes `projectId`) |
 | `session:exit` | on | Session exited (includes `projectId`) |

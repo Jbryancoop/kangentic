@@ -11,11 +11,11 @@ The session-history subsystem is split into four layers with strict separation o
 | Layer | File | Responsibility |
 |---|---|---|
 | Adapter parser | `adapters/<agent>/session-history-parser.ts` | Agent-specific file format knowledge. Implements `locate()` + `parse()`. |
-| Reader (dispatcher) | `src/main/pty/session-history-reader.ts` | Generic file watching, cursor tracking, parse dispatch. Owns all session-history-specific runtime logic. |
-| Consumer primitives | `src/main/pty/usage-tracker.ts` | Generic primitives (`setSessionUsage`, `ingestEvents`, `forceActivity`, `suppressPty`, `processStatusUpdate`, `captureHookSessionIds`) — no telemetry-source-specific vocabulary. |
+| Reader (dispatcher) | `src/main/pty/readers/session-history-reader.ts` | Generic file watching, cursor tracking, parse dispatch. Owns all session-history-specific runtime logic. |
+| Consumer primitives | `src/main/pty/activity/session-telemetry.ts` | Generic primitives (`setSessionUsage`, `ingestEvents`, `forceActivity`, `notifyPtyData`, `processStatusUpdate`, `captureHookSessionIds`) — no telemetry-source-specific vocabulary. |
 | Session lifecycle | `src/main/pty/session-manager.ts` | Calls `reader.attach()` on agent-session-id capture, `reader.detach()` on removal. Composes both telemetry readers symmetrically. Knows nothing else about session history. |
 
-**Symmetric pipeline**: `StatusFileReader` (`src/main/pty/status-file-reader.ts`) handles Claude's hook-based telemetry (status.json + events.jsonl) using the exact same pattern. Both readers own their own `FileWatcher` instances and dispatch through generic `UsageTracker` primitives. Neither reader mentions a specific agent name. See the "Claude status-file pipeline" section below for details.
+**Symmetric pipeline**: `StatusFileReader` (`src/main/pty/readers/status-file-reader.ts`) handles Claude's hook-based telemetry (status.json + events.jsonl) using the exact same pattern. Both readers own their own `FileWatcher` instances and dispatch through generic `SessionTelemetry` primitives. Neither reader mentions a specific agent name. See the "Claude status-file pipeline" section below for details.
 
 Runtime flow:
 
@@ -31,12 +31,12 @@ Runtime flow:
 4. When `notifyAgentSessionId` fires (one of the latter three paths), SessionManager reads `session.agentParser?.runtime?.sessionHistory` and, if present, calls `sessionHistoryReader.attach(...)`. The spawn-time short-circuit calls `attach()` directly, bypassing the notify chain to avoid a DB ordering hazard with `recoverStaleSessionId`. `attach()` is idempotent, so a later capture pathway firing the full chain is harmless.
 5. `SessionHistoryReader.attach()` calls `hook.locate({ agentSessionId, cwd })`, instantiates a `FileWatcher` on the resolved path, and triggers an initial read.
 6. Each file-change event reads new content (append-mode cursor for JSONL, whole-file re-read for JSON) and dispatches to `sessionHistory.parse(content, mode)`.
-7. The resulting `SessionHistoryParseResult` flows through `dispatchSessionHistoryResult()` into the generic callback primitives (`onUsageUpdate`, `onEvents`, `onActivity`, `onFirstTelemetry`) that SessionManager wired to UsageTracker at construction time.
-8. On the first successful dispatch, `onFirstTelemetry` fires, which calls `UsageTracker.suppressPty(sessionId)` - PtyActivityTracker stops contributing activity signals for the rest of the session.
+7. The resulting `SessionHistoryParseResult` flows through `dispatchSessionHistoryResult()` into the generic callback primitives (`onUsageUpdate`, `onEvents`, `onActivity`, `onFirstTelemetry`) that SessionManager wired to SessionTelemetry at construction time.
+8. On the first successful dispatch, `onFirstTelemetry` fires, which calls into `SessionTelemetry`'s PTY-tracker suppression - PtyActivityTracker stops contributing activity signals for the rest of the session.
 
 The PtyActivityTracker keeps running in parallel until suppressed, so the boot window (before the history file materializes) is still covered by the existing spinner + silence-timer mechanism.
 
-**UsageTracker has zero session-history awareness.** Its new generic primitives (`ingestEvents`, `forceActivity`, `suppressPty`, plus the existing `setSessionUsage`) are useful for any telemetry source — session history is just the first caller. A future hypothetical telemetry source (WebSocket stream, API poll, etc.) would use the same primitives without any UsageTracker changes.
+**SessionTelemetry has zero session-history awareness.** Its generic primitives (`ingestEvents`, `forceActivity`, plus the existing `setSessionUsage`) are useful for any telemetry source — session history is just one caller. A future hypothetical telemetry source (WebSocket stream, API poll, etc.) would use the same primitives without any SessionTelemetry changes.
 
 ### `SessionHistoryParseResult`
 
@@ -44,8 +44,8 @@ The PtyActivityTracker keeps running in parallel until suppressed, so the boot w
 
 | Field | Type | Semantics |
 |-------|------|-----------|
-| `usage` | `SessionUsage \| null` | Updated usage snapshot. Null when this parse pass didn't touch model or tokens. The reader's callback merges it into the existing `usageCache` entry via `UsageTracker.setSessionUsage`. |
-| `events` | `SessionEvent[]` | New events to append to the session event log. Empty array when there are none. The reader pushes them through `UsageTracker.ingestEvents`, which runs each event through the activity state machine plus the per-event detectors (PTY suppression, ExitPlanMode, PR command). |
+| `usage` | `SessionUsage \| null` | Updated usage snapshot. Null when this parse pass didn't touch model or tokens. The reader's callback merges it into the existing `usageCache` entry via `SessionTelemetry.setSessionUsage`. |
+| `events` | `SessionEvent[]` | New events to append to the session event log. Empty array when there are none. The reader pushes them through `SessionTelemetry.ingestEvents`, which runs each event through the activity engine plus the per-event detectors (PTY suppression, ExitPlanMode, PR command). |
 | `activity` | `Activity \| null` | Explicit activity transition hint (`Activity.Thinking`, `Activity.Idle`, or `null`). Set when a log entry maps directly to a state change (e.g. Codex `task_started` → `Thinking`, `task_complete` → `Idle`) rather than relying on the event stream alone. Null when events alone imply the transition. |
 
 All three fields are optional in the sense that any combination is valid — parsers can return partial results (e.g. a token-only update yields `usage` populated and `events: []`).
@@ -197,7 +197,7 @@ readonly runtime: AdapterRuntimeStrategy = {
 };
 ```
 
-`StatusFileReader` (`src/main/pty/status-file-reader.ts`) reads `session.agentParser?.runtime?.statusFile` at attach time and dispatches through the hook's `parseStatus` / `parseEvent` methods. It contains no Claude-specific parsing code - swap the hook and the same reader serves any future adapter that wants to ride the same pipeline.
+`StatusFileReader` (`src/main/pty/readers/status-file-reader.ts`) reads `session.agentParser?.runtime?.statusFile` at attach time and dispatches through the hook's `parseStatus` / `parseEvent` methods. It contains no Claude-specific parsing code - swap the hook and the same reader serves any future adapter that wants to ride the same pipeline.
 
 | Field | Semantics |
 |-------|-----------|

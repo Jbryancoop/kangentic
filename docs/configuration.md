@@ -20,7 +20,7 @@ The config directory (`<configDir>`) is platform-specific:
 
 Both panels use a VS Code-style layout: a sidebar with tab navigation on the left and the active settings pane on the right. A search bar at the top filters settings by keyword. Search uses multi-token matching (all tokens must appear in the setting name or description). Results are grouped by tab with match count badges on the sidebar; tabs with zero matches are dimmed. Press Ctrl+F (Cmd+F on macOS) to focus the search bar, Escape to clear the filter.
 
-- **Settings Panel** -- opened via the titlebar gear icon or the gear icon on each project row in the sidebar. A project switcher dropdown in the header allows switching between projects. Sidebar tabs: Theme, Terminal, Agent, Git, Browser, Shortcuts, Layout, Behavior, MCP Server, Notifications, Privacy. The first six tabs (above the separator) are per-project settings. Five of them (Theme, Terminal, Agent, Git, Browser) save to `.kangentic/config.json`, while Shortcuts saves to the board config files (`kangentic.json` and `kangentic.local.json`). The last five (Layout, Behavior, MCP Server, Notifications, Privacy) are shared settings that apply across all projects, saved to the global config. When no project is open, only the 5 shared tabs appear. Changes save immediately. New projects clone settings from the most recently configured project (falling back to defaults if none exist).
+- **Settings Panel** -- opened via the titlebar gear icon or the gear icon on each project row in the sidebar. A project switcher dropdown in the header allows switching between projects. Sidebar tabs: Theme, Terminal, Agent, Git, Browser, Shortcuts, Layout, Behavior, MCP Server, Notifications, Privacy, Developer. The first six tabs (above the separator) are per-project settings. Five of them (Theme, Terminal, Agent, Git, Browser) save to `.kangentic/config.json`, while Shortcuts saves to the board config files (`kangentic.json` and `kangentic.local.json`). The last six (Layout, Behavior, MCP Server, Notifications, Privacy, Developer) are shared settings that apply across all projects, saved to the global config. When no project is open, only the 6 shared tabs appear. Changes save immediately. New projects clone settings from the most recently configured project (falling back to defaults if none exist).
 
 ### App-Only Settings
 
@@ -35,6 +35,7 @@ These settings appear only in App Settings and cannot be overridden per-project:
 - `contextBar.*` (all context bar visibility toggles)
 - `notifications.*` (all notification settings)
 - `agent.idleTimeoutMinutes`
+- `developer.activityDebugOverlay`
 
 ### Per-Project Overridable Settings
 
@@ -199,6 +200,14 @@ All context bar settings are global-only and cannot be overridden per-project.
 ### Privacy
 
 The Privacy tab is informational only - it has no configurable keys. It displays what anonymous analytics Kangentic collects (app launches, platform, crash reports, task/session counts) and what it does not collect (task content, file paths, usernames, code). Analytics are powered by Aptabase (no cookies, no persistent identifiers, GDPR-compliant). Set `KANGENTIC_TELEMETRY=0` as an environment variable to opt out.
+
+### Developer
+
+Power-user settings for diagnosing the activity engine and other internal subsystems. Global-only (no per-project override). Also toggleable from anywhere via Ctrl+Shift+D.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `developer.activityDebugOverlay` | boolean | `false` | Show the floating activity-engine debug overlay. Renders live counters (pendingToolCount, subagentDepth, bg shells), the current `ActivityReason`, and a ring buffer of recent transitions for every running session in the current project. Polls `getActivityStats` every 2 seconds while open; lazy-disables the IPC when closed. |
 
 ## Swimlane-Level Configuration
 

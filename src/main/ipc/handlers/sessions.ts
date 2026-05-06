@@ -53,6 +53,8 @@ export function registerSessionHandlers(context: IpcContext): void {
     projectId ? context.sessionManager.getUsageCacheForProject(projectId) : context.sessionManager.getUsageCache());
   ipcMain.handle(IPC.SESSION_GET_ACTIVITY, (_, projectId?: string) =>
     projectId ? context.sessionManager.getActivityCacheForProject(projectId) : context.sessionManager.getActivityCache());
+  ipcMain.handle(IPC.SESSION_GET_ACTIVITY_REASON, (_, sessionId: string) => context.sessionManager.getActivityReason(sessionId));
+  ipcMain.handle(IPC.SESSION_GET_ACTIVITY_STATS, (_, sessionId: string) => context.sessionManager.getActivityStatsSnapshot(sessionId));
   ipcMain.handle(IPC.SESSION_GET_EVENTS, (_, sessionId: string) => context.sessionManager.getEventsForSession(sessionId));
   ipcMain.handle(IPC.SESSION_GET_EVENTS_CACHE, (_, projectId?: string) =>
     projectId ? context.sessionManager.getEventsCacheForProject(projectId) : context.sessionManager.getEventsCache());
@@ -245,6 +247,13 @@ export function registerSessionHandlers(context: IpcContext): void {
     flushBackgroundBuffer();
   });
 
+  // User pressed Ctrl+C in the terminal. Renderer already sent \x03 to
+  // the PTY directly; this is a parallel signal so the activity engine
+  // can recover quickly when the agent's hooks don't fire.
+  ipcMain.handle(IPC.SESSION_NOTIFY_USER_INTERRUPT, (_, sessionId: string) => {
+    context.sessionManager.signalUserInterrupt(sessionId);
+  });
+
   // === Background IPC Buffering ===
   // Buffer usage and event IPC for non-focused sessions, flushing every 2 seconds.
   // This reduces IPC churn from O(N*freq) to O(1*freq) + trickle.
@@ -309,7 +318,7 @@ export function registerSessionHandlers(context: IpcContext): void {
     }
   });
 
-  context.sessionManager.on('activity', (sessionId: string, state: string, isPermission: boolean) => {
+  context.sessionManager.on('activity', (sessionId: string, state: string, reason: unknown) => {
     if (!context.mainWindow.isDestroyed()) {
       const projectId = context.sessionManager.getSessionProjectId(sessionId);
       const taskId = context.sessionManager.getSessionTaskId(sessionId);
@@ -323,7 +332,7 @@ export function registerSessionHandlers(context: IpcContext): void {
           // Project DB may not exist yet -- skip title lookup
         }
       }
-      context.mainWindow.webContents.send(IPC.SESSION_ACTIVITY, sessionId, state, projectId, taskId, taskTitle, isPermission);
+      context.mainWindow.webContents.send(IPC.SESSION_ACTIVITY, sessionId, state, reason, projectId, taskId, taskTitle);
     }
   });
 
@@ -386,7 +395,7 @@ export function registerSessionHandlers(context: IpcContext): void {
     }
     if (!projectId) return;
 
-    // session-manager.suspend() (called by usage-tracker.requestSuspend) already
+    // session-manager.suspend() (called by session-telemetry.requestSuspend) already
     // flipped the registry status synchronously. Mirror those writes into the DB
     // so task.session_id and the session record agree with the registry.
     // Without this, SESSION_RESUME's reconciliation has to recover from the

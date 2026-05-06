@@ -181,7 +181,7 @@ Valid suspended_by values: `user` (explicit pause button), `system` (shutdown, t
 
 Valid permission_mode values: `default`, `plan`, `acceptEdits`, `dontAsk`, `bypassPermissions`, `auto` (see `PermissionMode` type in `src/shared/types.ts`).
 
-`tool_breakdown` is JSON-encoded `PerToolStat[]` (see `src/shared/types.ts`). One entry per distinct tool name with `callCount`, `totalDurationMs`, `interruptedCount`, and optional `costUsd` / `inputTokens` / `outputTokens` when the adapter emits per-tool telemetry on `tool_end` events. NULL on records captured before the column existed and on records whose session produced no tool events. Written by `captureSessionMetrics` from a per-session aggregator in `UsageTracker` that pairs `tool_start` / `tool_end` timestamps; tracked independently of the bounded event cache so totals are not truncated for long sessions.
+`tool_breakdown` is JSON-encoded `PerToolStat[]` (see `src/shared/types.ts`). One entry per distinct tool name with `callCount`, `totalDurationMs`, `interruptedCount`, and optional `costUsd` / `inputTokens` / `outputTokens` when the adapter emits per-tool telemetry on `tool_end` events. NULL on records captured before the column existed and on records whose session produced no tool events. Written by `captureSessionMetrics` from `UsageAccumulator` (`src/main/pty/activity/usage-accumulator.ts`), which pairs `tool_start` / `tool_end` timestamps in a per-session aggregator and is tracked independently of the bounded event cache so totals are not truncated for long sessions.
 
 Indexes: `idx_sessions_task_started` on (task_id, started_at DESC), `idx_sessions_status` on (status), `idx_sessions_agent_session_id` on (agent_session_id).
 

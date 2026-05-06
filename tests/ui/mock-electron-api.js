@@ -1002,6 +1002,17 @@
       getActivity: async function (/* projectId */) {
         return Object.assign({}, activityCache);
       },
+      getActivityReason: async function (/* sessionId */) {
+        // No reason data is mocked; UI tests that assert on the reason
+        // shape should extend this stub. Returning null mirrors the
+        // production "session unknown" path.
+        return null;
+      },
+      getActivityStats: async function (/* sessionId */) {
+        // Debug overlay only; UI tests rarely need this. Return null
+        // to mirror "session unknown" path.
+        return null;
+      },
       onActivity: function () {
         return noop;
       },
@@ -1054,6 +1065,10 @@
       __setFocusedCalls: [],
       setFocused: async function (sessionIds) {
         window.electronAPI.sessions.__setFocusedCalls.push(sessionIds.slice());
+      },
+      __notifyUserInterruptCalls: [],
+      notifyUserInterrupt: async function (sessionId) {
+        window.electronAPI.sessions.__notifyUserInterruptCalls.push(sessionId);
       },
     },
 

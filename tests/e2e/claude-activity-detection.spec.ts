@@ -424,7 +424,7 @@ test.describe('Claude Agent -- Task Card Spinner', () => {
     // Mock Claude never emits real hook events, so the session settles to
     // idle after initialization. Simulate a PreToolUse hook by writing a
     // tool_start event directly to the session's events JSONL - the file
-    // watcher picks it up and UsageTracker transitions the state to thinking.
+    // watcher picks it up and SessionTelemetry transitions the state to thinking.
     const eventsPath = findEventsOutputPath();
     expect(eventsPath).toBeTruthy();
     fs.mkdirSync(path.dirname(eventsPath!), { recursive: true });

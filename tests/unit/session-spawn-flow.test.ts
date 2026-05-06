@@ -129,7 +129,7 @@ function makeContext(): SpawnFlowContext {
       initSession: vi.fn(),
       onData: vi.fn(),
     },
-    usageTracker: {
+    telemetry: {
       removeSession: vi.fn(),
       initSession: vi.fn(),
       setSessionUsage: vi.fn(),

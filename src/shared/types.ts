@@ -292,7 +292,7 @@ export interface SessionRecord {
 
 /**
  * Per-tool aggregate captured at session exit/suspend. Sourced from the
- * incremental tracker in UsageTracker so the totals are not truncated by
+ * incremental tracker in UsageAccumulator so the totals are not truncated by
  * the bounded event-cache window. Cost/token fields are optional - they
  * are only populated if a future adapter starts emitting per-tool cost
  * on its ToolEnd event payload (see `SessionEvent.costUsd` etc.). The
@@ -346,7 +346,87 @@ export interface SessionSummary {
 
 // === Session Activity (Claude Code Hooks) ===
 
-export type ActivityState = 'thinking' | 'idle';
+/**
+ * Top-level activity state.
+ *
+ * `'permission'` is a distinct state from `'idle'`: the agent has paused
+ * waiting for user approval (a `PermissionRequest` hook fired). UI and
+ * notifications differentiate this from a clean Stop because the user
+ * needs to act, not just acknowledge.
+ *
+ * The renderer should treat `'permission'` like `'idle'` for spinner
+ * purposes (no animated spinner) but render a distinct affordance
+ * (lock icon, dot, etc.).
+ */
+export type ActivityState = 'thinking' | 'idle' | 'permission';
+
+/**
+ * Why the activity engine reports its current state. Discriminated
+ * union exposed alongside `ActivityState` so the UI can render
+ * context-aware affordances - different icons per `kind`, live counts,
+ * tooltip text naming the current tool.
+ *
+ * Priority ladder (single source of truth in the engine's
+ * `deriveActivityAndReason`):
+ *   permission > tool > subagent > background-shell > turn-active > idle
+ *
+ * Kinds where the predicate is `'thinking'`: tool, subagent,
+ * background-shell, turn-active. Others map to `'permission'` or
+ * `'idle'`.
+ */
+export type ActivityReason =
+  | { kind: 'idle' }
+  | { kind: 'permission' }
+  | {
+      kind: 'tool';
+      pendingCount: number;
+      /** Most recent ToolStart's tool name; null between tool calls. */
+      currentTool: string | null;
+    }
+  | { kind: 'subagent'; depth: number }
+  | {
+      kind: 'background-shell';
+      count: number;
+      /** Identity-aware shell ids when extracted from hooks; empty for anonymous shells. */
+      ids: readonly string[];
+    }
+  | { kind: 'turn-active' };
+
+/**
+ * Rich activity-engine state snapshot for the debug overlay
+ * (Developer tab toggle). Surfaces internal counters + ring buffer of
+ * recent transitions for diagnosing stuck-thinking / missed-idle bugs.
+ *
+ * IPC payload only - production renderer code uses `ActivityState` +
+ * `ActivityReason`. Subscribed via `getActivityStats(sessionId)`.
+ */
+export interface ActivityStatsSnapshot {
+  sessionId: string;
+  activity: ActivityState;
+  reason: ActivityReason;
+  pendingToolCount: number;
+  subagentDepth: number;
+  backgroundShellIds: readonly string[];
+  anonymousBackgroundShellCount: number;
+  turnActive: boolean;
+  permissionPending: boolean;
+  msSinceLastSignal: number | null;
+  pendingIdleArmed: boolean;
+  recentTransitions: ReadonlyArray<{
+    ts: number;
+    from: ActivityState;
+    /** Same as `from` for non-transition events that mutated counters
+     *  without changing activity. */
+    to: ActivityState;
+    reasonKind: ActivityReason['kind'];
+    /** Free-form trigger label - see TransitionTrigger in activity-engine.ts. */
+    trigger: string;
+    /** Plain-text summary of which counters/flags changed during this
+     *  step (e.g. "tools +1", "bg -1, turn no"). Undefined when no
+     *  observable counter shifted. */
+    counterDelta?: string;
+  }>;
+}
 
 // === Typesafe Enums for Hook Events, Event Types, and Tool Names ===
 
@@ -459,6 +539,13 @@ export const IdleReason = {
   Prompt: 'prompt',
   /** Synthetic: the PTY tracker's silence timer expired. */
   Silence: 'silence',
+  /**
+   * Synthetic: the bg-shell watcher detected a background shell's
+   * process exited naturally (no KillBash, no BashOutput status).
+   * Used as the `detail` of a synthetic `background_shell_end` event
+   * emitted by `BgShellWatcher`.
+   */
+  NaturalExit: 'natural-exit',
 } as const;
 export type IdleReason = typeof IdleReason[keyof typeof IdleReason];
 
@@ -477,6 +564,20 @@ export interface SessionEvent {
   ts: number;
   type: EventType;
   tool?: string;    // for tool_start/tool_end/interrupted
+  /**
+   * Optional correlation id for tool events. When present, the
+   * activity engine matches `tool_end` to its `tool_start` by id
+   * instead of falling back to LIFO-by-name. This eliminates the
+   * stale-currentTool drift when concurrent tools end out-of-order
+   * and removes the duplicate-name ambiguity.
+   *
+   * Source: Claude Code's hook payload includes `tool_use_id` at the
+   * top level on PreToolUse and PostToolUse. Other adapters that
+   * surface a stable per-call identifier should populate this too.
+   * Adapters without correlation IDs simply leave it undefined; the
+   * engine falls back to name-matching automatically.
+   */
+  toolId?: string;
   /**
    * Polymorphic context for the event:
    * - For `tool_start`/`tool_end`: tool-specific info (file path, command)
@@ -828,6 +929,21 @@ export interface AppConfig {
     enabled?: boolean;
     /** Project default URL when a task has no per-task override. */
     defaultUrl?: string;
+  };
+
+  /**
+   * Developer / debug toggles. Global-only - the debug overlay is a
+   * per-machine dev affordance, not something that varies per project.
+   * Lives below the shared-settings separator in the Developer tab.
+   */
+  developer?: {
+    /**
+     * Show the activity-engine debug overlay (floating panel showing
+     * live counters, current reason, recent transitions). Useful for
+     * diagnosing "stuck thinking" or "missed idle" reports.
+     * Default false.
+     */
+    activityDebugOverlay?: boolean;
   };
 
   hasCompletedFirstRun: boolean;
@@ -1504,7 +1620,7 @@ export interface AdapterRuntimeStrategy {
 /**
  * Narrow, generic surface the session manager hands to an adapter's
  * `attachSession` hook. Everything an adapter needs to push telemetry
- * into the runtime without knowing anything about UsageTracker,
+ * into the runtime without knowing anything about SessionTelemetry,
  * IPC, or the session map - so adapter-specific orchestration can
  * live inside the adapter module, not inside session-manager.ts.
  *
@@ -1517,7 +1633,7 @@ export interface SessionContext {
 
   /**
    * Merge a partial SessionUsage patch into the session's
-   * UsageTracker state. Safe to call from async callbacks - a no-op
+   * SessionTelemetry usage cache. Safe to call from async callbacks - a no-op
    * once the session has been torn down. Used by adapters that
    * resolve telemetry out-of-band (secondary CLI queries, HTTP
    * probes, etc.) and want to seed ContextBar before the PTY
@@ -1804,7 +1920,9 @@ export interface ElectronAPI {
     onStatus: (callback: (sessionId: string, session: Session, projectId?: string) => void) => () => void;
     onUsage: (callback: (sessionId: string, data: SessionUsage, projectId?: string) => void) => () => void;
     getActivity: (projectId?: string) => Promise<Record<string, ActivityState>>;
-    onActivity: (callback: (sessionId: string, state: ActivityState, projectId?: string, taskId?: string, taskTitle?: string, isPermission?: boolean) => void) => () => void;
+    onActivity: (callback: (sessionId: string, state: ActivityState, reason: ActivityReason, projectId?: string, taskId?: string, taskTitle?: string) => void) => () => void;
+    getActivityReason: (sessionId: string) => Promise<ActivityReason | null>;
+    getActivityStats: (sessionId: string) => Promise<ActivityStatsSnapshot | null>;
     getEvents: (sessionId: string) => Promise<SessionEvent[]>;
     getEventsCache: (projectId?: string) => Promise<Record<string, SessionEvent[]>>;
     onEvent: (callback: (sessionId: string, event: SessionEvent, projectId?: string) => void) => () => void;
@@ -1815,6 +1933,21 @@ export interface ElectronAPI {
     killTransient: (sessionId: string) => Promise<void>;
     getPeriodStats: (period: UsageTimePeriod) => Promise<PeriodUsageStats>;
     setFocused: (sessionIds: string[]) => Promise<void>;
+    /**
+     * User pressed Ctrl+C in this session's terminal. The renderer
+     * sends \x03 directly to the PTY (via `write`); this is a parallel
+     * signal that lets the activity engine recover quickly when the
+     * agent's PostToolUseFailure / Stop hooks don't fire (the engine
+     * otherwise has to wait for the 5-min stuck-pending-tools hatch).
+     *
+     * Behavior: schedules a 3-second settle timer. If the engine is
+     * still in `thinking` after that window AND the agent's own hooks
+     * haven't recovered (pendingToolCount or turnActive non-zero),
+     * the engine commits a synthetic `Interrupted` transition. If the
+     * agent's hooks DID fire and the engine already cleared, the
+     * synthetic is a no-op.
+     */
+    notifyUserInterrupt: (sessionId: string) => Promise<void>;
   };
 
   // Config

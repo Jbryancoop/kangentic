@@ -1,11 +1,12 @@
 import { EventEmitter } from 'node:events';
+import * as path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { ShellResolver } from './spawn/shell-resolver';
 import { SessionQueue } from './session-queue';
 import { PtyBufferManager } from './buffer/pty-buffer-manager';
 import { SessionHistoryReader } from './readers/session-history-reader';
 import { StatusFileReader } from './readers/status-file-reader';
-import { UsageTracker } from './activity/usage-tracker';
+import { SessionTelemetry } from './activity/session-telemetry';
 import { TranscriptWriter } from './buffer/transcript-writer';
 import { SessionIdManager } from './lifecycle/session-id-manager';
 import { SessionFileManager } from './lifecycle/session-file-manager';
@@ -25,10 +26,22 @@ import type {
   Session,
   SessionUsage,
   ActivityState,
+  ActivityReason,
   SessionEvent,
   SpawnSessionInput,
   PerToolStat,
 } from '../../shared/types';
+import type { ActivityEngineOptions, ActivityStatsSnapshot } from './activity/engine';
+
+export interface SessionManagerOptions {
+  /**
+   * Override activity-engine timings. Production code does not pass
+   * this; tests use it to shrink debounce/escape-hatch/watchdog
+   * windows so assertions don't have to wall-clock-wait the production
+   * defaults.
+   */
+  activityEngineOptions?: ActivityEngineOptions;
+}
 
 export class SessionManager extends EventEmitter {
   private registry = new SessionRegistry();
@@ -59,20 +72,22 @@ export class SessionManager extends EventEmitter {
   private transcriptWriter: TranscriptWriter | null = null;
 
   // Sub-modules owned by SessionManager. Cross-wired in the constructor
-  // below; `usageTracker` and `sessionHistoryReader` form a cycle (the
-  // tracker's onAgentSessionId attaches the history reader; the reader
-  // calls back into the tracker) which is resolved via definite-
+  // below; `telemetry` and `sessionHistoryReader` form a cycle (the
+  // telemetry's onAgentSessionId attaches the history reader; the reader
+  // calls back into telemetry) which is resolved via definite-
   // assignment (`!`) so their callbacks can reference each other.
   private sessionQueue: SessionQueue;
   private bufferManager: PtyBufferManager;
-  private usageTracker!: UsageTracker;
+  private telemetry!: SessionTelemetry;
   private sessionHistoryReader!: SessionHistoryReader;
   private statusFileReader: StatusFileReader;
   private sessionFiles: SessionFileManager;
   private sessionIdManager: SessionIdManager;
+  private activityEngineOptions: ActivityEngineOptions | undefined;
 
-  constructor() {
+  constructor(options: SessionManagerOptions = {}) {
     super();
+    this.activityEngineOptions = options.activityEngineOptions;
 
     this.sessionQueue = new SessionQueue({
       spawner: (input) => this.doSpawn(input).then(() => {}),
@@ -105,18 +120,18 @@ export class SessionManager extends EventEmitter {
     });
 
     this.sessionIdManager = new SessionIdManager({
-      hasAgentSessionId: (id) => this.usageTracker.hasAgentSessionId(id),
-      notifyAgentSessionId: (id, capturedId) => this.usageTracker.notifyAgentSessionId(id, capturedId),
+      hasAgentSessionId: (id) => this.telemetry.hasAgentSessionId(id),
+      notifyAgentSessionId: (id, capturedId) => this.telemetry.notifyAgentSessionId(id, capturedId),
       sessionExists: (id) => this.registry.has(id),
     });
 
-    this.usageTracker = new UsageTracker({
+    this.telemetry = new SessionTelemetry({
       onUsageChange: (sessionId, usage) => this.emit('usage', sessionId, usage),
-      onActivityChange: (sessionId, activity, permissionIdle) => this.emit('activity', sessionId, activity, permissionIdle),
+      onActivityChange: (sessionId, activity, reason) => this.emit('activity', sessionId, activity, reason),
       onEvent: (sessionId, event) => this.emit('event', sessionId, event),
       onIdleTimeout: (sessionId) => {
         const session = this.registry.get(sessionId);
-        if (session) this.emit('idle-timeout', sessionId, session.taskId, this.usageTracker.idleTimeoutMinutes);
+        if (session) this.emit('idle-timeout', sessionId, session.taskId, this.telemetry.idleTimeoutMinutes);
       },
       onPlanExit: (sessionId) => this.emit('plan-exit', sessionId),
       onPRCandidate: (sessionId) => {
@@ -153,12 +168,26 @@ export class SessionManager extends EventEmitter {
       },
       requestSuspend: (sessionId) => this.suspend(sessionId),
       isSessionRunning: (sessionId) => this.registry.get(sessionId)?.status === 'running',
+      getSessionRootPid: (sessionId) => {
+        const session = this.registry.get(sessionId);
+        return session?.pty?.pid;
+      },
+    }, {
+      activityEngineOptions: this.activityEngineOptions,
+      // Activity-engine debug snapshots land at `<.kangentic>/debug/<sessionId>.json`
+      // when KANGENTIC_DATA_DIR is set. Production installs do set
+      // this env var, so disk dumps are always available for
+      // post-mortem diagnostics; cost is one tiny JSON write per
+      // engine state change (a few KB, gitignored).
+      debugDumpDir: process.env.KANGENTIC_DATA_DIR
+        ? path.resolve(process.env.KANGENTIC_DATA_DIR, '..', 'debug')
+        : undefined,
     });
 
     this.sessionHistoryReader = new SessionHistoryReader({
-      onUsageUpdate: (sessionId, usage) => this.usageTracker.setSessionUsage(sessionId, usage),
-      onEvents: (sessionId, events) => this.usageTracker.ingestEvents(sessionId, events),
-      onActivity: (sessionId, activity) => this.usageTracker.forceActivity(sessionId, activity),
+      onUsageUpdate: (sessionId, usage) => this.telemetry.setSessionUsage(sessionId, usage),
+      onEvents: (sessionId, events) => this.telemetry.ingestEvents(sessionId, events),
+      onActivity: (sessionId, activity) => this.telemetry.forceActivity(sessionId, activity),
       onFirstTelemetry: (sessionId) => {
         // Only suppress PTY detection when the adapter uses hooks_and_pty
         // (meaning hook-based events can drive activity transitions). For
@@ -168,16 +197,16 @@ export class SessionManager extends EventEmitter {
         const session = this.registry.get(sessionId);
         const activityKind = session?.agentParser?.runtime?.activity?.kind;
         if (activityKind === 'hooks_and_pty') {
-          this.usageTracker.suppressPty(sessionId);
+          this.telemetry.suppressPty(sessionId);
         }
       },
     });
 
     this.statusFileReader = new StatusFileReader({
-      onUsageParsed: (sessionId, usage) => this.usageTracker.processStatusUpdate(sessionId, usage),
+      onUsageParsed: (sessionId, usage) => this.telemetry.processStatusUpdate(sessionId, usage),
       onEventsParsed: (sessionId, rawLines, events) => {
-        this.usageTracker.captureHookSessionIds(sessionId, rawLines);
-        this.usageTracker.ingestEvents(sessionId, events);
+        this.telemetry.captureHookSessionIds(sessionId, rawLines);
+        this.telemetry.ingestEvents(sessionId, events);
       },
     });
 
@@ -203,7 +232,7 @@ export class SessionManager extends EventEmitter {
   }
 
   setIdleTimeout(minutes: number): void {
-    this.usageTracker.setIdleTimeout(minutes);
+    this.telemetry.setIdleTimeout(minutes);
   }
 
   /**
@@ -216,13 +245,30 @@ export class SessionManager extends EventEmitter {
   }
 
   dispose(): void {
-    this.usageTracker.dispose();
+    this.telemetry.dispose();
     this.transcriptWriter?.finalizeAll();
   }
 
   /** Set which sessions are currently visible (terminal panel + command bar overlay). */
   setFocusedSessions(sessionIds: string[]): void {
     this.focusedSessionIds = new Set(sessionIds);
+  }
+
+  /**
+   * User pressed Ctrl+C in the terminal. Forwarded to telemetry's
+   * `UserInterruptCoordinator`, which arms a settle timer; if the
+   * agent's own hooks don't recover the engine state within the
+   * window, telemetry synthesizes an Interrupted event. The renderer
+   * has already sent \x03 to the PTY via the normal `write` path -
+   * this is purely a parallel signal for engine recovery.
+   *
+   * Named `signalUserInterrupt` (not `notifyUserInterrupt`) to convey
+   * "fire-and-forget signal to a downstream coordinator" rather than
+   * "telemetry call". The IPC handler invokes this; the actual
+   * coordinator method is `UserInterruptCoordinator.notify`.
+   */
+  signalUserInterrupt(sessionId: string): void {
+    this.telemetry.notifyUserInterrupt(sessionId);
   }
 
   /** Return the set of currently focused session IDs. */
@@ -304,7 +350,7 @@ export class SessionManager extends EventEmitter {
     return performSpawn(input, {
       registry: this.registry,
       bufferManager: this.bufferManager,
-      usageTracker: this.usageTracker,
+      telemetry: this.telemetry,
       sessionIdManager: this.sessionIdManager,
       sessionFiles: this.sessionFiles,
       resizeManager: this.resizeManager,
@@ -407,7 +453,7 @@ export class SessionManager extends EventEmitter {
     this.registry.delete(sessionId);
     this.bufferManager.removeSession(sessionId);
     this.transcriptWriter?.remove(sessionId);
-    this.usageTracker.removeSession(sessionId);
+    this.telemetry.removeSession(sessionId);
     this.firstOutputTracker.removeSession(sessionId);
     this.resizeManager.removeSession(sessionId);
   }
@@ -536,10 +582,10 @@ export class SessionManager extends EventEmitter {
     this.transcriptWriter?.finalize(sessionId);
 
     // Synthetic session_end before we kill - Claude Code's hook won't fire
-    this.usageTracker.emitSessionEnd(sessionId);
+    this.telemetry.emitSessionEnd(sessionId);
 
     // Clear subagent depth - session is no longer active
-    this.usageTracker.clearSessionTracking(sessionId);
+    this.telemetry.clearSessionTracking(sessionId);
 
     // Mark suspended BEFORE killing so the async onExit handler preserves it
     session.status = 'suspended';
@@ -588,25 +634,38 @@ export class SessionManager extends EventEmitter {
 
   /** Return cached usage data for all sessions (survives renderer reloads). */
   getUsageCache(): Record<string, SessionUsage> {
-    return this.usageTracker.getUsageCache();
+    return this.telemetry.getUsageCache();
   }
 
   /**
    * Upsert a partial SessionUsage entry for a session. Thin wrapper
-   * around UsageTracker.setSessionUsage for external callers.
+   * around SessionTelemetry.setSessionUsage for external callers.
    */
   setSessionUsage(sessionId: string, partial: Partial<SessionUsage>): void {
-    this.usageTracker.setSessionUsage(sessionId, partial);
+    this.telemetry.setSessionUsage(sessionId, partial);
   }
 
   /** Return cached activity state for all sessions (survives renderer reloads). */
   getActivityCache(): Record<string, ActivityState> {
-    return this.usageTracker.getActivityCache();
+    return this.telemetry.getActivityCache();
+  }
+
+  /** Return the latest ActivityReason for a session, or null if unknown. */
+  getActivityReason(sessionId: string): ActivityReason | null {
+    return this.telemetry.getActivityReason(sessionId);
+  }
+
+  /**
+   * Rich activity stats snapshot for the debug overlay (Developer tab).
+   * Returns null for unknown sessions.
+   */
+  getActivityStatsSnapshot(sessionId: string): ActivityStatsSnapshot | null {
+    return this.telemetry.getActivityStatsSnapshot(sessionId);
   }
 
   /** Return cached events for a specific session (survives renderer reloads). */
   getEventsForSession(sessionId: string): SessionEvent[] {
-    return this.usageTracker.getEventsForSession(sessionId);
+    return this.telemetry.getEventsForSession(sessionId);
   }
 
   /**
@@ -615,7 +674,7 @@ export class SessionManager extends EventEmitter {
    * tool_call_count even after the cache has rolled past 500 events.
    */
   getToolCallCount(sessionId: string): number {
-    return this.usageTracker.getToolCallCount(sessionId);
+    return this.telemetry.getToolCallCount(sessionId);
   }
 
   /**
@@ -624,7 +683,7 @@ export class SessionManager extends EventEmitter {
    * "By tool" section for archived tasks.
    */
   getToolBreakdown(sessionId: string): PerToolStat[] {
-    return this.usageTracker.getToolBreakdown(sessionId);
+    return this.telemetry.getToolBreakdown(sessionId);
   }
 
   /** Return the transcript writer instance (if enabled). */
@@ -634,13 +693,13 @@ export class SessionManager extends EventEmitter {
 
   /** Return cached events for all sessions (survives renderer reloads). */
   getEventsCache(): Record<string, SessionEvent[]> {
-    return this.usageTracker.getEventsCache();
+    return this.telemetry.getEventsCache();
   }
 
   /** Return cached usage data filtered to a specific project. */
   getUsageCacheForProject(projectId: string): Record<string, SessionUsage> {
     return filterCacheByProject(
-      this.usageTracker.getUsageCache(),
+      this.telemetry.getUsageCache(),
       (sessionId) => this.registry.getSessionProjectId(sessionId),
       projectId,
     );
@@ -649,7 +708,7 @@ export class SessionManager extends EventEmitter {
   /** Return cached activity state filtered to a specific project. */
   getActivityCacheForProject(projectId: string): Record<string, ActivityState> {
     return filterCacheByProject(
-      this.usageTracker.getActivityCache(),
+      this.telemetry.getActivityCache(),
       (sessionId) => this.registry.getSessionProjectId(sessionId),
       projectId,
     );
@@ -658,7 +717,7 @@ export class SessionManager extends EventEmitter {
   /** Return cached events filtered to a specific project. */
   getEventsCacheForProject(projectId: string): Record<string, SessionEvent[]> {
     return filterCacheByProject(
-      this.usageTracker.getEventsCache(),
+      this.telemetry.getEventsCache(),
       (sessionId) => this.registry.getSessionProjectId(sessionId),
       projectId,
     );

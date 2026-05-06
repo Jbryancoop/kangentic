@@ -80,6 +80,8 @@ export const IPC = {
   SESSION_GET_USAGE: 'session:getUsage',
   SESSION_ACTIVITY: 'session:activity',
   SESSION_GET_ACTIVITY: 'session:getActivity',
+  SESSION_GET_ACTIVITY_REASON: 'session:getActivityReason',
+  SESSION_GET_ACTIVITY_STATS: 'session:getActivityStats',
   SESSION_EVENT: 'session:event',
   SESSION_GET_EVENTS: 'session:getEvents',
   SESSION_GET_EVENTS_CACHE: 'session:getEventsCache',
@@ -94,6 +96,7 @@ export const IPC = {
   SESSION_KILL_TRANSIENT: 'session:killTransient',
   SESSION_GET_PERIOD_STATS: 'session:getPeriodStats',
   SESSION_SET_FOCUSED: 'session:setFocused',
+  SESSION_NOTIFY_USER_INTERRUPT: 'session:notifyUserInterrupt',
 
   // Config
   CONFIG_GET: 'config:get',

@@ -1319,7 +1319,7 @@ describe('fromFilesystem session-ID capture wiring', () => {
     });
 
     // fromFilesystem resolves immediately (microtask) but the callback
-    // chain goes through UsageTracker -> SessionManager event -> here.
+    // chain goes through SessionTelemetry -> SessionManager event -> here.
     // Allow one tick for the async chain to settle.
     await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1689,7 +1689,7 @@ describe('attachSession dispatch contract', () => {
 
     capturedContext!.applyUsage({ model: { id: 'cursor-small', displayName: 'Cursor Small' } });
 
-    // UsageTracker.setSessionUsage triggers the onUsageChange callback which emits 'usage'
+    // SessionTelemetry.setSessionUsage triggers the onUsageChange callback which emits 'usage'
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(usageEvents.some((e) => e.sessionId === session.id)).toBe(true);

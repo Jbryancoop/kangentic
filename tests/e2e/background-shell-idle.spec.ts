@@ -30,14 +30,16 @@
  *   emits idle. Pre-fix: state machine transitioned thinking -> idle
  *   because nothing knew about the detached child.
  *
- * Fix: the event-bridge's PreToolUse handler now remaps
+ * Fix: the event-bridge's PreToolUse handler remaps
  * `tool_name === 'Bash' && tool_input.run_in_background === true` to
- * a new `background_shell_start` event type, and `tool_name ===
- * 'KillBash'` to `background_shell_end`. The ActivityStateMachine
- * tracks `activeBackgroundShells`, and Guard 3
- * (`deferStopUntilBackgroundShellsFinish`) suppresses any Stop-driven
- * idle while that counter is > 0. Interrupts and permission idle
- * bypass the guard so they reach the user immediately.
+ * a `background_shell_start` event type, and `tool_name === 'KillBash'`
+ * to `background_shell_end`. The v2 `ActivityEngine` includes
+ * `activeBackgroundShells > 0` in its predicate, so any Stop-driven
+ * idle stays in 'thinking' until the counter drops to zero. Interrupts
+ * bypass the predicate (immediate idle); permission idle becomes its
+ * own top-level state. The 5-min orphaned-bg-shell escape hatch
+ * (BG_SHELL_ESCAPE_HATCH_MS) handles natural completion since Claude
+ * Code does not fire a hook for that case.
  *
  * ------------------------------------------------------------------
  * Harness design
@@ -320,11 +322,12 @@ test.describe('Background-shell idle bug -- positive control (bg Bash + live det
     const pid = await readBgShellPid(sessionDir);
 
     // Wait for the engine to ingest the mock's event cycle
-    // (background_shell_start, tool_end, idle). Guard 3 in the
-    // ActivityStateMachine must defer the Stop-driven idle while
-    // activeBackgroundShells > 0, so the session should settle on
-    // 'thinking' -- not 'idle' as it did pre-fix. Poll with a healthy
-    // timeout so fs.watch debounce + IPC round-trip have time.
+    // (background_shell_start, tool_end, idle). The v2 ActivityEngine's
+    // predicate keeps the session in 'thinking' while
+    // activeBackgroundShells > 0, even after Stop fires - so the session
+    // should settle on 'thinking', not 'idle' as it did pre-fix. Poll
+    // with a healthy timeout so fs.watch debounce + IPC round-trip have
+    // time.
     await expect
       .poll(
         async () => {

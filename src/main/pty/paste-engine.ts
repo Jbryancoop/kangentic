@@ -330,7 +330,10 @@ function waitForSubmissionEvidence(
     const onActivity = (...args: unknown[]): void => {
       if (args[0] !== sessionId) return;
       const activity = args[1];
-      if (activity && activity !== 'idle') finish('activity');
+      // Only 'thinking' is proof the paste was acknowledged. Permission
+      // transitions don't count - the paste might have triggered the
+      // permission prompt itself.
+      if (activity === 'thinking') finish('activity');
     };
 
     const onAbort = (): void => {

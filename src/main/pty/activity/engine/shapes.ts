@@ -1,0 +1,295 @@
+import { EventType } from '../../../../shared/types';
+import type { ActivityState, ActivityReason, SessionEvent } from '../../../../shared/types';
+
+/**
+ * Shapes for the activity engine: types, default constants, and
+ * runtime classification sets used by the engine and its consumers.
+ *
+ * Heterogeneous on purpose - everything in this file is "static
+ * configuration / vocabulary the engine uses". Splitting types from
+ * constants from sets adds three import paths for one conceptual layer.
+ */
+
+/**
+ * Default escape hatch for orphaned background shells: when a
+ * `Bash(run_in_background:true)` exits naturally Claude Code does NOT
+ * fire any hook, so without external help the counter would over-count
+ * forever. As a final fallback (the process-tree watcher in
+ * Subsystem B is the primary fix), if the engine has been thinking
+ * SOLELY because of bg shells AND no event has arrived for this long,
+ * force-clear the counter and emit idle.
+ *
+ * Default 5 minutes. Override via constructor option for tests.
+ */
+export const DEFAULT_BG_SHELL_ESCAPE_HATCH_MS = 5 * 60_000;
+
+/**
+ * Default stale-thinking safety net for hook loss. If a session is
+ * stuck in `'thinking'` because `turnActive=true` (a thinking event
+ * fired but the matching Idle hook never arrived) we force-idle it
+ * after this long. Pending tools and counters bypass this watchdog -
+ * legitimate long-running work is not stuck state.
+ *
+ * Default 45 seconds. Override via constructor option for tests.
+ */
+export const DEFAULT_STALE_THINKING_TIMEOUT_MS = 45_000;
+
+/**
+ * Default idle stability window. After computing a Stop-driven idle
+ * (or a watcher-driven natural-exit idle), wait this long before
+ * emitting. If a thinking signal arrives during the window, suppress
+ * the idle. Prevents idle->thinking flicker from out-of-order hook
+ * arrivals.
+ *
+ * Bypassed by Interrupted (instant), watchdog timeout (already 45s),
+ * and PTY silence (already 3s).
+ *
+ * Default 400ms. Override via constructor option for tests / disable.
+ */
+export const DEFAULT_IDLE_STABILITY_WINDOW_MS = 400;
+
+/**
+ * How many audit-log entries to retain in the per-session ring buffer
+ * for `getStatsSnapshot`. The log captures BOTH state transitions
+ * (from !== to) AND counter-affecting events (from === to with a
+ * non-empty counterDelta) so the debug overlay can reconstruct the
+ * full reasoning chain across a turn. Sized for ~30s of typical
+ * activity at 1-2 events/second.
+ */
+export const RECENT_TRANSITIONS_RING_SIZE = 50;
+
+/**
+ * Snapshot of the counters / flags the predicate keys off. Used to
+ * compute a human-readable counter-delta string for the audit log.
+ */
+export interface CountersSnapshot {
+  pendingToolCount: number;
+  subagentDepth: number;
+  bgShells: number;
+  turnActive: boolean;
+  permissionPending: boolean;
+}
+
+export interface ActivityEngineOptions {
+  /** Final-safety escape hatch when only bg shells are holding thinking. */
+  bgShellEscapeHatchMs?: number;
+  /** Stale-thinking watchdog when only turnActive is holding thinking. */
+  staleThinkingTimeoutMs?: number;
+  /** Stability window before emitting Stop-driven idle. Set to 0 to disable. */
+  idleStabilityWindowMs?: number;
+  /** Time source - injectable for tests. */
+  now?: () => number;
+}
+
+/**
+ * One in-flight tool tracked on the `pendingToolStack`. `id` is the
+ * adapter's correlation id when available (e.g. Claude's `tool_use_id`
+ * via the `tool-id` directive); undefined for adapters that don't
+ * surface IDs - the engine falls back to LIFO-by-name in that case.
+ * `name` is always set (sourced from `event.tool`).
+ */
+export interface PendingTool {
+  id?: string;
+  name: string;
+}
+
+/**
+ * Per-session bookkeeping for the v2 activity engine.
+ *
+ * The shape is intentionally smaller than v1's `SessionTrackingState`:
+ * the three guards, the `pendingIdle*` flags, the `deferredIdleAt`
+ * timestamp, the `pendingPermissions` counter, the
+ * `lastThinkingSignal`/`firstThinkingTimestamp` watchdog scaffolding -
+ * all of it collapses into a single predicate.
+ */
+export interface SessionEngineState {
+  /** Current derived activity state. */
+  activity: ActivityState;
+  /**
+   * True between any "thinking-initiating" event (ToolStart, Prompt,
+   * SubagentStart, Compact, WorktreeCreate, BackgroundShellStart) and
+   * the next "idle-initiating" event (Idle, Interrupted).
+   */
+  turnActive: boolean;
+  /** In-flight ToolStart events with no matching ToolEnd/Interrupted. */
+  pendingToolCount: number;
+  /** Nesting depth of active subagents. */
+  subagentDepth: number;
+  /**
+   * Identity-aware bg shell tracking (set by Subsystem C). Until
+   * shell_id is extracted from hooks this set will only be populated
+   * by direct `markBackgroundShellEnded(sessionId, shellId)` calls
+   * from the watcher's PID-aware path.
+   */
+  activeBackgroundShellIds: Set<string>;
+  /**
+   * Fallback counter for shells whose start-event lacked a `shell_id`
+   * detail. Decremented in lockstep with the watcher's count-based
+   * heuristic (Subsystem B Tier B).
+   */
+  anonymousBackgroundShellCount: number;
+  /**
+   * Sticky flag set when an Idle event with `detail=permission` fires.
+   * Cleared by Prompt, Interrupted, SubagentStart, depth-0 ToolStart,
+   * depth-0 ToolEnd, non-permission Idle, forceThinking, forceIdle.
+   */
+  permissionPending: boolean;
+  /**
+   * Wall-clock ms of the most recent activity-proving signal. Used by
+   * the bg-shell escape hatch and stale-thinking watchdog.
+   */
+  lastSignalAt: number | null;
+  /**
+   * Most recent ToolStart's tool name. Sticky until the next ToolStart
+   * or until pendingToolCount drops to 0. Surfaced in `ActivityReason`
+   * for UI tooltips ("Running Bash"). DERIVED from `pendingToolStack` -
+   * always equals the top of the stack, or null when the stack is
+   * empty. Maintained in lockstep so external readers can keep using
+   * the field without thinking about the stack.
+   */
+  currentTool: string | null;
+  /**
+   * Stack of in-flight tools in start order. Pushed on `ToolStart`;
+   * matched by id (preferred) or LIFO-by-name (fallback) on `ToolEnd`.
+   *
+   * Length stays in lockstep with `pendingToolCount` for the common
+   * case; a hook drop or out-of-order arrival can desync them, so the
+   * predicate uses pendingToolCount and the UI uses the stack top.
+   */
+  pendingToolStack: PendingTool[];
+  /** Wall-clock ms of the most recent idle transition (used by idle-timeout sweep). */
+  idleTimestamp: number | null;
+  /**
+   * Pending stability-window idle. When non-null, an idle transition
+   * is scheduled to commit at this wall-clock ms. A thinking signal
+   * arriving before then cancels it.
+   */
+  pendingIdleAt: number | null;
+  /**
+   * Ring buffer of recent transitions for the debug overlay. Mutated
+   * only by `recordTransition`; external observers via `getState` /
+   * `forEachState` see this through `Readonly<SessionEngineState>`,
+   * which prevents accidental writes from outside the engine.
+   */
+  recentTransitions: TransitionRecord[];
+}
+
+/**
+ * Free-form trigger label describing what caused a transition. Useful
+ * for debugging "why did this go idle?" reports. Examples:
+ *   - `event:tool_start`           - hook event drove it
+ *   - `event:idle:permission`      - hook event with detail
+ *   - `force-thinking`             - PTY tracker / heartbeat recovery
+ *   - `force-idle`                 - PTY silence / Esc / shutdown
+ *   - `timer:stability`            - 400ms idle stability window expired
+ *   - `timer:bg-shell-hatch`       - 5-min orphan-bg-shell escape hatch
+ *   - `timer:stale-thinking`       - 45s stale-thinking watchdog
+ *   - `timer:stuck-pending-tools`  - 5-min hatch for orphan tool_starts
+ *   - `interrupted`                - Interrupted event reset everything
+ */
+export type TransitionTrigger =
+  | `event:${string}`
+  | `event:${string}:${string}`
+  | `timer:${string}`
+  | 'force-thinking'
+  | 'force-idle'
+  | 'interrupted';
+
+export interface TransitionRecord {
+  /** Wall-clock ms (from the engine's `now()` source). */
+  ts: number;
+  from: ActivityState;
+  /** Same as `from` for non-transition events that mutated counters
+   *  without changing activity. */
+  to: ActivityState;
+  reasonKind: ActivityReason['kind'];
+  /** What caused the entry. Free-form for the debug overlay. */
+  trigger: TransitionTrigger;
+  /** Plain-text summary of which counters/flags changed during this
+   *  step (e.g. "tools +1", "bg -1, turn no"). Undefined when no
+   *  observable counter shifted - only set on state transitions OR
+   *  non-transition events that did mutate something. */
+  counterDelta?: string;
+}
+
+/**
+ * Snapshot exposed via `getStatsSnapshot` for the debug overlay
+ * (Subsystem E). Implementation detail leakage is acceptable here -
+ * this method is dev-tools-only.
+ */
+export interface ActivityStatsSnapshot {
+  sessionId: string;
+  activity: ActivityState;
+  reason: ActivityReason;
+  pendingToolCount: number;
+  subagentDepth: number;
+  backgroundShellIds: readonly string[];
+  anonymousBackgroundShellCount: number;
+  turnActive: boolean;
+  permissionPending: boolean;
+  msSinceLastSignal: number | null;
+  pendingIdleArmed: boolean;
+  recentTransitions: ReadonlyArray<TransitionRecord>;
+}
+
+export interface ActivityEngineCallbacks {
+  /** Fired every time the activity state actually changes (deduped). */
+  onActivityChange(sessionId: string, activity: ActivityState, reason: ActivityReason): void;
+  /**
+   * Fired when the engine itself originates a `SessionEvent` that did
+   * not arrive from the JSONL stream (e.g. a watchdog-driven Idle event
+   * carrying `detail: IdleReason.Timeout`). The caller is expected to
+   * push this into the activity log so the user can see WHY the engine
+   * transitioned.
+   *
+   * Always fires BEFORE the matching `onActivityChange` so listeners
+   * see the log entry first.
+   */
+  onSyntheticEvent?(sessionId: string, event: SessionEvent): void;
+}
+
+/**
+ * Log-only events do NOT reset `lastSignalAt`, do NOT toggle
+ * `turnActive`, and do NOT cause transitions. These fire unpredictably
+ * (sometimes during true idle, e.g. Notification "Context getting full")
+ * and treating them as alive signals would falsely keep idle sessions
+ * in the thinking state.
+ */
+export const LOG_ONLY_EVENTS = new Set<EventType>([
+  EventType.SessionStart,
+  EventType.SessionEnd,
+  EventType.Notification,
+  EventType.TeammateIdle,
+  EventType.TaskCompleted,
+  EventType.ConfigChange,
+  EventType.WorktreeRemove,
+  EventType.ModelStart,
+  EventType.ModelEnd,
+  EventType.ToolSelectionStart,
+  EventType.ToolEnd,
+  EventType.SubagentStop,
+  EventType.BackgroundShellEnd,
+]);
+
+/**
+ * Events that initiate a turn (transition idle/permission -> thinking
+ * via `turnActive=true`).
+ */
+export const TURN_INITIATING_EVENTS = new Set<EventType>([
+  EventType.ToolStart,
+  EventType.Prompt,
+  EventType.SubagentStart,
+  EventType.Compact,
+  EventType.WorktreeCreate,
+  EventType.BackgroundShellStart,
+]);
+
+/**
+ * Events that end the turn (transition thinking -> idle via
+ * `turnActive=false`). SessionEnd is intentionally NOT here - it's
+ * log-only; the session teardown path calls deleteSession explicitly.
+ */
+export const TURN_ENDING_EVENTS = new Set<EventType>([
+  EventType.Idle,
+  EventType.Interrupted,
+]);

@@ -4,7 +4,7 @@ import type { Session, SessionContext, SpawnSessionInput } from '../../../shared
 import type { SessionRegistry, ManagedSession } from '../session-registry';
 import { toSession } from '../session-registry';
 import type { PtyBufferManager } from '../buffer/pty-buffer-manager';
-import type { UsageTracker } from '../activity/usage-tracker';
+import type { SessionTelemetry } from '../activity/session-telemetry';
 import type { SessionIdManager } from './session-id-manager';
 import type { SessionFileManager } from './session-file-manager';
 import type { ResizeManager } from './resize-manager';
@@ -19,6 +19,8 @@ import { handleSpawnFailure } from '../spawn/spawn-failure-handler';
 import { detectPR } from '../pr/pr-connectors';
 import { isShuttingDown } from '../../shutdown-state';
 import { adaptCommandForShell } from '../../../shared/paths';
+import { reconcileBgShellsOnResume } from '../activity/background-shell/resume';
+import { createProcessTreeProbe } from '../activity/background-shell/process-tree';
 
 /**
  * Collaborators that the spawn flow reads and mutates. Grouped into a
@@ -33,7 +35,7 @@ import { adaptCommandForShell } from '../../../shared/paths';
 export interface SpawnFlowContext {
   registry: SessionRegistry;
   bufferManager: PtyBufferManager;
-  usageTracker: UsageTracker;
+  telemetry: SessionTelemetry;
   sessionIdManager: SessionIdManager;
   sessionFiles: SessionFileManager;
   resizeManager: ResizeManager;
@@ -119,7 +121,7 @@ export async function performSpawn(
   // the new session, and stale usage/activity data doesn't persist.
   if (existing) {
     context.registry.delete(existing.id);
-    context.usageTracker.removeSession(existing.id);
+    context.telemetry.removeSession(existing.id);
     context.bufferManager.removeSession(existing.id);
     context.sessionFiles.removeSession(existing.id);
   }
@@ -196,11 +198,29 @@ export async function performSpawn(
     sessionId: id,
     statusOutputPath: input.statusOutputPath || null,
   });
-  context.usageTracker.initSession(id, input.agentParser);
+  context.telemetry.initSession(id, input.agentParser);
+
+  // Resume-only: try to adopt orphan bg shells from the prior session.
+  // The fresh Claude CLI typically has no relevant descendants at this
+  // point, so this is a near-no-op today. Wired in for the future
+  // feature where Kangentic persists bg shell PIDs across restarts and
+  // the watcher walks the wider process table to reattach them. See
+  // `bg-shell-resume.ts` for the rationale.
+  if (input.resuming && ptyProcess.pid) {
+    void reconcileBgShellsOnResume({
+      sessionId: id,
+      rootPid: ptyProcess.pid,
+      probe: createProcessTreeProbe(),
+      engine: context.telemetry.activityEngine,
+      watcher: context.telemetry.bgShellWatcher,
+    }).catch((err) => {
+      console.warn(`[bg-shell-resume] reconciliation failed for session=${id.slice(0, 8)}:`, err);
+    });
+  }
   // Attach the status-file telemetry reader for sessions that provide
   // status/events file paths (today only Claude). The reader owns the
   // FileWatcher instances and dispatches parsed telemetry via the
-  // generic UsageTracker primitives wired in StatusFileReader's
+  // generic SessionTelemetry primitives wired in StatusFileReader's
   // callbacks. When the session has no parser, the reader still runs
   // startup file cleanup (delete stale status.json, truncate stale
   // events.jsonl) but skips watcher setup.
@@ -263,7 +283,7 @@ export async function performSpawn(
     sessionId: id,
     applyUsage: (usage) => {
       if (!context.registry.has(id)) return;
-      context.usageTracker.setSessionUsage(id, usage);
+      context.telemetry.setSessionUsage(id, usage);
     },
   };
   attachAdapter(session, adapterContext);
@@ -301,10 +321,10 @@ export async function performSpawn(
       }
       const result = session.streamParser.parseTelemetry(data);
       if (result?.usage) {
-        context.usageTracker.setSessionUsage(id, result.usage);
+        context.telemetry.setSessionUsage(id, result.usage);
       }
       if (result?.events && result.events.length > 0) {
-        context.usageTracker.ingestEvents(id, result.events);
+        context.telemetry.ingestEvents(id, result.events);
       }
     }
 
@@ -314,11 +334,11 @@ export async function performSpawn(
     const strategy = input.agentParser?.runtime?.activity;
     if (strategy && strategy.kind !== 'hooks') {
       if (strategy.detectIdle?.(data)) {
-        context.usageTracker.notifyPtyIdle(id);
+        context.telemetry.notifyPtyIdle(id);
       } else if (data.length > 0) {
-        const currentActivity = context.usageTracker.getSessionActivity(id);
+        const currentActivity = context.telemetry.getSessionActivity(id);
         if (context.resizeManager.shouldNotifyOnData(id, data, currentActivity)) {
-          context.usageTracker.notifyPtyData(id);
+          context.telemetry.notifyPtyData(id);
         }
       }
     }
@@ -330,7 +350,7 @@ export async function performSpawn(
     if (session.status !== 'suspended') {
       session.status = 'exited';
       // Synthetic session_end - Claude Code's hook won't fire on kill
-      context.usageTracker.emitSessionEnd(id);
+      context.telemetry.emitSessionEnd(id);
     }
     session.exitCode = exitCode;
     session.pty = null;
@@ -361,8 +381,8 @@ export async function performSpawn(
     // Fallback PR scan: if a PR command was flagged (ToolStart seen) but
     // ToolEnd was never processed (event lost or never written), scan the
     // scrollback now as a last resort before the session is fully closed.
-    if (context.usageTracker.hasPendingPRCommand(id)) {
-      context.usageTracker.clearPendingPRCommand(id);
+    if (context.telemetry.hasPendingPRCommand(id)) {
+      context.telemetry.clearPendingPRCommand(id);
       const scrollback = context.bufferManager.getRawScrollback(id);
       const detected = detectPR(scrollback);
       if (detected) {

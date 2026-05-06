@@ -168,6 +168,7 @@ export function enableTerminalClipboard(
   el: HTMLElement,
   onWrite?: (data: string) => void,
   shellName?: string,
+  sessionId?: string,
 ): void {
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
@@ -201,6 +202,20 @@ export function enableTerminalClipboard(
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && onWrite) {
       onWrite('\n');
       return false;
+    }
+
+    // Ctrl+C with no selection - xterm's default sends \x03 (SIGINT)
+    // to the PTY. Notify the activity engine in parallel: gives it a
+    // signal to recover quickly if the agent's PostToolUseFailure /
+    // Stop hooks don't fire. Returning `true` lets xterm proceed with
+    // its default \x03 behavior. Mac sends Cmd+C only as a copy
+    // shortcut, never as SIGINT, so we restrict this to ctrlKey.
+    if (event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === 'c' && !terminal.hasSelection() && sessionId) {
+      window.electronAPI.sessions.notifyUserInterrupt(sessionId).catch(() => {
+        // Best-effort. The engine's 5-min stuck-pending-tools hatch
+        // is the safety backstop if this IPC fails.
+      });
+      return true;
     }
 
     return true;

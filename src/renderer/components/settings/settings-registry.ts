@@ -90,6 +90,9 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
 
   // ── Privacy (synthetic) ──
   { id: 'privacy.info', tabId: 'privacy', label: 'Privacy', description: 'Anonymous analytics and data collection policy', scope: 'global', keywords: ['telemetry', 'analytics', 'aptabase', 'gdpr', 'opt out'] },
+
+  // ── Developer ──
+  { id: 'developer.activityDebugOverlay', tabId: 'developer', label: 'Activity Engine Debug Overlay', description: 'Show a floating panel with live activity-engine state for every running session. Useful for diagnosing spinner / idle bugs.', scope: 'global', keywords: ['debug', 'overlay', 'diagnostic', 'engine', 'activity', 'thinking', 'idle', 'subagent', 'background', 'shell', 'reason'] },
 ];
 
 /** Lookup by ID for O(1) access. */

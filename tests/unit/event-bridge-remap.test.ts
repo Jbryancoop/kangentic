@@ -52,7 +52,9 @@ afterEach(() => {
 /** The full set of directives that Claude's PreToolUse hook uses. */
 const PRETOOLUSE_DIRECTIVES = [
   'tool:tool_name',
-  'nested-detail:tool_input:file_path,command,query,pattern,url,description',
+  // shell_id first so KillBash + future shell-aware events surface
+  // their identity. Falls through to file_path/command/etc otherwise.
+  'nested-detail:tool_input:shell_id,file_path,command,query,pattern,url,description',
   'remap-nested:tool_input:run_in_background:true:background_shell_start',
   'remap:tool_name:KillBash:background_shell_end',
 ];
@@ -125,6 +127,35 @@ describe('event-bridge remap-nested + remap for background-shell events', () => 
     const emitted = readEvent();
     expect(emitted.type).toBe('background_shell_end');
     expect(emitted.tool).toBe('KillBash');
+    // shell_id is now extracted as detail so the engine can match it
+    // against tracked background shell ids (Set-based path).
+    expect(emitted.detail).toBe('bash_1');
+  });
+
+  it('extracts shell_id as detail when KillBash payload includes it', () => {
+    // Distinct test from the basic KillBash remap: pin the detail
+    // value so a future regression in directive ordering doesn't
+    // silently drop the shell_id.
+    const stdinContent = JSON.stringify({
+      tool_name: 'KillBash',
+      tool_input: { shell_id: 'bash_42' },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_start', ...PRETOOLUSE_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('background_shell_end');
+    expect(emitted.detail).toBe('bash_42');
+  });
+
+  it('falls through to command when shell_id is absent (foreground Bash)', () => {
+    const stdinContent = JSON.stringify({
+      tool_name: 'Bash',
+      tool_input: { command: 'ls -la', description: 'List files' },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_start', ...PRETOOLUSE_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('tool_start');
+    // shell_id absent, falls through to command
+    expect(emitted.detail).toBe('ls -la');
   });
 
   it('remap-nested takes priority over remap when both conditions match simultaneously', () => {
@@ -147,5 +178,70 @@ describe('event-bridge remap-nested + remap for background-shell events', () => 
     // field is still present.
     expect(['background_shell_start', 'background_shell_end']).toContain(emitted.type);
     expect(emitted.tool).toBe('KillBash');
+  });
+});
+
+describe('event-bridge tool-id directives (correlation IDs)', () => {
+  it('tool-id extracts toolId from a top-level field', () => {
+    const stdinContent = JSON.stringify({
+      tool_name: 'Bash',
+      tool_use_id: 'tu_abc123',
+      tool_input: { command: 'ls' },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_start',
+      'tool:tool_name', 'tool-id:tool_use_id']);
+    const emitted = readEvent();
+    expect(emitted.tool).toBe('Bash');
+    expect(emitted.toolId).toBe('tu_abc123');
+  });
+
+  it('tool-id-nested extracts toolId from a nested field', () => {
+    const stdinContent = JSON.stringify({
+      tool_name: 'Bash',
+      tool_input: { command: 'ls', tool_use_id: 'tu_nested_456' },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_start',
+      'tool:tool_name', 'tool-id-nested:tool_input:tool_use_id']);
+    const emitted = readEvent();
+    expect(emitted.toolId).toBe('tu_nested_456');
+  });
+
+  it('tool-id wins when both top-level and nested directives are given (first-match precedence)', () => {
+    // Mirrors how Claude's hook-manager wires both directives - the
+    // top-level one runs first and wins when present.
+    const stdinContent = JSON.stringify({
+      tool_name: 'Bash',
+      tool_use_id: 'tu_top',
+      tool_input: { tool_use_id: 'tu_nested' },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_start',
+      'tool:tool_name',
+      'tool-id:tool_use_id',
+      'tool-id-nested:tool_input:tool_use_id']);
+    const emitted = readEvent();
+    expect(emitted.toolId).toBe('tu_top');
+  });
+
+  it('tool-id-nested falls through when top-level directive missed', () => {
+    // tool_use_id only present nested - the top-level directive
+    // doesn't fire (no top-level field), nested fills in.
+    const stdinContent = JSON.stringify({
+      tool_name: 'Bash',
+      tool_input: { tool_use_id: 'tu_nested' },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_start',
+      'tool:tool_name',
+      'tool-id:tool_use_id',
+      'tool-id-nested:tool_input:tool_use_id']);
+    const emitted = readEvent();
+    expect(emitted.toolId).toBe('tu_nested');
+  });
+
+  it('toolId omitted when no directive matches (adapter without correlation)', () => {
+    const stdinContent = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls' } });
+    runBridge(stdinContent, [outputFile, 'tool_start', 'tool:tool_name']);
+    const emitted = readEvent();
+    expect(emitted.tool).toBe('Bash');
+    expect(emitted.toolId).toBeUndefined();
   });
 });

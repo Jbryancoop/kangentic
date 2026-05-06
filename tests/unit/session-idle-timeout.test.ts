@@ -2,7 +2,7 @@
  * Tests for the idle-timeout listener DB side-effect in registerSessionHandlers.
  *
  * The idle-timeout path was the root-cause of the divergence bug on this branch:
- * `usage-tracker.requestSuspend` flipped the SessionRegistry entry to
+ * `session-telemetry.requestSuspend` flipped the SessionRegistry entry to
  * 'suspended', but the corresponding 'idle-timeout' listener in sessions.ts
  * never wrote the DB counterpart. That left `task.session_id` pointing at a
  * registry entry that was already suspended - SESSION_RESUME would then throw

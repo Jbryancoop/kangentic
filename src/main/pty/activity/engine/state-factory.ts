@@ -1,0 +1,24 @@
+import type { SessionEngineState } from './shapes';
+
+/**
+ * Construct a fresh per-session state for the activity engine. All
+ * counters start at zero, activity starts as `'idle'`, and the
+ * pending-tool stack is empty.
+ */
+export function createSessionEngineState(): SessionEngineState {
+  return {
+    activity: 'idle',
+    turnActive: false,
+    pendingToolCount: 0,
+    subagentDepth: 0,
+    activeBackgroundShellIds: new Set<string>(),
+    anonymousBackgroundShellCount: 0,
+    permissionPending: false,
+    lastSignalAt: null,
+    currentTool: null,
+    pendingToolStack: [],
+    idleTimestamp: null,
+    pendingIdleAt: null,
+    recentTransitions: [],
+  };
+}

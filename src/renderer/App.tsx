@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { AppLayout } from './components/layout/AppLayout';
+import { ActivityDebugOverlay } from './components/debug/ActivityDebugOverlay';
 import { useProjectStore } from './stores/project-store';
 import { useBoardStore } from './stores/board-store';
 import { useConfigStore } from './stores/config-store';
@@ -347,8 +348,8 @@ export function App() {
     // ALWAYS update activity (sidebar badges need cross-project data),
     // but only run auto-focus for current project.
     if (sessions.onActivity) {
-      cleanups.push(sessions.onActivity((sessionId, state, projectId, taskId, taskTitle, isPermission) => {
-        updateActivity(sessionId, state);
+      cleanups.push(sessions.onActivity((sessionId, state, reason, projectId, taskId, taskTitle) => {
+        updateActivity(sessionId, state, reason);
 
         const activeProjectId = useProjectStore.getState().currentProject?.id;
         const isCurrentProject = !projectId || !activeProjectId || projectId === activeProjectId;
@@ -357,7 +358,8 @@ export function App() {
         const sessionStore = useSessionStore.getState();
 
         // Auto-focus: switch the bottom panel to the most recently idle session
-        // (only for current project sessions)
+        // (only for current project sessions). Treat 'permission' like 'idle'
+        // for focus rules - the agent is paused, the user should see it.
         if (isCurrentProject && config.autoFocusIdleSession) {
           const projectSessions = sessionStore.sessions.filter((s) => s.projectId === activeProjectId);
           const target = resolveAutoFocusTarget({
@@ -373,8 +375,8 @@ export function App() {
           }
         }
 
-        // OS notification + taskbar flash for idle sessions not visible to the user
-        if (state === 'idle') {
+        // OS notification + taskbar flash for idle/permission sessions not visible to the user
+        if (state === 'idle' || state === 'permission') {
           const notifyConfig = useConfigStore.getState().config.notifications;
           if (notifyConfig.desktop.onAgentIdle) {
             const session = sessionStore.sessions.find((s) => s.id === sessionId);
@@ -384,7 +386,7 @@ export function App() {
                 const project = useProjectStore.getState().projects.find((p) => p.id === session.projectId);
                 const projectName = project?.name ?? 'A project';
                 const label = session.transient ? 'Command Terminal' : (taskTitle ?? 'A task');
-                const body = isPermission ? `Needs permission: ${projectName}` : projectName;
+                const body = state === 'permission' ? `Needs permission: ${projectName}` : projectName;
                 const clickTaskId = session.transient ? COMMAND_TERMINAL_NOTIFICATION_TASK_ID : (taskId ?? '');
                 sendNotification(sessionId, label, body, session.projectId, clickTaskId);
               });
@@ -607,7 +609,12 @@ export function App() {
     };
   }, [upsertSession, updateSessionStatus, updateActivity]);
 
-  return <AppLayout />;
+  return (
+    <>
+      <AppLayout />
+      <ActivityDebugOverlay />
+    </>
+  );
 }
 
 // Dev-only: re-sync all IPC-backed Zustand stores after Vite HMR updates.

@@ -1,336 +1,327 @@
 # Activity Detection
 
-## Overview
+Kangentic tracks whether each agent session is **thinking** (working on a turn), **idle** (waiting for input or done), or in a **permission** state (paused awaiting user approval). This drives the task card spinner, the desktop "task done" notification, idle-timeout suspend, and auto-focus behavior.
 
-Kangentic tracks whether each agent session is **thinking** (actively using tools) or **idle** (waiting for input or stopped). This state drives the task card spinner in the Kanban board UI.
+## Why this matters
 
-Each adapter declares an `ActivityDetectionStrategy` on its `runtime.activity` field that selects between hook-based events, PTY pattern detection, or both. The Claude Code pipeline (hooks-only) is described first because it's the richest source of activity information. PTY-based detection for agents without reliable hooks is documented in [Strategies](#strategies).
+The "task done" notification is one of Kangentic's core differentiators. Agents that have started backgrounded work (`Bash(run_in_background:true)`) are still working until those processes exit, even after the agent's hook stream has gone quiet. A session that prematurely shows "idle" causes a false notification; one that's stuck in "thinking" never notifies at all. Both are user-visible bugs.
 
-### `Activity` typesafe enum
+This subsystem aims to be near-100% accurate: notification fires within seconds of the agent (and all its background work) actually being done.
 
-`src/shared/types.ts` exports a small `Activity` const enum (`Thinking`, `Idle`) that is the typesafe counterpart to the `ActivityState` string union. It is used by session history parsers (Codex's `CodexSessionHistoryParser`, Gemini's `GeminiSessionHistoryParser`) as the explicit-activity-hint value on `SessionHistoryParseResult.activity` — the parsers return `Activity.Thinking` or `Activity.Idle` when a log entry (e.g. Codex `task_started` / `task_complete`) maps directly to a state transition rather than relying on the event stream alone. See [Adapter Session History](adapter-session-history.md) for the full pipeline.
+## Architecture
 
-## Strategies
+```
+   ┌──────────────────────────────────────────────────────────────────┐
+   │  Agent CLI hook ↦ event-bridge.js ↦ events.jsonl                 │
+   │  (each adapter wires its own hook flow; see below)               │
+   └─────────────────────────────────┬────────────────────────────────┘
+                                     │
+                ┌────────────────────▼─────────────────────┐
+                │  StatusFileReader (watches events.jsonl) │
+                │  → SessionTelemetry.ingestEvents(events) │
+                └────────────────────┬─────────────────────┘
+                                     │
+   ┌─────────────────────────────────▼──────────────────────────────────┐
+   │              ActivityEngine (single-predicate state machine)        │
+   │                                                                    │
+   │   activity = 'permission' IFF permissionPending                    │
+   │            = 'thinking'   IFF turnActive                           │
+   │                              OR subagentDepth > 0                  │
+   │                              OR backgroundShells > 0               │
+   │            = 'idle'       otherwise                                │
+   └─────────────────────────────────┬──────────────────────────────────┘
+                                     │
+                ┌────────────────────┼─────────────────┬──────────────┐
+                ▼                    ▼                 ▼              ▼
+   ┌───────────────────┐ ┌─────────────────────────┐ ┌────────────┐ ┌────────────┐
+   │ Stability window  │ │ Watchdog table (3 holds)│ │ BgShell    │ │ Ctrl+C     │
+   │ (400ms)           │ │ - bg-shell hatch (5min) │ │ Watcher    │ │ synthesis  │
+   │                   │ │ - stuck-tools  (5min)   │ │ (proc-tree)│ │ (3s settle)│
+   │                   │ │ - stale-think  (45s)    │ │            │ │            │
+   └───────────────────┘ └─────────────────────────┘ └────────────┘ └────────────┘
+                                                          │
+                                                          ▼
+                                                ┌────────────────────┐
+                                                │ ProcessTreeProbe   │
+                                                │ Win: Get-CimInstance│
+                                                │ POSIX: ps -A       │
+                                                └────────────────────┘
+```
 
-`src/shared/types.ts` - `ActivityDetectionStrategy` discriminated union
+## Key files
 
-| `kind` | Used by | Behavior |
-|--------|---------|----------|
-| `'hooks'` | Claude Code | Hook events are the sole source of activity truth. PTY data does not influence activity state. |
-| `'pty'` | Aider, Codex | Activity is inferred from PTY output patterns. The optional `detectIdle(data)` callback returns true on a definitive idle signal (e.g. an `aider>` prompt). Without `detectIdle`, a 10-second silence timer determines idle. All PTY strategies automatically filter TUI noise via content deduplication in `SessionManager` - repeated frames with identical stripped text do not reset the silence timer. |
-| `'hooks_and_pty'` | Gemini | Hooks are primary, with PTY-based detection as a fallback if hooks fail to fire. Once hooks deliver a `thinking` event, `PtyActivityTracker.suppress()` permanently disables PTY detection for that session. Accepts the same optional `detectIdle(data)` callback as `'pty'`. |
+The engine itself is split across modules under `pty/activity/engine/`. External consumers import from `engine/index.ts`; internal modules are implementation details.
 
-### `ActivityDetection` factory
+| File | Role |
+|------|------|
+| `src/main/pty/activity/engine/index.ts` | Public surface re-exports (`ActivityEngine`, `ActivitySnapshotWriter`, types, default constants) |
+| `src/main/pty/activity/engine/activity-engine.ts` | Engine class - lifecycle + orchestration (delegates to the modules below) |
+| `src/main/pty/activity/engine/shapes.ts` | `SessionEngineState`, `ActivityEngineOptions`, `TransitionRecord`, `PendingTool`, event sets, default thresholds |
+| `src/main/pty/activity/engine/predicate.ts` | Pure `derivePredicate` / `deriveReason` / `deriveActivityAndReason` - no engine reference, no mutation |
+| `src/main/pty/activity/engine/event-handlers.ts` | Pure `updateCounters` / `updatePermissionFlag` - the big switch on event type |
+| `src/main/pty/activity/engine/counter-snapshot.ts` | `snapshotCounters` and `formatCounterDelta` for the audit log |
+| `src/main/pty/activity/engine/state-factory.ts` | `createSessionEngineState` initial-state factory |
+| `src/main/pty/activity/engine/watchdog.ts` | `WatchdogHold` table + `findActiveWatchdogHold` lookup - declarative safety nets |
+| `src/main/pty/activity/engine/snapshot-writer.ts` | `ActivitySnapshotWriter` - atomic JSON snapshots for post-mortem diagnostics |
 
-`src/shared/types.ts`
+Surrounding infrastructure:
 
-Adapters construct strategy values via factory functions rather than inline object literals. The factories enforce per-variant shape (e.g. `hooks()` cannot accidentally receive a `detectIdle` callback) and give descriptive call sites:
+| File | Role |
+|------|------|
+| `src/main/pty/activity/session-telemetry.ts` | Wires the engine to event ingestion + PTY tracker + watchers + user-interrupt coordinator |
+| `src/main/pty/activity/user-interrupt-coordinator.ts` | 3-second settle timer for Ctrl+C; synthesizes Interrupted if engine still hot |
+| `src/main/pty/activity/usage-accumulator.ts` | Per-tool usage stats (call count, cost, tokens) |
+| `src/main/pty/activity/pr-command-detector.ts` | PR command pattern detector |
+| `src/main/pty/activity/pty-activity-tracker.ts` | PTY-byte fallback for non-hook agents |
+| `src/main/pty/activity/background-shell/watcher.ts` | Process-tree-based natural-exit detector |
+| `src/main/pty/activity/background-shell/process-tree.ts` | Cross-platform descendant enumeration; `listAllProcesses` shared once per cycle |
+| `src/main/pty/activity/background-shell/resume.ts` | Resume-time orphan adoption |
+| `src/main/pty/activity/background-shell/looks-like-shell-id.ts` | Shell-id shape gate |
+| `src/main/agent/event-bridge.js` | Generic hook-to-JSONL bridge with directive language (tool, tool-id, detail, remap, ...) |
+| `src/main/agent/adapters/claude/hook-manager.ts` | Claude Code hook configuration |
+| `src/shared/types.ts` | `ActivityState`, `ActivityReason`, `EventType`, `SessionEvent.toolId` |
+
+## ActivityState
 
 ```ts
-import { ActivityDetection } from '../../../../shared/types';
-
-// Claude Code: hooks are the only source
-runtime = { activity: ActivityDetection.hooks() };
-
-// Codex: PTY only, silence timer (no detectIdle - see note below)
-runtime = { activity: ActivityDetection.pty() };
-
-// Aider: PTY with prompt-regex detectIdle for instant transitions
-runtime = { activity: ActivityDetection.pty((data) => /(?:^|\n)\s*aider>\s*$/.test(data)) };
-
-// Gemini: hooks primary, PTY fallback with silence timer
-runtime = { activity: ActivityDetection.hooksAndPty() };
+type ActivityState = 'thinking' | 'idle' | 'permission';
 ```
 
-`PtyActivityTracker` (`src/main/pty/pty-activity-tracker.ts`) owns the silence-timer state and the suppress flag. It exposes `onData()`, `onIdleDetected()`, `suppress()`, and `clearSession()` callbacks consumed by `UsageTracker`.
+Three top-level states:
 
-**Content deduplication (agent-agnostic):** `SessionManager` strips ANSI from each PTY chunk and compares against the previous frame for that session. If the stripped text is identical, the chunk is a TUI redraw that does not reset the silence timer. This is a generic safety net for any TUI agent that might continuously repaint the screen.
+- **`thinking`** — agent is working. Spinner shown on task card. Notifications NOT fired.
+- **`idle`** — agent is truly done. Notification fires. Auto-focus / auto-suspend can act.
+- **`permission`** — agent paused awaiting user approval. Distinct from `idle` so the UI can render a different affordance (lock icon vs idle dot).
 
-**Why Codex has no `detectIdle`:** The `›` (U+203A) guillemet prompt character is always visible in the Codex Ink TUI layout, including during active tool execution. Using it for `detectIdle` causes false idle transitions during active work (rapid thinking↔idle oscillation). Empirically verified: Codex goes completely silent when idle, so the 10-second silence timer fires reliably without prompt detection.
+## ActivityReason (discriminated union)
 
-## Claude Code Pipeline
+Every transition emits both an `ActivityState` AND an `ActivityReason` describing WHY:
 
-Activity detection uses a single pipeline: Claude Code hooks write structured events to a JSONL file, the main process watches that file, and the renderer derives the display state from event types.
-
-## Pipeline
-
-```
-Claude Code hook fires (PreToolUse, PostToolUse, Stop, etc.)
-  → event-bridge.js reads hook JSON from stdin
-  → Appends one-line JSON to .kangentic/sessions/<id>/events.jsonl
-  → SessionManager's event watcher detects file change (fs.watch, 50ms debounce)
-  → Reads new bytes from last known offset (incremental, no full re-read)
-  → Parses new JSONL lines into event objects
-  → Derives activity state from event type (thinking or idle)
-  → Emits IPC session:activity (state change) and session:event (log entry)
-  → SessionStore updates, TaskCard re-renders spinner/mail icon
+```ts
+type ActivityReason =
+  | { kind: 'idle' }
+  | { kind: 'permission' }
+  | { kind: 'tool';            pendingCount: number; currentTool: string | null }
+  | { kind: 'subagent';        depth: number }
+  | { kind: 'background-shell'; count: number; ids: readonly string[] }
+  | { kind: 'turn-active' };
 ```
 
-## Event Bridge Script
+The renderer uses `reason.kind` to pick a Lucide icon (Wrench / Users / Terminal / Lock / Loader2 / Mail) and inline label for the TaskCard hover tooltip.
 
-`src/main/agent/event-bridge.js`
+Priority ladder: `permission > tool > subagent > background-shell > turn-active > idle`. Anchored to `state.activity` for consistency — when forced paths (Interrupted, forceIdle) commit a transition that diverges from the bare predicate (e.g. clearing all counters on Esc), the reason follows the committed state.
 
-A standalone Node.js script invoked by Claude Code's hook system. Each invocation:
+## Predicate
 
-1. Reads JSON from stdin (hook payload from Claude Code)
-2. Builds an event object with timestamp, event type, and tool metadata
-3. Appends a single JSON line to the events file
-4. Exits immediately
-
-The script is stateless -- no persistent process, no inter-invocation memory. All writes are wrapped in try/catch so a failed write never blocks Claude Code.
-
-### Event Types
-
-| Type | Meaning | Hook Point |
-|------|---------|------------|
-| `tool_start` | Agent began using a tool | `PreToolUse` (blank matcher) |
-| `tool_end` | Tool execution completed | `PostToolUse` (blank matcher), or `PostToolUseFailure` when `is_interrupt` is false |
-| `prompt` | Agent submitted/received a prompt | `UserPromptSubmit` (blank matcher) |
-| `idle` | Agent stopped or is waiting | `Stop`, `PermissionRequest` (blank matchers) |
-| `interrupted` | User interrupted the agent | `PostToolUseFailure` when `is_interrupt` is true |
-| `session_start` | Claude Code session started | `SessionStart` (blank matcher) |
-| `session_end` | Claude Code session ended | `SessionEnd` (blank matcher) |
-| `subagent_start` | Main agent launched a subagent | `SubagentStart` (blank matcher) |
-| `subagent_stop` | Subagent finished | `SubagentStop` (blank matcher) |
-| `notification` | Informational notification | `Notification` (blank matcher) |
-| `compact` | Context compaction in progress | `PreCompact` (blank matcher) |
-| `teammate_idle` | A teammate agent went idle | `TeammateIdle` (blank matcher) |
-| `task_completed` | Agent completed a task | `TaskCompleted` (blank matcher) |
-| `config_change` | Configuration changed | `ConfigChange` (blank matcher) |
-| `worktree_create` | Worktree creation in progress | `WorktreeCreate` (blank matcher) |
-| `worktree_remove` | Worktree removal in progress | `WorktreeRemove` (blank matcher) |
-| `background_shell_start` | Agent launched a Bash with `run_in_background: true` | `PreToolUse` remapped by `remap-nested:tool_input:run_in_background:true:background_shell_start` |
-| `background_shell_end` | Agent killed a backgrounded shell via `KillBash` | `PreToolUse` remapped by `remap:tool_name:KillBash:background_shell_end` |
-| `model_start` | LLM API call started | `BeforeModel` (Qwen Code / Gemini CLI wire-protocol) |
-| `model_end` | LLM API call returned | `AfterModel` (Qwen Code / Gemini CLI wire-protocol) |
-| `tool_selection_start` | Agent is choosing which tool to invoke | `BeforeToolSelection` (Qwen Code / Gemini CLI wire-protocol) |
-
-Note: `tool_failure` is passed as the event type argument to the bridge script, but is never written to the JSONL file as-is. The bridge reads `is_interrupt` from the hook payload and converts it to either `interrupted` (if true) or `tool_end` (if false).
-
-### Output Format
-
-Each line in `events.jsonl` is a self-contained JSON object:
-
-```json
-{"ts":1709312400000,"type":"tool_start","tool":"Read","detail":"/src/main.ts"}
-{"ts":1709312400100,"type":"tool_end","tool":"Read"}
-{"ts":1709312400200,"type":"tool_start","tool":"Edit","detail":"/src/main.ts"}
-{"ts":1709312400300,"type":"idle"}
-```
-
-Fields vary by event type. Common fields: `ts` (Unix ms), `type` (event type string). Tool events include `tool` (tool name) and may include `detail` (file path, command, or other metadata extracted from the hook payload's `tool_input`).
-
-## Activity State Derivation
-
-The SessionManager derives thinking/idle state from event types using this mapping:
-
-| Event Type | Activity State | Rationale |
-|------------|---------------|-----------|
-| `tool_start` | **thinking** | Agent is actively executing a tool |
-| `prompt` | **thinking** | Agent received input and will start processing |
-| `subagent_start` | **thinking** | Main agent launched a subagent -- active work |
-| `compact` | **thinking** | Context compaction in progress |
-| `worktree_create` | **thinking** | Worktree creation in progress |
-| `background_shell_start` | **thinking** | Agent launched a backgrounded Bash; also increments `activeBackgroundShells` so Guard 3 holds while the detached child is alive |
-| `idle` | **idle** | Agent stopped, hit a permission wall, or asked a question |
-| `interrupted` | **idle** | User interrupted; agent is no longer processing |
-| `notification` | *(no change)* | Informational only -- fires unpredictably, often while idle |
-| `subagent_stop` | *(no change)* | Subagent finishing doesn't mean the main agent is active |
-| `tool_end` | *(no change)* | Another tool_start typically follows immediately |
-| `session_start` | *(no change)* | Lifecycle event only -- session just started |
-| `session_end` | *(no change)* | Lifecycle event only -- session ended |
-| `teammate_idle` | *(no change)* | Informational -- a teammate agent went idle |
-| `task_completed` | *(no change)* | Informational -- agent completed a task |
-| `config_change` | *(no change)* | Informational -- configuration changed |
-| `worktree_remove` | *(no change)* | Informational -- worktree removal |
-| `background_shell_end` | *(no change)* | Decrements `activeBackgroundShells`; releases a deferred Guard 3 idle when the counter reaches zero |
-| `model_start` | *(no change)* | Log-only -- fires inside an active turn; `BeforeAgent` already drove thinking state |
-| `model_end` | *(no change)* | Log-only -- pairs with `model_start` |
-| `tool_selection_start` | *(no change)* | Log-only -- fires inside an active turn; `BeforeAgent` already drove thinking state |
-
-Key design decisions:
-
-- **`tool_end` does not set idle.** Between consecutive tool calls, there's a brief gap where no tool is running. Setting idle on `tool_end` would cause the spinner to flicker off and on rapidly. Instead, only explicit idle signals (`Stop`, `PermissionRequest`) set idle state.
-- **`tool_failure` is never a final event type.** The event bridge converts `PostToolUseFailure` payloads based on the `is_interrupt` flag: `interrupted` if the user pressed Escape, `tool_end` otherwise. There is no `tool_failure` entry in the JSONL file or the activity state mapping.
-- **`notification` does not change state.** Notifications (e.g. "Context getting full") are informational and fire unpredictably -- often after an idle event, which would incorrectly flip state back to thinking.
-- **`subagent_stop` does not change state.** A subagent finishing is not evidence that the main agent is actively working. The main agent's own tool events drive thinking state.
-
-## Subagent-Aware Transitions
-
-When the main agent is idle (permission prompt, `Stop`, `AskUserQuestion`), subagents may still be running and firing `tool_start` events through the same hooks pipeline. Without guarding, these subagent events override the idle state, causing the task card to show an incorrect "active" spinner.
-
-### Subagent Depth Tracking
-
-The SessionManager tracks a `subagentDepth` counter per session:
-
-- `subagent_start` → increment depth
-- `subagent_stop` → decrement depth (floor 0)
-- Cleared on session kill/suspend
-
-### Transition Guards
-
-Two guards protect against incorrect state transitions when subagents are running:
-
-**Guard 1: idle → thinking suppression** (`suppressSubagentWakeDuringPermission`, prevents a subagent tool event from waking the state while a permission is still pending)
-
-| Condition | Result | Why |
-|-----------|--------|-----|
-| Event is `prompt` | **Allow** | User responded -- always reliable |
-| Event is `subagent_start` | **Allow** | Main agent spawning -- always reliable |
-| Subagent depth = 0 | **Allow** | No subagents running, so this `tool_start` is from the main agent |
-| `permissionIdle` is false | **Allow** | No permission outstanding -- the wake is legitimate |
-| All of: depth > 0, `permissionIdle` true | **Suppress** | Showing "thinking" would hide a still-pending permission prompt |
-
-Guard 1 only fires while `permissionIdle` is true. Once the `pendingPermissions` counter drains to zero via matching `tool_end` events (see "Permission idle recovery" below), `permissionIdle` is cleared and the next subagent `tool_start` cleanly wakes the state.
-
-**Guard 2: thinking → idle suppression** (`deferStopUntilSubagentFinishes`, prevents main agent Stop from showing idle while subagents work)
-
-| Condition | Result | Why |
-|-----------|--------|-----|
-| Event is `interrupted` | **Allow** | User pressed Escape -- always goes through |
-| Event detail is `IdleReason.Permission` | **Allow** | Permission prompt blocks everything -- user must see idle immediately |
-| Subagent depth = 0 | **Allow** | No subagents running, genuine idle |
-| Subagent depth > 0 | **Defer** | Set `pendingIdleWhileSubagent` flag, emit idle when last subagent finishes |
-
-**Deferred idle mechanism:**
-- When Guard 2 suppresses an idle transition, it sets a `pendingIdleWhileSubagent` flag
-- On `subagent_stop`, if depth reaches 0 and the flag is set, emit idle
-- The flag is cleared when the main agent resumes thinking (`prompt`, `subagent_start`, or `tool_start` at depth 0)
-- Permission idles (`IdleReason.Permission`) also clear the pending flag to prevent stale deferred idles after approval
-
-**Permission idle recovery (`pendingPermissions` counter):**
-- When idle is caused by `PermissionRequest` (event detail = `IdleReason.Permission`), a `permissionIdle` flag is set and a `pendingPermissions` counter increments (at `subagentDepth <= 1` only)
-- Each subsequent `tool_end` event at depth <= 1 decrements the counter while `permissionIdle` is true
-- When the counter drains to zero **from a positive value**, `permissionIdle` clears and the next subagent `tool_start` cleanly wakes the state (Guard 1 no longer suppresses)
-- At `depth >= 2` the counter is frozen (increments and decrements are gated) -- we cannot tell which subagent's `tool_end` balances which permission, so the conservative sticky behavior is preserved until depth returns to 0
-- The counter never decrements from 0: a `tool_end` with counter already at 0 is either (a) a permission fired at `depth >= 2` that was never counted, or (b) an orphan event. Clearing `permissionIdle` in that case would prematurely wake a still-pending permission
-
-**Heartbeat recovery (safety net):**
-- Claude Code's `status.json` contains cumulative token counts (`totalInputTokens`, `totalOutputTokens`) that only increase during active model inference
-- The status file is already watched with 100ms debounce via `StatusFileReader` → `UsageTracker.processStatusUpdate()`
-- When tokens increase while idle for >1 second, the session transitions to thinking
-- During any true idle, the model is blocked and token counts are frozen -- no false recovery is possible
-- The 1-second grace period prevents race conditions from status updates arriving slightly after an idle event
-
-**Stale thinking safety timer:**
-- A background interval (every 15s) checks all sessions in the `thinking` state
-- If no signal (hook event or status.json update) has arrived for 45 seconds, the session transitions to idle
-- **Pending tool suppression:** If any tools are in-flight (`pendingToolCount > 0`), the timer resets instead of transitioning to idle. This prevents false idle during long-running tools (e.g. `npm run build`, `npx playwright test`) and subagent executions (the `Agent` tool stays pending for the entire subagent lifetime). The timer resumes normal behavior once all tools complete.
-- This catches cases where hooks fail to fire (e.g. Ctrl+C during model inference, not during a tool call, so no `PostToolUseFailure` hook fires)
-- A synthetic `idle` event with `detail: IdleReason.Timeout` is emitted to the activity log so the user can see why it went idle
-- Any subsequent event or usage update resets the 45-second timer
-- The timer only checks running sessions in the `thinking` state; idle sessions are ignored
-- **Nucleation guard:** Sessions that have never received usage data (no `usageCache` entry) are skipped by the stale timer. During nucleation, Claude Code reads local context before making API calls. No hooks fire and no `status.json` exists, so the 45s threshold would falsely trigger. Once the first API response arrives and `status.json` is written, the normal timer applies.
-
-### Scenarios
-
-1. **Permission prompt + subagents running:** Permission idle bypasses Guard 2 → card shows idle immediately. `permissionIdle` flag is set and `pendingPermissions` increments (at depth <= 1). Subagent tool_starts remain suppressed by Guard 1 while the counter is non-zero (correct)
-2. **Permission approved + subagent continues:** Each matching `tool_end` at depth <= 1 decrements the counter. When the last counted permission's `tool_end` fires, `permissionIdle` clears. The next subagent `tool_start` wakes the state to thinking -- no need to wait for depth to return to 0 (correct)
-3. **Multiple parallel permissions at depth 1:** Each `idle/permission` event increments the counter; each corresponding `tool_end` decrements it. The state wakes only after the LAST counted permission resolves, not the first -- partially-granted permissions keep the card idle (correct)
-4. **Permission at depth >= 2 (nested subagent):** The counter is frozen (increments and decrements are gated). `permissionIdle` is still set by the transition, so Guard 1 suppresses wake attempts. Recovery waits for depth to return to 0 and the next wake event (conservative but correct for the ambiguous multi-subagent case)
-5. **False idle with no event recovery:** Heartbeat detects token increase after 1s idle → card transitions to thinking (correct)
-6. **Long-running tool (e.g. npm run build):** `tool_start` fires at launch, no events during execution, `tool_end` fires on completion. `pendingToolCount > 0` suppresses the stale thinking timer throughout. Card stays thinking (correct)
-7. **Subagent thinking gap:** Agent tool_start fires at subagent launch. Subagent thinks for >45s between its own tool calls. `pendingToolCount > 0` (Agent tool still pending) suppresses the timer. Card stays thinking (correct)
-8. **Ctrl+C during model inference (no tool running):** No hook fires; stale thinking timer detects 45s without signals → card transitions to idle with `detail: IdleReason.Timeout` (correct)
-9. **User sends new message:** `prompt` always transitions regardless of depth (correct)
-10. **Main agent spawns subagent then fires Stop:** Idle suppressed, card stays thinking while subagent works (correct)
-11. **Last subagent finishes after deferred idle:** Card transitions to idle when depth reaches 0 (correct)
-12. **User presses Escape while subagents run:** `interrupted` always goes through, card shows idle immediately (correct)
-13. **Prompt fires while idle is deferred:** Pending flag cleared, no stale idle emitted when subagents finish (correct)
-14. **Nested subagents with deferred idle:** Idle only emits when ALL subagents finish (depth 0), not on intermediate stops (correct)
-15. **Long nucleation (no API call yet):** Session stays thinking throughout nucleation. Stale timer skipped because `usageCache` has no entry. Once first API response writes `status.json`, normal 45s timer applies (correct)
-
-### Idle and Prompt Sub-Reasons
-
-`src/shared/types.ts` -- `IdleReason` and `PromptReason` typed constants
-
-Idle and synthetic-prompt events carry a `detail` field with one of these documented values. Compare against the constants rather than string literals:
-
-| Constant | Value | When it fires |
-|----------|-------|---------------|
-| `IdleReason.Permission` | `'permission'` | `PermissionRequest` hook -- agent is blocked on user approval |
-| `IdleReason.Timeout` | `'timeout'` | Synthetic: the stale-thinking watchdog forced a transition after 45s without signals |
-| `IdleReason.Prompt` | `'prompt'` | Synthetic: the PTY tracker matched a known prompt pattern (e.g. `aider>`) |
-| `IdleReason.Silence` | `'silence'` | Synthetic: the PTY tracker's 10s silence timer expired |
-| `PromptReason.PtyActivity` | `'pty-activity'` | Synthetic: the PTY tracker observed output while idle and emits a synthetic `prompt` event to wake the state |
-
-Only `IdleReason.Permission` comes from a Claude Code hook. The other four are synthetic markers emitted by Kangentic's own detectors (stale-thinking watchdog, PTY activity tracker) so the activity log can distinguish hook-driven transitions from inferred ones.
-
-## Hook Configuration
-
-Hooks are injected into Claude Code's settings as part of the session settings merge. The event-bridge is registered on 17 hook points, all using blank matchers (`matcher: ''`):
+The engine exposes ONE predicate:
 
 ```
-PreToolUse:          "" → tool_start       # Any tool starting
-PostToolUse:         "" → tool_end         # Any tool completed
-PostToolUseFailure:  "" → tool_failure*    # Any tool failed (*converted by bridge)
-UserPromptSubmit:    "" → prompt           # User submitted a prompt
-Stop:                "" → idle             # Agent stopped naturally
-PermissionRequest:   "" → idle (permission)# Agent hit a permission wall
-SessionStart:        "" → session_start    # Session started
-SessionEnd:          "" → session_end      # Session ended
-SubagentStart:       "" → subagent_start   # Subagent launched
-SubagentStop:        "" → subagent_stop    # Subagent finished
-Notification:        "" → notification     # Informational notification
-PreCompact:          "" → compact          # Context compaction
-TeammateIdle:        "" → teammate_idle    # Teammate went idle
-TaskCompleted:       "" → task_completed   # Agent completed task
-ConfigChange:        "" → config_change    # Configuration changed
-WorktreeCreate:      "" → worktree_create  # Worktree created
-WorktreeRemove:      "" → worktree_remove  # Worktree removed
+'thinking' IFF turnActive
+            OR subagentDepth > 0
+            OR (activeBackgroundShellIds.size + anonymousBackgroundShellCount) > 0
+'permission' IFF permissionPending
+'idle' otherwise
 ```
 
-*`tool_failure` is passed as the argument to event-bridge.js, but the bridge converts it to `interrupted` (if `is_interrupt` is true in the payload) or `tool_end` (otherwise) before writing to the JSONL file.
+Notably absent: `pendingToolCount` is NOT in the predicate. An explicit `Idle` event (Stop hook) must transition to idle even if a tool's PostToolUse never arrived. `pendingToolCount` only drives the `'tool'` reason for UI tooltips.
 
-All hooks use blank matchers, meaning they fire for every invocation of that hook point regardless of tool name. There are no tool-specific matchers (e.g. no `AskUserQuestion` or `ExitPlanMode` matchers).
+### turnActive
 
-## Hook Injection
+Set on any "thinking-initiating" event (`ToolStart`, `Prompt`, `SubagentStart`, `Compact`, `WorktreeCreate`, `BackgroundShellStart`). Cleared by `Idle`, `Interrupted`. Persists across the silent gaps between tool calls so the spinner doesn't flicker.
 
-All sessions (main repo and worktree) use a single code path in `CommandBuilder.createMergedSettings()` (`src/main/agent/adapters/claude/command-builder.ts`):
+### Subagent depth
 
-1. Reads `.claude/settings.json` from project root (committed, shared)
-2. Deep-merges `.claude/settings.local.json` from project root (personal)
-3. For worktrees: merges permissions from the worktree's `.claude/settings.local.json` (captures "always allow" grants)
-4. Calls `buildEventHooks()` from `hook-manager.ts` to append event-bridge entries to all hook points
-5. Writes the merged settings to `.kangentic/sessions/<id>/settings.json`
-6. Passes `--settings <path>` to the Claude CLI
+Tracks nested subagent invocations. SubagentStop decrements (clamped to 0). When the main agent fires Stop while a subagent is still running, `turnActive = false` but `subagentDepth > 0` keeps the predicate true. Idle emits when depth hits 0 (and no other counter holds).
 
-All Kangentic hooks live in `.kangentic/sessions/<id>/settings.json` -- nothing is written to `.claude/settings.local.json`.
+### Background-shell tracking (Set + anonymous fallback)
 
-## Hook Cleanup
+Two storage modes:
 
-`stripKangenticHooks()` in `src/main/agent/adapters/claude/hook-manager.ts` removes all Kangentic hooks on project close or delete. This function is deprecated since the unified `--settings` approach (hooks are now in `.kangentic/sessions/<id>/settings.json`), but is kept for backward compatibility with older worktrees that may still have hooks in `.claude/settings.local.json`:
+- **`activeBackgroundShellIds: Set<string>`** — when the hook directive extracted a `shell_id` (today: KillBash events), the engine tracks shells by id. `markBackgroundShellEnded(sessionId, shellId)` removes the matching id.
+- **`anonymousBackgroundShellCount: number`** — fallback for shells whose start-event lacked a shell_id (the common case today; production hooks emit the command string as detail, not a shell_id). The watcher's count-based heuristic decrements this.
 
-- Identifies hooks by two markers: `.kangentic` in the command AND a known bridge name (`activity-bridge` or `event-bridge`)
-- Backs up `settings.local.json` before modification
-- Validates JSON integrity before writing
-- Restores from backup on any error
-- Deletes empty settings files and `.claude/` directories
+The predicate uses `set.size + anonymousCount > 0` so both modes coexist.
 
-## File Watcher
+### Permission flag
 
-The SessionManager's event watcher (`src/main/pty/session-manager.ts`) uses `fs.watch` with a 50ms debounce to detect changes to `events.jsonl`.
+Set when an `Idle` event fires with `detail: 'permission'`. Cleared by:
+- `Prompt` (user typed something new)
+- `Interrupted` (Esc)
+- `SubagentStart` (main agent spawning a child)
+- `Idle` with non-permission detail (agent ended turn)
+- `ToolStart`/`ToolEnd` at `subagentDepth === 0` (main agent activity)
 
-### Incremental Reading
+Subagent-tool events at depth>0 do NOT clear permission (the permission belonged to the main agent which is still paused).
 
-The watcher tracks a byte offset into the file. On each change:
+### Tool tracking (stack with correlation IDs + LIFO-by-name fallback)
 
-1. `fs.stat` to get current file size
-2. If size > last offset, open file and read from the offset
-3. Split new bytes into lines, parse each as JSON
-4. Update offset to current file size
-5. Emit events to renderer
+`pendingToolStack: Array<{ id?: string; name: string }>` records in-flight tools in start order. `currentTool` always reflects the top of the stack and is exposed via `ActivityReason` for the TaskCard hover tooltip ("Running Bash").
 
-This avoids re-reading the entire file on every change, which matters as the file grows (one line per tool call, potentially hundreds per session).
+ToolEnd matching priority:
+1. **By correlation id** — when both events carry `event.toolId` (Claude's `tool_use_id` extracted via the `tool-id` / `tool-id-nested` directives), exact removal regardless of stack position. Solves the duplicate-name and out-of-order cases.
+2. **LIFO-by-name** — fallback when an event has no toolId or the id didn't match (drift recovery from hook drop or version skew).
+3. **Raw pop** — fallback for `Interrupted` (no tool name carried).
 
-### Event Capping
+Hard reset on `pendingToolCount === 0`: the stack is cleared even if name desync left dangling entries. Idle events also clear the stack (see "Idle clamp" below).
 
-The SessionManager caps events at 500 per session in memory. The renderer's ActivityLog component renders these as a plain DOM list (no xterm overhead).
+Adapters opt into ID correlation by adding `tool-id:<field>` and `tool-id-nested:<parent>:<field>` directives to their hook config. Adapters without correlation IDs leave `event.toolId` undefined and the engine falls back to LIFO-by-name automatically - no breaking change.
 
-## Status Bridge (separate concern)
+### Idle clamp
 
-The status bridge (`status-bridge.js`) is a separate pipeline that tracks token usage, cost, model name, and context window percentage. It writes to `status.json` and is watched with a 100ms debounce. It uses Claude Code's `statusLine` feature (not hooks) and is unrelated to activity detection.
+When a non-permission `Idle` event arrives, the engine forcibly clears `pendingToolCount`, the stack, and `currentTool`. The agent's turn is done; any unmatched ToolStart events are stale by definition (PostToolUse hook dropped, tool force-killed, etc.).
 
-## Historical Note
+Permission idles bypass the clamp because the agent paused awaiting approval and may resume the same tool.
 
-Earlier versions used a dual-pipeline approach with both an `activity-bridge.js` (writing `activity.json`) and the event bridge. The activity bridge was removed because on Windows, `fs.watch` can fire spuriously or with delays, causing the activity watcher to read stale state and overwrite the correct state set by the event watcher. The event-bridge-only approach eliminates this race condition by deriving activity state from structured event types rather than reading a separate polling file.
+## Stability window (400ms)
+
+When the predicate flips from `thinking` to `idle` due to a Stop event or a counter clearing, the engine waits 400ms before emitting the transition. If a thinking signal arrives during the window, the pending idle is cancelled. Prevents `idle → thinking → idle` flicker from out-of-order hook arrivals.
+
+Bypassed by:
+- `Interrupted` (Esc — instant, no flicker concern)
+- `forceIdle` (PTY-driven; already debounced 3s in PtyActivityTracker)
+- Stale-thinking watchdog (already 45s)
+
+Configurable via `ActivityEngineOptions.idleStabilityWindowMs`. Tests set this to 0 for deterministic timing.
+
+## Three safety nets (the watchdog table)
+
+The predicate handles the common case. Three timer-driven safety nets in `engine/watchdog.ts` catch hook-loss / orphan situations. Each is a `WatchdogHold` describing a state shape, threshold, reset action, and audit-log label. `findActiveWatchdogHold(state, holds)` picks the matching one each cycle.
+
+### 1. Stale-thinking watchdog (45s)
+
+Held by `turnActive` alone (no tools, no subagent, no bg shells) for 45 seconds. The matching Idle/Stop hook never arrived. Emits synthetic `Idle/Timeout`, clears `turnActive`. Bypasses the stability window (the 45s already debounced any flicker).
+
+### 2. Bg-shell escape hatch (5 min)
+
+Held by background shells alone for 5 minutes. The process-tree watcher couldn't observe the natural exit (probe failure, unusual platform, etc.). Force-clears the counters and emits idle through the stability window.
+
+In practice the watcher catches most cases within seconds; the 5-min hatch is a final safety net.
+
+### 3. Stuck-pending-tools watchdog (5 min)
+
+Held by `pendingToolCount > 0` alone for 5 minutes. Common cause: user pressed Ctrl+C, the agent killed the bash, but `PostToolUseFailure` didn't propagate. Without this hatch the engine would be stuck in `thinking` forever - the stale-thinking watchdog requires `pendingToolCount === 0` to fire, the bg-shell hatch requires bg shells, and the Idle clamp only works when Idle actually fires.
+
+Resets `pendingToolCount`, the stack, `currentTool`, AND `turnActive` (the matching Stop hook for this turn was lost along with the PostToolUse). Goes through the stability window for the same reason as the bg-shell hatch.
+
+Real long-running foreground tools rarely run 5 min in total silence - they emit nested ToolStart/End from sub-tools and subagents that refresh `lastSignalAt`.
+
+### Adding a new watchdog
+
+Append to the table in `buildWatchdogHolds()`:
+
+```ts
+{
+  predicate: (state) => /* what state shape qualifies as stuck */,
+  thresholdMs: config.someThresholdMs,
+  trigger: 'timer:my-watchdog',
+  reset: (state) => { /* mutations to clear the hold */ },
+  applyStabilityWindow: true,
+}
+```
+
+The predicates are mutually exclusive (each requires exactly one signal source non-zero, others zero) so order only matters when predicates could overlap.
+
+## Ctrl+C user-interrupt synthesis (3s)
+
+When the user presses Ctrl+C in a session terminal, the renderer fires the `notifyUserInterrupt` IPC alongside the regular `\x03` write to the PTY. Telemetry arms a 3-second settle timer per session. After the window, if the engine is still in `thinking` AND state is hot (`pendingToolCount > 0` OR `turnActive`), telemetry synthesizes an `Interrupted` event with `detail: 'user-ctrl-c'`. The engine's Interrupted handler clears all counters and commits idle immediately.
+
+If Claude's hooks already recovered the engine state during the settle window, the synthetic is a no-op (state isn't hot). Multiple rapid Ctrl+C presses collapse to one - the existing timer is cleared and re-armed each time.
+
+Without this path, hook-drop scenarios on Ctrl+C have to wait for the 5-minute stuck-pending-tools watchdog to fire.
+
+## BgShellWatcher (the primary natural-exit mechanism)
+
+Empirical analysis of ~50 production sessions found:
+- ~206 `background_shell_start` events
+- ~4 `background_shell_end` events (KillBash)
+- 0 `BashOutput` tool calls
+
+Conclusion: agents almost never explicitly end their bg shells. The only reliable signal is OS process-tree observation.
+
+### How it works
+
+The watcher polls every 2 seconds. For each session with `activeShellCount > 0`:
+
+1. Check if the Claude CLI's root PID is alive. If dead, fire `onRootProcessDied` (engine forceIdle).
+2. Enumerate the Claude CLI's descendant processes via `ps` (POSIX) or `Get-CimInstance Win32_Process` (Windows).
+3. **Tier A (PID-aware):** for shells registered via `registerShellPid(shellId, pid)`, check `isAlive(pid)`. If dead, fire `onShellPidExited(shellId)` → engine removes by id.
+4. **Tier B (count heuristic):** filter descendants to "shell-like" basenames (bash, sh, cmd, pwsh, node, npm, npx, python, etc.). If the count dropped below the snapshot taken at the last `background_shell_start` AND the engine reports tracked shells, fire `onNaturalExit(delta)`. Engine drains anonymous count by delta.
+
+### Lazy polling
+
+The watcher only polls when at least one session has `getActiveShellCount() > 0`. Idle Kangentic = zero polls.
+
+### Cross-platform
+
+- **Windows:** `powershell.exe -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Csv -NoTypeInformation"`. Walks the parent map in JS. Times out at 1.5s.
+- **POSIX:** `ps -A -o pid=,ppid=,comm=`. Walks the parent map in JS. Times out at 1.5s.
+- **Liveness probe:** `process.kill(pid, 0)`; treats EPERM as alive (matches existing pattern).
+
+### Kill switch
+
+Set `KANGENTIC_BG_SHELL_WATCHER=0` to disable the watcher. The 5-min escape hatch remains as fallback.
+
+## Resume reconciliation
+
+When Kangentic restarts mid-session, the engine starts clean but the agent's Claude CLI may have living descendant processes. `reconcileBgShellsOnResume` enumerates the descendants at resume time, filters to shell-like basenames, and adopts them as anonymous bg shells. The watcher then prunes them as they exit naturally.
+
+## Observability
+
+### TaskCard hover tooltip
+
+The activity icon on each task card is wrapped in a tooltip rendering `ActivityReasonTooltip`. Hover reveals an icon + inline label per reason kind: "Running Bash", "2 subagents active", "1 background shell", "Awaiting permission", etc.
+
+### Activity Engine Debug Overlay (Developer settings tab)
+
+A per-project setting under **Developer → Activity Engine Debug Overlay** enables a floating panel showing live engine state:
+- Current activity + reason for each running session
+- Raw counters (tools, subagents, bg shells)
+- Ring buffer of last 10 transitions
+
+Polls `getActivityStats(sessionId)` every 2 seconds. Hidden by default — power users discover via Developer settings; bug reporters can enable + screenshot.
+
+## Synthetic events
+
+The engine itself emits synthetic events into the activity log via the `onSyntheticEvent` callback for two cases:
+
+- **Watchdog Idle/Timeout:** when the 45s stale-thinking watchdog or the 5-min bg-shell escape hatch fires. Pushed BEFORE the matching `onActivityChange` so the log entry appears before the state change.
+- **Natural-exit `BackgroundShellEnd`:** when the watcher infers a bg shell exited naturally. Detail is `IdleReason.NaturalExit` for `onNaturalExit` (anonymous) or the shell_id for `onShellPidExited` (Tier A).
+
+## Test infrastructure
+
+Three test tiers:
+
+1. **Unit** (`tests/unit/activity-engine.test.ts`, `bg-shell-watcher.test.ts`, `process-tree.test.ts`, `bg-shell-resume.test.ts`): direct engine + watcher tests with mock probe.
+2. **Property** (`tests/unit/activity-engine-property.test.ts`): fast-check generates random event sequences, asserts invariants (counters never negative, activity matches reason kind, dispose is idempotent, multi-session isolation).
+3. **Replay** (`tests/unit/activity-engine-replay.test.ts`): drives sanitized real production `events.jsonl` files through the engine and pins expected end-state. Fixtures live at `tests/fixtures/replay/`. Sanitization helper at `tests/fixtures/replay/_sanitize.mjs`.
+4. **E2E** (`tests/e2e/background-shell-idle.spec.ts`): real Electron + mock Claude CLI exercising the full pipeline with actual bg processes.
+
+## Configuration
+
+### `ActivityEngineOptions`
+
+```ts
+interface ActivityEngineOptions {
+  bgShellEscapeHatchMs?: number;     // default 5 * 60_000
+  staleThinkingTimeoutMs?: number;   // default 45_000
+  idleStabilityWindowMs?: number;    // default 400
+  now?: () => number;                // testability
+}
+```
+
+Plumbed through `SessionManagerOptions.activityEngineOptions` for tests.
+
+### Per-project setting
+
+`developer.activityDebugOverlay: boolean` — enables the debug overlay for the current project. Default false.
+
+### Environment variables
+
+- `KANGENTIC_BG_SHELL_WATCHER=0` — disables the bg-shell process-tree watcher (fallback to escape hatch only).
+- `SKIP_PROCESS_TREE_PROBE=1` — skips real-OS probe smoke tests in CI environments without `ps`/`pwsh`.
+
+## History
+
+The current design (v2) replaced a v1 three-guard state machine that had grown to 557 lines with overlapping concerns: Guard 1 (suppressSubagentWakeDuringPermission), Guard 2 (deferStopUntilSubagentFinishes), Guard 3 (deferStopUntilBackgroundShellsFinish), composite hand-off bookkeeping, a 45s stale-thinking watchdog, a 10-min Guard 3 escape hatch, and a `pendingPermissions` counter with depth-≥2 freeze logic.
+
+The v2 single-predicate engine + process-tree watcher reduced this to ~600 lines total across `engine/activity-engine.ts` + `background-shell/watcher.ts` + `background-shell/process-tree.ts`, with a near-100% empirical hit rate on the natural-exit cases that motivated the rewrite.

@@ -5,7 +5,7 @@
  * the PRConnector interface. The registry exposes two functions that the rest
  * of the codebase calls without knowing which platforms are registered:
  *
- *   matchesPRCommand(detail)  - used by usage-tracker to flag relevant Bash commands
+ *   matchesPRCommand(detail)  - used by PRCommandDetector to flag relevant Bash commands
  *   detectPR(scrollback)      - used by session-manager to extract PR URLs
  *
  * To add a new platform:

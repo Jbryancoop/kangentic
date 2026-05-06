@@ -105,7 +105,7 @@ test.describe('Codex Agent - Activity Detection', () => {
     //   1. captureSessionIdFromFilesystem -> find the rollout file
     //   2. locate -> resolve the file path
     //   3. parse -> extract usage + events
-    //   4. dispatch -> update UsageTracker -> emit to renderer
+    //   4. dispatch -> update SessionTelemetry -> emit to renderer
 
     // Poll until usage data arrives with a non-zero context window.
     // The filesystem scan polls at 500ms intervals, so this may take

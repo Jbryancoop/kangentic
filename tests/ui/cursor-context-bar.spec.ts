@@ -154,7 +154,7 @@ test.describe('Cursor ContextBar model pill', () => {
       // We pass a full SessionUsage object (not just { model }) because TaskCard
       // unconditionally dereferences usage.contextWindow.totalInputTokens when
       // usage is truthy. A partial patch would crash the component before it
-      // could render the model name. In production, UsageTracker.setSessionUsage
+      // could render the model name. In production, SessionTelemetry.setSessionUsage
       // deep-merges into the existing entry, so the contextWindow sub-object is
       // always populated before the model field arrives. We replicate that here.
       await page.evaluate(

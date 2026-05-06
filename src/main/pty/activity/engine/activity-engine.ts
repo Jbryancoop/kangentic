@@ -1,0 +1,545 @@
+import { EventType, IdleReason } from '../../../../shared/types';
+import type { ActivityState, ActivityReason, SessionEvent } from '../../../../shared/types';
+import {
+  DEFAULT_BG_SHELL_ESCAPE_HATCH_MS,
+  DEFAULT_STALE_THINKING_TIMEOUT_MS,
+  DEFAULT_IDLE_STABILITY_WINDOW_MS,
+  RECENT_TRANSITIONS_RING_SIZE,
+  LOG_ONLY_EVENTS,
+  TURN_INITIATING_EVENTS,
+  TURN_ENDING_EVENTS,
+} from './shapes';
+import type {
+  ActivityEngineOptions,
+  ActivityEngineCallbacks,
+  ActivityStatsSnapshot,
+  SessionEngineState,
+  TransitionRecord,
+  TransitionTrigger,
+} from './shapes';
+import { snapshotCounters, formatCounterDelta } from './counter-snapshot';
+import { createSessionEngineState } from './state-factory';
+import { derivePredicate, deriveReason, deriveActivityAndReason } from './predicate';
+import { updateCounters, updatePermissionFlag } from './event-handlers';
+import { buildWatchdogHolds, findActiveWatchdogHold } from './watchdog';
+import type { WatchdogHold } from './watchdog';
+
+/**
+ * Single-predicate activity engine.
+ *
+ * The state is `'thinking'` IFF:
+ *   - permissionPending is false (permission is reported as `'permission'`)
+ *   - AND any of:
+ *     - turnActive (a thinking event fired and no idle event has fired since)
+ *     - subagentDepth > 0
+ *     - activeBackgroundShellIds.size + anonymousBackgroundShellCount > 0
+ *
+ * `Idle` events explicitly clear `turnActive` and re-evaluate the
+ * predicate. If counters still hold, the session stays thinking. When
+ * all counters clear, the predicate returns idle (subject to the
+ * stability window).
+ *
+ * Background shells that exit naturally without firing a hook are
+ * caught by the bg-shell escape hatch (5 min). The process-tree
+ * watcher (Subsystem B) reports natural exits much faster via
+ * `markBackgroundShellEnded(sessionId, shellId?)`.
+ */
+export class ActivityEngine {
+  private readonly states = new Map<string, SessionEngineState>();
+  private readonly timers = new Map<string, NodeJS.Timeout>();
+  private readonly callbacks: ActivityEngineCallbacks;
+  private readonly idleStabilityWindowMs: number;
+  private readonly now: () => number;
+  private readonly watchdogConfig: readonly WatchdogHold[];
+  private disposed = false;
+
+  constructor(callbacks: ActivityEngineCallbacks, options: ActivityEngineOptions = {}) {
+    this.callbacks = callbacks;
+    this.idleStabilityWindowMs = options.idleStabilityWindowMs ?? DEFAULT_IDLE_STABILITY_WINDOW_MS;
+    this.now = options.now ?? Date.now;
+    this.watchdogConfig = buildWatchdogHolds({
+      bgShellEscapeHatchMs: options.bgShellEscapeHatchMs ?? DEFAULT_BG_SHELL_ESCAPE_HATCH_MS,
+      staleThinkingTimeoutMs: options.staleThinkingTimeoutMs ?? DEFAULT_STALE_THINKING_TIMEOUT_MS,
+    });
+  }
+
+  // ==== Lifecycle ====
+
+  initSession(sessionId: string): void {
+    if (this.disposed) return;
+    this.clearTimer(sessionId);
+    const state = createSessionEngineState();
+    state.idleTimestamp = this.now();
+    this.states.set(sessionId, state);
+    this.callbacks.onActivityChange(sessionId, 'idle', deriveReason(state));
+  }
+
+  deleteSession(sessionId: string): void {
+    this.clearTimer(sessionId);
+    this.states.delete(sessionId);
+  }
+
+  /**
+   * Tear down all per-session state and timers. Idempotent. Used by
+   * `SessionTelemetry.dispose()` and tests.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+    this.states.clear();
+  }
+
+  getOrCreateState(sessionId: string): SessionEngineState {
+    let state = this.states.get(sessionId);
+    if (!state) {
+      state = createSessionEngineState();
+      this.states.set(sessionId, state);
+    }
+    return state;
+  }
+
+  getState(sessionId: string): SessionEngineState | undefined {
+    return this.states.get(sessionId);
+  }
+
+  /**
+   * Iterate all sessions for read-only scans (idle-timeout sweep).
+   * State is exposed as `Readonly` so callers cannot bypass the engine
+   * by mutating fields directly.
+   */
+  forEachState(
+    callback: (sessionId: string, state: Readonly<SessionEngineState>) => void,
+  ): void {
+    for (const [sessionId, state] of this.states) {
+      callback(sessionId, state);
+    }
+  }
+
+  /** Snapshot of just the activity field for IPC callers. */
+  getActivityCache(): Record<string, ActivityState> {
+    const result: Record<string, ActivityState> = {};
+    for (const [sessionId, state] of this.states) {
+      result[sessionId] = state.activity;
+    }
+    return result;
+  }
+
+  /** Latest reason for a single session, or null if the session is unknown. */
+  getActivityReason(sessionId: string): ActivityReason | null {
+    const state = this.states.get(sessionId);
+    if (!state) return null;
+    return deriveReason(state);
+  }
+
+  /**
+   * Rich state snapshot for the debug overlay (Subsystem E). Includes
+   * raw counters, ring buffer of recent transitions, and pending-idle
+   * armed flag. Returns null if the session is unknown.
+   */
+  getStatsSnapshot(sessionId: string): ActivityStatsSnapshot | null {
+    const state = this.states.get(sessionId);
+    if (!state) return null;
+    const lastSignalAt = state.lastSignalAt;
+    return {
+      sessionId,
+      activity: state.activity,
+      reason: deriveReason(state),
+      pendingToolCount: state.pendingToolCount,
+      subagentDepth: state.subagentDepth,
+      backgroundShellIds: Array.from(state.activeBackgroundShellIds),
+      anonymousBackgroundShellCount: state.anonymousBackgroundShellCount,
+      turnActive: state.turnActive,
+      permissionPending: state.permissionPending,
+      msSinceLastSignal: lastSignalAt === null ? null : this.now() - lastSignalAt,
+      pendingIdleArmed: state.pendingIdleAt !== null,
+      recentTransitions: state.recentTransitions.slice(),
+    };
+  }
+
+  // ==== Main event processing ====
+
+  processEvent(sessionId: string, event: SessionEvent): void {
+    if (this.disposed) return;
+    const state = this.getOrCreateState(sessionId);
+
+    // Snapshot counters before any mutation so we can render an audit
+    // log entry showing what changed during this step.
+    const before = snapshotCounters(state);
+
+    updateCounters(state, event);
+    updatePermissionFlag(state, event);
+
+    if (!LOG_ONLY_EVENTS.has(event.type)) {
+      state.lastSignalAt = this.now();
+    }
+
+    if (TURN_INITIATING_EVENTS.has(event.type)) {
+      state.turnActive = true;
+      // A fresh thinking signal cancels any pending stability-window idle.
+      state.pendingIdleAt = null;
+    } else if (TURN_ENDING_EVENTS.has(event.type)) {
+      state.turnActive = false;
+    }
+
+    if (event.type === EventType.Interrupted) {
+      this.applyInterruptedBypass(sessionId, state, before);
+      return;
+    }
+
+    const trigger: TransitionTrigger = event.detail !== undefined && event.detail !== ''
+      ? `event:${event.type}:${event.detail}`
+      : `event:${event.type}`;
+    const delta = formatCounterDelta(before, snapshotCounters(state));
+    this.reevaluate(sessionId, state, trigger, delta);
+  }
+
+  /**
+   * Interrupted forces immediate idle, bypassing the stability window.
+   * User pressed Esc (or our renderer's Ctrl+C synthesizer fired) - reset
+   * all counters and clear pending state. Matches forceIdle semantics:
+   * a hard abort that should leave the session in a clean idle state
+   * regardless of mid-flight tools or detached background work.
+   */
+  private applyInterruptedBypass(
+    sessionId: string,
+    state: SessionEngineState,
+    before: ReturnType<typeof snapshotCounters>,
+  ): void {
+    state.pendingIdleAt = null;
+    state.pendingToolCount = 0;
+    state.pendingToolStack.length = 0;
+    state.subagentDepth = 0;
+    state.activeBackgroundShellIds.clear();
+    state.anonymousBackgroundShellCount = 0;
+    state.currentTool = null;
+    const delta = formatCounterDelta(before, snapshotCounters(state));
+    this.commitTransition(sessionId, state, 'idle', 'interrupted', delta);
+  }
+
+  // ==== External force paths (PTY tracker, heartbeat recovery) ====
+
+  /**
+   * Force a transition to `'thinking'`. Used by the PTY tracker (PTY
+   * data while idle) and heartbeat recovery (status.json tokens-up
+   * while idle). Sets `turnActive=true` to match the semantics of an
+   * external "agent is alive" signal.
+   */
+  forceThinking(sessionId: string): void {
+    if (this.disposed) return;
+    const state = this.getOrCreateState(sessionId);
+    const before = snapshotCounters(state);
+    state.turnActive = true;
+    state.lastSignalAt = this.now();
+    state.permissionPending = false;
+    state.pendingIdleAt = null;
+    const delta = formatCounterDelta(before, snapshotCounters(state));
+    this.commitTransition(sessionId, state, 'thinking', 'force-thinking', delta);
+  }
+
+  /**
+   * Force a transition to `'idle'`. Used by the PTY tracker (silence
+   * timer or prompt detection). Resets all counters - the PTY's
+   * "definitive idle" overrides our event-based bookkeeping.
+   */
+  forceIdle(sessionId: string): void {
+    if (this.disposed) return;
+    const state = this.getOrCreateState(sessionId);
+    const before = snapshotCounters(state);
+    state.turnActive = false;
+    state.permissionPending = false;
+    state.lastSignalAt = null;
+    state.pendingToolCount = 0;
+    state.pendingToolStack.length = 0;
+    state.subagentDepth = 0;
+    state.activeBackgroundShellIds.clear();
+    state.anonymousBackgroundShellCount = 0;
+    state.currentTool = null;
+    state.pendingIdleAt = null;
+    const delta = formatCounterDelta(before, snapshotCounters(state));
+    this.commitTransition(sessionId, state, 'idle', 'force-idle', delta);
+  }
+
+  /**
+   * Reset `lastSignalAt` without firing a transition. Used by paths
+   * that observe the agent is alive but don't want to flip state
+   * (e.g. heartbeat keeping a thinking session warm so the bg-shell
+   * escape hatch doesn't false-fire).
+   */
+  markThinkingSignal(sessionId: string): void {
+    if (this.disposed) return;
+    const state = this.states.get(sessionId);
+    if (state) {
+      state.lastSignalAt = this.now();
+      if (state.activity === 'thinking') {
+        this.scheduleTimer(sessionId, state);
+      }
+    }
+  }
+
+  /**
+   * Subsystem B/C entry point: external caller (process-tree watcher
+   * or BashOutput hook) reports that a background shell ended.
+   *
+   * If `shellId` matches a tracked id in `activeBackgroundShellIds`,
+   * remove it. Otherwise (anonymous bg shell), decrement
+   * `anonymousBackgroundShellCount`. Re-evaluates the predicate -
+   * may emit idle.
+   */
+  markBackgroundShellEnded(sessionId: string, shellId?: string): void {
+    if (this.disposed) return;
+    const state = this.states.get(sessionId);
+    if (!state) return;
+    const before = snapshotCounters(state);
+    if (shellId !== undefined) {
+      // Identity-aware decrement. If the shell isn't tracked under
+      // this id, treat as no-op - the caller named a specific shell,
+      // falling through would silently corrupt the anonymous count.
+      if (!state.activeBackgroundShellIds.has(shellId)) return;
+      state.activeBackgroundShellIds.delete(shellId);
+    } else {
+      // Anonymous decrement (count-based heuristic from watcher).
+      // The watcher saw N fewer descendants - SOMETHING ended. Drain
+      // anonymous first; if anonymous is empty but the named set still
+      // has entries, drain one named entry as a last resort. Without
+      // this fallback, named-set entries left over from prior bookkeeping
+      // drift would never decrement, freezing the bg-shell count.
+      if (state.anonymousBackgroundShellCount > 0) {
+        state.anonymousBackgroundShellCount -= 1;
+      } else if (state.activeBackgroundShellIds.size > 0) {
+        const firstId = state.activeBackgroundShellIds.values().next().value;
+        if (firstId !== undefined) state.activeBackgroundShellIds.delete(firstId);
+      } else {
+        return;
+      }
+    }
+    const trigger: TransitionTrigger = shellId !== undefined
+      ? `event:bg-shell-ended:${shellId}`
+      : 'event:bg-shell-ended:watcher';
+    const delta = formatCounterDelta(before, snapshotCounters(state));
+    this.reevaluate(sessionId, state, trigger, delta);
+  }
+
+  /**
+   * Subsystem G entry point: on Kangentic restart with a resumed
+   * session whose Claude CLI has surviving descendant processes, adopt
+   * those as anonymous bg shells. The watcher then prunes them as
+   * they exit naturally.
+   */
+  adoptAnonymousBackgroundShells(sessionId: string, count: number): void {
+    if (this.disposed) return;
+    if (count <= 0) return;
+    const state = this.getOrCreateState(sessionId);
+    const before = snapshotCounters(state);
+    state.anonymousBackgroundShellCount += count;
+    const delta = formatCounterDelta(before, snapshotCounters(state));
+    this.reevaluate(sessionId, state, 'event:bg-shells-adopted', delta);
+  }
+
+  // ==== Internal: re-evaluate after state mutation ====
+
+  /**
+   * Re-evaluate predicate after a state mutation. If activity should
+   * change, commit the transition. The stability window applies to
+   * any thinking->idle transition reached through the predicate path
+   * (Stop event, SubagentStop, BackgroundShellEnd, watcher's
+   * markBackgroundShellEnded). Forced idle paths (Interrupted,
+   * forceIdle) bypass reevaluate entirely so the window doesn't
+   * apply to them.
+   */
+  private reevaluate(
+    sessionId: string,
+    state: SessionEngineState,
+    trigger: TransitionTrigger,
+    counterDelta?: string,
+  ): void {
+    const fromActivity = state.activity;
+    // Cheap predicate-only check: avoids allocating an ActivityReason
+    // object on the common no-transition path. The reason is built
+    // lazily below (only when we actually log or commit).
+    const newActivity = derivePredicate(state);
+    if (newActivity === fromActivity) {
+      // No state change. If counters mutated, log a non-transition
+      // step so the audit log shows what events held the predicate
+      // in this state.
+      if (counterDelta) {
+        const reason = deriveReason(state);
+        this.recordTransition(state, fromActivity, fromActivity, reason.kind, trigger, counterDelta);
+      }
+      this.scheduleTimer(sessionId, state);
+      return;
+    }
+    // Stability window: only apply to thinking->idle. Idle->thinking
+    // and ->permission are always immediate.
+    const shouldDelayIdle =
+      newActivity === 'idle'
+      && state.activity === 'thinking'
+      && this.idleStabilityWindowMs > 0;
+
+    if (shouldDelayIdle) {
+      // Idle deferred by stability window. The counter change that
+      // would have flipped the state is real and worth logging now -
+      // when the timer fires later, the actual transition gets its
+      // own audit entry.
+      if (counterDelta) {
+        const reason = deriveReason(state);
+        this.recordTransition(state, fromActivity, fromActivity, reason.kind, trigger, counterDelta);
+      }
+      state.pendingIdleAt = this.now() + this.idleStabilityWindowMs;
+      this.scheduleTimer(sessionId, state);
+      return;
+    }
+
+    this.commitTransition(sessionId, state, newActivity, trigger, counterDelta);
+  }
+
+  private commitTransition(
+    sessionId: string,
+    state: SessionEngineState,
+    newActivity: ActivityState,
+    trigger: TransitionTrigger,
+    counterDelta?: string,
+  ): void {
+    if (state.activity === newActivity) {
+      // No transition - but if counters changed, still log the step.
+      if (counterDelta) {
+        const reason = deriveReason(state);
+        this.recordTransition(state, state.activity, state.activity, reason.kind, trigger, counterDelta);
+      }
+      this.scheduleTimer(sessionId, state);
+      return;
+    }
+    const fromActivity = state.activity;
+    state.activity = newActivity;
+    state.pendingIdleAt = null;
+    if (newActivity === 'idle') {
+      state.idleTimestamp = this.now();
+    } else {
+      state.idleTimestamp = null;
+    }
+    const reason = deriveReason(state);
+    this.recordTransition(state, fromActivity, newActivity, reason.kind, trigger, counterDelta);
+    this.callbacks.onActivityChange(sessionId, newActivity, reason);
+    this.scheduleTimer(sessionId, state);
+  }
+
+  private recordTransition(
+    state: SessionEngineState,
+    from: ActivityState,
+    to: ActivityState,
+    reasonKind: ActivityReason['kind'],
+    trigger: TransitionTrigger,
+    counterDelta?: string,
+  ): void {
+    const record: TransitionRecord = { ts: this.now(), from, to, reasonKind, trigger };
+    if (counterDelta) record.counterDelta = counterDelta;
+    state.recentTransitions.push(record);
+    if (state.recentTransitions.length > RECENT_TRANSITIONS_RING_SIZE) {
+      state.recentTransitions.splice(0, state.recentTransitions.length - RECENT_TRANSITIONS_RING_SIZE);
+    }
+  }
+
+  // ==== Timers: stability window, bg-shell escape hatch, stale-thinking watchdog ====
+
+  private scheduleTimer(sessionId: string, state: SessionEngineState): void {
+    this.clearTimer(sessionId);
+    if (this.disposed) return;
+
+    // Priority 1: pending stability-window idle has the soonest deadline.
+    if (state.pendingIdleAt !== null) {
+      const delay = Math.max(10, state.pendingIdleAt - this.now());
+      this.armTimer(sessionId, delay);
+      return;
+    }
+
+    if (state.activity !== 'thinking') return;
+
+    const hold = findActiveWatchdogHold(state, this.watchdogConfig);
+    if (hold) {
+      const baseTime = state.lastSignalAt ?? this.now();
+      const delay = Math.max(50, hold.thresholdMs - (this.now() - baseTime));
+      this.armTimer(sessionId, delay);
+    }
+  }
+
+  private armTimer(sessionId: string, delayMs: number): void {
+    const timer = setTimeout(() => this.onTick(sessionId), delayMs);
+    timer.unref();
+    this.timers.set(sessionId, timer);
+  }
+
+  private clearTimer(sessionId: string): void {
+    const existing = this.timers.get(sessionId);
+    if (existing) {
+      clearTimeout(existing);
+      this.timers.delete(sessionId);
+    }
+  }
+
+  private onTick(sessionId: string): void {
+    this.timers.delete(sessionId);
+    if (this.disposed) return;
+    const state = this.states.get(sessionId);
+    if (!state) return;
+
+    // Stability-window idle commit.
+    if (state.pendingIdleAt !== null && this.now() >= state.pendingIdleAt) {
+      // Re-derive: if a new counter became active during the window, suppress.
+      const { activity: derived } = deriveActivityAndReason(state);
+      state.pendingIdleAt = null;
+      if (derived === 'idle') {
+        this.commitTransition(sessionId, state, 'idle', 'timer:stability');
+      } else {
+        this.scheduleTimer(sessionId, state);
+      }
+      return;
+    }
+
+    if (state.activity !== 'thinking') return;
+
+    const baseTime = state.lastSignalAt ?? 0;
+    const sinceSignal = this.now() - baseTime;
+    const hold = findActiveWatchdogHold(state, this.watchdogConfig);
+
+    if (hold && sinceSignal >= hold.thresholdMs) {
+      const before = snapshotCounters(state);
+      this.emitSyntheticIdleTimeout(sessionId);
+      hold.reset(state);
+      const delta = formatCounterDelta(before, snapshotCounters(state));
+      // Schedule the idle commit through the stability window unless
+      // the hold opted out (stale-thinking watchdog wants instant
+      // emission, no flicker risk because turnActive was the only
+      // holder and we just cleared it).
+      if (hold.applyStabilityWindow && this.idleStabilityWindowMs > 0) {
+        state.pendingIdleAt = this.now() + this.idleStabilityWindowMs;
+        this.scheduleTimer(sessionId, state);
+      } else {
+        this.commitTransition(sessionId, state, 'idle', hold.trigger, delta);
+      }
+      return;
+    }
+
+    // Conditions changed since we armed, or threshold not reached - re-arm.
+    this.scheduleTimer(sessionId, state);
+  }
+
+  private emitSyntheticIdleTimeout(sessionId: string): void {
+    if (!this.callbacks.onSyntheticEvent) return;
+    const syntheticEvent: SessionEvent = {
+      ts: this.now(),
+      type: EventType.Idle,
+      detail: IdleReason.Timeout,
+    };
+    this.callbacks.onSyntheticEvent(sessionId, syntheticEvent);
+  }
+
+  /**
+   * Predicate for `session-telemetry.ts:maybeSuppressPtyTracker` -
+   * "is this event a thinking-initiating event?". Replaces the
+   * vestigial `EventTypeActivity` map.
+   */
+  static isTurnInitiatingEvent(eventType: EventType): boolean {
+    return TURN_INITIATING_EVENTS.has(eventType);
+  }
+}

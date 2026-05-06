@@ -426,7 +426,7 @@ function mapCodexToolName(_name: string): AgentTool {
  *
  * IMPORTANT: Only includes fields that were actually captured in this
  * chunk. Uncaptured fields are omitted entirely (not defaulted to 0) so
- * that the shallow spread merge in `UsageTracker.setSessionUsage()` does
+ * that the shallow spread merge in `UsageAccumulator.setSessionUsage()` does
  * not overwrite correct base values with zeros. For example, a chunk
  * containing only `turn_context` (model name) must NOT include
  * `contextWindowSize: 0` because that would overwrite a previously-set

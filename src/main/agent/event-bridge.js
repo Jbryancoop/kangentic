@@ -12,6 +12,8 @@
  *
  * Directives:
  *   tool:<field>                   Extract event.tool from ctx[field]
+ *   tool-id:<f1>,<f2>,...          Extract event.toolId from first non-null ctx[f]
+ *   tool-id-nested:<p>:<f1>,<f2>,. Extract event.toolId from first non-null ctx[p][f]
  *   detail:<f1>,<f2>,...           Extract event.detail from first non-null ctx[f]
  *   nested-detail:<p>:<f1>,<f2>,.. Extract event.detail from first non-null ctx[p][f]
  *   env:<key>=<ENV_VAR>            Capture env var into hookContext as key
@@ -57,6 +59,39 @@ process.stdin.on('end', () => {
       // tool:<field> - extract event.tool from ctx[field]
       const field = directive.slice(5);
       if (ctx && ctx[field] != null) event.tool = ctx[field];
+
+    } else if (directive.startsWith('tool-id-nested:')) {
+      // tool-id-nested:<parent>:<f1>,<f2>,... - extract toolId from ctx[parent][f]
+      const rest = directive.slice(15);
+      const colonIndex = rest.indexOf(':');
+      if (colonIndex > 0 && ctx && !event.toolId) {
+        const parent = rest.slice(0, colonIndex);
+        const fields = rest.slice(colonIndex + 1).split(',');
+        const container = ctx[parent];
+        if (container && typeof container === 'object') {
+          for (const field of fields) {
+            const value = container[field];
+            if (value != null) {
+              event.toolId = String(value).slice(0, 200);
+              break;
+            }
+          }
+        }
+      }
+
+    } else if (directive.startsWith('tool-id:')) {
+      // tool-id:<f1>,<f2>,... - extract toolId from first non-null ctx[f]
+      if (!event.toolId) {
+        const fields = directive.slice(8).split(',');
+        if (ctx) {
+          for (const field of fields) {
+            if (ctx[field] != null) {
+              event.toolId = String(ctx[field]).slice(0, 200);
+              break;
+            }
+          }
+        }
+      }
 
     } else if (directive.startsWith('nested-detail:')) {
       // nested-detail:<parent>:<f1>,<f2>,... - extract detail from ctx[parent][f]

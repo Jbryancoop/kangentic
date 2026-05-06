@@ -29,13 +29,18 @@ export function resolveAutoFocusTarget(input: AutoFocusInput): string | null {
     return null;
   }
 
-  if (newState === 'idle') {
-    // Don't switch if user is already viewing a running idle session
-    const isViewingIdleSession =
+  // Treat 'permission' like 'idle' for focus purposes - the agent is paused
+  // and the user should see it. The renderer differentiates the two visually
+  // (lock icon vs idle dot) but both qualify as "ready for user attention".
+  const isPaused = (state: ActivityState) => state === 'idle' || state === 'permission';
+
+  if (isPaused(newState)) {
+    // Don't switch if user is already viewing a running paused session
+    const isViewingPausedSession =
       currentActiveSessionId !== null &&
-      sessionActivity[currentActiveSessionId] === 'idle' &&
+      isPaused(sessionActivity[currentActiveSessionId] ?? 'idle') &&
       sessions.some((s) => s.id === currentActiveSessionId && s.status === 'running');
-    if (!isViewingIdleSession) {
+    if (!isViewingPausedSession) {
       return sessionId;
     }
     return null;
@@ -43,10 +48,10 @@ export function resolveAutoFocusTarget(input: AutoFocusInput): string | null {
 
   // newState === 'thinking' -- only react if the viewed session went to thinking
   if (currentActiveSessionId === sessionId) {
-    const otherIdle = sessions.find(
-      (s) => s.id !== sessionId && s.status === 'running' && sessionActivity[s.id] === 'idle',
+    const otherPaused = sessions.find(
+      (s) => s.id !== sessionId && s.status === 'running' && isPaused(sessionActivity[s.id] ?? 'idle'),
     );
-    return otherIdle?.id ?? null;
+    return otherPaused?.id ?? null;
   }
 
   return null;

@@ -87,6 +87,7 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
   latestRateLimits: null,
   sessionFirstOutput: {},
   sessionActivity: {},
+  sessionActivityReason: {},
   sessionEvents: {},
   seenIdleSessions: {},
   pendingCommandLabel: preservedPendingCommandLabel,
@@ -329,11 +330,14 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
     }));
   },
 
-  updateActivity: (sessionId, state) => {
+  updateActivity: (sessionId, state, reason) => {
     set((s) => {
       const updates: Partial<SessionStore> = {
         sessionActivity: { ...s.sessionActivity, [sessionId]: state },
       };
+      if (reason !== undefined) {
+        updates.sessionActivityReason = { ...s.sessionActivityReason, [sessionId]: reason };
+      }
       // When session resumes thinking, remove from seen so next idle is fresh
       if (state === 'thinking') {
         const { [sessionId]: _removed, ...rest } = s.seenIdleSessions;

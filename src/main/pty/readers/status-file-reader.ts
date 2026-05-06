@@ -12,7 +12,7 @@ export type StatusFileHook = NonNullable<AdapterRuntimeStrategy['statusFile']>;
 /**
  * Generic callback primitives that StatusFileReader uses to push parsed
  * telemetry into the rest of the system. None of these mention Claude,
- * statusline, or hooks - they're generic enough that UsageTracker (or
+ * statusline, or hooks - they're generic enough that SessionTelemetry (or
  * any future consumer) can implement them without knowing where the
  * data originated. This mirrors SessionHistoryReader's callback shape
  * so both telemetry readers plug into the same consumer primitives.
@@ -65,14 +65,14 @@ interface AttachedState {
  *
  * Symmetric with SessionHistoryReader - both subsystems own their
  * FileWatcher instances, own their parse dispatch, and feed the same
- * UsageTracker primitives. The difference: StatusFileReader's source
+ * SessionTelemetry primitives. The difference: StatusFileReader's source
  * files are written by event-bridge hooks that Kangentic injects into
  * the agent (used today only by Claude), while SessionHistoryReader's
  * source files are written by the agent CLI natively (used today by
  * Codex and Gemini).
  *
  * Owns all Claude-statusline-pipeline-specific logic in one place so
- * SessionManager and UsageTracker can stay free of file-watching
+ * SessionManager and SessionTelemetry can stay free of file-watching
  * concerns.
  *
  * Cross-platform: uses FileWatcher (fs.watch + polling fallback) so
@@ -133,7 +133,7 @@ export class StatusFileReader {
     // regardless of whether the adapter declares a `statusFile` hook.
     // Claude uses the hook to parse events into SessionEvent objects,
     // but non-Claude adapters (Codex, Gemini) still need their raw
-    // event lines tailed so `UsageTracker.captureHookSessionIds` can
+    // event lines tailed so `SessionTelemetry.captureHookSessionIds` can
     // extract the agent-reported session ID from the `hookContext`
     // field on a `session_start` line. Gating this on `statusFileHook`
     // made the fromHook capture path dead code for Codex/Gemini.

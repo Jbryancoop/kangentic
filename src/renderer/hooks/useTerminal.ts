@@ -126,7 +126,7 @@ export function useTerminal(options: UseTerminalOptions) {
     writeBatcherRef.current = batcher;
 
     // Enable Ctrl+C copy (when text selected), Ctrl+V paste, and Ctrl+Enter newline
-    enableTerminalClipboard(terminal, terminalRef.current, batcher.schedule, options.shellName);
+    enableTerminalClipboard(terminal, terminalRef.current, batcher.schedule, options.shellName, options.sessionId ?? undefined);
 
     terminal.onScroll(() => {
       const buffer = terminal.buffer.active;

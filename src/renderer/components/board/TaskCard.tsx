@@ -18,6 +18,7 @@ import { getProgressColor } from '../../utils/color-lerp';
 import { LabelPills } from '../Pill';
 import type { Task } from '../../../shared/types';
 import { TaskContextMenu } from './TaskContextMenu';
+import { formatActivityReasonText } from './ActivityReasonTooltip';
 
 interface TaskCardProps {
   task: Task;
@@ -31,7 +32,7 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
   // Scaling: 100 cards × 6 subs each = 600 selector invocations per session-store
   // update; with one selector it drops to 100, and shallow equality still skips
   // re-renders when the projected object hasn't actually changed.
-  const { showDetail, sessionId, isHighlighted, isResuming, hasFirstOutput, hasActivityEntry } = useSessionStore(
+  const { showDetail, sessionId, isHighlighted, isResuming, hasFirstOutput, hasActivityEntry, activityReason } = useSessionStore(
     useShallow(
       useCallback(
         (s: ReturnType<typeof useSessionStore.getState>) => {
@@ -43,6 +44,7 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
             isResuming: s._sessionByTaskId.get(task.id)?.resuming ?? false,
             hasFirstOutput: resolvedSessionId ? !!s.sessionFirstOutput[resolvedSessionId] : false,
             hasActivityEntry: resolvedSessionId ? s.sessionActivity[resolvedSessionId] !== undefined : false,
+            activityReason: resolvedSessionId ? s.sessionActivityReason[resolvedSessionId] : undefined,
           };
         },
         [task.id],
@@ -209,9 +211,11 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
     );
   }
 
-  // A running session is always either idle or thinking; see
-  // task-progress.ts for how the fallback is resolved.
-  const isIdle = displayState.kind === 'running' && displayState.activity === 'idle';
+  // A running session is in one of three states (idle, thinking, permission).
+  // See task-progress.ts for how the fallback is resolved. Permission is
+  // grouped with idle for the "agent is paused, needs attention" indicator.
+  const isIdle = displayState.kind === 'running'
+    && (displayState.activity === 'idle' || displayState.activity === 'permission');
   const isThinking = displayState.kind === 'running' && displayState.activity === 'thinking';
 
   // Board-level density: compact prop (from backlog) takes precedence, otherwise use config
@@ -236,10 +240,22 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
       >
         <div className="flex items-center gap-1.5">
           {isIdle && (
-            <Mail size={14} className="text-amber-400 shrink-0" />
+            <Mail
+              size={14}
+              className="text-amber-400 shrink-0"
+              aria-label={activityReason ? formatActivityReasonText(activityReason) : 'Idle'}
+            >
+              {activityReason && <title>{formatActivityReasonText(activityReason)}</title>}
+            </Mail>
           )}
           {isThinking && (
-            <Loader2 size={14} className="text-emerald-400 animate-spin shrink-0" />
+            <Loader2
+              size={14}
+              className="text-emerald-400 animate-spin shrink-0"
+              aria-label={activityReason ? formatActivityReasonText(activityReason) : 'Thinking'}
+            >
+              {activityReason && <title>{formatActivityReasonText(activityReason)}</title>}
+            </Loader2>
           )}
           <div className="text-sm text-fg font-medium truncate">{task.title}</div>
         </div>

@@ -1,0 +1,203 @@
+import { EventType, IdleReason } from '../../../../shared/types';
+import type { SessionEvent } from '../../../../shared/types';
+import type { SessionEngineState } from './shapes';
+import { looksLikeShellId } from '../background-shell/looks-like-shell-id';
+
+/**
+ * Pure event-to-state mutations for the activity engine.
+ *
+ * Each function takes the current state and an event and mutates the
+ * state in place. No engine reference, no IO, no transitions - the
+ * engine layers timer scheduling and predicate evaluation on top.
+ */
+
+/**
+ * Apply the counter delta for a single event.
+ *
+ * - `ToolStart`           pushes `{id, name}` to the stack, increments count.
+ * - `ToolEnd`/`Interrupted` removes one entry from the stack (id-match preferred,
+ *                         LIFO-by-name fallback, raw pop for Interrupted) and
+ *                         decrements count. When the count reaches zero,
+ *                         hard-resets the stack so any dangling names
+ *                         (from dropped hooks) clear.
+ * - `Idle` (non-permission) clears all pending tool tracking - the agent's
+ *                         turn is done, any unmatched ToolStart events
+ *                         are stale by definition (PostToolUse hook
+ *                         dropped, tool force-killed, etc.).
+ * - `SubagentStart/Stop`  adjusts `subagentDepth` (clamped at zero).
+ * - `BackgroundShellStart` either tracks by `shell_id` (when the detail
+ *                         is id-shaped) or anonymously (when the detail
+ *                         is empty or a command-string fallback).
+ *                         When PreToolUse + PostToolUse fire as a pair,
+ *                         the second arrival "promotes" an anonymous
+ *                         slot to a named one to keep total count constant.
+ * - `BackgroundShellEnd`  decrements the named shell if the id matches,
+ *                         else drains anonymous, else drains a named
+ *                         entry as last resort. The agent told us
+ *                         SOMETHING ended.
+ */
+export function updateCounters(state: SessionEngineState, event: SessionEvent): void {
+  switch (event.type) {
+    case EventType.ToolStart:
+      state.pendingToolCount += 1;
+      if (event.tool) {
+        // toolId may be undefined for adapters without correlation IDs;
+        // the stack still tracks the name and falls back to LIFO matching.
+        state.pendingToolStack.push({ id: event.toolId, name: event.tool });
+        state.currentTool = event.tool;
+      }
+      break;
+    case EventType.ToolEnd:
+    case EventType.Interrupted:
+      state.pendingToolCount = Math.max(0, state.pendingToolCount - 1);
+      // Match priority:
+      //   1. By correlation id when both events carry one (precise
+      //      across out-of-order arrival and duplicate names).
+      //   2. By LIFO-by-name when only the name is available.
+      //   3. By raw pop for Interrupted (no tool name carried).
+      if (event.toolId) {
+        const idx = state.pendingToolStack.findIndex((entry) => entry.id === event.toolId);
+        if (idx >= 0) {
+          state.pendingToolStack.splice(idx, 1);
+        } else if (event.tool) {
+          // ID didn't match (drift from hook drop or version skew); fall
+          // back to LIFO-by-name so we still drain the stack.
+          for (let i = state.pendingToolStack.length - 1; i >= 0; i--) {
+            if (state.pendingToolStack[i].name === event.tool) {
+              state.pendingToolStack.splice(i, 1);
+              break;
+            }
+          }
+        }
+      } else if (event.tool) {
+        for (let i = state.pendingToolStack.length - 1; i >= 0; i--) {
+          if (state.pendingToolStack[i].name === event.tool) {
+            state.pendingToolStack.splice(i, 1);
+            break;
+          }
+        }
+      } else if (state.pendingToolStack.length > 0) {
+        // Interrupted has no tool name and no id. Pop most recent.
+        // Note: the engine's Interrupted bypass (in activity-engine.ts)
+        // hard-clears all of this immediately afterward; we still do the
+        // pop so an Interrupted that DOESN'T hit the bypass (e.g. legacy
+        // event replay through processEvent) maintains invariants.
+        state.pendingToolStack.pop();
+      }
+      // currentTool falls back to whatever's still in flight.
+      state.currentTool = state.pendingToolStack[state.pendingToolStack.length - 1]?.name ?? null;
+      if (state.pendingToolCount === 0) {
+        // Hard reset: even if a hook drop left names dangling, the
+        // count says nothing is in flight. Clear both.
+        state.pendingToolStack.length = 0;
+        state.currentTool = null;
+      }
+      break;
+    case EventType.Idle: {
+      // Idle (Stop hook) means the agent's turn is done. Any unmatched
+      // ToolStart events are stale by definition - PostToolUse hook
+      // dropped, the tool was force-killed, or some other reliability
+      // gap. Clear them.
+      //
+      // Permission idles are the exception: the agent paused to ask
+      // for approval and may resume the same tool, so leave counters
+      // intact.
+      //
+      // Why this matters: a stuck `pendingToolCount > 0` permanently
+      // blocks the bg-shell watcher's pending-tools guard from
+      // firing natural-exit, which leaves bg shells stuck in the
+      // count after the agent has officially stopped.
+      if (event.detail !== IdleReason.Permission) {
+        state.pendingToolCount = 0;
+        state.pendingToolStack.length = 0;
+        state.currentTool = null;
+      }
+      break;
+    }
+    case EventType.SubagentStart:
+      state.subagentDepth += 1;
+      break;
+    case EventType.SubagentStop:
+      state.subagentDepth = Math.max(0, state.subagentDepth - 1);
+      break;
+    case EventType.BackgroundShellStart: {
+      // PreToolUse fires this without a shell_id (the agent hasn't
+      // assigned one yet) - we count anonymously. PostToolUse fires
+      // this AGAIN once Claude Code has assigned a shell_id to the
+      // bg shell, this time with the id in detail. We treat the
+      // PostToolUse arrival as PROMOTION: convert one anonymous
+      // slot to a named slot, keeping the total count constant.
+      //
+      // Detail-shape rules (see `looksLikeShellId`):
+      //   - whitespace/long/non-id chars => anonymous (typical
+      //     PreToolUse where Claude falls back to command string)
+      //   - id-shaped (alphanumeric/-/_, 1-64 chars) => named
+      //
+      // The promote heuristic (anonymous > 0 AND id-shaped detail
+      // AND id not already in named set) keeps total constant when
+      // PreToolUse + PostToolUse fire as a pair. If an id arrives
+      // without a prior anonymous slot (e.g., a hook chain that
+      // only fires PostToolUse), the named entry is added without
+      // promotion - that scenario doesn't double-count either.
+      if (looksLikeShellId(event.detail)) {
+        if (state.activeBackgroundShellIds.has(event.detail)) {
+          // Duplicate - same shell_id seen before. No-op.
+          break;
+        }
+        if (state.anonymousBackgroundShellCount > 0) {
+          // Promote: swap one anonymous slot for this named id.
+          state.anonymousBackgroundShellCount -= 1;
+        }
+        state.activeBackgroundShellIds.add(event.detail);
+      } else {
+        state.anonymousBackgroundShellCount += 1;
+      }
+      break;
+    }
+    case EventType.BackgroundShellEnd: {
+      // KillBash's hook fires this with detail = tool_input.shell_id.
+      // If we tracked the start under that id, decrement the named
+      // set. Otherwise (start was anonymous, or shell_id is unknown),
+      // fall through to drain anonymous, then drain named set as a
+      // last resort - the agent told us a shell ended, so SOMETHING
+      // should decrement.
+      const shellId = event.detail;
+      if (shellId !== undefined && state.activeBackgroundShellIds.has(shellId)) {
+        state.activeBackgroundShellIds.delete(shellId);
+      } else if (state.anonymousBackgroundShellCount > 0) {
+        state.anonymousBackgroundShellCount -= 1;
+      } else if (state.activeBackgroundShellIds.size > 0) {
+        const firstId = state.activeBackgroundShellIds.values().next().value;
+        if (firstId !== undefined) state.activeBackgroundShellIds.delete(firstId);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/**
+ * Update `permissionPending` based on the event. Permission is set by
+ * `Idle` events with detail=permission, and cleared by signals from
+ * the main agent (Prompt, Interrupted, SubagentStart, non-permission
+ * Idle, depth-0 ToolStart/ToolEnd).
+ */
+export function updatePermissionFlag(state: SessionEngineState, event: SessionEvent): void {
+  // Set on Idle/permission.
+  if (event.type === EventType.Idle && event.detail === IdleReason.Permission) {
+    state.permissionPending = true;
+    return;
+  }
+  // Clear on signals from the main agent (depth 0) or unambiguous wakes.
+  const isPermissionClearingSignal =
+    event.type === EventType.Prompt
+    || event.type === EventType.Interrupted
+    || event.type === EventType.SubagentStart
+    || (event.type === EventType.Idle && event.detail !== IdleReason.Permission)
+    || ((event.type === EventType.ToolStart || event.type === EventType.ToolEnd)
+        && state.subagentDepth === 0);
+  if (isPermissionClearingSignal) {
+    state.permissionPending = false;
+  }
+}

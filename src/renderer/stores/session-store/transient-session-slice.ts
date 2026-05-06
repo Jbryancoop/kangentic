@@ -94,6 +94,7 @@ export function createTransientSessionSlice(preserved: {
           const { [transientSessionId]: _usage, ...restUsage } = state.sessionUsage;
           const { [transientSessionId]: _firstOutput, ...restFirstOutput } = state.sessionFirstOutput;
           const { [transientSessionId]: _activity, ...restActivity } = state.sessionActivity;
+          const { [transientSessionId]: _activityReason, ...restActivityReason } = state.sessionActivityReason;
           const { [transientSessionId]: _events, ...restEvents } = state.sessionEvents;
           const { [transientSessionId]: _seen, ...restSeen } = state.seenIdleSessions;
           const sessions = state.sessions.filter((s) => s.id !== transientSessionId);
@@ -113,6 +114,7 @@ export function createTransientSessionSlice(preserved: {
             sessionUsage: restUsage,
             sessionFirstOutput: restFirstOutput,
             sessionActivity: restActivity,
+            sessionActivityReason: restActivityReason,
             sessionEvents: restEvents,
             seenIdleSessions: restSeen,
             transientSessions: updatedTransientSessions,
@@ -184,6 +186,7 @@ export function createTransientSessionSlice(preserved: {
         const { [entry.sessionId]: _usage, ...restUsage } = state.sessionUsage;
         const { [entry.sessionId]: _firstOutput, ...restFirst } = state.sessionFirstOutput;
         const { [entry.sessionId]: _activity, ...restActivity } = state.sessionActivity;
+        const { [entry.sessionId]: _activityReason, ...restActivityReason } = state.sessionActivityReason;
         const { [entry.sessionId]: _events, ...restEvents } = state.sessionEvents;
         const { [entry.sessionId]: _seen, ...restSeen } = state.seenIdleSessions;
         const sessions = state.sessions.filter((s) => s.id !== entry.sessionId);
@@ -197,6 +200,7 @@ export function createTransientSessionSlice(preserved: {
           sessionUsage: restUsage,
           sessionFirstOutput: restFirst,
           sessionActivity: restActivity,
+          sessionActivityReason: restActivityReason,
           sessionEvents: restEvents,
           seenIdleSessions: restSeen,
         };

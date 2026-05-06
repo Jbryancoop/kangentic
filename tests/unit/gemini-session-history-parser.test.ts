@@ -169,7 +169,7 @@ describe('GeminiSessionHistoryParser', () => {
     it('sparse-merge regression: returned usage object has no cost key', () => {
       // Regression guard for the fix that removed `cost: { totalCostUsd: 0, totalDurationMs: 0 }`
       // from the Gemini parser output. If `cost` reappears on the usage object, it will zero-out
-      // any previously-merged cost value in UsageTracker.setSessionUsage via a shallow spread,
+      // any previously-merged cost value in UsageAccumulator.setSessionUsage via a shallow spread,
       // silently discarding cost data reported by an earlier parse pass (e.g. from Claude hooks
       // running alongside Gemini). The parser must return a *sparse* usage that omits `cost`
       // entirely, relying on the tracker's merge logic to preserve the prior value.

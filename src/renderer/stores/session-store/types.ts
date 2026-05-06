@@ -2,6 +2,7 @@ import type {
   Session,
   SessionUsage,
   ActivityState,
+  ActivityReason,
   SessionEvent,
   SpawnSessionInput,
 } from '../../../shared/types';
@@ -48,6 +49,12 @@ export interface CoreSessionSlice {
   /** Tracks sessions whose PTY has activated the alternate screen buffer (TUI ready). */
   sessionFirstOutput: Record<string, boolean>;
   sessionActivity: Record<string, ActivityState>;
+  /**
+   * Latest `ActivityReason` per session - kind + counts + currentTool.
+   * Updated alongside `sessionActivity` from the `onActivity` push event.
+   * Consumed by the TaskCard hover tooltip and the debug overlay.
+   */
+  sessionActivityReason: Record<string, ActivityReason>;
   sessionEvents: Record<string, SessionEvent[]>;
   seenIdleSessions: Record<string, boolean>;
   /** Command label to show in the terminal overlay (e.g. "/code-review") keyed by task ID. */
@@ -80,7 +87,7 @@ export interface CoreSessionSlice {
   updateSessionStatus: (id: string, updates: Partial<Session>) => void;
   updateUsage: (sessionId: string, data: SessionUsage) => void;
   markFirstOutput: (sessionId: string) => void;
-  updateActivity: (sessionId: string, state: ActivityState) => void;
+  updateActivity: (sessionId: string, state: ActivityState, reason?: ActivityReason) => void;
   addEvent: (sessionId: string, event: SessionEvent) => void;
   batchUpdateUsage: (entries: Map<string, SessionUsage>) => void;
   batchAddEvents: (entries: Array<{ sessionId: string; event: SessionEvent }>) => void;

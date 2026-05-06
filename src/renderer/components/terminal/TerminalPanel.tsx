@@ -152,9 +152,9 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
                     : 'text-fg-faint hover:text-fg-tertiary hover:bg-surface-raised/50'
                 }`}
               >
-                {session.status === 'running' && sessionActivity[session.id] !== 'idle' ? (
+                {session.status === 'running' && sessionActivity[session.id] === 'thinking' ? (
                   <Loader2 size={8} className="text-green-400 animate-spin" />
-                ) : session.status === 'running' && sessionActivity[session.id] === 'idle' ? (
+                ) : session.status === 'running' && (sessionActivity[session.id] === 'idle' || sessionActivity[session.id] === 'permission') ? (
                   <div className={`w-1.5 h-1.5 rounded-full bg-amber-400${
                     effectiveActiveId !== session.id && !seenIdleSessions[session.id] ? ' animate-pulse' : ''
                   }`} />

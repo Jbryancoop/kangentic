@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/ipc-channels';
-import type { ElectronAPI, NotificationInput, Project, Session, SessionUsage, ActivityState, SessionEvent, UpdateDownloadedInfo, UsageTimePeriod, TaskBulkDeleteProgress } from '../shared/types';
+import type { ElectronAPI, NotificationInput, Project, Session, SessionUsage, ActivityState, ActivityReason, SessionEvent, UpdateDownloadedInfo, UsageTimePeriod, TaskBulkDeleteProgress } from '../shared/types';
 
 const api: ElectronAPI = {
   projects: {
@@ -153,8 +153,10 @@ const api: ElectronAPI = {
       return () => ipcRenderer.removeListener(IPC.SESSION_USAGE, handler);
     },
     getActivity: (projectId?) => ipcRenderer.invoke(IPC.SESSION_GET_ACTIVITY, projectId),
+    getActivityReason: (sessionId: string) => ipcRenderer.invoke(IPC.SESSION_GET_ACTIVITY_REASON, sessionId),
+    getActivityStats: (sessionId: string) => ipcRenderer.invoke(IPC.SESSION_GET_ACTIVITY_STATS, sessionId),
     onActivity: (callback) => {
-      const handler = (_event: Electron.IpcRendererEvent, sessionId: string, state: ActivityState, projectId?: string, taskId?: string, taskTitle?: string, isPermission?: boolean) => callback(sessionId, state, projectId, taskId, taskTitle, isPermission);
+      const handler = (_event: Electron.IpcRendererEvent, sessionId: string, state: ActivityState, reason: ActivityReason, projectId?: string, taskId?: string, taskTitle?: string) => callback(sessionId, state, reason, projectId, taskId, taskTitle);
       ipcRenderer.on(IPC.SESSION_ACTIVITY, handler);
       return () => ipcRenderer.removeListener(IPC.SESSION_ACTIVITY, handler);
     },
@@ -176,6 +178,7 @@ const api: ElectronAPI = {
     killTransient: (id) => ipcRenderer.invoke(IPC.SESSION_KILL_TRANSIENT, id),
     getPeriodStats: (period: UsageTimePeriod) => ipcRenderer.invoke(IPC.SESSION_GET_PERIOD_STATS, period),
     setFocused: (sessionIds: string[]) => ipcRenderer.invoke(IPC.SESSION_SET_FOCUSED, sessionIds),
+    notifyUserInterrupt: (sessionId: string) => ipcRenderer.invoke(IPC.SESSION_NOTIFY_USER_INTERRUPT, sessionId),
   },
 
   config: {

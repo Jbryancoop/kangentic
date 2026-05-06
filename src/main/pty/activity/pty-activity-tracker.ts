@@ -37,7 +37,7 @@ interface PtyActivityCallbacks {
  *    prompt patterns are unreliable.
  *
  * PTY detection is automatically suppressed when hook-based thinking events
- * arrive (managed by UsageTracker via `suppress()`).
+ * arrive (managed by SessionTelemetry via `suppress()`).
  */
 export class PtyActivityTracker {
   private silenceTimers = new Map<string, ReturnType<typeof setTimeout>>();

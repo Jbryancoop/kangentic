@@ -80,19 +80,66 @@ export function buildHooks(
       // `tests/e2e/background-shell-idle.spec.ts` for the repro.
       { matcher: '', hooks: [{ type: 'command', command: buildBridgeCommand(eventBridge, eventsPath, E.ToolStart,
         'tool:tool_name',
-        'nested-detail:tool_input:file_path,command,query,pattern,url,description',
+        // Capture Claude's tool_use_id for correlation with the matching
+        // PostToolUse. Lets the engine match concurrent ToolEnds to the
+        // exact ToolStart instead of falling back to LIFO-by-name.
+        // Top-level extraction first (canonical Claude shape), nested
+        // fallback for hook payload variations across CLI versions.
+        'tool-id:tool_use_id',
+        'tool-id-nested:tool_input:tool_use_id',
+        // Detail extraction priority: shell_id first (KillBash + future
+        // shell-aware events) so the engine can use Set-based id
+        // tracking. Falls back to the command/path/etc when shell_id
+        // is absent, preserving anonymous bg shell behavior.
+        'nested-detail:tool_input:shell_id,file_path,command,query,pattern,url,description',
         'remap-nested:tool_input:run_in_background:true:background_shell_start',
         'remap:tool_name:KillBash:background_shell_end') }] },
     ],
     [H.PostToolUse]: [
       ...(existingHooks[H.PostToolUse] || []),
+      // Default: emit `tool_end` for every tool. PostToolUse runs
+      // AFTER the tool produced a result, so `tool_response` contains
+      // any agent-assigned identifiers (shell_id for backgrounded
+      // Bash, status for BashOutput polling).
+      //
+      // Conditional remaps:
+      //   1. Bash with run_in_background:true => fires a SECOND
+      //      `background_shell_start` with the shell_id from
+      //      tool_response.shell_id. The engine treats this as a
+      //      promotion (anonymous slot from PreToolUse -> named slot
+      //      with id), keeping total count constant.
+      //   2. BashOutput with status of completed/failed/killed =>
+      //      remap to `background_shell_end`, taking shell_id from
+      //      tool_response.shell_id so the engine drains the right
+      //      named slot.
+      //
+      // Each `nested-detail`/`remap-nested` directive is a no-op when
+      // its target field is missing, so this is safe to ship before
+      // we've empirically confirmed Claude Code's exact tool_response
+      // shape - if `shell_id` doesn't exist, the engine falls back to
+      // anonymous tracking which already works today.
       { matcher: '', hooks: [{ type: 'command', command: buildBridgeCommand(eventBridge, eventsPath, E.ToolEnd,
-        'tool:tool_name') }] },
+        'tool:tool_name',
+        // Same correlation id extraction as PreToolUse so the engine
+        // can match this end to its start. Claude carries tool_use_id
+        // at the top level on PostToolUse; tool_response also has a
+        // copy in some shapes - capture both via fallthrough.
+        'tool-id:tool_use_id',
+        'tool-id-nested:tool_response:tool_use_id',
+        'nested-detail:tool_response:shell_id,bash_id',
+        'remap-nested:tool_input:run_in_background:true:background_shell_start',
+        'remap-nested:tool_response:status:completed:background_shell_end',
+        'remap-nested:tool_response:status:failed:background_shell_end',
+        'remap-nested:tool_response:status:killed:background_shell_end') }] },
     ],
     [H.PostToolUseFailure]: [
       ...(existingHooks[H.PostToolUseFailure] || []),
       { matcher: '', hooks: [{ type: 'command', command: buildBridgeCommand(eventBridge, eventsPath, E.ToolEnd,
-        'tool:tool_name', 'remap:is_interrupt:true:interrupted', 'detail:error') }] },
+        'tool:tool_name',
+        'tool-id:tool_use_id',
+        'tool-id-nested:tool_input:tool_use_id',
+        'remap:is_interrupt:true:interrupted',
+        'detail:error') }] },
     ],
     [H.UserPromptSubmit]: [
       ...(existingHooks[H.UserPromptSubmit] || []),

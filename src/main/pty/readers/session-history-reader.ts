@@ -13,7 +13,7 @@ type SessionHistoryHook = NonNullable<AdapterRuntimeStrategy['sessionHistory']>;
 /**
  * Generic callback primitives that SessionHistoryReader uses to push
  * parsed telemetry into the rest of the system. None of these mention
- * session-history - they're generic enough that UsageTracker (or any
+ * session-history - they're generic enough that SessionTelemetry (or any
  * future consumer) can implement them without knowing where the data
  * originated. This is the key separation of concerns that keeps
  * session-history logic isolated from core session infrastructure.
@@ -81,8 +81,8 @@ export function dispatchSessionHistoryResult(
  * and dispatches parsed telemetry via the generic callback primitives.
  *
  * Owns all session-history-specific logic in one place so SessionManager
- * and UsageTracker can remain free of session-history vocabulary.
- * Composed by SessionManager alongside UsageTracker, PtyBufferManager,
+ * and SessionTelemetry can remain free of session-history vocabulary.
+ * Composed by SessionManager alongside SessionTelemetry, PtyBufferManager,
  * and the other per-session subsystems.
  *
  * Cross-platform: uses FileWatcher (fs.watch + polling fallback) so

@@ -1,17 +1,17 @@
 /**
- * Per-tool aggregator tests. Drives `UsageTracker.ingestEvents` with synthetic
+ * Per-tool aggregator tests. Drives `SessionTelemetry.ingestEvents` with synthetic
  * events and asserts the snapshots returned by `getToolBreakdown` /
  * `getToolCallCount`. Covers FIFO pairing, interleaved tool names, interrupted
  * pairs, the optional cost/token fields on ToolEnd, and the bounded-cache
  * resilience that motivated the standalone counter (see audit failure mode #5).
  */
 import { describe, it, expect } from 'vitest';
-import { UsageTracker } from '../../src/main/pty/activity/usage-tracker';
+import { SessionTelemetry } from '../../src/main/pty/activity/session-telemetry';
 import { EventType } from '../../src/shared/types';
 import type { SessionEvent } from '../../src/shared/types';
 
-function makeTracker(): UsageTracker {
-  return new UsageTracker({
+function makeTracker(): SessionTelemetry {
+  return new SessionTelemetry({
     onUsageChange: () => {},
     onActivityChange: () => {},
     onEvent: () => {},
@@ -37,7 +37,7 @@ function interrupted(tool: string, ts: number): SessionEvent {
 
 const SID = 'session-1';
 
-describe('UsageTracker per-tool aggregator', () => {
+describe('SessionTelemetry per-tool aggregator', () => {
   it('pairs ToolStart and ToolEnd by tool name FIFO', () => {
     const tracker = makeTracker();
     tracker.initSession(SID);
