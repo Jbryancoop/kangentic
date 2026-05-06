@@ -210,6 +210,8 @@ describe('TerminalSubmitScheduler', () => {
       await tick();
 
       expect(terminalSubmit.calls).toHaveLength(1);
+      // Fallback delivery must also honor freshlySpawned -> sendCtrlC=false.
+      expect(terminalSubmit.calls[0].opts.sendCtrlC).toBe(false);
     });
 
     it('hard timeout (default 120s) cancels when CLI never starts', async () => {
@@ -228,6 +230,34 @@ describe('TerminalSubmitScheduler', () => {
       await tick();
 
       expect(terminalSubmit.calls).toHaveLength(0);
+    });
+
+    // Regression: when the scheduler hardcoded `sendCtrlC: true`, the leading
+    // Ctrl+C on a freshly-spawned Claude Code session landed mid-render of the
+    // initial CLI-arg prompt turn. The follow-up keystrokes then concatenated
+    // onto the prompt as one user message (`<task>...</task>/test` glued
+    // together). The fix derives sendCtrlC from `freshlySpawned` so the
+    // documented `submitKeystrokes` contract is honored.
+    it('passes sendCtrlC=false to submitKeystrokes for freshly-spawned bursts', async () => {
+      sessionManager.registry.set('s1', { status: 'running' });
+
+      scheduler.scheduleKeystrokes('task-1', 's1', ['/test'], { freshlySpawned: true });
+      await tick();
+      sessionManager.emitActivity('s1', 'thinking');
+      await tick();
+
+      expect(terminalSubmit.calls).toHaveLength(1);
+      expect(terminalSubmit.calls[0].opts.sendCtrlC).toBe(false);
+    });
+
+    it('keeps sendCtrlC=true for live-injection bursts (no freshlySpawned)', async () => {
+      sessionManager.registry.set('s1', { status: 'running' });
+
+      scheduler.scheduleKeystrokes('task-1', 's1', ['/model opus']);
+      await tick();
+
+      expect(terminalSubmit.calls).toHaveLength(1);
+      expect(terminalSubmit.calls[0].opts.sendCtrlC).toBe(true);
     });
   });
 

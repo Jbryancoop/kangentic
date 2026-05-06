@@ -178,7 +178,14 @@ export class TerminalSubmitScheduler {
   ): Promise<void> {
     try {
       await this.terminalSubmit.submitKeystrokes(sessionId, commands, {
-        sendCtrlC: true,
+        // Fresh-spawn paths just consumed the CLI prompt arg and have nothing
+        // to interrupt; sending Ctrl+C here on Windows ConPTY + Ink lands
+        // mid-render of the initial turn and causes the next keystrokes to
+        // concatenate onto the prompt as one user message (rendered as
+        // `</task>/test` glued together). Live-injection paths (model/effort
+        // live swap, board column-edit) keep the leading Ctrl+C so they can
+        // interrupt mid-thinking and deliver new flags.
+        sendCtrlC: !opts.freshlySpawned,
         verifier: opts.verifier,
         verifiedPrefixLength: opts.verifiedPrefixLength,
         signal: entry.controller.signal,

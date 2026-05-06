@@ -1,6 +1,6 @@
 # Command Injection
 
-Kangentic injects per-column "auto-commands" and per-column model/effort settings into a live agent session when a task moves between columns. `TerminalSubmitScheduler` (`src/main/engine/terminal-submit-scheduler.ts`) schedules each task's burst, and `TerminalSubmit.submitKeystrokes` (`src/main/pty/terminal-submit.ts`) executes the byte-level `Ctrl+C → text → Esc → Enter` pattern. This document covers how the **command-injection** verification context confirms each chained command lands cleanly on the agent's TUI.
+Kangentic injects per-column "auto-commands" and per-column model/effort settings into a live agent session when a task moves between columns. `TerminalSubmitScheduler` (`src/main/engine/terminal-submit-scheduler.ts`) schedules each task's burst and decides whether the burst is prefixed with a `Ctrl+C` (live-injection) or not (fresh-spawn). `TerminalSubmit.submitKeystrokes` (`src/main/pty/terminal-submit.ts`) executes the byte-level keystroke sequence (`Ctrl+C? → text → Esc → Enter` per command). This document covers how the **command-injection** verification context confirms each chained command lands cleanly on the agent's TUI.
 
 ## Why verification exists
 
@@ -43,9 +43,14 @@ The scan is bounded by a 50ms tolerance window around the send time (`Date.now()
 
 `TerminalSubmitScheduler.scheduleKeystrokes` hands a chain of commands to `TerminalSubmit.submitKeystrokes`, which delivers them with the following timing:
 
+0. **Optional leading `Ctrl+C`** (`sendCtrlC` opt-in, default true). The scheduler passes `sendCtrlC: false` when `opts.freshlySpawned` is true so fresh-spawn auto_command bursts skip the interrupt entirely. Live-injection paths (`/model` swap, board column-edit on a running session) keep `sendCtrlC: true` so they can interrupt mid-thinking before delivering the new flags.
 1. Initial write of command text + Escape + Enter (text → `\x1b` → `\r`).
 2. **If the command falls within `verifiedPrefixLength`**: poll the verifier every 25ms for up to 400ms. If unconfirmed, re-fire `\r` and try again. After 4 retries, log a warning, send Ctrl+C to clear the prompt buffer, and continue with the next command.
 3. **Otherwise** (no verifier, or command falls outside the verified prefix): wait a fixed 500ms settle window before the next command.
+
+### Fresh-spawn concatenation failure mode
+
+The `Ctrl+C` opt-out exists to prevent a distinct concatenation failure mode from the chained-command one above. Fresh-spawn auto_command paths just consumed the CLI prompt arg (e.g. `claude -- "<task>...</task>"`) and the CLI is mid-render of that first user turn. On Windows ConPTY + Ink, sending `Ctrl+C` during that render lands in a state where the just-submitted prompt and the follow-up keystrokes get rendered as one user message: `</task>/test` glued together. Suppressing the leading `Ctrl+C` lets the keystrokes queue cleanly behind the in-flight turn and submit as a distinct second user message.
 
 The `verifiedPrefixLength` distinction is critical: deterministic adapter-emitted writes (`/model X`, `/effort Y` from `getInjectionSequence`) are safe to verify because we know exactly what JSONL entry to expect. A trailing user-supplied `auto_command` is **not** verified: it may not produce a matching JSONL entry the verifier recognizes, and retry exhaustion would drop the user's intended action. So we let auto-commands sail through with a time-based settle.
 
@@ -88,7 +93,7 @@ A non-Claude adapter could implement `'command-injection'` verification once its
 ## Files
 
 - `src/main/engine/injection-plan.ts` -- builds the chained sequence + verifier from a column transition spec.
-- `src/main/engine/terminal-submit-scheduler.ts` -- task-keyed lifecycle wrapper: cancel-on-rerun, freshlySpawned wait, drag-burst coalesce.
+- `src/main/engine/terminal-submit-scheduler.ts` -- task-keyed lifecycle wrapper: cancel-on-rerun, freshlySpawned wait, drag-burst coalesce, and `sendCtrlC` routing (suppressed for fresh-spawn, enabled for live-injection).
 - `src/main/pty/terminal-submit.ts` -- byte-level engine: `submitContent` (bracketed paste) + `submitKeystrokes` (manual keypress sequence with retry-on-unconfirmed).
 - `src/main/agent/adapters/claude/slash-command-verifier.ts` -- Claude-specific JSONL-polling implementation.
 - `src/shared/types.ts` -- `SubmissionContext`, `SubmissionContextType`, `SubmissionVerifier` type definitions.
