@@ -120,6 +120,43 @@ jobs:
           AZURE_SIGNING_ACCOUNT: sign-kangentic
           AZURE_CERT_PROFILE: kangentic-signing
 
+      # Fail the build if app-update.yml is missing from the packaged app.
+      # electron-updater reads this manifest on launch; if it's absent the
+      # app raises ENOENT on every check and auto-update is silently broken.
+      # See src/main/updater.ts:initUpdater for the runtime guard.
+      - name: Verify app-update.yml is packaged (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          set -e
+          missing=0
+          shopt -s nullglob
+          apps=(out/mac*/Kangentic.app)
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "::error::No out/mac*/Kangentic.app found"
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
+            manifest="$app/Contents/Resources/app-update.yml"
+            if [ ! -f "$manifest" ]; then
+              echo "::error::Missing $manifest"
+              missing=1
+            else
+              echo "Found $manifest"
+            fi
+          done
+          [ "$missing" = "0" ]
+
+      - name: Verify app-update.yml is packaged (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $manifest = "out/win-unpacked/resources/app-update.yml"
+          if (-not (Test-Path $manifest)) {
+            Write-Error "Missing $manifest"
+            exit 1
+          }
+          Write-Host "Found $manifest"
+
   # Only publish the draft release when ALL platform builds succeed.
   # This prevents partial releases (e.g. missing macOS artifacts) from
   # reaching users. If any platform fails, the release stays as a draft.

@@ -23,6 +23,10 @@ const mocks = vi.hoisted(() => ({
   autoUpdaterOn: vi.fn(),
   trackEvent: vi.fn(),
   sanitizeErrorMessage: vi.fn((message: string) => message),
+  // initUpdater() now guards on the presence of app-update.yml; force the
+  // guard to pass so the full wiring path (including the `error` listener
+  // these tests target) is executed.
+  existsSync: vi.fn(() => true),
 }));
 
 vi.mock('electron', () => ({
@@ -51,12 +55,25 @@ vi.mock('../../src/main/analytics/analytics', () => ({
   sanitizeErrorMessage: mocks.sanitizeErrorMessage,
 }));
 
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return { ...actual, existsSync: mocks.existsSync };
+});
+
 // updater.ts short-circuits initUpdater() on Linux (`if (!app.isPackaged ||
 // process.platform === 'linux') return`). CI runs on Ubuntu, so without this
 // stub the error listener is never registered and every test that calls
 // getRegisteredListener('error') fails. Tests should exercise the full
 // init path regardless of host OS.
 Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+// initUpdater() reads process.resourcesPath via manifestPath(). It is
+// undefined under vitest, which would throw `path` argument errors before
+// the existsSync stub above is consulted.
+Object.defineProperty(process, 'resourcesPath', {
+  value: '/fake/resources',
+  configurable: true,
+});
 
 // Import after mocks are registered.
 import { checkWithRetry, downloadWithRetry, initUpdater } from '../../src/main/updater';
