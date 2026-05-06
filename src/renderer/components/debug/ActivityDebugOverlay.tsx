@@ -697,18 +697,16 @@ const SnapshotRow = memo(function SnapshotRow({ snapshot, label }: { snapshot: A
   const bgShellCount = snapshot.backgroundShellIds.length + snapshot.anonymousBackgroundShellCount;
   return (
     <div className="space-y-2 min-w-0 border border-edge/50 rounded-md p-2.5 bg-surface/30">
-      {/* Identity on the left, status pill floated to the right.
-          Reads as "Session X · Y" with the pill as the eye-anchor.
-          Wraps to two lines on narrow widths. */}
-      <div className="flex items-center gap-2 flex-wrap text-[11px] min-w-0">
+      {/* Title on row 1, status pill on row 2 underneath, always left-aligned.
+          Layout stays consistent regardless of title length so long board
+          names don't push the pill to a right-floated second line. */}
+      <div className="flex items-center gap-2 text-[11px] min-w-0">
         <span className="font-medium text-fg-secondary truncate" title={snapshot.sessionId}>{label}</span>
         <span className="font-mono text-fg-disabled shrink-0" title="Session ID prefix">
           {snapshot.sessionId.slice(0, 8)}
         </span>
-        <div className="ml-auto shrink-0">
-          <StatusRow snapshot={snapshot} />
-        </div>
       </div>
+      <StatusRow snapshot={snapshot} />
 
       {/* Counter grid: full names, hover tooltips explaining each. Non-zero
           counters are emphasized; zeros and "no" flags are dimmed so the
