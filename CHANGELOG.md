@@ -6,16 +6,101 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
-## [Unreleased]
+## [v0.18.0] - 2026-05-06
 
-### Added
+### Features
 
-- **Global search palette** (Ctrl+Shift+F or Ctrl+F, also reachable from a new ⌘ icon in the title bar). Searches across tasks (active + archived), backlog items, session events (from `events.jsonl`), and registered projects. Per-kind grouped results with keyboard navigation. Selecting a session-event hit scrolls the Activity Log to the matched event with a brief highlight; backlog hits switch to the backlog view and open the item.
-- **Kimi Code agent support** (Moonshot AI's `kimi-cli`). Full wire-protocol v1.9 telemetry via `~/.kimi/sessions/<hash>/<id>/wire.jsonl` (context %, token counts, tool events). Caller-owned session IDs via `--session <uuid>`. Plan / YOLO permission modes. MCP server config injection. Detected on Windows + macOS + Linux via uv-tool fallback paths.
+- Add OpenCode CLI agent adapter (a17e925)
+- Add Qwen Code adapter as 8th supported agent (143d4e4)
+- Add Kimi Code adapter with full wire-protocol v1.9 support (d514557)
+- Add Factory Droid CLI adapter (4464edf)
+- Embedded browser pane with capture-and-send (3670374)
+- Browser hardening, settings tab, and unit coverage (186b29f)
+- Browser: clear browser data action and shared partition constant (1f97256)
+- Unified global search palette (Ctrl+Shift+F) (d8b2b96)
+- MCP: expose unified search as kangentic_search_everything (7f0c6d4)
+- MCP: route by prompt project cues via instructions block (7ea0499)
+- Per-column model/effort overrides with live mid-session swap (dd191b7)
+- Per-task model/effort picker popover in context bar (80eb720)
+- Per-column UX polish and harden agent CLI discovery (65cadb1)
+- Wrap task prompts and handoff context in XML envelopes (07f457e)
+- Auto-name tasks and transient sessions from prompt (32b197a)
+- Replace EditColumnDialog with unified Edit Columns manager (6e6bc02)
+- Tighten Edit Columns layout and click-anywhere toggle card (8f7474c)
+- Per-tool stats breakdown and capture pipeline fixes (1045ad5)
+- Sync rate-limit pill across all active agents (37ea0d5)
+- Display current Claude effort level next to model name (9a24ea1)
+- Remember last active task tab per project (7d7d59f)
+- Optimistic task delete with snap-back-on-failure (0fe65df)
+- Tag spawn/exit/complete analytics events with agent and model (041e878)
+- Per-adapter submission evidence in paste engine (721c015)
+- Wire BeforeModel/AfterModel/BeforeToolSelection hooks (8d8dcb0)
+- OpenCode: hook-based activity stream via plugin (ca4be05)
+- OpenCode: wire Kangentic MCP via OPENCODE_CONFIG_CONTENT (b72b4c2)
+- OpenCode: map permission dropdown to OpenCode --agent flag (c9462ea)
+- OpenCode: detect and surface CLI authentication state (cc8b335)
+- OpenCode: warn once when opencode.db schema diverges from verified baseline (c74ccca)
+- OpenCode: TUI transcript cleanup for handoff (d2bd116)
+- Qwen Code: caller-owned session IDs via --session-id (b68afe4)
+- Qwen Code: pre-populate folder trust for spawned worktrees (cd588a0)
+- Qwen Code: wire Kangentic MCP server into sessions (d37a558)
+- Qwen Code: transcript cleanup for handoff (cb408b1)
+- Kimi Code: detect and surface CLI authentication state (f2ac53c)
+- Kimi Code: wire --continue flag for resume-latest semantics (1d10dbd)
+- Kimi Code: track subagent lifecycle from SubagentEvent envelopes (ada68a7)
+- Kimi Code: surface PlanDisplay markdown content in Activity log (3849037)
+- Kimi Code: surface HookRequest input_data summary in Activity log (1b139ac)
+- Droid: parse session JSONL for the Transcript tab (309302f)
+- Droid: surface "no live telemetry" capability (226f333)
+- Droid: clean Ink TUI scrollback for cross-agent handoff (668831e)
+
+### Fixes
+
+- Activity: evict stale per-session entries on syncSessions (a890f56)
+- Activity: keep tasks active while a backgrounded Bash is running (bd7f27c)
+- Engine: suppress Ctrl+C on fresh-spawn auto_command bursts (327486b)
+- PTY: serialize writes through per-session FIFO queue to prevent paste truncation (97518c6)
+- PTY: release stuck "thinking" after natural bg-shell exit (98be040)
+- Session: reconcile stale task.session_id after idle-timeout suspend (b48a48a)
+- Git: extend removeWithRetry budget for Windows handle release (05136b8)
+- MCP: auto-attach files referenced by absolute path on create_task (d706e9b)
+- Codex: stop writing legacy .codex/hooks.json (Codex 0.128 redesign) (ad4b222)
+- Qwen: use -i flag so prompts launch the interactive TUI (c6e05c4)
+- Kimi: write MCP config to disk to avoid invalid JSON on PowerShell (b30adee)
+- OpenCode: reduce exit sequence to Ctrl+C only after empirical verification (fc7be38)
+- Prompt: preserve newlines and omit empty sections in task XML (fc13c6d)
+- Prompt: break <description> open/close tags onto own lines when multi-line (d35ac17)
+- Sidebar: hide activity indicators in collapsed project rail (9ee0a06)
+- Command terminal: prevent freeze when opened from Backlog view (a8fd30c)
+- Resolve hook cleanup and path separator bugs (5823280)
+
+### Other
+
+- Refactor activity engine + bg-shell watcher + Ctrl+C recovery (c83386e)
+- Refactor PTY: unify terminal submission under TerminalSubmit + TerminalSubmitScheduler (4721400)
+- Refactor verification: unify submission verifiers under getSubmissionVerifier (76d1abc)
+- Refactor usage: generalize SessionUsage.rateLimits as adapter-described array (14db2f5)
+- Refactor UI: consolidate click-anywhere toggle into shared <ToggleCard> (de14546)
+- Perf: make import-dialog filter input responsive during rapid typing (2b63c32)
+- Refresh README and close anchor gaps for v0.18.0 (cc32d03)
+- Enumerate per-column model/effort override surface (ac840a5)
+- Add OpenCode adapter section with same-cwd concurrency caveat (60c56be)
+- Note Qwen Code 0.15.3 incompatibility with OpenAI gpt-5 family (ca50fcb)
+- Document Droid MCP setup as manual (63fba34)
+- Add real-LLM smoke checklist for OpenCode (e6c3791)
+- Unify and refresh doc-auditor anchor list (4b422f0)
+- Add Windows PowerShell MCP JSON validator script for Kimi (b9dc034)
+- Probe-droid: add Step 8 to probe project-level .factory hooks (5c47337)
+- Post-refactor cleanup and per-adapter injection-sequence coverage (a89228a)
+- Test stabilization: replace fixed waitForTimeout with conditional polls; fix Linux CI flakes; multiple flake fixes (8b5c539, 2867ccc, 18304ac, e5f0f26, 65df603, 56ccb7c, 517b39e, befd48e, c53e3ea, c559ffb)
+- Add E2E session-resume spec for Qwen Code adapter (0456ce7)
+- Add concurrent same-work_dir spawn race spec for Kimi (a10bfd6)
+- Add UI, unit, and E2E coverage for embedded browser pane (0319caa)
+- Add unit assertions for qwen, kimi, gemini, codex, aider, warp display name entries (20f76bf)
 
 ### Removed
 
-- The always-visible board search bar (`showBoardSearch` config key) and the in-place row filter that lived above the board columns. Task title/description search is now part of the global search palette. The label/priority filter button moves to a small floating control at the top right of the board.
+- The always-visible board search bar (`showBoardSearch` config key) and the in-place row filter above the board columns. Task title/description search is now part of the global search palette. The label/priority filter button moves to a small floating control at the top right of the board.
 
 ## [v0.17.0] - 2026-04-24
 

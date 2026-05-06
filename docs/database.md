@@ -324,9 +324,11 @@ Listed in execution order within `runProjectMigrations()`:
 
 ### Key Migrations (Global DB)
 
-1. **`position` column on projects** -- adds explicit project ordering. Backfills positions based on `last_opened DESC` order to preserve the original visual order.
-2. **`project_groups` table** -- creates the project groups table for organizing projects into named, collapsible sections.
-3. **`group_id` column on projects** -- adds nullable foreign key linking projects to their group.
+Listed in execution order (idempotent, gated on `IF NOT EXISTS` / `pragma table_info`):
+
+1. **`project_groups` table** -- creates the project groups table for organizing projects into named, collapsible sections.
+2. **`group_id` column on projects** -- adds nullable foreign key linking projects to their group.
+3. **`position` column on projects** -- adds explicit project ordering. Backfills positions based on `last_opened DESC` order to preserve the original visual order.
 
 ## Repository Pattern
 

@@ -54,14 +54,7 @@ Post-spawn: handoff DB record updated with target session ID
 
 ## Session History File Locations
 
-Each agent adapter implements `locateSessionHistoryFile(agentSessionId, cwd)` to find the native session file:
-
-| Agent | File Pattern | Method |
-|-------|-------------|--------|
-| Claude Code | `~/.claude/projects/<slug>/<sessionId>.jsonl` | `locateClaudeTranscriptFile()` - direct path computation |
-| Codex CLI | `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl` | `CodexSessionHistoryParser.locate()` - directory scan with polling |
-| Gemini CLI | `~/.gemini/tmp/<projectDir>/chats/session-<id>.json` | `GeminiSessionHistoryParser.locate()` - directory scan with polling |
-| Aider | N/A | Returns null - no native session files |
+Each agent adapter implements `locateSessionHistoryFile(agentSessionId, cwd)` to find the native session file. The full per-agent table (file patterns + lookup methods for all 11 supported adapters) lives in [Agent Integration > Session History File Location](agent-integration.md#session-history-file-location); maintained there as the single source of truth.
 
 ## Prompt Delivery
 
@@ -93,6 +86,7 @@ Handoff records are stored in the `handoffs` table for audit trail:
 | `to_agent` | TEXT | Target agent name |
 | `trigger` | TEXT | What caused the handoff (`column_transition`) |
 | `session_history_path` | TEXT | Absolute path to source session file (nullable) |
+| `packet_json` | TEXT | Legacy column (pre-`session_history_path`). Still present in the schema for backward compatibility but excluded from every `HandoffRepository` SELECT, so it is never read or written by current code. |
 | `created_at` | TEXT | ISO timestamp |
 
 ## MCP Access
