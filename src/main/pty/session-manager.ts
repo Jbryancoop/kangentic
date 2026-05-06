@@ -746,9 +746,17 @@ export class SessionManager extends EventEmitter {
    *
    * Safe to call even if a session already exists for the task - doSpawn
    * handles existing sessions by taskId (cleans up and replaces).
+   *
+   * Emits `session-changed` so the renderer's onStatus listener evicts any
+   * stale prior session entry for the same taskId immediately. Without this
+   * push the renderer would only learn about the placeholder via the next
+   * syncSessions(), leaving a window where stale sessions[] entries from
+   * before a project switch can mask the real placeholder state.
    */
   registerSuspendedPlaceholder(input: { taskId: string; projectId: string; cwd: string }): Session {
-    return this.registry.registerSuspendedPlaceholder(input);
+    const session = this.registry.registerSuspendedPlaceholder(input);
+    this.emit('session-changed', session.id, session);
+    return session;
   }
 
   /** Check whether a session (any status) already exists for a given task. */

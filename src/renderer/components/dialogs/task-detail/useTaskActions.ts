@@ -90,9 +90,27 @@ export function useTaskActions(input: {
       if (action === 'pausing') {
         await input.suspendSession(input.task.id);
       } else {
-        await input.resumeSession(input.task.id);
+        // Snapshot the displayed session id BEFORE the call. If main returns
+        // the same id we already had on display, the renderer's view was
+        // stale (it thought 'suspended' but main had a live PTY all along) -
+        // resume self-healed instead of spawning. Show an info toast so the
+        // user understands no new agent was started.
+        //
+        // Note: priorSessionId is null only when displayState is 'preparing'
+        // or 'none', neither of which can drift to a self-heal path - the
+        // Resume button isn't shown for 'none', and 'preparing' implies main
+        // is mid-spawn and reconcileTaskSessionRef finds no live session.
+        // So a null priorSessionId always means a real spawn happened.
+        const priorSessionId = input.session?.id ?? null;
+        const returned = await input.resumeSession(input.task.id);
         setResumeFailed(false);
         setResumeError('');
+        if (returned && returned.status === 'running' && priorSessionId === returned.id) {
+          useToastStore.getState().addToast({
+            message: 'Reconnected to running session',
+            variant: 'info',
+          });
+        }
       }
       await input.loadBoard();
       // pendingAction is cleared by the effect below once the session store

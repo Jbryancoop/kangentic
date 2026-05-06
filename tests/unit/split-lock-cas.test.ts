@@ -855,3 +855,115 @@ describe('SESSION_RESUME split-lock dedup', () => {
     expect(result).toMatchObject({ id: 'sess-other' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test suite: SESSION_RESUME Phase 1 self-heal
+//
+// Pins the contract: when the renderer's view drifts (e.g. after rapid project
+// switches show a stale "Resume session" button on a task whose PTY is
+// actually running), clicking Resume must NOT throw "Task X already has an
+// active session". Instead the handler returns the existing live Session so
+// the renderer's resumeSession action evicts the stale entry and reattaches.
+//
+// Pre-fix behavior: Phase 1 threw on any liveSession - leaving the user
+// stuck until app restart or destructive Reset Session.
+// ---------------------------------------------------------------------------
+
+describe('SESSION_RESUME Phase 1 self-heal (live session already exists)', () => {
+  let context: ReturnType<typeof createMockContext>;
+  let doingLane: MockSwimlane;
+  let task: MockTask;
+  let storedTask: MockTask;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandlers.clear();
+
+    doingLane = createMockSwimlane('lane-doing', { auto_spawn: true });
+    // Task points at a session that the registry says is live (running). The
+    // renderer's stale view believes the session is suspended; the user clicks
+    // Resume.
+    task = createMockTask('task-self-heal', {
+      swimlane_id: 'lane-doing',
+      session_id: 'sess-live',
+    });
+    storedTask = { ...task };
+
+    const taskRepo = {
+      getById: vi.fn(() => storedTask),
+      update: vi.fn((patch: Partial<MockTask> & { id: string }) => {
+        storedTask = { ...storedTask, ...patch };
+      }),
+    };
+    const swimlaneRepo = {
+      getById: vi.fn((id: string) => ({ 'lane-doing': doingLane }[id] ?? null)),
+    };
+
+    mockGetProjectRepos.mockReturnValue({
+      tasks: taskRepo,
+      swimlanes: swimlaneRepo,
+      actions: { getTransitionsFor: vi.fn(() => []) },
+      attachments: { add: vi.fn(), listForTask: vi.fn(() => []) },
+    });
+
+    mockCreateTransitionEngine.mockReturnValue({
+      resumeSuspendedSession: vi.fn(async () => {}),
+    });
+
+    context = createMockContext();
+    // Registry says the session is live (running) - this is the truth main
+    // process sees, even though the renderer's sessions[] array still shows
+    // status='suspended' from a stale state.
+    const liveSession: Session = {
+      id: 'sess-live',
+      taskId: 'task-self-heal',
+      projectId: 'proj-1',
+      pid: 54321,
+      status: 'running',
+      shell: '/bin/bash',
+      cwd: '/mock/project',
+      startedAt: new Date().toISOString(),
+      exitCode: null,
+      resuming: false,
+    };
+    context.sessionManager.getSession.mockImplementation(() => liveSession);
+
+    registerSessionHandlers(context as never);
+  });
+
+  it('returns the live session without throwing or entering Phase 2', async () => {
+    const handler = capturedHandlers.get(IPC.SESSION_RESUME);
+    if (!handler) throw new Error('SESSION_RESUME handler not registered');
+
+    const result = await handler(null, 'task-self-heal');
+
+    // Self-heal: returns the live session so the renderer can reattach.
+    expect(result).toMatchObject({
+      id: 'sess-live',
+      taskId: 'task-self-heal',
+      status: 'running',
+    });
+
+    // Phase 2 (worktree I/O) and Phase 3 (transition engine) MUST NOT run -
+    // there's nothing to spawn.
+    expect(mockEnsureTaskWorktree).not.toHaveBeenCalled();
+    expect(mockCreateTransitionEngine).not.toHaveBeenCalled();
+  });
+
+  it('does not clear task.session_id when returning the live session', async () => {
+    const handler = capturedHandlers.get(IPC.SESSION_RESUME);
+    if (!handler) throw new Error('SESSION_RESUME handler not registered');
+
+    await handler(null, 'task-self-heal');
+
+    // The reconciler only clears task.session_id when the registry reference
+    // is stale. A live session must NOT trigger the clear - that would orphan
+    // the running PTY from its task.
+    const lastRepos = mockGetProjectRepos.mock.results.at(-1)?.value as { tasks: { update: MockInstance } };
+    const updateCalls = (lastRepos?.tasks.update.mock.calls ?? []) as Array<[Partial<MockTask> & { id: string }]>;
+    const sessionIdNullingCall = updateCalls.find(
+      ([patch]) => patch.id === 'task-self-heal' && patch.session_id === null,
+    );
+    expect(sessionIdNullingCall).toBeUndefined();
+  });
+});

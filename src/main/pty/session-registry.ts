@@ -239,6 +239,13 @@ export class SessionRegistry {
    * Register a suspended placeholder for a task that was user-paused
    * before app restart. The placeholder has no PTY but gives the
    * renderer a "Paused" state and exposes the "Resume session" button.
+   *
+   * Callers should go through `SessionManager.registerSuspendedPlaceholder`
+   * (not this method directly) so the `session-changed` event fires and
+   * the renderer's onStatus listener evicts any stale prior session entry
+   * for the same taskId immediately. Calling this registry method without
+   * the manager wrapper leaves the renderer dependent on the next
+   * `syncSessions()` to learn about the placeholder.
    */
   registerSuspendedPlaceholder(input: { taskId: string; projectId: string; cwd: string }): Session {
     const id = uuidv4();

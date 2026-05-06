@@ -104,23 +104,40 @@ export function registerSessionHandlers(context: IpcContext): void {
 
       try {
         // Phase 1 (locked, short): validate task + lane, build plan.
-        const plan = await withTaskLock(taskId, async () => {
+        // Self-heal contract: if main already has a live PTY for this task,
+        // return it instead of throwing. The renderer's view can drift after
+        // rapid project switches (sessions[] entries with status='suspended'
+        // for tasks whose registry entry is actually 'running'). Rather than
+        // surfacing an error the user can't recover from without a restart,
+        // we treat resume as idempotent and return the existing handle. The
+        // renderer's resumeSession action replaces the stale entry and sets
+        // activeSessionId, restoring the terminal attachment.
+        const phase1Result = await withTaskLock(taskId, async () => {
           const { task, liveSession } = reconcileTaskSessionRef(context, resolvedProjectId, taskId);
           if (liveSession) {
-            throw new Error(`Task ${taskId} already has an active session`);
+            return { kind: 'live' as const, session: liveSession };
           }
           const lane = swimlanes.getById(task.swimlane_id);
           if (lane?.role === 'todo') {
             throw new Error('Cannot resume a session for a task in the To Do column');
           }
-          return { task };
+          return { kind: 'spawn' as const, task };
         });
+
+        if (phase1Result.kind === 'live') {
+          console.log(
+            `[SESSION_RESUME] Self-heal: returning live session for task ${taskId.slice(0, 8)}`
+            + ` (renderer view was stale)`,
+          );
+          return phase1Result.session;
+        }
+        const planTask = phase1Result.task;
 
         // Phase 2 (unlocked, slow): git I/O. Serialized per-project by
         // WorktreeManager.projectQueues. AbortSignal cancels in-flight fetch
         // when SESSION_SUSPEND / a newer SESSION_RESUME / SESSION_RESET fires.
         try {
-          await ensureTaskWorktree(context, plan.task, tasks, resolvedProjectPath, { signal });
+          await ensureTaskWorktree(context, planTask, tasks, resolvedProjectPath, { signal });
         } catch (worktreeError) {
           if (isAbortError(worktreeError)) throw worktreeError;
           const message = worktreeError instanceof Error ? worktreeError.message : String(worktreeError);
