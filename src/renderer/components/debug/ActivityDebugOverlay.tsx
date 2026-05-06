@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Bug, GripVertical, X, Loader2, Mail, Lock, Wrench, Users, Terminal, ChevronDown } from 'lucide-react';
+import { Bug, GripVertical, X, Loader2, Mail, Lock, Wrench, Users, Terminal, ChevronDown, RotateCw } from 'lucide-react';
 import type { ActivityStatsSnapshot, ActivityReason, ActivityState } from '../../../shared/types';
 import { useConfigStore } from '../../stores/config-store';
 import { useSessionStore } from '../../stores/session-store';
@@ -128,6 +128,13 @@ function ActivityDebugOverlayContent() {
   }, [sessions, tasks, transientSessionId]);
 
   const [snapshots, setSnapshots] = useState<ActivityStatsSnapshot[]>([]);
+  // Tracks whether the snapshot poll has run at least once for the current
+  // project session set. Without this guard the DesyncDiagnostic would
+  // briefly flash on every overlay open / projectSessionIds change because
+  // `snapshots` defaults to `[]` and the first poll's IPC roundtrip is
+  // async. The diagnostic message is alarming ("engine has no state for N
+  // sessions") and would be wrong during the loading window.
+  const [firstPollComplete, setFirstPollComplete] = useState(false);
 
   // Drag-to-reposition. The panel is always pixel-positioned: on first
   // open it lands centered on the viewport; subsequent drags update
@@ -160,6 +167,9 @@ function ActivityDebugOverlayContent() {
 
   useEffect(() => {
     let cancelled = false;
+    // Reset the loading guard when the session set changes so the user
+    // doesn't see the diagnostic briefly carry over from a different set.
+    setFirstPollComplete(false);
     const idsAtMount = projectSessionIdsKey.length === 0 ? [] : projectSessionIdsKey.split(',');
     const poll = async () => {
       // Skip mid-drag: a setSnapshots while dragging would re-render
@@ -175,7 +185,10 @@ function ActivityDebugOverlayContent() {
           // Ignore probe failures - the overlay is best-effort.
         }
       }
-      if (!cancelled) setSnapshots(results);
+      if (!cancelled) {
+        setSnapshots(results);
+        setFirstPollComplete(true);
+      }
     };
     void poll();
     const interval = setInterval(() => { void poll(); }, POLL_INTERVAL_MS);
@@ -370,8 +383,16 @@ function ActivityDebugOverlayContent() {
         </button>
       </div>
       <div className="max-h-96 overflow-auto p-3 space-y-3">
-        {snapshots.length === 0 ? (
-          <div className="text-fg-faint">No running sessions in this project.</div>
+        {!firstPollComplete ? (
+          <div className="flex items-center gap-2 text-fg-faint text-[11px]">
+            <Loader2 size={12} className="animate-spin" />
+            <span>Loading activity state...</span>
+          </div>
+        ) : snapshots.length === 0 ? (
+          <DesyncDiagnostic
+            projectSessionIds={projectSessionIds}
+            sessionLabels={sessionLabels}
+          />
         ) : (
           snapshots.map((snapshot) => (
             <SnapshotRow
@@ -382,6 +403,73 @@ function ActivityDebugOverlayContent() {
           ))
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Rendered when the renderer believes one or more sessions in the
+ * current project are running (`projectSessionIds.length > 0`) but
+ * `getActivityStats` returned null for every one of them. That means
+ * the activity engine's `states` map has no entry for those sessions,
+ * which should be impossible while the registry reports them as
+ * running - either the renderer's session list is locally stale (a
+ * status flip's push event was missed) or the main-process registry
+ * and engine have genuinely drifted.
+ *
+ * Showing the affected session ids + a Resync button turns the
+ * formerly-mute "No running sessions" copy into something the user
+ * can act on: clicking Resync re-runs `syncSessions()` and either
+ * recovers (renderer cache leak) or confirms the desync survives a
+ * fresh fetch (main-side bug to investigate with these specific ids).
+ */
+function DesyncDiagnostic({
+  projectSessionIds,
+  sessionLabels,
+}: {
+  projectSessionIds: string[];
+  sessionLabels: Map<string, string>;
+}) {
+  const [resyncing, setResyncing] = useState(false);
+  const handleResync = useCallback(async () => {
+    setResyncing(true);
+    try {
+      await useSessionStore.getState().syncSessions();
+    } finally {
+      setResyncing(false);
+    }
+  }, []);
+  const sessionWord = projectSessionIds.length === 1 ? 'session' : 'sessions';
+  return (
+    <div className="space-y-2 text-[11px]">
+      <div className="text-fg-secondary">
+        Activity engine has no state for {projectSessionIds.length} {sessionWord} the
+        renderer believes are running. The renderer cache or the
+        registry/engine pair has drifted.
+      </div>
+      <div className="space-y-1">
+        {projectSessionIds.map((sessionId) => (
+          <div key={sessionId} className="flex items-center gap-2 min-w-0">
+            <span className="font-medium text-fg-secondary truncate" title={sessionId}>
+              {sessionLabels.get(sessionId) ?? sessionId.slice(0, 8)}
+            </span>
+            <span className="font-mono text-fg-disabled shrink-0" title="Session ID prefix">
+              {sessionId.slice(0, 8)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        data-overlay-button
+        onClick={handleResync}
+        disabled={resyncing}
+        className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-surface-raised border border-edge text-fg-secondary hover:bg-surface-hover disabled:opacity-60"
+        title="Re-fetch sessions and activity from the main process"
+      >
+        <RotateCw size={12} className={resyncing ? 'animate-spin' : ''} />
+        <span>{resyncing ? 'Resyncing...' : 'Resync'}</span>
+      </button>
     </div>
   );
 }

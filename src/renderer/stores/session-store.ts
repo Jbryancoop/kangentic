@@ -10,6 +10,39 @@ import { createTransientSessionSlice } from './session-store/transient-session-s
 
 const MAX_EVENTS_PER_SESSION = 500;
 
+/**
+ * Reconcile a per-session cache map fetched from main against the
+ * renderer store's snapshot of the same map.
+ *
+ * The cache (`cached`) is the authoritative key set: it contains
+ * exactly the sessions that the main-process activity engine still
+ * tracks. Any id present in `current` but absent from `cached` is
+ * intentionally dropped - the main process has removed that session
+ * (suspend, respawn, full removal) and the renderer entry is stale.
+ *
+ * For ids present in both maps, the store entry wins. An IPC push
+ * (`onActivity`, `onUsage`, `onEvent`) may have delivered a fresher
+ * value during the async gap between fetching the cache and applying
+ * it; we don't want syncSessions to clobber that.
+ *
+ * Why not the simpler `{ ...cached, ...current }`: that variant
+ * preserves entries that no longer exist in `cached`, leading to
+ * indefinite leaks of `sessionActivity[id] = 'thinking'` (and
+ * matching usage/events) for sessions the engine has already
+ * dropped. HMR re-runs syncSessions on every renderer reload, so
+ * the leak compounds across cycles.
+ */
+function reconcileCache<T>(
+  cached: Record<string, T>,
+  current: Record<string, T>,
+): Record<string, T> {
+  const result: Record<string, T> = {};
+  for (const [sessionId, cachedValue] of Object.entries(cached)) {
+    result[sessionId] = sessionId in current ? current[sessionId] : cachedValue;
+  }
+  return result;
+}
+
 /** Aborts in-flight syncSessions() calls when the project switches.
  *  Persisted across HMR via import.meta.hot.data so cancelSync() can
  *  still abort an in-flight sync after a module replacement. */
@@ -142,8 +175,13 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
     const stillExists = currentState.activeSessionId
       && mergedSessions.some((s) => s.id === currentState.activeSessionId);
 
-    // For usage/activity/events: keep store on top -- IPC-delivered updates
-    // are strictly more recent than the cache snapshot.
+    // For usage/activity/events: reconcile via reconcileCache (above).
+    // The cache is authoritative for the key set (sessions the main
+    // engine still tracks); store entries win only for ids present in
+    // both, preserving IPC pushes that arrived during the async gap.
+    // Entries the engine has dropped are evicted; this prevents stale
+    // 'thinking' (and matching usage/events) from accumulating across
+    // suspend/respawn/HMR cycles.
     // latestRateLimits: seed from any cached entry with rateLimits when we
     // don't already have one. IPC-delivered updates that arrived during the
     // async gap have already populated the store's snapshot, so we leave
@@ -165,10 +203,10 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
       sessions: mergedSessions,
       _sessionByTaskId: buildSessionByTaskId(mergedSessions),
       activeSessionId: stillExists ? currentState.activeSessionId : null,
-      sessionUsage: { ...cachedUsage, ...currentState.sessionUsage },
+      sessionUsage: reconcileCache(cachedUsage, currentState.sessionUsage),
       latestRateLimits: nextLatestRateLimits,
-      sessionActivity: { ...cachedActivity, ...currentState.sessionActivity },
-      sessionEvents: { ...cachedEvents, ...currentState.sessionEvents },
+      sessionActivity: reconcileCache(cachedActivity, currentState.sessionActivity),
+      sessionEvents: reconcileCache(cachedEvents, currentState.sessionEvents),
     });
 
     // Recover transient session pointers after a full page reload.
