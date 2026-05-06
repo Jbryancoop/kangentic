@@ -88,16 +88,25 @@ export function attachDebugger(window: BrowserWindow): boolean {
 }
 
 export function detachDebugger(window: BrowserWindow): void {
-  const state = attached.get(window.webContents);
+  let webContents: WebContents;
+  try {
+    // `before-quit` may fire after the window is destroyed; the `webContents`
+    // getter throws "Object has been destroyed" in that case.
+    if (window.isDestroyed()) return;
+    webContents = window.webContents;
+  } catch {
+    return;
+  }
+  const state = attached.get(webContents);
   if (!state) return;
   try {
-    state.webContents.debugger.removeListener('message', state.consoleListener);
-    state.webContents.debugger.removeListener('detach', state.detachListener);
-    state.webContents.debugger.detach();
+    webContents.debugger.removeListener('message', state.consoleListener);
+    webContents.debugger.removeListener('detach', state.detachListener);
+    webContents.debugger.detach();
   } catch {
     // best-effort
   }
-  attached.delete(window.webContents);
+  attached.delete(webContents);
 }
 
 /**
