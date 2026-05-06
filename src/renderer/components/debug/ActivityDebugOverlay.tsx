@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Bug, GripVertical, X, Loader2, Mail, Lock, Wrench, Users, Terminal, ChevronDown, RotateCw } from 'lucide-react';
 import type { ActivityStatsSnapshot, ActivityReason, ActivityState } from '../../../shared/types';
 import { useConfigStore } from '../../stores/config-store';
@@ -73,11 +73,33 @@ interface OverlayPosition {
   top: number;
 }
 
-const PANEL_WIDTH_PX = 420; // approximates max-w-md
-const PANEL_MIN_HEIGHT_PX = 80;
 /** Estimated panel height for initial centering. Real height is dynamic;
  *  this only affects the default landing spot. */
 const PANEL_ESTIMATED_HEIGHT_PX = 300;
+
+/** Grid layout knobs. The overlay grows to fit a balanced grid of
+ *  per-session snapshots: 1×1, 1×2, 2×2, 2×3, 3×3, then engages a
+ *  scrollbar past 9 sessions. Width is recomputed each render from
+ *  the current snapshot count. */
+const MAX_COLS = 3;
+const COL_WIDTH_PX = 360;
+const GAP_PX = 12;
+const PANEL_PADDING_X_PX = 24;
+const SCROLL_THRESHOLD_SESSIONS = 10;
+
+interface GridLayout {
+  cols: number;
+  widthPx: number;
+}
+
+export function computeGridLayout(sessionCount: number): GridLayout {
+  if (sessionCount <= 1) {
+    return { cols: 1, widthPx: COL_WIDTH_PX + PANEL_PADDING_X_PX };
+  }
+  const cols = Math.min(Math.ceil(Math.sqrt(sessionCount)), MAX_COLS);
+  const widthPx = COL_WIDTH_PX * cols + GAP_PX * (cols - 1) + PANEL_PADDING_X_PX;
+  return { cols, widthPx };
+}
 
 /**
  * Compute the default position when the overlay opens with no cached
@@ -85,10 +107,79 @@ const PANEL_ESTIMATED_HEIGHT_PX = 300;
  * immediately on enabling debug mode; subsequent drags persist via
  * `cachedPosition`.
  */
-function computeCenteredPosition(): OverlayPosition {
-  const left = Math.max(20, (window.innerWidth - PANEL_WIDTH_PX) / 2);
+function computeCenteredPosition(panelWidthPx: number): OverlayPosition {
+  const left = Math.max(20, (window.innerWidth - panelWidthPx) / 2);
   const top = Math.max(20, (window.innerHeight - PANEL_ESTIMATED_HEIGHT_PX) / 2);
   return { left, top };
+}
+
+/**
+ * Field-by-field comparison of two activity reasons. Used by the
+ * structural-sharing pass in the poll loop so React.memo on the
+ * status pill / snapshot row sees a stable reference when the engine
+ * state genuinely hasn't changed between polls.
+ */
+export function reasonsEqual(a: ActivityReason, b: ActivityReason): boolean {
+  if (a === b) return true;
+  if (a.kind !== b.kind) return false;
+  switch (a.kind) {
+    case 'tool': {
+      const other = b as Extract<ActivityReason, { kind: 'tool' }>;
+      return a.pendingCount === other.pendingCount && a.currentTool === other.currentTool;
+    }
+    case 'subagent': {
+      const other = b as Extract<ActivityReason, { kind: 'subagent' }>;
+      return a.depth === other.depth;
+    }
+    case 'background-shell': {
+      const other = b as Extract<ActivityReason, { kind: 'background-shell' }>;
+      if (a.count !== other.count) return false;
+      if (a.ids.length !== other.ids.length) return false;
+      for (let index = 0; index < a.ids.length; index++) {
+        if (a.ids[index] !== other.ids[index]) return false;
+      }
+      return true;
+    }
+    case 'turn-active':
+    case 'idle':
+    case 'permission':
+      return true;
+  }
+}
+
+/**
+ * Structural-equality check used to preserve snapshot identity across
+ * polls. The IPC layer always returns fresh objects, which would defeat
+ * React.memo on every child. By holding the prior snapshot in a ref
+ * and reusing it when content matches, we keep `prev === next` for
+ * memoized components and React bails out the subtree without doing
+ * any reconciliation work.
+ *
+ * The recentTransitions array is treated as a ring buffer of immutable
+ * records: a length change OR a different last-entry signature means
+ * the timeline shifted. Middle entries can never mutate in place.
+ */
+export function snapshotsContentEqual(a: ActivityStatsSnapshot, b: ActivityStatsSnapshot): boolean {
+  if (a === b) return true;
+  if (a.sessionId !== b.sessionId) return false;
+  if (a.activity !== b.activity) return false;
+  if (a.pendingToolCount !== b.pendingToolCount) return false;
+  if (a.subagentDepth !== b.subagentDepth) return false;
+  if (a.anonymousBackgroundShellCount !== b.anonymousBackgroundShellCount) return false;
+  if (a.turnActive !== b.turnActive) return false;
+  if (a.permissionPending !== b.permissionPending) return false;
+  if (a.pendingIdleArmed !== b.pendingIdleArmed) return false;
+  if (a.backgroundShellIds.length !== b.backgroundShellIds.length) return false;
+  for (let index = 0; index < a.backgroundShellIds.length; index++) {
+    if (a.backgroundShellIds[index] !== b.backgroundShellIds[index]) return false;
+  }
+  if (!reasonsEqual(a.reason, b.reason)) return false;
+  if (a.recentTransitions.length !== b.recentTransitions.length) return false;
+  const lastA = a.recentTransitions[a.recentTransitions.length - 1];
+  const lastB = b.recentTransitions[b.recentTransitions.length - 1];
+  if ((lastA?.ts ?? 0) !== (lastB?.ts ?? 0)) return false;
+  if ((lastA?.trigger ?? '') !== (lastB?.trigger ?? '')) return false;
+  return true;
 }
 
 function ActivityDebugOverlayContent() {
@@ -128,6 +219,11 @@ function ActivityDebugOverlayContent() {
   }, [sessions, tasks, transientSessionId]);
 
   const [snapshots, setSnapshots] = useState<ActivityStatsSnapshot[]>([]);
+  // Cache prior snapshot references keyed by sessionId. Each poll
+  // checks structural equality against the cache and reuses the prior
+  // reference when content matches, so memoized children short-circuit
+  // via shallow `prev === next` comparison.
+  const previousSnapshotsRef = useRef<Map<string, ActivityStatsSnapshot>>(new Map());
   // Tracks whether the snapshot poll has run at least once for the current
   // project session set. Without this guard the DesyncDiagnostic would
   // briefly flash on every overlay open / projectSessionIds change because
@@ -135,6 +231,15 @@ function ActivityDebugOverlayContent() {
   // async. The diagnostic message is alarming ("engine has no state for N
   // sessions") and would be wrong during the loading window.
   const [firstPollComplete, setFirstPollComplete] = useState(false);
+
+  // Grid layout grows with the running snapshot count. When fewer than
+  // one snapshot is rendered (loading or desync states) we still want a
+  // sensible single-column width so those copy-heavy fallbacks read
+  // naturally.
+  const gridLayout = useMemo(
+    () => computeGridLayout(Math.max(snapshots.length, 1)),
+    [snapshots.length],
+  );
 
   // Drag-to-reposition. The panel is always pixel-positioned: on first
   // open it lands centered on the viewport; subsequent drags update
@@ -149,18 +254,21 @@ function ActivityDebugOverlayContent() {
   //      overlay's content does not re-render mid-drag. A render
   //      mid-drag would re-apply stale `style={{ left, top }}` from
   //      React state and snap the panel back.
-  //   3. Panel height is captured once on pointer-down. Reading
-  //      offsetHeight on every move would force a layout reflow per
-  //      pointermove tick.
+  //   3. Panel dimensions are captured once on pointer-down. Reading
+  //      offsetWidth/offsetHeight on every move would force a layout
+  //      reflow per pointermove tick.
   //   4. State is committed once on pointer-up. After the commit, the
   //      next poll re-renders with the current position and the next
   //      drag starts fresh.
-  const [position, setPosition] = useState<OverlayPosition>(() => cachedPosition ?? computeCenteredPosition());
+  const [position, setPosition] = useState<OverlayPosition>(
+    () => cachedPosition ?? computeCenteredPosition(computeGridLayout(Math.max(projectSessionIds.length, 1)).widthPx),
+  );
   const positionRef = useRef<OverlayPosition>(position);
   const dragRef = useRef<{
     pointerId: number;
     offsetX: number;
     offsetY: number;
+    panelWidth: number;
     panelHeight: number;
   } | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -177,16 +285,49 @@ function ActivityDebugOverlayContent() {
       // causing visual snap-back until the next pointermove fixes it.
       if (dragRef.current !== null) return;
       const results: ActivityStatsSnapshot[] = [];
+      const nextCache = new Map<string, ActivityStatsSnapshot>();
+      const previousCache = previousSnapshotsRef.current;
       for (const sessionId of idsAtMount) {
         try {
           const snapshot = await window.electronAPI.sessions.getActivityStats(sessionId);
-          if (snapshot) results.push(snapshot);
+          if (snapshot) {
+            // Structural sharing: reuse the prior reference when nothing
+            // user-visible changed. This is what makes React.memo on the
+            // row components actually short-circuit; without it, every
+            // poll would produce a new object reference and force a full
+            // re-render of every session row even when their state was
+            // unchanged.
+            const previousSnapshot = previousCache.get(sessionId);
+            const stableSnapshot =
+              previousSnapshot && snapshotsContentEqual(previousSnapshot, snapshot)
+                ? previousSnapshot
+                : snapshot;
+            results.push(stableSnapshot);
+            nextCache.set(sessionId, stableSnapshot);
+          }
         } catch {
           // Ignore probe failures - the overlay is best-effort.
         }
       }
       if (!cancelled) {
-        setSnapshots(results);
+        previousSnapshotsRef.current = nextCache;
+        setSnapshots((prev) => {
+          // If every per-session reference matches the prior state,
+          // bail out of the setState entirely so React skips the
+          // render cycle. With structural sharing in place this is the
+          // common case during steady-state.
+          if (prev.length === results.length) {
+            let allMatch = true;
+            for (let index = 0; index < results.length; index++) {
+              if (prev[index] !== results[index]) {
+                allMatch = false;
+                break;
+              }
+            }
+            if (allMatch) return prev;
+          }
+          return results;
+        });
         setFirstPollComplete(true);
       }
     };
@@ -284,8 +425,11 @@ function ActivityDebugOverlayContent() {
       pointerId: event.pointerId,
       offsetX: event.clientX - rect.left,
       offsetY: event.clientY - rect.top,
-      // Cache panel height once: reading offsetHeight per move would
-      // force a layout reflow on every pointermove tick.
+      // Cache panel dimensions once: reading offsetWidth/offsetHeight
+      // per move would force a layout reflow on every pointermove tick.
+      // Width is also dynamic now (grid grows with session count) so we
+      // measure it instead of relying on a fixed constant.
+      panelWidth: rect.width,
       panelHeight: rect.height,
     };
     dragRef.current = dragState;
@@ -300,7 +444,7 @@ function ActivityDebugOverlayContent() {
     const onMove = (moveEvent: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag || drag.pointerId !== moveEvent.pointerId) return;
-      const maxLeft = window.innerWidth - PANEL_WIDTH_PX;
+      const maxLeft = window.innerWidth - drag.panelWidth;
       const maxTop = window.innerHeight - drag.panelHeight;
       const left = Math.max(0, Math.min(maxLeft, moveEvent.clientX - drag.offsetX));
       const top = Math.max(0, Math.min(maxTop, moveEvent.clientY - drag.offsetY));
@@ -337,6 +481,30 @@ function ActivityDebugOverlayContent() {
     window.addEventListener('pointercancel', onUp);
   }, [applyPositionToDom, flushPendingPosition]);
 
+  // Re-clamp the cached position when the grid grows (e.g. snapshots
+  // jump from 1 to 4 and the panel widens). Without this, a panel
+  // dragged near the right or bottom edge can drift off-screen on the
+  // next render. Layout effect rather than effect: avoids a 1-frame
+  // flash where the panel paints partially off-screen at the old
+  // position before the clamp commits a corrected one. Safe to read
+  // height here because layout has already run for the new width.
+  // Skipped during an active drag because the poll-driven snapshot
+  // updates are paused mid-drag, so `gridLayout.widthPx` cannot change
+  // while `dragRef.current` is set.
+  useLayoutEffect(() => {
+    const panelHeight = panelRef.current?.getBoundingClientRect().height ?? PANEL_ESTIMATED_HEIGHT_PX;
+    const maxLeft = Math.max(0, window.innerWidth - gridLayout.widthPx);
+    const maxTop = Math.max(0, window.innerHeight - panelHeight);
+    setPosition((prev) => {
+      const clampedLeft = Math.min(prev.left, maxLeft);
+      const clampedTop = Math.min(prev.top, maxTop);
+      if (clampedLeft === prev.left && clampedTop === prev.top) return prev;
+      const next = { left: clampedLeft, top: clampedTop };
+      cachedPosition = next;
+      return next;
+    });
+  }, [gridLayout.widthPx]);
+
   const handleClose = useCallback(() => {
     void updateConfig({ developer: { activityDebugOverlay: false } });
   }, [updateConfig]);
@@ -346,8 +514,12 @@ function ActivityDebugOverlayContent() {
   return (
     <div
       ref={panelRef}
-      className="fixed top-0 left-0 z-50 max-w-md bg-surface-raised border border-edge rounded-md shadow-lg text-xs select-none"
+      className="fixed top-0 left-0 z-50 bg-surface-raised border border-edge rounded-md shadow-lg text-xs select-none"
       style={{
+        // Width is dynamic: the overlay grows with the running session
+        // count to fit a balanced grid (1×1, 1×2, 2×2, 2×3, 3×3) up to
+        // MAX_COLS, then engages a scrollbar past SCROLL_THRESHOLD.
+        width: gridLayout.widthPx,
         // Transform is applied via useLayoutEffect, not here. Putting
         // it in JSX would race with the DOM-direct writes from the
         // drag handler whenever a parent re-render fires.
@@ -382,7 +554,11 @@ function ActivityDebugOverlayContent() {
           <X size={12} />
         </button>
       </div>
-      <div className="max-h-96 overflow-auto p-3 space-y-3">
+      <div
+        className={`p-3 overflow-auto ${
+          snapshots.length >= SCROLL_THRESHOLD_SESSIONS ? 'max-h-96' : 'max-h-[80vh]'
+        }`}
+      >
         {!firstPollComplete ? (
           <div className="flex items-center gap-2 text-fg-faint text-[11px]">
             <Loader2 size={12} className="animate-spin" />
@@ -394,13 +570,18 @@ function ActivityDebugOverlayContent() {
             sessionLabels={sessionLabels}
           />
         ) : (
-          snapshots.map((snapshot) => (
-            <SnapshotRow
-              key={snapshot.sessionId}
-              snapshot={snapshot}
-              label={sessionLabels.get(snapshot.sessionId) ?? snapshot.sessionId.slice(0, 8)}
-            />
-          ))
+          <div
+            className="grid gap-3"
+            style={{ gridTemplateColumns: `repeat(${gridLayout.cols}, minmax(0, 1fr))` }}
+          >
+            {snapshots.map((snapshot) => (
+              <SnapshotRow
+                key={snapshot.sessionId}
+                snapshot={snapshot}
+                label={sessionLabels.get(snapshot.sessionId) ?? snapshot.sessionId.slice(0, 8)}
+              />
+            ))}
+          </div>
         )}
       </div>
     </div>
@@ -474,10 +655,10 @@ function DesyncDiagnostic({
   );
 }
 
-function SnapshotRow({ snapshot, label }: { snapshot: ActivityStatsSnapshot; label: string }) {
+const SnapshotRow = memo(function SnapshotRow({ snapshot, label }: { snapshot: ActivityStatsSnapshot; label: string }) {
   const bgShellCount = snapshot.backgroundShellIds.length + snapshot.anonymousBackgroundShellCount;
   return (
-    <div className="space-y-2 border-b border-edge/40 pb-3 last:border-b-0 last:pb-0">
+    <div className="space-y-2 min-w-0 border border-edge/50 rounded-md p-2.5 bg-surface/30">
       {/* Identity on the left, status pill floated to the right.
           Reads as "Session X · Y" with the pill as the eye-anchor.
           Wraps to two lines on narrow widths. */}
@@ -535,7 +716,7 @@ function SnapshotRow({ snapshot, label }: { snapshot: ActivityStatsSnapshot; lab
       )}
     </div>
   );
-}
+});
 
 /**
  * Section showing the most recent engine state transitions. Defaults
@@ -545,7 +726,7 @@ function SnapshotRow({ snapshot, label }: { snapshot: ActivityStatsSnapshot; lab
  * and a copy-to-clipboard action exports the table as plain text for
  * bug reports.
  */
-function RecentTransitions({ snapshot }: { snapshot: ActivityStatsSnapshot }) {
+const RecentTransitions = memo(function RecentTransitions({ snapshot }: { snapshot: ActivityStatsSnapshot }) {
   const allEntries = snapshot.recentTransitions;
   const containerRef = useRef<HTMLDivElement>(null);
   // Tracks whether the user is "tailing" the log (scrolled to the
@@ -646,7 +827,23 @@ function RecentTransitions({ snapshot }: { snapshot: ActivityStatsSnapshot }) {
       )}
     </div>
   );
-}
+});
+
+/**
+ * Module-scoped trigger lookup table. Hoisted out of `triggerExplanation`
+ * so it isn't reallocated on every call (the function is invoked per
+ * activity-log row per render, so the table would otherwise churn ~50
+ * objects per second under the 2s poll cadence).
+ */
+const TRIGGER_EXACT_EXPLANATIONS: Record<string, string> = {
+  'force-thinking': 'PTY tracker / heartbeat recovery / external caller forced the session into thinking',
+  'force-idle': 'PTY silence timeout / shutdown / external caller forced idle and reset all counters',
+  'interrupted': 'User pressed Esc - all counters reset and session forced to idle',
+  'timer:stability': 'The 400ms idle stability window expired and the queued idle commit fired',
+  'timer:stale-thinking': 'The 45s stale-thinking watchdog forced idle (turn was active but no other counters held it)',
+  'timer:bg-shell-hatch': 'The 5-min orphan-bg-shell escape hatch fired (only bg shells were holding thinking, no signals received)',
+  'event:bg-shells-adopted': 'Watcher saw shell-like processes the hooks did not fire for and adopted them as anonymous bg shells',
+};
 
 /**
  * Plain-language explanation of a transition trigger. Surfaces the
@@ -654,20 +851,10 @@ function RecentTransitions({ snapshot }: { snapshot: ActivityStatsSnapshot }) {
  * source. Falls back to a generic prefix-based hint for unknown
  * triggers.
  */
-function triggerExplanation(trigger: string, reasonKind: ActivityReason['kind']): string {
+export function triggerExplanation(trigger: string, reasonKind: ActivityReason['kind']): string {
   const reasonHint = `Reason at commit: ${reasonKind}`;
 
-  // Exact-match first for the well-known triggers.
-  const exact: Record<string, string> = {
-    'force-thinking': 'PTY tracker / heartbeat recovery / external caller forced the session into thinking',
-    'force-idle': 'PTY silence timeout / shutdown / external caller forced idle and reset all counters',
-    'interrupted': 'User pressed Esc - all counters reset and session forced to idle',
-    'timer:stability': 'The 400ms idle stability window expired and the queued idle commit fired',
-    'timer:stale-thinking': 'The 45s stale-thinking watchdog forced idle (turn was active but no other counters held it)',
-    'timer:bg-shell-hatch': 'The 5-min orphan-bg-shell escape hatch fired (only bg shells were holding thinking, no signals received)',
-    'event:bg-shells-adopted': 'Watcher saw shell-like processes the hooks did not fire for and adopted them as anonymous bg shells',
-  };
-  if (trigger in exact) return `${exact[trigger]}. ${reasonHint}`;
+  if (trigger in TRIGGER_EXACT_EXPLANATIONS) return `${TRIGGER_EXACT_EXPLANATIONS[trigger]}. ${reasonHint}`;
 
   // Pattern-match for parameterized triggers.
   if (trigger.startsWith('event:bg-shell-ended:')) {
@@ -698,7 +885,7 @@ function triggerExplanation(trigger: string, reasonKind: ActivityReason['kind'])
  * Replaces the previous `ActivityBadge + ReasonCallout` pair, which
  * duplicated the state in two places.
  */
-function StatusRow({ snapshot }: { snapshot: ActivityStatsSnapshot }) {
+const StatusRow = memo(function StatusRow({ snapshot }: { snapshot: ActivityStatsSnapshot }) {
   const presentation = statusPresentation(snapshot);
   const { Icon, iconClass, pillClasses, label } = presentation;
   return (
@@ -707,7 +894,7 @@ function StatusRow({ snapshot }: { snapshot: ActivityStatsSnapshot }) {
       <span className="truncate">{label}</span>
     </div>
   );
-}
+});
 
 function statusPresentation(snapshot: ActivityStatsSnapshot): {
   Icon: typeof Wrench;
@@ -792,20 +979,20 @@ function statusPresentation(snapshot: ActivityStatsSnapshot): {
  * Smaller than the status pill, no background fill - just colored
  * text so the from/to in `idle → thinking` reads naturally.
  */
-function ActivityChip({ state }: { state: ActivityState }) {
+const ActivityChip = memo(function ActivityChip({ state }: { state: ActivityState }) {
   const color = state === 'thinking'
     ? 'text-green-300'
     : state === 'permission'
       ? 'text-amber-300'
       : 'text-fg-faint';
   return <span className={`shrink-0 ${color}`}>{state}</span>;
-}
+});
 
 /**
  * Numeric counter row. Non-zero values are emphasized; zeros are
  * dimmed so the eye lands on what is actually active.
  */
-function CounterRow({ label, value, tooltip }: { label: string; value: number; tooltip: string }) {
+const CounterRow = memo(function CounterRow({ label, value, tooltip }: { label: string; value: number; tooltip: string }) {
   const isActive = value > 0;
   return (
     <div className="flex items-center justify-between gap-2" title={tooltip}>
@@ -819,12 +1006,12 @@ function CounterRow({ label, value, tooltip }: { label: string; value: number; t
       </span>
     </div>
   );
-}
+});
 
 /**
  * Boolean flag row. "yes" is emphasized in amber; "no" is dimmed.
  */
-function FlagRow({ label, value, tooltip }: { label: string; value: boolean; tooltip: string }) {
+const FlagRow = memo(function FlagRow({ label, value, tooltip }: { label: string; value: boolean; tooltip: string }) {
   return (
     <div className="flex items-center justify-between gap-2" title={tooltip}>
       <span className="text-fg-faint truncate cursor-help">{label}</span>
@@ -837,4 +1024,4 @@ function FlagRow({ label, value, tooltip }: { label: string; value: boolean; too
       </span>
     </div>
   );
-}
+});
