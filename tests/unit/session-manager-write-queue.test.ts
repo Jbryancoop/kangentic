@@ -31,6 +31,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+// Disable the BgShellWatcher's recurring setInterval. These tests use
+// vi.useFakeTimers() + vi.runAllTimers() to drain the write queue's
+// chunker, but a recurring setInterval re-schedules itself on every tick
+// and causes runAllTimers() to abort with "infinite loop" after 10000
+// iterations. The watcher is irrelevant to write-queue behaviour.
+process.env.KANGENTIC_BG_SHELL_WATCHER = '0';
+
 // Mock heavy modules before importing SessionManager. Mirrors the pattern
 // established by tests/unit/session-manager.test.ts.
 vi.mock('node-pty', () => ({
