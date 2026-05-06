@@ -440,6 +440,14 @@ The Settings > Notifications panel exposes two configurable events: **Agent Idle
 
 The Privacy tab shows what anonymous analytics Kangentic collects and how to opt out. Analytics are powered by Aptabase (no cookies, no persistent identifiers, GDPR-compliant). Set `KANGENTIC_TELEMETRY=0` as an environment variable to disable analytics entirely. This tab is informational only - there are no configurable settings.
 
+### Developer
+
+The Developer tab exposes power-user diagnostics for the activity-detection subsystem. Settings here are global (apply to every project) and are intended for debugging only.
+
+| Setting | Description |
+|---------|-------------|
+| Activity Engine Debug Overlay | Show a floating overlay with live activity-engine state for every running session: current `ActivityReason`, raw counters (pending tools, subagent depth, background shells), and a ring buffer of recent state transitions. Toggle from anywhere with Ctrl+Shift+D. Polls every 2 seconds while open; lazy-disables the IPC when closed. |
+
 ## CLI
 
 Open a project directly from the terminal:

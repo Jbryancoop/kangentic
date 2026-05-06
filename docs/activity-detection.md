@@ -111,6 +111,48 @@ The renderer uses `reason.kind` to pick a Lucide icon (Wrench / Users / Terminal
 
 Priority ladder: `permission > tool > subagent > background-shell > turn-active > idle`. Anchored to `state.activity` for consistency — when forced paths (Interrupted, forceIdle) commit a transition that diverges from the bare predicate (e.g. clearing all counters on Esc), the reason follows the committed state.
 
+## EventType reference
+
+The 21 `EventType` values written to `events.jsonl` by `event-bridge.js`, defined in `src/shared/types.ts`. The activity column shows how each event maps to `ActivityState` via the `EventTypeActivity` table, also in `src/shared/types.ts`.
+
+| EventType key | JSONL value | Activity mapping | Notes |
+|---------------|-------------|------------------|-------|
+| `Prompt` | `prompt` | `thinking` | User submitted a prompt; agent is starting a turn |
+| `ToolStart` | `tool_start` | `thinking` | Agent began invoking a tool |
+| `ToolEnd` | `tool_end` | log-only | Tool returned; counters update but state does not |
+| `Idle` | `idle` | `idle` | Agent finished its turn (Stop hook, prompt-regex, or silence timer) |
+| `Interrupted` | `interrupted` | `idle` | User pressed Esc / Ctrl+C; clears counters and commits idle |
+| `SessionStart` | `session_start` | log-only | Session began; carries adapter session metadata |
+| `SessionEnd` | `session_end` | log-only | Session ended (CLI process exited) |
+| `SubagentStart` | `subagent_start` | `thinking` | Main agent spawned a child agent |
+| `SubagentStop` | `subagent_stop` | log-only | Subagent returned; depth counter decrements |
+| `Notification` | `notification` | log-only | Informational notification from the agent |
+| `Compact` | `compact` | `thinking` | Context-window compaction in progress |
+| `TeammateIdle` | `teammate_idle` | log-only | Cross-agent teammate signaled idle |
+| `TaskCompleted` | `task_completed` | log-only | Agent declared the task finished |
+| `ConfigChange` | `config_change` | log-only | Agent settings/model changed mid-session |
+| `WorktreeCreate` | `worktree_create` | `thinking` | Agent created a git worktree |
+| `WorktreeRemove` | `worktree_remove` | log-only | Agent removed a git worktree |
+| `BackgroundShellStart` | `background_shell_start` | `thinking` | `Bash(run_in_background: true)` launched |
+| `BackgroundShellEnd` | `background_shell_end` | log-only | `KillBash` invoked; decrements active-shells counter |
+| `ModelStart` | `model_start` | log-only | LLM API call beginning (Qwen/Gemini per-call telemetry) |
+| `ModelEnd` | `model_end` | log-only | LLM API call returned |
+| `ToolSelectionStart` | `tool_selection_start` | log-only | Agent is choosing the next tool |
+
+"log-only" means the event is recorded for the activity feed and may update internal counters, but does not on its own change `ActivityState`. State changes only occur through the predicate (see below) or via direct `Idle` / `Interrupted` events.
+
+## ActivityDetectionStrategy variants
+
+Each adapter declares one strategy via its `runtime.activity` field (constructed through the `ActivityDetection` factory). The three variants:
+
+| Kind | Hooks fire? | PTY fallback? | Used by | Semantics |
+|------|-------------|---------------|---------|-----------|
+| `hooks` | Yes (sole source of truth) | No | Claude Code | Activity state is driven exclusively by hook deliveries. PTY traffic is ignored for state transitions. |
+| `pty` | No | Yes | Aider, Cursor, Warp, Droid, Codex (today) | No hook protocol available. The PTY tracker emits `forceIdle` after a silence window, optionally short-circuited by an adapter-supplied `detectIdle(data)` regex that matches the agent's input prompt. |
+| `hooks_and_pty` | Yes (primary) | Yes (fallback) | Gemini, Qwen, Kimi, OpenCode, Copilot | Hooks are authoritative when they fire; the PTY tracker is auto-suppressed on the first hook event and re-engages only if hooks stop arriving. |
+
+Both `pty` and `hooks_and_pty` may pass an optional `detectIdle(data: string) => boolean` for instant idle detection from the input-prompt regex. Without it, idle is inferred from a silence timer.
+
 ## Predicate
 
 The engine exposes ONE predicate:

@@ -137,6 +137,7 @@ All action types that accept templates can use these placeholders:
 |----------|-------|
 | `{{title}}` | Task title (PTY-sanitized) |
 | `{{description}}` | Task description with `: ` prefix when non-empty |
+| `{{task_xml}}` | Task title and description wrapped in a `<task>` envelope (`<title>` / `<description>` children). Default seeded prompt template is `{{task_xml}}{{attachments}}`, which gives the agent a structured envelope without forcing the user to template it manually. |
 | `{{taskId}}` | Task UUID |
 | `{{worktreePath}}` | Worktree directory path (empty if none) |
 | `{{branchName}}` | Git branch name (empty if none) |

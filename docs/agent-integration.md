@@ -119,6 +119,7 @@ Omit `sessionId` entirely for agents that use caller-owned IDs (Claude via `--se
 | Oz CLI (Warp) | `warp-adapter.ts` | `oz` | No | No | No | No |
 | Kimi Code | `kimi-adapter.ts` | `kimi` | `--session <uuid>` (caller-owned) | Yes (`wire.jsonl`) | No | No |
 | Droid | `droid-adapter.ts` | `droid` | `--resume <uuid>` | No (PTY-only) | No (use Droid's TUI: `/model` + Ctrl+D, shift+tab; MCP via manual `droid mcp add`) | No |
+| OpenCode | `opencode-adapter.ts` | `opencode` | Plugin/PTY-captured `ses_<id>` (auto-generated) | Yes (plugin JSONL via `tool.execute.before/after` + `event` `session.*`) | No (`opencode.json` + `OPENCODE_CONFIG_CONTENT` env) | No (auth via `opencode auth login` -> `~/.local/share/opencode/auth.json`) |
 
 ## Agent Resolution
 
@@ -150,6 +151,7 @@ Each adapter implements `detectFirstOutput(data)` to signal when the agent's TUI
 | Oz CLI (Warp) | `data.length > 0` | `oz agent run` streams output, no alternate screen |
 | Kimi Code | `\x1b[?25l` (cursor hide) | TUI hides cursor when its alternate-screen buffer takes over (verified empirically with kimi v1.37.0) |
 | Droid | `\x1b[?25l` (cursor hide) | Ink-based TUI, same pattern as Claude (verified empirically) |
+| OpenCode | `\x1b[?25l` (cursor hide) | Full-screen TUI initializes alternate screen buffer with cursor hide on first frame |
 
 The `\x1b[?25l` (ANSI cursor hide) sequence fires after the shell prompt noise but before the TUI draws its startup banner. This keeps the shell command hidden behind the shimmer overlay.
 
@@ -169,6 +171,7 @@ Graceful exit sequences written to the PTY during `SessionManager.suspend()`:
 | Oz CLI (Warp) | `Ctrl+C` | No session resume mechanism |
 | Kimi Code | `Ctrl+C`, `/exit` | Conventional TUI quit; flushes context.jsonl / wire.jsonl |
 | Droid | `Ctrl+C`, `/quit` | Triggers clean shutdown of the Ink TUI |
+| OpenCode | `Ctrl+C` | Verified 2026-04-28: PTY exits in ~1s. `/exit` and `/quit` are not recognized slash commands. |
 
 ## Session History File Location
 
@@ -185,6 +188,8 @@ During cross-agent handoff, each adapter's `locateSessionHistoryFile()` finds th
 | Aider | N/A | Returns null (no native session files) |
 | Oz CLI (Warp) | N/A | Returns null (no CLI-accessible session history) |
 | Kimi Code | `~/.kimi/sessions/<work_dir_hash>/<sessionId>/wire.jsonl` | Glob across all hash dirs (work_dir hash is opaque) and match on session UUID |
+| OpenCode | `~/.local/share/opencode/opencode.db` (SQLite `session` table) | Read-only WAL handle; match `directory == cwd` and `time_created` within spawn window |
+| Droid | N/A | Returns null (no native session history file; activity flows through PTY-only detection) |
 
 ## Claude Code
 
