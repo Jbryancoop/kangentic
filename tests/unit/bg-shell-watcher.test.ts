@@ -16,6 +16,13 @@ class MockProcessTreeProbe implements ProcessTreeProbe {
    * each rootPid finds only that session's subtree.
    */
   trees = new Map<number, ProcessInfo[]>();
+  /**
+   * When true, `listAllProcesses` returns []. Simulates a real probe
+   * failure (PowerShell timeout, etc.). The watcher's snapshot-health
+   * guard uses an empty result OR a snapshot missing rootPid as the
+   * "skip this cycle" signal.
+   */
+  failProbe = false;
   /** Call counters for performance regression assertions. */
   listAllCalls = 0;
   listDescendantsCalls = 0;
@@ -26,8 +33,19 @@ class MockProcessTreeProbe implements ProcessTreeProbe {
 
   async listAllProcesses(): Promise<ProcessInfo[]> {
     this.listAllCalls += 1;
+    if (this.failProbe) return [];
     const all: ProcessInfo[] = [];
-    for (const descendants of this.trees.values()) {
+    // Real `listAllProcesses` enumerates every process on the host -
+    // which by definition includes the rootPid for each registered
+    // session. The watcher uses rootPid presence as its probe-health
+    // discriminator, so the mock must reflect that contract. `ppid`
+    // and `comm` for the rootPid entry are placeholders: nothing in
+    // the watcher reads them (walkDescendants returns descendants
+    // only, and 'claude' is not in the shell-like allowlist).
+    for (const [rootPid, descendants] of this.trees.entries()) {
+      if (this.alive.has(rootPid)) {
+        all.push({ pid: rootPid, ppid: 0, comm: 'claude' });
+      }
       all.push(...descendants);
     }
     return all;
@@ -189,8 +207,7 @@ describe('BgShellWatcher', () => {
     watcher.registerSession('s1');
     await watcher.pollNow();
 
-    // 2 of 3 disappear (leaves shellLikeCount=1, avoids the
-    // probe-failure guard which suppresses suspicious drops to 0).
+    // 2 of 3 disappear (leaves shellLikeCount=1).
     probe.trees.set(1234, [
       { pid: 5001, ppid: 1234, comm: 'bash' },
     ]);
@@ -335,8 +352,7 @@ describe('BgShellWatcher', () => {
     // First pollNow anchors preExisting for BOTH sessions.
     await watcher.pollNow();
 
-    // One of s1's shells dies; s2 unchanged. (Drop to 1, not 0, so the
-    // probe-failure guard doesn't suppress.)
+    // One of s1's shells dies; s2 unchanged.
     probe.trees.set(100, [{ pid: 1001, ppid: 100, comm: 'bash' }]);
     await watcher.pollNow();
     await watcher.pollNow();
@@ -570,9 +586,7 @@ describe('BgShellWatcher', () => {
 
   it('lag race: persistent deficit fires natural exit on the 2nd cycle', async () => {
     // After the lag-tolerance grace, real natural exits still fire.
-    // Without this, a stuck deficit would never be reported. Use 2
-    // shells dropping to 1 (instead of 1 dropping to 0) so the
-    // probe-failure guard doesn't suppress.
+    // Without this, a stuck deficit would never be reported.
     const { watcher, probe, rootPids, log, shellCounts } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
@@ -607,8 +621,8 @@ describe('BgShellWatcher', () => {
     const { watcher, probe, rootPids, log, shellCounts, pendingTools } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
-    // Start with 2 bg shells so we can drop to 1 without hitting the
-    // probe-failure guard.
+    // Start with 2 bg shells so we can simulate one bg shell exiting
+    // while the other plus a foreground bash remain alive.
     probe.trees.set(1234, [
       { pid: 5001, ppid: 1234, comm: 'bash' },
       { pid: 5002, ppid: 1234, comm: 'bash' },
@@ -708,13 +722,14 @@ describe('BgShellWatcher', () => {
     watcher.dispose();
   });
 
-  it('probe-failure guard: suspicious drop from N>0 to 0 with tracked>0 is treated as probe failure', async () => {
+  it('probe-health guard: empty snapshot from listAllProcesses is treated as probe failure', async () => {
     // PowerShell on Windows can intermittently exceed our 1.5s probe
-    // timeout under load. listDescendants returns [] in that case.
-    // Without this guard, the watcher would treat the empty result as
-    // "all tracked shells exited at once" and false-fire natural-exit
-    // for every tracked shell. Critical user-visible bug: real bg
-    // shells alive but engine reports idle.
+    // timeout under load. listAllProcesses returns [] in that case
+    // (per process-tree.ts:51 contract). Without this guard, the
+    // watcher would treat the empty result as "all tracked shells
+    // exited at once" and false-fire natural-exit for every tracked
+    // shell. Critical user-visible bug: real bg shells alive but
+    // engine reports idle.
     const { watcher, probe, rootPids, log, shellCounts } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
@@ -728,23 +743,139 @@ describe('BgShellWatcher', () => {
     await watcher.pollNow();
     // First cycle anchored preExisting=0, shellLikeCount=3, tracked=3.
 
-    // Probe times out and returns empty. Without guard, watcher would
-    // see deficit=3 and (after 2 cycles of grace) fire 3 natural-exits.
-    probe.trees.set(1234, []);
+    // Probe times out and returns empty. Without the snapshot-health
+    // guard, the watcher would see deficit=3 and (after 2 cycles of
+    // grace) fire 3 natural-exits.
+    probe.failProbe = true;
     await watcher.pollNow();
     await watcher.pollNow();
     await watcher.pollNow();
     expect(log.naturalExits).toHaveLength(0);
 
-    // Probe recovers - shells were never gone.
+    // Explicitly assert that consecutiveDeficitCycles was NOT advanced
+    // by any of the three probe-failed cycles. We verify this by proxy:
+    // when the probe recovers with shells still alive, the first cycle
+    // is in balance (no deficit) and fires no callbacks. If probe-failed
+    // cycles had incremented the counter, cycle 1 of recovery might
+    // spuriously fire or leave residual counter state that fires early.
+    probe.failProbe = false;
+    // Cycle 1 of recovery: shells still present, count matches expected.
+    // consecutiveDeficitCycles must be 0 (not accumulated from failed
+    // cycles), so no false deficit logic runs.
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
+    // No spurious surplus adoption either - count is in sync.
+    expect(log.unhookedAdoptions).toHaveLength(0);
+    watcher.dispose();
+  });
+
+  it('Tier B: drains anonymous count when all shells exit at once with healthy probe', async () => {
+    // Regression for the activity-engine bg-shell leak: when shells
+    // truly exit while the engine still holds an
+    // anonymousBackgroundShellCount (from earlier
+    // onUnhookedBackgroundShells adoption), the watcher must drain
+    // the count via onNaturalExit. The previous count-shape
+    // probe-failure guard mis-classified this exact post-exit state
+    // as probe failure and skipped every cycle indefinitely, leaving
+    // the session pinned in 'thinking' until the 5-min bg-shell-hatch
+    // watchdog fired.
+    const { watcher, probe, rootPids, log, shellCounts } = makeWatcher();
+    rootPids.set('s1', 1234);
+    probe.alive.add(1234);
+    // Engine has 2 anonymous bg shells from prior unhooked adoption.
+    // Probe sees the corresponding 2 OS-level shell-like descendants.
     probe.trees.set(1234, [
       { pid: 5001, ppid: 1234, comm: 'bash' },
       { pid: 5002, ppid: 1234, comm: 'bash' },
-      { pid: 5003, ppid: 1234, comm: 'bash' },
     ]);
+    shellCounts.set('s1', 2);
+    watcher.registerSession('s1');
+    await watcher.pollNow();
+    // First cycle anchored: preExisting = max(0, 2 - 2) = 0, tracked=2.
+
+    // Both bashes exit naturally between cycles. Snapshot remains
+    // healthy (Claude CLI is alive, listAllProcesses succeeds).
+    probe.trees.set(1234, []);
+
+    // Lag-tolerance grace: deficit must persist 2 cycles before firing.
+    await watcher.pollNow();
+    await watcher.pollNow();
+
+    // Should fire ONE onNaturalExit call reporting all 2 exits.
+    expect(log.naturalExits).toEqual([{ sessionId: 's1', exitedCount: 2 }]);
+    watcher.dispose();
+  });
+
+  it('Tier B: probe recovery after empty-snapshot failure resumes natural-exit detection', async () => {
+    // After a transient probe failure, when the probe recovers and
+    // sees that shells genuinely exited, the watcher must fire
+    // onNaturalExit. The new snapshot-health guard correctly
+    // distinguishes "probe failed" from "shells exited" and only
+    // suppresses the former.
+    const { watcher, probe, rootPids, log, shellCounts } = makeWatcher();
+    rootPids.set('s1', 1234);
+    probe.alive.add(1234);
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' },
+      { pid: 5002, ppid: 1234, comm: 'bash' },
+    ]);
+    shellCounts.set('s1', 2);
+    watcher.registerSession('s1');
+    await watcher.pollNow(); // anchor
+
+    // Probe fails for one cycle (the bashes have already exited but
+    // we don't know that yet).
+    probe.failProbe = true;
+    probe.trees.set(1234, []);
     await watcher.pollNow();
     expect(log.naturalExits).toHaveLength(0);
-    expect(log.unhookedAdoptions).toHaveLength(0);
+
+    // Probe recovers: snapshot healthy, descendants empty.
+    probe.failProbe = false;
+
+    // First post-recovery cycle: deficit=2, consecutiveDeficitCycles=1,
+    // suppressed by lag tolerance.
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
+
+    // Second post-recovery cycle: deficit persists, fires.
+    await watcher.pollNow();
+    expect(log.naturalExits).toEqual([{ sessionId: 's1', exitedCount: 2 }]);
+    watcher.dispose();
+  });
+
+  it('Tier B: regression for activity-engine bg-shell leak (idle tasks shown as Thinking)', async () => {
+    // Reproduces the symptom from the bug ticket: engine holds
+    // anonymousBackgroundShellCount=2 from a prior
+    // onUnhookedBackgroundShells adoption (e.g. agent's MonitorBash
+    // / BashList), all OS bashes exited cleanly, no pending tools,
+    // no turn active. Sidebar showed "Thinking - 2 background
+    // shells" until the 5-min bg-shell-hatch fired. After this fix,
+    // the watcher drains the leak within ~2 cycles.
+    const { watcher, probe, rootPids, log, shellCounts } = makeWatcher();
+    rootPids.set('s1', 1234);
+    probe.alive.add(1234);
+    // Step 1: agent ran an unhooked tool that spawned 2 bashes. The
+    // watcher adopted them via onUnhookedBackgroundShells. We jump
+    // straight to the post-adoption steady state.
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' },
+      { pid: 5002, ppid: 1234, comm: 'bash' },
+    ]);
+    shellCounts.set('s1', 2);
+    watcher.registerSession('s1');
+    await watcher.pollNow(); // anchor
+
+    // Step 2: agent finishes its turn, every bash exits naturally.
+    // Probe is healthy throughout (Claude CLI is alive).
+    probe.trees.set(1234, []);
+
+    // Within 2 cycles (~4 sec at 2-sec poll cadence) the watcher
+    // must drain the engine's anonymous count to 0.
+    await watcher.pollNow();
+    await watcher.pollNow();
+
+    expect(log.naturalExits).toEqual([{ sessionId: 's1', exitedCount: 2 }]);
     watcher.dispose();
   });
 
@@ -952,22 +1083,227 @@ describe('BgShellWatcher', () => {
     watcher.dispose();
   });
 
-  it('cycle is non-overlapping (drops ticks while polling)', async () => {
-    const { watcher, probe, rootPids, shellCounts } = makeWatcher();
+  it('preExistingHelpers adjusts down when a pre-existing helper exits while engine tracked=0', async () => {
+    // Gap: the `else` branch of `tracked > 0` at watcher.ts line 426.
+    // A pre-existing MCP server / statusline worker that passed the
+    // shell-like filter exits while the engine has 0 tracked shells.
+    // The watcher must silently shrink preExistingHelpers and NOT fire
+    // onNaturalExit or onUnhookedBackgroundShells. After both helpers
+    // exit, a subsequent surplus (new unhooked shell spawns while tracked
+    // remains 0) must be adopted normally, confirming preExistingHelpers
+    // was cleanly adjusted to 0 rather than staying at its original
+    // value.
+    const { watcher, probe, rootPids, log } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
-    shellCounts.set('s1', 0);
+    // Two shell-like pre-existing helpers (e.g. MCP server wrappers).
+    // Engine reports 0 tracked shells so they both anchor as pre-existing.
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' },
+      { pid: 5002, ppid: 1234, comm: 'sh' },
+    ]);
+    // shellCounts defaults to 0 for 's1' (not set in map) -> tracked=0.
+
+    watcher.registerSession('s1');
+    await watcher.pollNow(); // anchor: preExistingHelpers=2, tracked=0
+
+    // One pre-existing helper exits.
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' },
+    ]);
+
+    // Lag-tolerance grace: deficit must persist 2 cycles before firing.
+    // Even after grace, tracked=0 so the `else` branch fires, shrinking
+    // preExistingHelpers to 1 rather than calling onNaturalExit.
+    await watcher.pollNow();
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
+    expect(log.unhookedAdoptions).toHaveLength(0);
+
+    // Second helper also exits.
+    probe.trees.set(1234, []);
+
+    // Two more cycles of deficit grace (counter reset after first
+    // adjustment).
+    await watcher.pollNow();
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
+    expect(log.unhookedAdoptions).toHaveLength(0);
+
+    // Now confirm preExistingHelpers was cleanly adjusted to 0:
+    // raise shellLikeCount to 1 with tracked still 0. If
+    // preExistingHelpers were still 2 (unadjusted), the surplus would
+    // be negative (1 - 0 - 2 < 0) and no adoption would fire. But if
+    // preExistingHelpers was correctly reduced to 0, the surplus is 1
+    // and onUnhookedBackgroundShells fires.
+    probe.trees.set(1234, [
+      { pid: 6001, ppid: 1234, comm: 'bash' },
+    ]);
+    await watcher.pollNow();
+    expect(log.unhookedAdoptions).toEqual([{ sessionId: 's1', adoptedCount: 1 }]);
+    watcher.dispose();
+  });
+
+  it('consecutiveDeficitCycles resets to 0 on surplus (not just on balance), so a subsequent deficit restarts the lag-tolerance counter', async () => {
+    // Gap: three reset sites exist for consecutiveDeficitCycles (lines
+    // 379, 388, 433 in watcher.ts). This test targets the surplus path
+    // (line 388). If the reset were missing from the surplus branch,
+    // a second deficit arriving after a surplus would add to the
+    // leftover counter value and fire prematurely (i.e. without the
+    // full 2-cycle lag grace).
+    const { watcher, probe, rootPids, shellCounts, log } = makeWatcher();
+    rootPids.set('s1', 1234);
+    probe.alive.add(1234);
+
+    // Anchor with 2 shells - engine tracks 2, preExisting=0.
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' },
+      { pid: 5002, ppid: 1234, comm: 'sh' },
+    ]);
+    shellCounts.set('s1', 2);
+
+    watcher.registerSession('s1');
+    await watcher.pollNow(); // anchor
+
+    // Cycle 1: one shell exits -> deficit=1, consecutiveDeficitCycles=1.
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' },
+    ]);
+    await watcher.pollNow();
+    // Still within lag tolerance, no fire yet.
+    expect(log.naturalExits).toHaveLength(0);
+
+    // Cycle 2: a surplus arrives (new unhooked shell spawns while the
+    // other one is still gone). Engine has tracked=2 still (we didn't
+    // fire a natural exit on cycle 1), shellLikeCount=3, so surplus=1.
+    // The adoption fires AND consecutiveDeficitCycles must reset to 0.
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' },
+      // pid 5002 is still gone; a new unhooked shell appeared instead
+      { pid: 6001, ppid: 1234, comm: 'sh' },
+      { pid: 6002, ppid: 1234, comm: 'bash' },
+    ]);
+    await watcher.pollNow();
+    // Adoption fires for the 1 surplus. Engine callback bumps tracked
+    // from 2 to 3 (makeWatcher's onUnhookedBackgroundShells does this).
+    expect(log.unhookedAdoptions).toEqual([{ sessionId: 's1', adoptedCount: 1 }]);
+    // No natural exit fires from cycle 2 (surplus, not deficit path).
+    expect(log.naturalExits).toHaveLength(0);
+
+    // Cycle 3: now engine has tracked=3 (2 original + 1 adopted),
+    // preExisting=0, expected=3. shellLikeCount=3 -> in balance ->
+    // no deficit.
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
+
+    // Now simulate a fresh deficit (drop to 2 shells, expected=3).
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' },
+      { pid: 6001, ppid: 1234, comm: 'sh' },
+    ]);
+
+    // Cycle 4: deficit=1, consecutiveDeficitCycles becomes 1.
+    // Because the counter was reset to 0 during the surplus in cycle 2
+    // (not preserved as 1 from the earlier deficit), lag tolerance
+    // correctly suppresses the fire.
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
+
+    // Cycle 5: deficit persists - now at 2 consecutive cycles - fires.
+    await watcher.pollNow();
+    expect(log.naturalExits).toEqual([{ sessionId: 's1', exitedCount: 1 }]);
+    watcher.dispose();
+  });
+
+  it('anchorBaseline is a public no-op and does not mutate watcher state', async () => {
+    // Gap: anchorBaseline() exists as a backwards-compat shim (watcher
+    // now derives expected shells from engine state each cycle, not from
+    // an explicit anchor snapshot). Verify it neither fires callbacks,
+    // nor perturbs preExistingHelpers, nor changes behavior of the
+    // following cycle.
+    const { watcher, probe, rootPids, log } = makeWatcher();
+    rootPids.set('s1', 1234);
+    probe.alive.add(1234);
+    probe.trees.set(1234, []);
+
+    watcher.registerSession('s1');
+    await watcher.pollNow(); // anchor: preExistingHelpers=0
+
+    // Call anchorBaseline - must be a no-op.
+    await watcher.anchorBaseline('s1');
+    expect(log.naturalExits).toHaveLength(0);
+    expect(log.unhookedAdoptions).toHaveLength(0);
+
+    // Follow-up cycle with no process changes: still no callbacks.
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
+    expect(log.unhookedAdoptions).toHaveLength(0);
+
+    // Verify state is unchanged: introduce a surplus shell. If
+    // anchorBaseline had silently re-anchored preExistingHelpers to 1,
+    // the surplus would be suppressed (1 shell matches pre-existing=1,
+    // no adoption). Instead, preExistingHelpers stayed at 0 so the
+    // surplus of 1 is adopted normally.
+    probe.trees.set(1234, [{ pid: 6001, ppid: 1234, comm: 'bash' }]);
+    await watcher.pollNow();
+    expect(log.unhookedAdoptions).toEqual([{ sessionId: 's1', adoptedCount: 1 }]);
+    watcher.dispose();
+  });
+
+  it('cycle is non-overlapping (setInterval drops ticks while polling)', async () => {
+    // The `polling` guard inside the setInterval handler prevents
+    // overlapping cycles when the OS probe is slow. Verify this by
+    // advancing fake timers through two ticks while a pollNow() call
+    // is still "in flight" (simulated by having probe.listAllProcesses
+    // resolve only after we advance time). The probe call count must
+    // remain 1 for the first tick window, confirming the second tick
+    // was dropped.
+    const { watcher, probe, rootPids } = makeWatcher({ pollIntervalMs: 100 });
+    rootPids.set('s1', 1234);
+    probe.alive.add(1234);
+    probe.trees.set(1234, []);
     watcher.registerSession('s1');
 
-    // Drive multiple polls in fast succession
-    const polls = await Promise.all([
-      watcher.pollNow(),
-      watcher.pollNow(),
-      watcher.pollNow(),
-    ]);
-    // No assertion on the polls themselves - just that nothing throws
-    // and dispose is clean.
-    expect(polls).toHaveLength(3);
+    // Anchor first cycle synchronously so the guard state is clean.
+    await watcher.pollNow();
+    probe.listAllCalls = 0;
+
+    // Simulate the setInterval firing twice in the same tick window
+    // by advancing timers while the watcher is inside a pollNow().
+    // Because pollNow() drives cycle() directly (bypassing the
+    // setInterval guard), we instead verify the interval path by
+    // checking that a second vi.advanceTimersByTime does not cause a
+    // second listAllProcesses call while polling is still true.
+    //
+    // We gate the probe's listAllProcesses behind a manual resolver so
+    // we can hold the first poll open and advance the timer mid-flight.
+    let resolveProbe!: () => void;
+    const blocker = new Promise<ProcessInfo[]>((resolve) => {
+      resolveProbe = () => resolve([{ pid: 1234, ppid: 0, comm: 'claude' }]);
+    });
+    const originalList = probe.listAllProcesses.bind(probe);
+    probe.listAllProcesses = async () => {
+      probe.listAllCalls += 1;
+      return blocker;
+    };
+
+    // Start a cycle via the interval (not pollNow - we want the guard).
+    vi.advanceTimersByTime(100); // fires first tick
+    // Advance timer again - second tick should be dropped by `polling` guard.
+    vi.advanceTimersByTime(100);
+
+    // Now release the probe. The first cycle completes; the second tick
+    // was already dropped (its setInterval callback exited via `return`).
+    resolveProbe();
+    // Drain microtasks so the cycle fully finishes.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Restore probe for dispose.
+    probe.listAllProcesses = originalList;
+
+    // Exactly one listAllProcesses call despite two ticks firing.
+    expect(probe.listAllCalls).toBe(1);
     watcher.dispose();
   });
 });

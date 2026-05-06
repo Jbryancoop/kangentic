@@ -136,21 +136,6 @@ interface SessionWatchState {
    * see deficit and false-fire a natural exit.
    */
   consecutiveDeficitCycles: number;
-  /**
-   * Last shellLikeCount we observed from a probe that we believed.
-   * Used by the probe-failure heuristic: if a cycle reports 0
-   * shell-like descendants while the engine has tracked shells AND we
-   * previously observed > 0, the probe likely timed out (PowerShell
-   * is slow on Windows under load) - skip the cycle rather than
-   * false-fire natural-exits for shells that are still alive.
-   *
-   * The guard is unconditional (no cap on consecutive skips). A
-   * permanently broken probe is handled by the engine's 60s
-   * stuck-tracking hatch, not here - the watcher's job is to never
-   * false-fire natural-exit while the probe is producing untrustworthy
-   * results.
-   */
-  lastObservedShellLikeCount: number;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -190,7 +175,6 @@ export class BgShellWatcher {
       preExistingHelpers: null,
       trackedShellPids: new Map(),
       consecutiveDeficitCycles: 0,
-      lastObservedShellLikeCount: 0,
     });
     this.maybeStartPolling();
   }
@@ -280,16 +264,24 @@ export class BgShellWatcher {
       // per cycle, saturating one CPU core. With the shared snapshot,
       // it's one ~200ms spawn per cycle regardless of session count.
       const allProcesses = await this.probe.listAllProcesses();
+      // Precompute pids once per cycle for the snapshot-health check
+      // in cycleSession. Avoids an O(N) linear scan per session
+      // (O(M*N) total) when the host has many processes.
+      const allProcessPids = new Set(allProcesses.map((process) => process.pid));
 
       for (const sessionId of sessionIds) {
-        await this.cycleSession(sessionId, allProcesses);
+        await this.cycleSession(sessionId, allProcesses, allProcessPids);
       }
     } finally {
       this.polling = false;
     }
   }
 
-  private async cycleSession(sessionId: string, allProcesses: ProcessInfo[]): Promise<void> {
+  private async cycleSession(
+    sessionId: string,
+    allProcesses: ProcessInfo[],
+    allProcessPids: Set<number>,
+  ): Promise<void> {
     const state = this.states.get(sessionId);
     if (!state) return;
 
@@ -306,35 +298,28 @@ export class BgShellWatcher {
     const descendants = walkDescendants(allProcesses, state.rootPid);
     const shellLikeCount = filterTopmostShellLikeDescendants(descendants, this.isShellLikeFn).length;
 
-    // PROBE-FAILURE GUARD: PowerShell on Windows can intermittently
-    // exceed our 1.5s probe timeout under load. When it does, the
-    // probe returns an empty descendant list - which would otherwise
-    // be indistinguishable from "all shells truly exited at once."
-    // If we previously observed shell-like descendants AND the engine
-    // still has tracked shells, a sudden drop to 0 is almost certainly
-    // a probe failure, not a real exit. Skip the cycle.
+    // PROBE-HEALTH GUARD: process-tree.ts:listAllProcesses returns []
+    // on probe failure (PowerShell timeout, child crash, permission
+    // error). A successful poll enumerates every process on the host,
+    // which by definition includes rootPid (verified alive above).
+    // When the snapshot is empty or doesn't contain rootPid the poll
+    // is untrustworthy - skip the cycle so we don't false-fire
+    // natural-exits for shells that may still be running.
     //
-    // The guard is unconditional (no skip cap). A permanently broken
-    // probe is handled by the engine's 60s stuck-tracking hatch, NOT
-    // here - the watcher's job is to never false-fire natural-exit
-    // while the probe is producing untrustworthy results.
-    //
-    // We capture tracked HERE (before Tier A might fire) because the
-    // guard decides whether to skip the entire cycle including Tier A.
-    // The post-Tier-A `tracked` (used to compute `expected` below) is
-    // captured fresh after Tier A's onShellPidExited callbacks may
-    // have decremented engine state.
-    const trackedAtCycle = this.callbacks.getActiveShellCount(sessionId);
-    if (
-      shellLikeCount === 0
-      && state.lastObservedShellLikeCount > 0
-      && trackedAtCycle > 0
-    ) {
-      // Don't update lastObservedShellLikeCount; we're treating this
-      // observation as untrustworthy. Skip the cycle entirely.
+    // The previous guard tried to detect probe failure with a
+    // count-shape heuristic (`shellLikeCount==0 && previously>0 &&
+    // tracked>0`) which produced the same signature as a genuine
+    // post-exit state, trapping leaked anonymous bg-shell counts in
+    // an indefinite skip loop until the 5-min bg-shell-hatch fired.
+    // Snapshot health is the actual, precise discriminator.
+    if (allProcesses.length === 0 || !allProcessPids.has(state.rootPid)) {
       return;
     }
-    state.lastObservedShellLikeCount = shellLikeCount;
+
+    // We capture tracked HERE (before Tier A might fire) because Tier
+    // A's onShellPidExited callbacks decrement engine state - a fresh
+    // read after Tier A is taken below to compute `expected`.
+    const trackedAtCycle = this.callbacks.getActiveShellCount(sessionId);
 
     // First-cycle anchor: capture pre-existing direct shell-like
     // descendants (Claude's MCP servers, statusline workers, etc.) so
