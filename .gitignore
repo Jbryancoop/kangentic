@@ -8,6 +8,40 @@
 .gemini/
 .aider/
 
+# Stray bin shims left behind by accidental `npm install -g <agent-cli>`
+# inside a worktree (npm prefix pointing at cwd emits the trio here instead
+# of node_modules/.bin/). Anchored so they only match repo/worktree roots.
+/gemini
+/gemini.cmd
+/gemini.ps1
+/claude
+/claude.cmd
+/claude.ps1
+/codex
+/codex.cmd
+/codex.ps1
+/qwen
+/qwen.cmd
+/qwen.ps1
+/opencode
+/opencode.cmd
+/opencode.ps1
+/aider
+/aider.cmd
+/aider.ps1
+/kimi
+/kimi.cmd
+/kimi.ps1
+/droid
+/droid.cmd
+/droid.ps1
+/copilot
+/copilot.cmd
+/copilot.ps1
+/warp
+/warp.cmd
+/warp.ps1
+
 # Build output
 dist/
 
