@@ -48,6 +48,19 @@ export function registerSessionHandlers(context: IpcContext): void {
   ipcMain.handle(IPC.SESSION_WRITE, (_, id, data) => context.sessionManager.write(id, data));
   ipcMain.handle(IPC.SESSION_RESIZE, (_, id, cols, rows) => context.sessionManager.resize(id, cols, rows));
   ipcMain.handle(IPC.SESSION_LIST, () => context.sessionManager.listSessions());
+  // Targeted self-heal probe: returns the live registry session for a task
+  // (or null) and clears any stale task.session_id pointer on the DB row.
+  // Used by the task detail dialog to reconcile a 'suspended' renderer view
+  // before committing to the resume branch. Cheaper than SESSION_LIST and
+  // does not spawn anything (unlike SESSION_RESUME's self-heal). No
+  // withTaskLock: this is a read-mostly probe and contention with concurrent
+  // suspend/resume is acceptable.
+  ipcMain.handle(IPC.SESSION_RECONCILE, (_, taskId: string): Session | null => {
+    const projectId = context.currentProjectId;
+    if (!projectId) return null;
+    const { liveSession } = reconcileTaskSessionRef(context, projectId, taskId);
+    return liveSession;
+  });
   ipcMain.handle(IPC.SESSION_GET_SCROLLBACK, (_, id) => context.sessionManager.getScrollback(id));
   ipcMain.handle(IPC.SESSION_GET_USAGE, (_, projectId?: string) =>
     projectId ? context.sessionManager.getUsageCacheForProject(projectId) : context.sessionManager.getUsageCache());

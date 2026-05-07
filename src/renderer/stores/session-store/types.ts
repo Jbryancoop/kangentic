@@ -74,6 +74,18 @@ export interface CoreSessionSlice {
   resetSession: (taskId: string) => Promise<void>;
   suspendSession: (taskId: string) => Promise<void>;
   resumeSession: (taskId: string, resumePrompt?: string) => Promise<Session>;
+  /**
+   * Probe main's registry for the live session of `taskId` and reconcile
+   * the renderer cache. If main returns a live Session (running/queued),
+   * replace any stale row for the task with it. If main returns null
+   * this is a no-op: legitimately suspended sessions also return null
+   * because `reconcileTaskSessionRef` only counts running/queued as
+   * live, and evicting on null would erase the Resume button for every
+   * genuinely-paused dialog open. Returns the live session (or null).
+   * Used by the task detail dialog on mount to self-heal a stale
+   * 'suspended' view.
+   */
+  reconcileSession: (taskId: string) => Promise<Session | null>;
   setActiveSession: (id: string | null) => void;
   /** User-gesture variant of setActiveSession. Updates state AND persists the
    *  selection to AppConfig.lastActiveTaskByProject so it survives app restart

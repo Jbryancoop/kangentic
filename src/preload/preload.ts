@@ -137,6 +137,7 @@ const api: ElectronAPI = {
     kill: (id) => ipcRenderer.invoke(IPC.SESSION_KILL, id),
     suspend: (taskId) => ipcRenderer.invoke(IPC.SESSION_SUSPEND, taskId),
     resume: (taskId, resumePrompt?) => ipcRenderer.invoke(IPC.SESSION_RESUME, taskId, resumePrompt),
+    reconcile: (taskId) => ipcRenderer.invoke(IPC.SESSION_RECONCILE, taskId),
     reset: (taskId) => ipcRenderer.invoke(IPC.SESSION_RESET, taskId),
     write: (id, data) => ipcRenderer.invoke(IPC.SESSION_WRITE, id, data),
     resize: (id, cols, rows) => ipcRenderer.invoke(IPC.SESSION_RESIZE, id, cols, rows),

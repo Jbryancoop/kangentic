@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { useSessionStore } from '../../../stores/session-store';
 import { useTaskProgress } from '../../../utils/task-progress';
 import type { Task, Session } from '../../../../shared/types';
@@ -48,6 +48,7 @@ export function useTaskSessionState(input: {
     state.sessions.find((candidate) => candidate.taskId === input.task.id) ?? null,
   );
   const setDialogSessionId = useSessionStore((state) => state.setDialogSessionId);
+  const reconcileSession = useSessionStore((state) => state.reconcileSession);
 
   const displayState = useTaskProgress(input.task.id, session?.id);
 
@@ -106,6 +107,28 @@ export function useTaskSessionState(input: {
     }, 100);
     return () => clearTimeout(id);
   }, [input.isEditing, session?.id]);
+
+  // Proactively reconcile a 'suspended' view against main's registry on dialog
+  // mount. The renderer cache can drift from the live PTY (HMR listener gap,
+  // optimistic suspend in suspendSession, multi-session-per-task races). If
+  // main reports the session is actually running, the store update swaps in
+  // the live session and the dialog re-renders the active terminal. If main
+  // confirms suspended (or no session at all), this is a no-op for the UI.
+  //
+  // Guarded by a ref keyed on (taskId, sessionId) so we probe at most once
+  // per session per dialog mount. Re-probing on every status flap would be
+  // a loop hazard since the probe itself updates session.status.
+  const probedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!session) return;
+    if (session.status !== 'suspended') return;
+    const key = `${input.task.id}:${session.id}`;
+    if (probedKeyRef.current === key) return;
+    probedKeyRef.current = key;
+    reconcileSession(input.task.id).catch((error) => {
+      console.warn('[useTaskSessionState] reconcile probe failed', error);
+    });
+  }, [session?.id, session?.status, input.task.id, reconcileSession]);
 
   return {
     session,

@@ -1940,6 +1940,16 @@ export interface ElectronAPI {
     kill: (sessionId: string) => Promise<void>;
     suspend: (taskId: string) => Promise<void>;
     resume: (taskId: string, resumePrompt?: string) => Promise<Session>;
+    /**
+     * Targeted "is this task's session alive right now?" probe. Returns
+     * the live registry Session if main has one for this task, or null
+     * if the task has no live PTY. Side effect: clears stale
+     * `task.session_id` pointers on the DB row when the registry has no
+     * matching entry. Used by the task detail dialog to self-heal a
+     * renderer cache that has drifted to `suspended` while the PTY is
+     * actually running (HMR listener gap, optimistic suspend, etc.).
+     */
+    reconcile: (taskId: string) => Promise<Session | null>;
     reset: (taskId: string) => Promise<void>;
     write: (sessionId: string, data: string) => Promise<void>;
     resize: (sessionId: string, cols: number, rows: number) => Promise<{ colsChanged: boolean }>;

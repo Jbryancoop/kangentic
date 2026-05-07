@@ -152,13 +152,14 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `transition:set` | invoke | Set action chain for lane A→B |
 | `transition:getFor` | invoke | Get transitions for lane pair (exact match, then wildcard) |
 
-### Sessions (30 channels)
+### Sessions (31 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `session:spawn` | invoke | Spawn PTY session (may queue) |
 | `session:kill` | invoke | Kill session |
 | `session:suspend` | invoke | Suspend session (preserves for resume) |
 | `session:resume` | invoke | Resume suspended session |
+| `session:reconcile` | invoke | Targeted self-heal probe: returns the live registry session for a task (or null) and clears stale `task.session_id`. Used by the task detail dialog to heal a renderer cache that drifted to `suspended`. |
 | `session:reset` | invoke | Reset unrecoverable session (kill PTY, mark DB exited, clear task reference) |
 | `session:write` | invoke | Write to session stdin |
 | `session:resize` | invoke | Resize PTY (cols/rows) |

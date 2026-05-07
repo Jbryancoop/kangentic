@@ -26,7 +26,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '../../src/shared/types';
-import type { ActivityState, SessionEvent, SessionUsage } from '../../src/shared/types';
+import type { ActivityState, Session, SessionEvent, SessionUsage } from '../../src/shared/types';
 
 // ---------------------------------------------------------------------------
 // Stub window.electronAPI before importing the store.
@@ -50,6 +50,7 @@ import type { ActivityState, SessionEvent, SessionUsage } from '../../src/shared
       reset: async () => {},
       suspend: async () => {},
       resume: async () => ({}),
+      reconcile: async () => null,
       getUsage: async () => ({}),
       getActivity: async () => ({}),
       getEventsCache: async () => ({}),
@@ -286,5 +287,216 @@ describe('syncSessions - cache reconciliation preserves IPC-during-async-gap upd
     const activity = useSessionStore.getState().sessionActivity;
     expect(activity['sess-existing']).toBe('idle');
     expect(activity['sess-new']).toBe('thinking');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reconcileSession action
+//
+// Contract:
+//  - null no-op: when the IPC returns null, the sessions array is unchanged,
+//    spawnProgress is unchanged, and the action returns null.
+//  - by-id replace: when the live session shares the id of an existing row,
+//    replace it in-place and clear spawnProgress[taskId].
+//  - taskId-evict + add: when the live session has a NEW id but an old row
+//    with the same taskId exists, evict the old row, add the new one, and
+//    clear spawnProgress[taskId].
+//  - spawnProgress eviction: any 'Initializing...' label for the task is
+//    cleared whenever a live session arrives (both replace and evict paths).
+// ---------------------------------------------------------------------------
+
+/** Build a minimal Session object for test seeding. */
+function makeSession(overrides: Partial<Session> & Pick<Session, 'id' | 'taskId'>): Session {
+  return {
+    projectId: 'proj-test',
+    pid: null,
+    status: 'running',
+    shell: 'bash',
+    cwd: '/mock/project',
+    startedAt: new Date().toISOString(),
+    exitCode: null,
+    resuming: false,
+    ...overrides,
+  };
+}
+
+/**
+ * Temporarily replace sessions.reconcile for one call, then restore.
+ * Mirrors the syncWithMocks pattern used by the cache-reconciliation tests above.
+ */
+async function reconcileWith(
+  returnValue: Session | null,
+): Promise<Session | null> {
+  const sessionsApi = (window as Record<string, unknown> & {
+    electronAPI: { sessions: { reconcile: (taskId: string) => Promise<Session | null> } };
+  }).electronAPI.sessions;
+  const original = sessionsApi.reconcile;
+  sessionsApi.reconcile = async () => returnValue;
+  try {
+    return await useSessionStore.getState().reconcileSession('task-a');
+  } finally {
+    sessionsApi.reconcile = original;
+  }
+}
+
+describe('reconcileSession - null no-op', () => {
+  beforeEach(resetStore);
+
+  it('leaves sessions array unchanged when reconcile() returns null', async () => {
+    const existing = makeSession({ id: 'sess-1', taskId: 'task-a', status: 'suspended' });
+    useSessionStore.setState({ sessions: [existing], _sessionByTaskId: new Map([['task-a', existing]]) });
+
+    const result = await reconcileWith(null);
+
+    expect(result).toBeNull();
+    const { sessions } = useSessionStore.getState();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toBe(existing);
+  });
+
+  it('leaves spawnProgress unchanged when reconcile() returns null', async () => {
+    useSessionStore.setState({ spawnProgress: { 'task-a': 'Initializing...' } });
+
+    await reconcileWith(null);
+
+    expect(useSessionStore.getState().spawnProgress['task-a']).toBe('Initializing...');
+  });
+});
+
+describe('reconcileSession - by-id in-place replace', () => {
+  beforeEach(resetStore);
+
+  it('replaces the existing row in-place when the live session shares the same id', async () => {
+    // Seed a suspended row for the same session id. The live session
+    // returns with status='running' - simulates the renderer-drifted-from-main bug.
+    const staleSuspended = makeSession({ id: 'sess-1', taskId: 'task-a', status: 'suspended' });
+    useSessionStore.setState({
+      sessions: [staleSuspended],
+      _sessionByTaskId: new Map([['task-a', staleSuspended]]),
+    });
+
+    const liveSession = makeSession({ id: 'sess-1', taskId: 'task-a', status: 'running', pid: 99 });
+    const result = await reconcileWith(liveSession);
+
+    expect(result).toBe(liveSession);
+    const { sessions, _sessionByTaskId } = useSessionStore.getState();
+    // Exactly one row still in the array.
+    expect(sessions).toHaveLength(1);
+    // The row is the live session object (replaced in-place).
+    expect(sessions[0]).toBe(liveSession);
+    // Index reflects the replacement.
+    expect(_sessionByTaskId.get('task-a')).toBe(liveSession);
+  });
+
+  it('clears spawnProgress[taskId] on by-id replace', async () => {
+    const staleSuspended = makeSession({ id: 'sess-1', taskId: 'task-a', status: 'suspended' });
+    useSessionStore.setState({
+      sessions: [staleSuspended],
+      _sessionByTaskId: new Map([['task-a', staleSuspended]]),
+      spawnProgress: { 'task-a': 'Initializing...' },
+    });
+
+    const liveSession = makeSession({ id: 'sess-1', taskId: 'task-a', status: 'running' });
+    await reconcileWith(liveSession);
+
+    expect(useSessionStore.getState().spawnProgress['task-a']).toBeUndefined();
+  });
+
+  it('does not disturb sibling sessions for other tasks on by-id replace', async () => {
+    const sibling = makeSession({ id: 'sess-sibling', taskId: 'task-b', status: 'running' });
+    const stale = makeSession({ id: 'sess-1', taskId: 'task-a', status: 'suspended' });
+    useSessionStore.setState({
+      sessions: [stale, sibling],
+      _sessionByTaskId: new Map([['task-a', stale], ['task-b', sibling]]),
+    });
+
+    const liveSession = makeSession({ id: 'sess-1', taskId: 'task-a', status: 'running' });
+    await reconcileWith(liveSession);
+
+    const { sessions } = useSessionStore.getState();
+    expect(sessions).toHaveLength(2);
+    expect(sessions.find((s) => s.id === 'sess-sibling')).toBe(sibling);
+  });
+});
+
+describe('reconcileSession - taskId-evict + add (respawn path)', () => {
+  beforeEach(resetStore);
+
+  it('evicts the old row and inserts the new session when the id differs', async () => {
+    // Seed an old suspended session (old id). Main has respawned the task
+    // under a new session id. The store should drop the old row and add the new one.
+    const oldSession = makeSession({ id: 'sess-old', taskId: 'task-a', status: 'suspended' });
+    useSessionStore.setState({
+      sessions: [oldSession],
+      _sessionByTaskId: new Map([['task-a', oldSession]]),
+    });
+
+    const liveSession = makeSession({ id: 'sess-new', taskId: 'task-a', status: 'running', pid: 42 });
+    const result = await reconcileWith(liveSession);
+
+    expect(result).toBe(liveSession);
+    const { sessions, _sessionByTaskId } = useSessionStore.getState();
+    // Old row is gone; new row is present.
+    expect(sessions.find((s) => s.id === 'sess-old')).toBeUndefined();
+    expect(sessions.find((s) => s.id === 'sess-new')).toBe(liveSession);
+    expect(sessions).toHaveLength(1);
+    // Index reflects new row.
+    expect(_sessionByTaskId.get('task-a')).toBe(liveSession);
+  });
+
+  it('clears spawnProgress[taskId] on taskId-evict + add', async () => {
+    const oldSession = makeSession({ id: 'sess-old', taskId: 'task-a', status: 'suspended' });
+    useSessionStore.setState({
+      sessions: [oldSession],
+      _sessionByTaskId: new Map([['task-a', oldSession]]),
+      spawnProgress: { 'task-a': 'Initializing...' },
+    });
+
+    const liveSession = makeSession({ id: 'sess-new', taskId: 'task-a', status: 'running' });
+    await reconcileWith(liveSession);
+
+    expect(useSessionStore.getState().spawnProgress['task-a']).toBeUndefined();
+  });
+
+  it('does not disturb sibling sessions for other tasks on evict + add', async () => {
+    const sibling = makeSession({ id: 'sess-sibling', taskId: 'task-b', status: 'running' });
+    const oldSession = makeSession({ id: 'sess-old', taskId: 'task-a', status: 'suspended' });
+    useSessionStore.setState({
+      sessions: [oldSession, sibling],
+      _sessionByTaskId: new Map([['task-a', oldSession], ['task-b', sibling]]),
+    });
+
+    const liveSession = makeSession({ id: 'sess-new', taskId: 'task-a', status: 'running' });
+    await reconcileWith(liveSession);
+
+    const { sessions } = useSessionStore.getState();
+    expect(sessions).toHaveLength(2);
+    expect(sessions.find((s) => s.id === 'sess-sibling')).toBe(sibling);
+  });
+});
+
+describe('reconcileSession - spawnProgress eviction on heal', () => {
+  beforeEach(resetStore);
+
+  it('clears the spawnProgress label when a live session arrives, leaving other tasks untouched', async () => {
+    // Two tasks both have in-flight spawn labels. Only task-a is being reconciled.
+    const staleSession = makeSession({ id: 'sess-1', taskId: 'task-a', status: 'suspended' });
+    useSessionStore.setState({
+      sessions: [staleSession],
+      _sessionByTaskId: new Map([['task-a', staleSession]]),
+      spawnProgress: {
+        'task-a': 'Initializing...',
+        'task-b': 'Starting agent...',
+      },
+    });
+
+    const liveSession = makeSession({ id: 'sess-1', taskId: 'task-a', status: 'running' });
+    await reconcileWith(liveSession);
+
+    const { spawnProgress } = useSessionStore.getState();
+    // task-a's label is gone (healed).
+    expect(spawnProgress['task-a']).toBeUndefined();
+    // task-b's label is untouched (different task, not reconciled).
+    expect(spawnProgress['task-b']).toBe('Starting agent...');
   });
 });

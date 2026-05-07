@@ -290,6 +290,45 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
     return newSession;
   },
 
+  reconcileSession: async (taskId) => {
+    const liveSession = await window.electronAPI.sessions.reconcile(taskId);
+    if (!liveSession) {
+      // Main has no LIVE session for this task. That includes the legitimate
+      // "session is suspended" case (reconcileTaskSessionRef only returns
+      // running/queued sessions), so we deliberately leave the renderer
+      // cache alone here. Evicting would erase the Resume button for every
+      // genuinely-suspended dialog open. The probe is a positive-heal tool
+      // only; cleanup of stale suspended rows is the job of syncSessions or
+      // explicit Reset.
+      return null;
+    }
+    set((state) => {
+      // Live session exists on main: replace any stale row for this task.
+      // Keyed by id first (covers in-place status fix on the same id);
+      // falls back to taskId eviction (covers respawn where the session
+      // id changed) so we never end up with two rows for the same task.
+      const existingIndex = state.sessions.findIndex((sess) => sess.id === liveSession.id);
+      let sessions: Session[];
+      if (existingIndex >= 0) {
+        sessions = [...state.sessions];
+        sessions[existingIndex] = liveSession;
+      } else {
+        sessions = [...state.sessions.filter((sess) => sess.taskId !== taskId), liveSession];
+      }
+      // Clear any in-flight spawn progress label for this task: a real
+      // session has arrived, so the "Initializing..." indicator is done.
+      // Mirrors upsertSession's behavior so a healed session doesn't leave
+      // a stale spawnProgress entry stranded on the task card.
+      const { [liveSession.taskId]: _removed, ...remainingProgress } = state.spawnProgress;
+      return {
+        sessions,
+        _sessionByTaskId: buildSessionByTaskId(sessions),
+        spawnProgress: remainingProgress,
+      };
+    });
+    return liveSession;
+  },
+
   setActiveSession: (id) => set({ activeSessionId: id }),
 
   selectActiveSession: (id) => {

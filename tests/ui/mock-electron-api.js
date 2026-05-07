@@ -968,6 +968,16 @@
           task.updated_at = now();
         }
       },
+      // Mock counterpart of main's SESSION_RECONCILE handler. Returns the
+      // session whose taskId matches IF its status is 'running' or 'queued'
+      // (the "live registry" view), else null. Tests can override via
+      // window.electronAPI.sessions.reconcile = ... to exercise drift cases.
+      reconcile: async function (taskId) {
+        var live = sessions.find(function (s) {
+          return s.taskId === taskId && (s.status === 'running' || s.status === 'queued');
+        });
+        return live || null;
+      },
       // Call log for test assertions. Each entry is { sessionId, payload }.
       // Reset between tests via window.__mockSessionWriteCalls.length = 0.
       __writeCalls: [],
