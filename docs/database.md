@@ -185,6 +185,36 @@ Valid permission_mode values: `default`, `plan`, `acceptEdits`, `dontAsk`, `bypa
 
 Indexes: `idx_sessions_task_started` on (task_id, started_at DESC), `idx_sessions_status` on (status), `idx_sessions_agent_session_id` on (agent_session_id).
 
+### usage_history table
+
+| Column | Type | Constraints | Default |
+|--------|------|-------------|---------|
+| id | TEXT | PRIMARY KEY | |
+| session_record_id | TEXT | NOT NULL UNIQUE | |
+| recorded_at | TEXT | NOT NULL | |
+| session_started_at | TEXT | NOT NULL | |
+| session_type | TEXT | | NULL |
+| total_cost_usd | REAL | NOT NULL | |
+| total_input_tokens | INTEGER | NOT NULL | 0 |
+| total_output_tokens | INTEGER | NOT NULL | 0 |
+| total_duration_ms | INTEGER | | NULL |
+| tool_call_count | INTEGER | NOT NULL | 0 |
+| model_id | TEXT | | NULL |
+| model_display_name | TEXT | | NULL |
+| lines_added | INTEGER | NOT NULL | 0 |
+| lines_removed | INTEGER | NOT NULL | 0 |
+| files_changed | INTEGER | NOT NULL | 0 |
+
+Indexes: `idx_usage_history_session_started_at` on (session_started_at), `idx_usage_history_recorded_at` on (recorded_at).
+
+Append-only ledger of finalized session usage. Decoupled from `sessions` and `tasks`: rows have no foreign keys, so they survive task deletion, bulk-archive cleanup, and revert-to-backlog. The StatusBar period selector (Live/Today/Week/Month/All Time) reads from this table via `SESSION_GET_PERIOD_STATS` so cost and token totals reflect every session ever finalized on the project, not just the ones whose source task still exists.
+
+`session_record_id` is the `sessions.id` of the row this entry mirrors. The UNIQUE constraint plus an `ON CONFLICT(session_record_id) DO UPDATE` clause in `recordSessionUsage` makes capture idempotent: re-capturing the same record at suspend AND again at app shutdown updates the existing row instead of producing duplicates. Git stat columns (`lines_added`, `lines_removed`, `files_changed`) are intentionally excluded from the UPSERT's `DO UPDATE SET` clause because they are owned by `updateGitStats`, which runs separately after `captureGitStats` finishes its `git diff` against the base branch.
+
+`session_started_at` is used for period bucketing (`WHERE session_started_at >= ?`) so "Today" means "session started today", not "metrics flushed today" - the difference matters for sessions that finalize across midnight. Written by `captureSessionMetrics` whenever `usage` is defined (i.e. metrics were actually captured). Cost = 0 with non-zero tokens is the Claude subscription-user case (Plus/Max) and IS recorded; the gate is `if (usage)`, not `cost > 0`. The migration backfills existing `sessions` rows with `total_cost_usd IS NOT NULL` so installs upgrading to this version do not lose their lifetime totals.
+
+TypeScript type: `PeriodUsageStats` (return type) in `src/shared/types.ts`. Repository: `UsageHistoryRepository` in `src/main/db/repositories/usage-history-repository.ts`.
+
 ### task_attachments table
 
 | Column | Type | Constraints | Default |
@@ -321,6 +351,7 @@ Listed in execution order within `runProjectMigrations()`:
 30. **`handoff_context` column on swimlanes** -- adds per-column toggle for cross-agent handoff context packaging. Default `0` (off) - users must opt in. When enabled, agent transitions package transcript, git diff, and metrics for the target agent.
 31. **Performance indices on sessions and tasks** -- adds four idempotent hot-path indices: `idx_sessions_task_started` on (task_id, started_at DESC) for per-task session lookups and cost summaries, `idx_sessions_status` on (status) for getResumable/getOrphaned/markRunningAsOrphaned, `idx_sessions_agent_session_id` on (agent_session_id) for the resume-by-agent-id path, and `idx_tasks_session_id` on (session_id) for session-change IPC events. Targets startup reconciliation and live board state lookups under accumulated session history.
 32. **`model_override` and `effort_override` columns on swimlanes and tasks** -- adds per-column model and effort/reasoning level overrides. Both default to NULL (inherit agent default). Read at spawn time by `prepare-spawn.ts` to set `--model` / `--effort` CLI flags. Live-applied to running sessions via adapter-specific slash injection (`getInjectionSequence`) on column transition; falls back to suspend+respawn for adapters without live-swap support. The same migration block also adds `model_override` and `effort_override` columns to the **tasks** table for per-task overrides set via the ContextBar popover. Per-task values take precedence over the swimlane override; NULL falls through to the swimlane and ultimately to the agent default.
+33. **`usage_history` append-only ledger** -- creates the `usage_history` table (in the initial `CREATE TABLE IF NOT EXISTS` block) plus two query indices (`idx_usage_history_session_started_at`, `idx_usage_history_recorded_at`) for StatusBar period bucketing. Adds a one-shot guarded backfill that copies existing `sessions` rows where `total_cost_usd IS NOT NULL` into `usage_history` so installs upgrading to this version retain their lifetime totals. Backfill is wrapped in a single transaction and uses `INSERT OR IGNORE` plus a `COUNT(*) = 0` guard so re-running is safe. Rows in this table have no foreign keys to `tasks` or `sessions`, so totals survive task deletion (the original bug this feature fixes).
 
 ### Key Migrations (Global DB)
 
@@ -479,6 +510,16 @@ Operates on a per-project DB. Manages both database records and files on disk un
 | `deleteByTaskId(backlogTaskId)` | Delete all attachments for a backlog task (files + DB records). Attempts to clean up empty directories. |
 | `getPathsForTask(backlogTaskId)` | Get file paths for all attachments on a backlog task |
 | `getDataUrl(id)` | Read file from disk and return as a `data:` URL with the correct media type |
+
+### UsageHistoryRepository
+
+Operates on a per-project DB. Append-only ledger of finalized session usage. Decoupled from `sessions` and `tasks` so lifetime cost and token totals survive task deletion, bulk-archive, and revert-to-backlog.
+
+| Method | Description |
+|--------|-------------|
+| `recordSessionUsage(input)` | Insert or UPSERT a history row keyed by `session_record_id`. UPSERT updates cost / tokens / duration / tool count / model fields on conflict but intentionally excludes git stat columns from the `DO UPDATE SET` clause (those are owned by `updateGitStats`). Called from `captureSessionMetrics` whenever `usage` is defined - including subscription-user sessions where `cost = 0` with real token counts. |
+| `updateGitStats(sessionRecordId, stats)` | Update `lines_added`, `lines_removed`, `files_changed` for an existing history row. Silent no-op if no row exists for the given `sessionRecordId` (e.g. the session never had usage captured). Called from `captureGitStats` in `src/main/ipc/handlers/git-stats-capture.ts` alongside the matching `SessionRepository.updateGitStats` call. |
+| `getStatsAfter(since)` | Sum `total_cost_usd`, `total_input_tokens`, `total_output_tokens` across all rows where `session_started_at >= since`. Pass `null` for "All Time" (no WHERE clause). Period bucketing uses `session_started_at` (when work happened), not `recorded_at` (when metrics flushed), so Today/Week/Month semantics are preserved across midnight boundaries. Used by the `SESSION_GET_PERIOD_STATS` IPC handler that drives the StatusBar. |
 
 ## Connection Management
 

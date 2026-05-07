@@ -70,6 +70,24 @@ export function runProjectMigrations(db: Database.Database): void {
       suspended_at TEXT,
       exited_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS usage_history (
+      id TEXT PRIMARY KEY,
+      session_record_id TEXT NOT NULL UNIQUE,
+      recorded_at TEXT NOT NULL,
+      session_started_at TEXT NOT NULL,
+      session_type TEXT,
+      total_cost_usd REAL NOT NULL,
+      total_input_tokens INTEGER NOT NULL DEFAULT 0,
+      total_output_tokens INTEGER NOT NULL DEFAULT 0,
+      total_duration_ms INTEGER,
+      tool_call_count INTEGER NOT NULL DEFAULT 0,
+      model_id TEXT,
+      model_display_name TEXT,
+      lines_added INTEGER NOT NULL DEFAULT 0,
+      lines_removed INTEGER NOT NULL DEFAULT 0,
+      files_changed INTEGER NOT NULL DEFAULT 0
+    );
   `);
 
   // Migration: add 'role' column for existing databases
@@ -557,6 +575,73 @@ export function runProjectMigrations(db: Database.Database): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_agent_session_id ON sessions(agent_session_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)');
+
+  // usage_history query indices (StatusBar period bucketing uses session_started_at).
+  db.exec('CREATE INDEX IF NOT EXISTS idx_usage_history_session_started_at ON usage_history(session_started_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_usage_history_recorded_at ON usage_history(recorded_at)');
+
+  // One-shot backfill: populate the history from existing sessions so that
+  // installs upgrading to this version do not see "All Time" reset to zero.
+  // Guarded by row count + INSERT OR IGNORE so re-running is safe.
+  const historyRowCount = (db.prepare('SELECT COUNT(*) AS c FROM usage_history').get() as { c: number }).c;
+  if (historyRowCount === 0) {
+    const sourceRows = db.prepare(`
+      SELECT id, started_at, suspended_at, exited_at, session_type,
+             total_cost_usd, total_input_tokens, total_output_tokens,
+             total_duration_ms, tool_call_count, model_id, model_display_name,
+             lines_added, lines_removed, files_changed
+      FROM sessions
+      WHERE total_cost_usd IS NOT NULL
+    `).all() as Array<{
+      id: string;
+      started_at: string;
+      suspended_at: string | null;
+      exited_at: string | null;
+      session_type: string | null;
+      total_cost_usd: number;
+      total_input_tokens: number | null;
+      total_output_tokens: number | null;
+      total_duration_ms: number | null;
+      tool_call_count: number | null;
+      model_id: string | null;
+      model_display_name: string | null;
+      lines_added: number | null;
+      lines_removed: number | null;
+      files_changed: number | null;
+    }>;
+    if (sourceRows.length > 0) {
+      const insertBackfill = db.prepare(`
+        INSERT OR IGNORE INTO usage_history
+          (id, session_record_id, recorded_at, session_started_at, session_type,
+           total_cost_usd, total_input_tokens, total_output_tokens,
+           total_duration_ms, tool_call_count, model_id, model_display_name,
+           lines_added, lines_removed, files_changed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const transaction = db.transaction(() => {
+        for (const row of sourceRows) {
+          insertBackfill.run(
+            uuidv4(),
+            row.id,
+            row.exited_at ?? row.suspended_at ?? row.started_at,
+            row.started_at,
+            row.session_type,
+            row.total_cost_usd,
+            row.total_input_tokens ?? 0,
+            row.total_output_tokens ?? 0,
+            row.total_duration_ms,
+            row.tool_call_count ?? 0,
+            row.model_id,
+            row.model_display_name,
+            row.lines_added ?? 0,
+            row.lines_removed ?? 0,
+            row.files_changed ?? 0,
+          );
+        }
+      });
+      transaction();
+    }
+  }
 
   // Seed default swimlanes if empty (must run after all ALTER TABLE migrations)
   const laneCount = db.prepare('SELECT COUNT(*) as c FROM swimlanes').get() as { c: number };

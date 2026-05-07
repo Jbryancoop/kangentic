@@ -1,6 +1,7 @@
 import { closeAll, getProjectDb } from './db/database';
 import { SessionRepository } from './db/repositories/session-repository';
 import { TaskRepository } from './db/repositories/task-repository';
+import { UsageHistoryRepository } from './db/repositories/usage-history-repository';
 import { markRecordSuspended, markRecordExited } from './engine/session-lifecycle';
 import { captureSessionMetrics } from './ipc/handlers/session-metrics';
 import type { SessionManager } from './pty/session-manager';
@@ -70,6 +71,7 @@ export function syncShutdownCleanup(dependencies: ShutdownDependencies): void {
       try {
         const db = getProjectDb(projectId);
         const sessionRepo = new SessionRepository(db);
+        const usageHistoryRepo = new UsageHistoryRepository(db);
         const taskRepo = new TaskRepository(db);
         for (const session of sessions) {
           const record = sessionRepo.getLatestForTask(session.taskId);
@@ -79,7 +81,15 @@ export function syncShutdownCleanup(dependencies: ShutdownDependencies): void {
             // (in-memory read + better-sqlite3 UPDATE) so it's safe in this
             // sync-only shutdown path. Without this, every clean app close
             // loses cost/token/duration for any active session.
-            captureSessionMetrics(sessionManager, sessionRepo, session.id, record.id);
+            captureSessionMetrics(
+              sessionManager,
+              sessionRepo,
+              usageHistoryRepo,
+              session.id,
+              record.id,
+              record.started_at,
+              record.session_type,
+            );
             markRecordSuspended(sessionRepo, record.id, 'system');
             taskRepo.update({ id: session.taskId, session_id: null });
           } else if (record && record.status === 'queued') {

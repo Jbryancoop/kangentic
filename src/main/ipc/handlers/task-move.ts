@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ipcMain } from 'electron';
-import { simpleGit } from 'simple-git';
 import { IPC } from '../../../shared/ipc-channels';
 import { SessionRepository } from '../../db/repositories/session-repository';
+import { UsageHistoryRepository } from '../../db/repositories/usage-history-repository';
+import { captureGitStats } from './git-stats-capture';
 import { WorktreeManager } from '../../git/worktree-manager';
 import { slugify } from '../../../shared/slugify';
 import { getProjectDb } from '../../db/database';
@@ -30,36 +31,6 @@ import { resolveTargetAgent } from '../../engine/agent-resolver';
 import { agentRegistry } from '../../agent/agent-registry';
 import { prepareInjectionPlan } from '../../engine/injection-plan';
 import type { Task, Swimlane } from '../../../shared/types';
-
-/**
- * Capture git diff stats (lines added/removed, files changed) by comparing
- * the task's branch against its base branch. Best-effort, never throws.
- */
-async function captureGitStats(
-  task: Task,
-  sessionRepo: SessionRepository,
-  recordId: string,
-  projectPath: string | null | undefined,
-  defaultBaseBranch?: string,
-): Promise<void> {
-  const gitDir = task.worktree_path ?? projectPath;
-  if (!gitDir) return;
-
-  const baseBranch = task.base_branch || defaultBaseBranch || 'main';
-  const git = simpleGit(gitDir);
-
-  // Compare all changes (committed + uncommitted) against the merge-base.
-  // Three-dot syntax `main...` means `git diff $(git merge-base main HEAD)`,
-  // which shows only changes introduced on the task branch, excluding any
-  // new commits on the base branch since the fork point.
-  const diffResult = await git.diffSummary([baseBranch + '...']);
-
-  sessionRepo.updateGitStats(recordId, {
-    linesAdded: diffResult.insertions,
-    linesRemoved: diffResult.deletions,
-    filesChanged: diffResult.changed,
-  });
-}
 
 /**
  * Guard: before checking out a branch in the main repo, verify no other
@@ -179,6 +150,7 @@ export async function handleTaskMove(
 
       const db = getProjectDb(resolvedProjectId);
       const sessionRepo = new SessionRepository(db);
+      const usageHistoryRepo = new UsageHistoryRepository(db);
 
       // Analytics: track critical-path transitions only.
       // Read agent from task.agent (set at spawn) and model from the latest
@@ -234,7 +206,15 @@ export async function handleTaskMove(
           if (record && record.agent_session_id
               && (record.status === 'running' || record.status === 'exited')) {
             // Capture metrics before suspend (caches are still populated)
-            captureSessionMetrics(context.sessionManager, sessionRepo, task.session_id, record.id);
+            captureSessionMetrics(
+              context.sessionManager,
+              sessionRepo,
+              usageHistoryRepo,
+              task.session_id,
+              record.id,
+              record.started_at,
+              record.session_type,
+            );
             markRecordSuspended(sessionRepo, record.id, 'system');
             console.log(`[TASK_MOVE] Suspended session record ${record.id.slice(0, 8)} for task ${task.id.slice(0, 8)}`);
           } else if (record && record.status === 'queued') {
@@ -262,7 +242,7 @@ export async function handleTaskMove(
             const effectiveConfig = context.configManager.getEffectiveConfig(resolvedProjectPath || undefined);
             const boardDefaultBranch = context.boardConfigManager.getDefaultBaseBranch();
             const effectiveDefaultBranch = boardDefaultBranch || effectiveConfig.git.defaultBaseBranch;
-            await captureGitStats(task, sessionRepo, latestRecord.id, resolvedProjectPath, effectiveDefaultBranch);
+            await captureGitStats(task, sessionRepo, usageHistoryRepo, latestRecord.id, resolvedProjectPath, effectiveDefaultBranch);
           } catch {
             // Git stats capture is best-effort
           }
@@ -294,7 +274,15 @@ export async function handleTaskMove(
           const record = sessionRepo.getLatestForTask(task.id);
           if (record && record.agent_session_id
               && (record.status === 'running' || record.status === 'exited')) {
-            captureSessionMetrics(context.sessionManager, sessionRepo, task.session_id, record.id);
+            captureSessionMetrics(
+              context.sessionManager,
+              sessionRepo,
+              usageHistoryRepo,
+              task.session_id,
+              record.id,
+              record.started_at,
+              record.session_type,
+            );
             markRecordSuspended(sessionRepo, record.id, 'system');
           } else if (record && record.status === 'queued') {
             markRecordExited(sessionRepo, record.id);
@@ -331,7 +319,15 @@ export async function handleTaskMove(
           const sessionRecord = sessionRepo.getLatestForTask(task.id);
           if (sessionRecord && sessionRecord.agent_session_id
               && (sessionRecord.status === 'running' || sessionRecord.status === 'exited')) {
-            captureSessionMetrics(context.sessionManager, sessionRepo, task.session_id, sessionRecord.id);
+            captureSessionMetrics(
+              context.sessionManager,
+              sessionRepo,
+              usageHistoryRepo,
+              task.session_id,
+              sessionRecord.id,
+              sessionRecord.started_at,
+              sessionRecord.session_type,
+            );
             markRecordSuspended(sessionRepo, sessionRecord.id, 'system');
           } else if (sessionRecord && sessionRecord.status === 'queued') {
             markRecordExited(sessionRepo, sessionRecord.id);
@@ -393,7 +389,15 @@ export async function handleTaskMove(
             const sessionRecord = sessionRepo.getLatestForTask(task.id);
             if (sessionRecord && sessionRecord.agent_session_id
                 && (sessionRecord.status === 'running' || sessionRecord.status === 'exited')) {
-              captureSessionMetrics(context.sessionManager, sessionRepo, task.session_id, sessionRecord.id);
+              captureSessionMetrics(
+                context.sessionManager,
+                sessionRepo,
+                usageHistoryRepo,
+                task.session_id,
+                sessionRecord.id,
+                sessionRecord.started_at,
+                sessionRecord.session_type,
+              );
               markRecordSuspended(sessionRepo, sessionRecord.id, 'system');
             } else if (sessionRecord && sessionRecord.status === 'queued') {
               markRecordExited(sessionRepo, sessionRecord.id);

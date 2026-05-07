@@ -185,7 +185,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `session:listSummaries` | invoke | Get summaries of multiple sessions |
 | `session:spawnTransient` | invoke | Spawn ephemeral command terminal session (no task, no DB) |
 | `session:killTransient` | invoke | Kill a transient session and clean up session directory |
-| `session:getPeriodStats` | invoke | Fetch aggregated usage stats (tokens, cost) for a given time period |
+| `session:getPeriodStats` | invoke | Fetch aggregated usage stats (tokens, cost) for a given time period. Sources from the append-only `usage_history` table so totals survive task deletion, bulk-archive, and revert-to-backlog. |
 
 ### Config (8 channels)
 | Channel | Pattern | Purpose |
@@ -343,6 +343,7 @@ Created on project open. Stored in the global config directory (not inside the p
 - **backlog_attachments** -- File attachments for backlog tasks, mirroring `task_attachments`. Copied to `task_attachments` on promote.
 - **session_transcripts** -- ANSI-stripped PTY output per session. Written by `TranscriptWriter` with 30s debounced flush. Used for cross-agent handoff context. No FK; cascade via DELETE trigger on sessions.
 - **handoffs** -- Cross-agent handoff records. Tracks from/to agents and sessions, stores serialized `ContextPacket` (transcript excluded). FK on task_id with CASCADE delete.
+- **usage_history** -- Append-only ledger of finalized session usage (cost, tokens, duration, tool count, git stats, model). No FK to `tasks` or `sessions`, so rows survive task deletion, bulk-archive cleanup, and revert-to-backlog. Backs the StatusBar period selector (Live/Today/Week/Month/All Time) via `session:getPeriodStats`. Written by `captureSessionMetrics` (UPSERT on `session_record_id`) and `captureGitStats` (mirror of git-diff stats).
 
 Repositories follow a simple pattern -- one class per table, all queries are synchronous (better-sqlite3). Transactions used for position shifts (task move, swimlane reorder).
 

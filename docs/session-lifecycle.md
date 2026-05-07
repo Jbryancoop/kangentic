@@ -149,7 +149,7 @@ The actual shutdown sequence (`syncShutdownCleanup()` in `src/main/index.ts`):
 
 1. Cancel all pending command injections
 2. List all in-memory sessions with `running` or `queued` status
-3. For each running record, call `captureSessionMetrics()` (synchronous: in-memory cache read + better-sqlite3 UPDATE) so cost / tokens / duration / `tool_breakdown` are flushed to the DB before the PTY is killed. Without this step every clean app close loses in-flight metrics for any session that had not yet checkpointed.
+3. For each running record, call `captureSessionMetrics()` (synchronous: in-memory cache read + better-sqlite3 writes) so cost / tokens / duration / `tool_breakdown` are flushed to the DB before the PTY is killed. The function writes to BOTH the `sessions` row (`SessionRepository.updateMetrics`) and, when `usage` is defined, to a `usage_history` row (`UsageHistoryRepository.recordSessionUsage`) so lifetime period totals survive any subsequent task deletion. Without this step every clean app close loses in-flight metrics for any session that had not yet checkpointed.
 4. Mark each running record `suspended` (with `suspended_at` timestamp and `suspended_by = 'system'`) so sessions can resume on next launch. Queued records are marked `exited` since there is nothing to resume.
 5. Call `SessionManager.killAll()` which force-kills all PTYs immediately (no graceful `/exit`, no waiting)
 6. Clean up session files and clear in-memory session maps

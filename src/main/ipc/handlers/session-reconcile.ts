@@ -1,4 +1,5 @@
 import { SessionRepository } from '../../db/repositories/session-repository';
+import { UsageHistoryRepository } from '../../db/repositories/usage-history-repository';
 import { getProjectDb } from '../../db/database';
 import { getProjectRepos } from '../helpers';
 import { captureSessionMetrics } from './session-metrics';
@@ -30,10 +31,19 @@ export function applySuspendDbWrites(
 
   const db = getProjectDb(projectId);
   const sessionRepo = new SessionRepository(db);
+  const usageHistoryRepo = new UsageHistoryRepository(db);
   const record = sessionRepo.getLatestForTask(taskId);
   const action = decideSuspendDbAction(record);
   if (record && action === 'suspend') {
-    captureSessionMetrics(context.sessionManager, sessionRepo, task.session_id, record.id);
+    captureSessionMetrics(
+      context.sessionManager,
+      sessionRepo,
+      usageHistoryRepo,
+      task.session_id,
+      record.id,
+      record.started_at,
+      record.session_type,
+    );
     markRecordSuspended(sessionRepo, record.id, source);
   } else if (record && action === 'exit-queued') {
     markRecordExited(sessionRepo, record.id);

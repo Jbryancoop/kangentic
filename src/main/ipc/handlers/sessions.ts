@@ -2,6 +2,7 @@ import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/ipc-channels';
 import { withTaskLock } from '../task-lifecycle-lock';
 import { SessionRepository } from '../../db/repositories/session-repository';
+import { UsageHistoryRepository } from '../../db/repositories/usage-history-repository';
 import { TaskRepository } from '../../db/repositories/task-repository';
 import { getProjectDb } from '../../db/database';
 import { getProjectRepos, ensureTaskWorktree, createTransitionEngine, resolveSpawnOverrides } from '../helpers';
@@ -263,9 +264,12 @@ export function registerSessionHandlers(context: IpcContext): void {
   ipcMain.handle(IPC.SESSION_GET_PERIOD_STATS, (_, period: UsageTimePeriod) => {
     if (!context.currentProjectId) return { totalCostUsd: 0, totalInputTokens: 0, totalOutputTokens: 0 };
     const db = getProjectDb(context.currentProjectId);
-    const sessionRepo = new SessionRepository(db);
+    // Reads from the append-only usage_history table so totals survive task
+    // and session deletion. SessionRepository.getStatsAfter still exists but
+    // is no longer the source of truth for the StatusBar.
+    const usageHistoryRepo = new UsageHistoryRepository(db);
     const since = computePeriodCutoff(period);
-    return sessionRepo.getStatsAfter(since);
+    return usageHistoryRepo.getStatsAfter(since);
   });
 
   // Set which sessions are visible in the renderer (terminal panel + command bar overlay).
@@ -484,6 +488,7 @@ export function registerSessionHandlers(context: IpcContext): void {
       try {
         const db = getProjectDb(resolvedProjectId);
         const sessionRepo = new SessionRepository(db);
+        const usageHistoryRepo = new UsageHistoryRepository(db);
         // Atomically mark 'running' or 'queued' records as 'exited'.
         // compareAndUpdateStatus guards against overwriting 'suspended',
         // which is set by TASK_MOVE before the async onExit fires.
@@ -512,15 +517,23 @@ export function registerSessionHandlers(context: IpcContext): void {
         }
 
         // Capture session metrics (usage/event caches are still populated at this point).
-        // Determine the DB record ID from whichever lookup path succeeded above.
-        const metricsRecordId = session
-          ? sessionRepo.getLatestForTask(session.taskId)?.id
-          : (updated ? undefined : (db.prepare(
-              `SELECT id FROM sessions WHERE agent_session_id = ? ORDER BY started_at DESC LIMIT 1`
-            ).get(sessionId) as { id: string } | undefined)?.id);
+        // Determine the DB record from whichever lookup path succeeded above.
+        const metricsRecord = session
+          ? sessionRepo.getLatestForTask(session.taskId)
+          : (updated ? null : (db.prepare(
+              `SELECT id, started_at, session_type FROM sessions WHERE agent_session_id = ? ORDER BY started_at DESC LIMIT 1`
+            ).get(sessionId) as { id: string; started_at: string; session_type: string } | undefined) ?? null);
 
-        if (metricsRecordId) {
-          captureSessionMetrics(context.sessionManager, sessionRepo, sessionId, metricsRecordId);
+        if (metricsRecord) {
+          captureSessionMetrics(
+            context.sessionManager,
+            sessionRepo,
+            usageHistoryRepo,
+            sessionId,
+            metricsRecord.id,
+            metricsRecord.started_at,
+            metricsRecord.session_type,
+          );
         }
       } catch {
         // DB may be closed during shutdown
