@@ -105,26 +105,29 @@ List tasks, optionally filtered by column.
 
 ### kangentic_search_tasks
 
-Search tasks by keyword across titles and descriptions. Includes both active and archived tasks.
+Search by keyword across both the board (active + archived tasks) and the backlog. This is the default tool for finding a task by title, description, or backlog label - it covers items whether or not they have been promoted from backlog to board. Use `scope` to narrow to a single surface.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `query` | string | Yes | Search keyword (case-insensitive) |
-| `status` | string | No | Filter: "active", "completed", or "all" (default) |
+| `query` | string | Yes | Search keyword (case-insensitive). Backlog hits also match on labels. |
+| `scope` | `'board' \| 'backlog' \| 'both'` | No | Which surface to search. Defaults to `"both"`. |
+| `status` | string | No | Filter board hits: `"active"`, `"completed"`, or `"all"` (default). Ignored for backlog hits. |
+
+Results are grouped under `Board (N):` and `Backlog (N):` sections so the agent can see at a glance which surface each hit came from.
 
 ### kangentic_find_task
 
-Find a task by display ID, UUID, branch name, title keyword, or PR number.
+Find a task or backlog item by display ID, UUID, branch name, title keyword, or PR number. Returns matching board tasks (with full `branch_name`, `worktree_path`, PR info) and any matching backlog items.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `displayId` | number | No | Numeric task display ID shown in UI (e.g. `24` for "#24"). Exact match. |
-| `id` | string | No | Full task UUID. Exact match. |
-| `branch` | string | No | Git branch name (matches the `tasks.branch_name` column, partial) |
-| `title` | string | No | Title keyword (case-insensitive) |
-| `prNumber` | number | No | Pull request number |
+| `displayId` | number | No | Numeric task display ID shown in UI (e.g. `24` for "#24"). Board-only, exact match. |
+| `id` | string | No | Full UUID. Matches both board task UUIDs and backlog item UUIDs. |
+| `branch` | string | No | Git branch name (matches the `tasks.branch_name` column, partial). Board-only. |
+| `title` | string | No | Title keyword (case-insensitive). Matches board tasks and backlog items. |
+| `prNumber` | number | No | Pull request number. Board-only. |
 
-At least one parameter is required.
+`displayId`, `branch`, and `prNumber` are skipped against the backlog because backlog items don't carry those fields. At least one parameter is required.
 
 ### kangentic_get_current_task
 
@@ -233,17 +236,9 @@ List items in the backlog staging area. Items have priority levels and labels fo
 | `priority` | number | No | Filter by priority: 0=none, 1=low, 2=medium, 3=high, 4=urgent |
 | `query` | string | No | Search keyword to filter by title, description, or labels |
 
-### kangentic_search_backlog
-
-Search backlog tasks by keyword across titles, descriptions, and labels.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `query` | string | Yes | Search keyword (case-insensitive) |
-
 ### kangentic_search_everything
 
-Unified keyword search across the active project (or all registered projects) covering: board tasks (active + archived, title and description), backlog items (title and description), session events (the structured tool_start/tool_end/idle stream from agent runs), and project names/paths. Returns a per-kind grouped result with snippets so an agent can pinpoint the matching task, backlog item, session event, or project in one call instead of issuing `kangentic_search_tasks` + `kangentic_search_backlog` + `kangentic_get_session_events` separately.
+Unified keyword search across the active project (or all registered projects) covering: board tasks (active + archived, title and description), backlog items (title and description), session events (the structured tool_start/tool_end/idle stream from agent runs), and project names/paths. Returns a per-kind grouped result with snippets so an agent can pinpoint the matching task, backlog item, session event, or project in one call instead of issuing `kangentic_search_tasks` + `kangentic_get_session_events` separately. (`kangentic_search_tasks` already spans board + backlog within a single project; reach for `kangentic_search_everything` when you also need session events or cross-project scope.)
 
 Defaults to scoping the search to the active project. Pass `scope: "all"` to widen across every registered project (which also surfaces project-name hits so the agent can discover routing targets). Passing `project` forces `scope: "current"` since explicit project routing already specifies the target.
 
@@ -263,7 +258,31 @@ Move backlog tasks to the board, creating tasks in the specified column.
 | `itemIds` | array | Yes | Backlog task IDs to move |
 | `column` | string | No | Target column name. Defaults to To Do. |
 
-Attachments on promoted backlog tasks are automatically copied to the new task.
+Attachments on promoted backlog tasks are automatically copied to the new task. Find item IDs with `kangentic_list_backlog` or `kangentic_search_tasks` (with `scope: "backlog"`).
+
+### kangentic_update_backlog_item
+
+Update a backlog item's title, description, priority, or labels. Only the fields you provide are changed; omitted fields are left as-is. The `labels` parameter is a full replacement (not additive) - pass the complete new label set.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `itemId` | string | Yes | Backlog item UUID |
+| `title` | string | No | New title (max 200 characters) |
+| `description` | string | No | New description (max 10,000 characters) |
+| `priority` | number | No | New priority: 0=none, 1=low, 2=medium, 3=high, 4=urgent |
+| `labels` | array | No | Full replacement label set. Strings, or `{name, color}` objects to also set the label color. |
+
+Find item IDs with `kangentic_list_backlog` or `kangentic_search_tasks` (with `scope: "backlog"`).
+
+### kangentic_delete_backlog_item
+
+Permanently delete a backlog item and all of its attachments. This cannot be undone.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `itemId` | string | Yes | Backlog item UUID to delete |
+
+Find item IDs with `kangentic_list_backlog` or `kangentic_search_tasks` (with `scope: "backlog"`).
 
 ### kangentic_get_handoff_context
 

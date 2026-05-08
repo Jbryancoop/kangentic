@@ -66,9 +66,15 @@ vi.mock('../../src/main/db/repositories/task-repository', () => ({
   TaskRepository: class {},
 }));
 
+// Silence the attachment-repository import (used by handlePromoteBacklog attachment copy path)
+vi.mock('../../src/main/db/repositories/attachment-repository', () => ({
+  AttachmentRepository: class {},
+}));
+
 // Silence column-resolver (used by handlePromoteBacklog, not our handlers)
+const mockResolveColumn = vi.fn();
 vi.mock('../../src/main/agent/commands/column-resolver', () => ({
-  resolveColumn: vi.fn(),
+  resolveColumn: (...args: unknown[]) => mockResolveColumn(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -78,6 +84,7 @@ vi.mock('../../src/main/agent/commands/column-resolver', () => ({
 import {
   handleUpdateBacklogItem,
   handleDeleteBacklogItem,
+  handlePromoteBacklog,
 } from '../../src/main/agent/commands/backlog-commands';
 import type { CommandContext } from '../../src/main/agent/commands/types';
 
@@ -181,7 +188,9 @@ describe('handleUpdateBacklogItem', () => {
       context,
     );
 
-    expect(result).toEqual({ success: false, error: 'Backlog item "missing-id" not found' });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/^Backlog item "missing-id" not found\./);
+    expect(result.error).toContain('kangentic_search_tasks');
     expect(mockBacklogRepoUpdate).not.toHaveBeenCalled();
     expect(context.onBacklogChanged).not.toHaveBeenCalled();
   });
@@ -318,7 +327,9 @@ describe('handleDeleteBacklogItem', () => {
 
     const result = handleDeleteBacklogItem({ itemId: 'no-such-id' }, context);
 
-    expect(result).toEqual({ success: false, error: 'Backlog item "no-such-id" not found' });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/^Backlog item "no-such-id" not found\./);
+    expect(result.error).toContain('kangentic_search_tasks');
     // The handler must return early without touching the attachment repo
     expect(mockBacklogAttachmentRepoDeleteByTaskId).not.toHaveBeenCalled();
     expect(mockBacklogRepoDelete).not.toHaveBeenCalled();
@@ -345,5 +356,55 @@ describe('handleDeleteBacklogItem', () => {
       message: 'Deleted backlog item "Delete me".',
       data: { id: 'item-to-delete', title: 'Delete me' },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handlePromoteBacklog
+// ---------------------------------------------------------------------------
+
+describe('handlePromoteBacklog', () => {
+  let context: CommandContext;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    context = makeContext();
+    // Configure resolveColumn to succeed with a stub "To Do" swimlane so the
+    // item-lookup loop always runs. Tests that want a column-resolution failure
+    // can override this mock.
+    mockResolveColumn.mockReturnValue({
+      swimlane: { id: 'lane-todo', name: 'To Do', role: 'todo', is_archived: 0, display_order: 0 },
+      allSwimlanes: [],
+    });
+    // By default, no backlog items are found
+    mockBacklogRepoGetById.mockReturnValue(undefined);
+  });
+
+  it('returns structured error with kangentic_search_tasks hint when all IDs are not found', () => {
+    // This exercises the promoted.length === 0 branch (backlog-commands.ts ~line 320).
+    // The new error message added in this branch points the agent at kangentic_search_tasks
+    // to look up stale IDs that were valid before a prior promotion.
+    const result = handlePromoteBacklog(
+      { itemIds: ['ghost-id-1', 'ghost-id-2'] },
+      context,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/^No backlog tasks found for the provided IDs\./);
+    expect(result.error).toContain('kangentic_search_tasks');
+    // onBacklogChanged is called even in the all-not-found path because the loop
+    // ran (and potentially processed partial results). This is the existing behavior.
+    expect(context.onBacklogChanged).toHaveBeenCalledOnce();
+  });
+
+  it('returns structured error with kangentic_search_tasks hint when the single ID is not found', () => {
+    const result = handlePromoteBacklog(
+      { itemIds: ['stale-id'] },
+      context,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/^No backlog tasks found for the provided IDs\./);
+    expect(result.error).toContain('kangentic_search_tasks');
   });
 });

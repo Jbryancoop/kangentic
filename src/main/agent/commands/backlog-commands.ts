@@ -153,7 +153,10 @@ export const handleUpdateBacklogItem: CommandHandler = (
 
   const existing = backlogRepo.getById(itemId);
   if (!existing) {
-    return { success: false, error: `Backlog item "${itemId}" not found` };
+    return {
+      success: false,
+      error: `Backlog item "${itemId}" not found. If you remember this ID from before a backlog -> board promotion, the new task has a different UUID - search for it by title with kangentic_search_tasks or kangentic_find_task.`,
+    };
   }
 
   const updates: Record<string, unknown> = { id: existing.id };
@@ -230,7 +233,10 @@ export const handleDeleteBacklogItem: CommandHandler = (
   const backlogRepo = new BacklogRepository(db);
   const item = backlogRepo.getById(itemId);
   if (!item) {
-    return { success: false, error: `Backlog item "${itemId}" not found` };
+    return {
+      success: false,
+      error: `Backlog item "${itemId}" not found. If you remember this ID from before a backlog -> board promotion, the new task has a different UUID - search for it by title with kangentic_search_tasks or kangentic_find_task.`,
+    };
   }
 
   const backlogAttachmentRepo = new BacklogAttachmentRepository(db);
@@ -243,54 +249,6 @@ export const handleDeleteBacklogItem: CommandHandler = (
     success: true,
     message: `Deleted backlog item "${item.title}".`,
     data: { id: item.id, title: item.title },
-  };
-};
-
-export const handleSearchBacklog: CommandHandler = (
-  params: Record<string, unknown>,
-  context: CommandContext,
-): CommandResponse => {
-  const query = String(params.query ?? '').toLowerCase();
-
-  if (!query.trim()) {
-    return { success: false, error: 'Search query is required' };
-  }
-
-  const db = context.getProjectDb();
-  const backlogRepo = new BacklogRepository(db);
-  const allItems = backlogRepo.list();
-
-  const matches = allItems.filter(
-    (item) =>
-      item.title.toLowerCase().includes(query) ||
-      item.description.toLowerCase().includes(query) ||
-      item.labels.some((label) => label.toLowerCase().includes(query)),
-  );
-
-  if (matches.length === 0) {
-    return { success: true, message: `No backlog tasks matching "${query}" found.`, data: [] };
-  }
-
-  const lines = matches.map((item) => {
-    const priorityLabel = BACKLOG_PRIORITY_LABELS[item.priority] ?? 'None';
-    const labelString = item.labels.length > 0 ? ` [${item.labels.join(', ')}]` : '';
-    const descriptionPreview = item.description
-      ? ` - ${item.description.slice(0, 100)}${item.description.length > 100 ? '...' : ''}`
-      : '';
-    return `- ${item.title} (${priorityLabel})${labelString}${descriptionPreview} (id: ${item.id})`;
-  });
-
-  return {
-    success: true,
-    message: `Found ${matches.length} backlog task(s) matching "${query}":\n${lines.join('\n')}`,
-    data: matches.map((item) => ({
-      id: item.id,
-      title: item.title,
-      description: item.description,
-      priority: item.priority,
-      priorityLabel: BACKLOG_PRIORITY_LABELS[item.priority] ?? 'None',
-      labels: item.labels,
-    })),
   };
 };
 
@@ -360,7 +318,10 @@ export const handlePromoteBacklog: CommandHandler = (
   context.onBacklogChanged();
 
   if (promoted.length === 0) {
-    return { success: false, error: `No backlog tasks found for the provided IDs` };
+    return {
+      success: false,
+      error: `No backlog tasks found for the provided IDs. If you remember an ID from before a previous promotion, the new task has a different UUID - search for the current ID with kangentic_search_tasks.`,
+    };
   }
 
   const lines = promoted.map((item) => `- "${item.title}" (task id: ${item.taskId})`);

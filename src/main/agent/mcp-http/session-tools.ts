@@ -70,24 +70,11 @@ export function registerSessionTools(server: McpServer, resolver: RequestResolve
     }, ctx, 'Failed to list backlog')),
   );
 
-  // --- kangentic_search_backlog ---
-  server.registerTool(
-    'kangentic_search_backlog',
-    {
-      description: 'Search backlog tasks by keyword across titles, descriptions, and labels. Pass `project` to search a different project\'s backlog.',
-      inputSchema: z.object({
-        query: z.string().describe('Search keyword or phrase (case-insensitive).'),
-        project: z.string().optional().describe(PROJECT_SELECTOR_DESCRIPTION),
-      }),
-    },
-    async ({ query, project }) => withProject(resolver, project, (ctx) => callHandler('search_backlog', { query }, ctx, 'Failed to search backlog')),
-  );
-
   // --- kangentic_promote_backlog ---
   server.registerTool(
     'kangentic_promote_backlog',
     {
-      description: 'Move one or more backlog tasks to the board, creating tasks in the specified column. Moved items are removed from the backlog. Find item IDs with kangentic_list_backlog or kangentic_search_backlog. Pass `project` to promote items in a different project.',
+      description: 'Move one or more backlog tasks to the board, creating tasks in the specified column. Moved items are removed from the backlog. Find item IDs with kangentic_list_backlog or kangentic_search_tasks (with `scope: "backlog"`). Pass `project` to promote items in a different project.',
       inputSchema: z.object({
         itemIds: z.array(z.string()).describe('Backlog task IDs to move to the board.'),
         column: z.string().optional().describe('Target column name. Defaults to the To Do column.'),
@@ -104,9 +91,9 @@ export function registerSessionTools(server: McpServer, resolver: RequestResolve
   server.registerTool(
     'kangentic_update_backlog_item',
     {
-      description: 'Update a backlog item\'s title, description, priority, or labels. Only the fields you provide are changed; omitted fields are left as-is. Note that `labels` is a full replacement (not additive) - pass the complete new label set. Find item IDs with kangentic_list_backlog or kangentic_search_backlog. Pass `project` to update a backlog item in a different project.',
+      description: 'Update a backlog item\'s title, description, priority, or labels. Only the fields you provide are changed; omitted fields are left as-is. Note that `labels` is a full replacement (not additive) - pass the complete new label set. Find item IDs with kangentic_list_backlog or kangentic_search_tasks (with `scope: "backlog"`). Pass `project` to update a backlog item in a different project.',
       inputSchema: z.object({
-        itemId: z.string().describe('Backlog item UUID (from kangentic_list_backlog or kangentic_search_backlog).'),
+        itemId: z.string().describe('Backlog item UUID (from kangentic_list_backlog or kangentic_search_tasks).'),
         title: z.string().max(200).optional().describe('New title (max 200 characters).'),
         description: z.string().max(10_000).optional().describe('New description (max 10,000 characters).'),
         priority: z.number().int().min(0).max(4).optional().describe('New priority level: 0=none, 1=low, 2=medium, 3=high, 4=urgent.'),
@@ -130,7 +117,7 @@ export function registerSessionTools(server: McpServer, resolver: RequestResolve
   server.registerTool(
     'kangentic_delete_backlog_item',
     {
-      description: 'Permanently delete a backlog item and all of its attachments. This cannot be undone. Find item IDs with kangentic_list_backlog or kangentic_search_backlog. Pass `project` to delete a backlog item in a different project.',
+      description: 'Permanently delete a backlog item and all of its attachments. This cannot be undone. Find item IDs with kangentic_list_backlog or kangentic_search_tasks (with `scope: "backlog"`). Pass `project` to delete a backlog item in a different project.',
       inputSchema: z.object({
         itemId: z.string().describe('Backlog item UUID to delete.'),
         project: z.string().optional().describe(PROJECT_SELECTOR_DESCRIPTION),

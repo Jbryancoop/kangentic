@@ -10,7 +10,9 @@ import type { SearchHit, Project } from '../../../shared/types';
  * palette so external agents can issue one query and get back hits
  * across tasks, backlog, session events, and (when scope='all') projects
  * instead of stitching together kangentic_search_tasks +
- * kangentic_search_backlog + kangentic_get_session_events.
+ * kangentic_get_session_events. (kangentic_search_tasks itself already
+ * spans board + backlog within a single project; this tool additionally
+ * covers session events and cross-project search.)
  *
  * Defaults to `scope: 'current'` because cross-project scope opens every
  * registered project's DB and streams every session's events.jsonl - much
@@ -29,7 +31,7 @@ export function registerSearchTools(
   server.registerTool(
     'kangentic_search_everything',
     {
-      description: 'Unified keyword search across the active project (or all registered projects) covering: board tasks (active + archived, title and description), backlog items (title and description), session events (the structured tool_start/tool_end/idle stream from agent runs), and project names/paths. Returns a per-kind grouped result with snippets so an agent can pinpoint the matching task, backlog item, session event, or project in one call instead of issuing kangentic_search_tasks + kangentic_search_backlog + kangentic_get_session_events separately. Per-kind hit caps prevent runaway results: 30 tasks, 20 backlog, 50 session events, 10 projects. Defaults to scoping the search to the active project; pass `scope: "all"` to widen across every registered project. Passing `project` forces scope to "current" since explicit project routing already specifies the target.',
+      description: 'Unified keyword search across the active project (or all registered projects) covering: board tasks (active + archived, title and description), backlog items (title and description), session events (the structured tool_start/tool_end/idle stream from agent runs), and project names/paths. Returns a per-kind grouped result with snippets so an agent can pinpoint the matching task, backlog item, session event, or project in one call instead of issuing kangentic_search_tasks + kangentic_get_session_events separately. (kangentic_search_tasks already spans board + backlog within a single project; reach for this tool when you also need session events or cross-project scope.) Per-kind hit caps prevent runaway results: 30 tasks, 20 backlog, 50 session events, 10 projects. Defaults to scoping the search to the active project; pass `scope: "all"` to widen across every registered project. Passing `project` forces scope to "current" since explicit project routing already specifies the target.',
       inputSchema: z.object({
         query: z.string().min(1).describe('Search keyword or phrase (case-insensitive). Empty queries return no results.'),
         scope: z.enum(['current', 'all']).optional().describe('"current" (default) searches only the active or `project`-routed project. "all" widens to every registered project on this machine and additionally surfaces project-name hits so an agent can discover routing targets. Ignored (forced to "current") when `project` is set.'),

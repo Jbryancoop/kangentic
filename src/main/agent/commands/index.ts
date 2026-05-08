@@ -6,7 +6,7 @@ import { handleUpdateColumn } from './column-commands';
 import { handleListColumns, handleListTasks } from './inventory-commands';
 import { handleSearchTasks, handleFindTask, handleGetCurrentTask } from './search-commands';
 import { handleGetTaskStats, handleBoardSummary, handleListSessions, handleGetSessionHistory, handleGetColumnDetail } from './analytics-commands';
-import { handleListBacklog, handleCreateBacklogTask, handleSearchBacklog, handlePromoteBacklog, handleUpdateBacklogItem, handleDeleteBacklogItem } from './backlog-commands';
+import { handleListBacklog, handleCreateBacklogTask, handlePromoteBacklog, handleUpdateBacklogItem, handleDeleteBacklogItem } from './backlog-commands';
 import { handleGetHandoffContext } from './handoff-commands';
 import { handleGetTranscript, handleQueryDb } from './inspect-commands';
 import { handleGetSessionFiles, handleGetSessionEvents } from './session-files-commands';
@@ -35,7 +35,6 @@ export const commandHandlers: Record<string, CommandHandler> = {
   get_column_detail: handleGetColumnDetail,
   list_backlog: handleListBacklog,
   create_backlog_task: handleCreateBacklogTask,
-  search_backlog: handleSearchBacklog,
   promote_backlog: handlePromoteBacklog,
   update_backlog_item: handleUpdateBacklogItem,
   delete_backlog_item: handleDeleteBacklogItem,

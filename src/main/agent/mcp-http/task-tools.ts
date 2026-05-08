@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod/v4';
 import { callHandler, runHandler, withProject, PROJECT_SELECTOR_DESCRIPTION, type TaskCounter } from './handler-helpers';
 import type { RequestResolver } from './project-resolver';
+import type { BoardHit, BacklogHit, SearchScope } from '../commands/search-commands';
 
 /**
  * Register the board/task/column management tools on an McpServer.
@@ -133,35 +134,73 @@ export function registerTaskTools(
   server.registerTool(
     'kangentic_search_tasks',
     {
-      description: 'Search board tasks by keyword across titles and descriptions. Searches both active and completed (archived) tasks. Does not search backlog tasks - use kangentic_search_backlog for that. Pass `project` to search a different project.',
+      description: 'Search by keyword across BOTH the board (active + completed/archived tasks) AND the backlog. This is the default tool to reach for when you want to find a task by title, description, or backlog label - it covers items regardless of whether they have been promoted from backlog to board. Use `scope` to narrow to one surface, and `status` to narrow board hits to active or completed. Pass `project` to search a different project.',
       inputSchema: z.object({
-        query: z.string().describe('Search keyword or phrase to match against task titles and descriptions (case-insensitive).'),
-        status: z.enum(['active', 'completed', 'all']).optional().describe('Filter by task status. "active" = on the board, "completed" = in Done/archived. Defaults to "all".'),
+        query: z.string().describe('Search keyword or phrase to match against task titles and descriptions (case-insensitive). Backlog hits also match on labels.'),
+        scope: z.enum(['board', 'backlog', 'both']).optional().describe('Which surface to search. "both" (default) covers board tasks and backlog items in one call. "board" restricts to the kanban board. "backlog" restricts to backlog items.'),
+        status: z.enum(['active', 'completed', 'all']).optional().describe('Filter board hits by status. "active" = on the board, "completed" = in Done/archived. Ignored for backlog hits. Defaults to "all".'),
         project: z.string().optional().describe(PROJECT_SELECTOR_DESCRIPTION),
       }),
     },
-    async ({ query, status, project }) => withProject(resolver, project, async (ctx) => {
-      const response = await runHandler('search_tasks', { query, status: status ?? 'all' }, ctx);
+    async ({ query, scope, status, project }) => withProject(resolver, project, async (ctx) => {
+      const effectiveScope: SearchScope = scope ?? 'both';
+      const response = await runHandler('search_tasks', {
+        query,
+        status: status ?? 'all',
+        scope: effectiveScope,
+      }, ctx);
       if (!response.success) {
         return { content: [{ type: 'text' as const, text: `Failed to search tasks: ${response.error}` }], isError: true };
       }
       const results = response.data as {
-        tasks: Array<{ id: string; displayId: number; title: string; description: string; column: string; status: string }>;
+        tasks: BoardHit[];
+        backlog: BacklogHit[];
         totalActive: number;
         totalCompleted: number;
+        totalBacklog: number;
+        scope: SearchScope;
       };
-      if (results.tasks.length === 0) {
-        return { content: [{ type: 'text' as const, text: `No tasks matching "${query}" found.` }] };
+
+      const totalHits = results.tasks.length + results.backlog.length;
+      if (totalHits === 0) {
+        return { content: [{ type: 'text' as const, text: `No tasks matching "${query}" found (scope: ${results.scope}).` }] };
       }
-      const summary = `Found ${results.tasks.length} task(s) matching "${query}" (${results.totalActive} active, ${results.totalCompleted} completed):`;
-      const lines = results.tasks.map((task) => {
-        const descriptionPreview = task.description
-          ? ` - ${task.description.slice(0, 100)}${task.description.length > 100 ? '...' : ''}`
-          : '';
-        const statusTag = task.status === 'completed' ? ' [completed]' : ` [${task.column}]`;
-        return `- ${task.title}${statusTag}${descriptionPreview} (#${task.displayId}, id: ${task.id})`;
-      });
-      return { content: [{ type: 'text' as const, text: `${summary}\n${lines.join('\n')}` }] };
+
+      const sections: string[] = [];
+
+      if (effectiveScope === 'both') {
+        sections.push(`Found ${totalHits} item(s) matching "${query}" (${results.totalActive} active, ${results.totalCompleted} completed, ${results.totalBacklog} backlog):`);
+      } else if (effectiveScope === 'board') {
+        sections.push(`Found ${results.tasks.length} board task(s) matching "${query}" (${results.totalActive} active, ${results.totalCompleted} completed):`);
+      } else {
+        sections.push(`Found ${results.totalBacklog} backlog item(s) matching "${query}":`);
+      }
+
+      if (results.tasks.length > 0) {
+        if (effectiveScope === 'both') sections.push(`\nBoard (${results.tasks.length}):`);
+        const taskLines = results.tasks.map((task) => {
+          const descriptionPreview = task.description
+            ? ` - ${task.description.slice(0, 100)}${task.description.length > 100 ? '...' : ''}`
+            : '';
+          const statusTag = task.status === 'completed' ? ' [completed]' : ` [${task.column}]`;
+          return `- ${task.title}${statusTag}${descriptionPreview} (#${task.displayId}, id: ${task.id})`;
+        });
+        sections.push(taskLines.join('\n'));
+      }
+
+      if (results.backlog.length > 0) {
+        if (effectiveScope === 'both') sections.push(`\nBacklog (${results.backlog.length}):`);
+        const backlogLines = results.backlog.map((item) => {
+          const labelString = item.labels.length > 0 ? ` [${item.labels.join(', ')}]` : '';
+          const descriptionPreview = item.description
+            ? ` - ${item.description.slice(0, 100)}${item.description.length > 100 ? '...' : ''}`
+            : '';
+          return `- ${item.title} (${item.priorityLabel})${labelString}${descriptionPreview} (id: ${item.id})`;
+        });
+        sections.push(backlogLines.join('\n'));
+      }
+
+      return { content: [{ type: 'text' as const, text: sections.join('\n') }] };
     }),
   );
 
@@ -188,13 +227,13 @@ export function registerTaskTools(
   server.registerTool(
     'kangentic_find_task',
     {
-      description: 'Find a task by display ID (e.g. 24, the "#24" shown in the UI), task UUID, branch name, title keyword, or PR number. Returns full task details including branch_name, worktree, PR info, and current column. Use displayId for the fastest exact lookup when the user references a task by its "#N" identifier. Pass `project` to look up a task in a different project.',
+      description: 'Find a task or backlog item by display ID (e.g. 24, the "#24" shown in the UI), UUID, branch name, title keyword, or PR number. Returns full board-task details (branch_name, worktree, PR info, column) and/or matching backlog items. The `id` (UUID) and `title` filters span both board and backlog; `displayId`, `branch`, and `prNumber` are board-only since backlog items don\'t carry those fields. Use displayId for the fastest exact lookup when the user references a task by its "#N" identifier. Pass `project` to look up a task in a different project.',
       inputSchema: z.object({
-        displayId: z.number().int().positive().optional().describe('Numeric task display ID shown in the UI (e.g. 24 for "#24"). Exact match.'),
-        id: z.string().optional().describe('Full task UUID. Exact match.'),
-        branch: z.string().optional().describe('Git branch name to search for (matches the tasks.branch_name column, exact or partial, e.g. "feature/92294").'),
-        title: z.string().optional().describe('Keyword to search in task titles (case-insensitive).'),
-        prNumber: z.number().optional().describe('Pull request number to search for.'),
+        displayId: z.number().int().positive().optional().describe('Numeric task display ID shown in the UI (e.g. 24 for "#24"). Board-only, exact match.'),
+        id: z.string().optional().describe('Full UUID. Matches against board-task UUIDs and backlog-item UUIDs.'),
+        branch: z.string().optional().describe('Git branch name to search for (matches the tasks.branch_name column, exact or partial, e.g. "feature/92294"). Board-only.'),
+        title: z.string().optional().describe('Keyword to search in titles (case-insensitive). Matches board tasks and backlog items.'),
+        prNumber: z.number().optional().describe('Pull request number to search for. Board-only.'),
         project: z.string().optional().describe(PROJECT_SELECTOR_DESCRIPTION),
       }),
     },
