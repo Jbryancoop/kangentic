@@ -4,6 +4,7 @@ import { writeLockfile, removeLockfile } from './main/lockfile';
 import { startInspectionServer, stopInspectionServer } from './main/inspection-server';
 import { attachDebugger, detachDebugger } from './main/cdp';
 import type { SessionManager } from '../main/pty/session-manager';
+import type { IpcContext } from '../main/ipc/ipc-context';
 
 /**
  * Single entry point for the dev-only inspection bridge subsystem.
@@ -40,6 +41,8 @@ export interface DevtoolsContext {
   getWorktreePath: () => string | null;
   /** Live SessionManager handle, used by /engine-state and /pty-input. */
   getSessionManager: () => SessionManager | null;
+  /** Live IpcContext, used by the /command proxy to run product MCP handlers. */
+  getIpcContext: () => IpcContext | null;
   /** Returns `developer.previewInspectionServer`. Live read on each lookup. */
   getInspectionServerEnabled: () => boolean;
   /** Returns `developer.previewEvalEnabled`. Live read on each lookup. */
@@ -103,6 +106,8 @@ async function startBridge(context: DevtoolsContext): Promise<void> {
       getEvalEnabled: context.getEvalEnabled,
       getSessionManager: context.getSessionManager,
       getProjectRoot: context.getProjectRoot,
+      getIpcContext: context.getIpcContext,
+      getProjectId: context.getProjectId,
     });
     if (port === null) return;
 

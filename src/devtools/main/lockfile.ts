@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { app } from 'electron';
+import { resetShotsDir } from './screenshot';
 import type { PreviewLockfile } from '../shared/types';
 
 /**
@@ -37,6 +38,11 @@ export function writeLockfile(options: WriteLockfileOptions): void {
   } catch {
     return;
   }
+  // Wipe any leftover devtools-shots from a previous run before this one
+  // starts producing fresh ones. Keeps the directory bounded across
+  // restarts even if the previous shutdown didn't fire (force-kill,
+  // crash, etc.).
+  resetShotsDir(options.projectRoot);
   const record: PreviewLockfile = {
     pid: process.pid,
     port: options.port,
@@ -64,6 +70,10 @@ export function removeLockfile(projectRoot: string): void {
   } catch {
     // Best-effort.
   }
+  // Also drop any devtools-shots produced during this run. The path is
+  // already gitignored, but leaving stale binary blobs around looks
+  // confusing in `ls .kangentic/`.
+  resetShotsDir(projectRoot);
 }
 
 /** Read + validate. Returns null when the file is missing or malformed. */

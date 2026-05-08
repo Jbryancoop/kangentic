@@ -39,14 +39,31 @@ interface CallBridgeOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Per-call timing breakdown attached to every callBridge response. Helps
+ * pinpoint where MCP latency is going without per-tool instrumentation:
+ *   - resolveMs:       lockfile read + alive-pid check + responding-instance probe (only when instanceId omitted)
+ *   - bridgeRoundTripMs: time-on-the-wire from request-end to response-end (HTTP + server-side handler)
+ *   - parseMs:         JSON.parse on the response body
+ *   - totalMs:         resolveMs + bridgeRoundTripMs + parseMs (wall clock observed by the MCP layer)
+ */
+interface CallTiming {
+  resolveMs: number;
+  bridgeRoundTripMs: number;
+  parseMs: number;
+  totalMs: number;
+}
+
 interface BridgeSuccess {
   ok: true;
   data: unknown;
+  _timing?: CallTiming;
 }
 
 interface BridgeFailure {
   ok: false;
   error: { kind: string; detail: string };
+  _timing?: CallTiming;
 }
 
 type BridgeResult = BridgeSuccess | BridgeFailure;
@@ -108,8 +125,20 @@ async function resolveInstance(
 }
 
 async function callBridge(options: CallBridgeOptions): Promise<BridgeResult> {
+  const callStart = performance.now();
   const resolved = await resolveInstance(options.instanceId);
-  if ('ok' in resolved && resolved.ok === false) return resolved;
+  const resolveMs = performance.now() - callStart;
+  if ('ok' in resolved && resolved.ok === false) {
+    return {
+      ...resolved,
+      _timing: {
+        resolveMs,
+        bridgeRoundTripMs: 0,
+        parseMs: 0,
+        totalMs: resolveMs,
+      },
+    };
+  }
   const port = (resolved as { port: number }).port;
   const queryString = options.query
     ? '?' +
@@ -123,8 +152,22 @@ async function callBridge(options: CallBridgeOptions): Promise<BridgeResult> {
     : '';
   const body = options.body !== undefined ? JSON.stringify(options.body) : undefined;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const httpStart = performance.now();
 
   return new Promise((resolve) => {
+    const finalize = (result: BridgeResult, parseMs: number): void => {
+      const bridgeRoundTripMs = performance.now() - httpStart - parseMs;
+      const totalMs = performance.now() - callStart;
+      resolve({
+        ...result,
+        _timing: {
+          resolveMs,
+          bridgeRoundTripMs,
+          parseMs,
+          totalMs,
+        },
+      });
+    };
     const request = http.request(
       {
         host: '127.0.0.1',
@@ -141,70 +184,170 @@ async function callBridge(options: CallBridgeOptions): Promise<BridgeResult> {
         response.on('data', (chunk: Buffer) => chunks.push(chunk));
         response.on('end', () => {
           const raw = Buffer.concat(chunks).toString('utf-8');
+          const parseStart = performance.now();
           let parsed: unknown;
           try {
             parsed = raw.trim() ? JSON.parse(raw) : null;
           } catch {
             parsed = raw;
           }
+          const parseMs = performance.now() - parseStart;
           if (response.statusCode && response.statusCode >= 400) {
             const detail =
               parsed && typeof parsed === 'object' && parsed !== null && 'error' in parsed
                 ? String((parsed as { error: { detail?: string } }).error?.detail ?? raw)
                 : raw;
-            resolve({
-              ok: false,
-              error: {
-                kind: parsed && typeof parsed === 'object' && parsed !== null && 'error' in parsed
-                  ? String((parsed as { error: { kind?: string } }).error?.kind ?? `http-${response.statusCode}`)
-                  : `http-${response.statusCode}`,
-                detail,
+            finalize(
+              {
+                ok: false,
+                error: {
+                  kind:
+                    parsed && typeof parsed === 'object' && parsed !== null && 'error' in parsed
+                      ? String(
+                          (parsed as { error: { kind?: string } }).error?.kind ?? `http-${response.statusCode}`,
+                        )
+                      : `http-${response.statusCode}`,
+                  detail,
+                },
               },
-            });
+              parseMs,
+            );
             return;
           }
-          resolve({ ok: true, data: parsed });
+          finalize({ ok: true, data: parsed }, parseMs);
         });
         response.on('error', (error) => {
-          resolve({
-            ok: false,
-            error: { kind: 'response-error', detail: error.message },
-          });
+          finalize({ ok: false, error: { kind: 'response-error', detail: error.message } }, 0);
         });
       },
     );
     request.on('error', (error) => {
-      resolve({ ok: false, error: { kind: 'request-error', detail: error.message } });
+      finalize({ ok: false, error: { kind: 'request-error', detail: error.message } }, 0);
     });
     request.on('timeout', () => {
       request.destroy();
-      resolve({
-        ok: false,
-        error: { kind: 'timeout', detail: `No response within ${timeoutMs}ms.` },
-      });
+      finalize(
+        {
+          ok: false,
+          error: { kind: 'timeout', detail: `No response within ${timeoutMs}ms.` },
+        },
+        0,
+      );
     });
     if (body) request.write(body);
     request.end();
   });
 }
 
-function toolResult(result: BridgeResult): {
-  content: { type: 'text'; text: string }[];
+type McpContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string }
+  | { type: 'resource_link'; uri: string; name: string; mimeType?: string; description?: string };
+
+interface McpToolResult {
+  content: McpContentBlock[];
   structuredContent?: Record<string, unknown>;
   isError?: true;
-} {
+  [extraKey: string]: unknown;
+}
+
+function toolResult(result: BridgeResult): McpToolResult {
   if (result.ok) {
     const text = typeof result.data === 'string' ? result.data : JSON.stringify(result.data, null, 2);
     const structured = toStructuredContent(result.data);
-    return structured
-      ? { content: [{ type: 'text', text }], structuredContent: structured }
+    const merged: Record<string, unknown> = structured ? { ...structured } : {};
+    if (result._timing) merged._timing = result._timing;
+    const hasStructured = structured !== null || result._timing !== undefined;
+    return hasStructured
+      ? { content: [{ type: 'text', text }], structuredContent: merged }
       : { content: [{ type: 'text', text }] };
   }
   return {
     content: [{ type: 'text', text: JSON.stringify(result.error, null, 2) }],
-    structuredContent: { error: result.error },
+    structuredContent: { error: result.error, ...(result._timing ? { _timing: result._timing } : {}) },
     isError: true,
   };
+}
+
+interface BridgeScreenshotResponse {
+  mode: 'inline' | 'file';
+  format: 'png' | 'jpeg';
+  base64?: string;
+  filePath?: string;
+  fileUri?: string;
+  byteLength: number;
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  deviceScaleFactor: number;
+  scale: number;
+  fullPage: boolean;
+  elementClip: { selector: string; box: unknown } | null;
+  retries: number;
+  reason?: 'over-inline-ceiling' | 'over-max-bytes';
+}
+
+/**
+ * Screenshot-specific result shape. Returns a proper MCP image content
+ * block (inline) or resource_link (file) instead of stringifying the
+ * base64 into a text block. Without this, screenshots count against
+ * the agent's text token budget and trip Claude Code's "saved to file"
+ * fallback for what should be a cheap inline image.
+ */
+function screenshotToolResult(result: BridgeResult): McpToolResult {
+  if (!result.ok) return toolResult(result);
+  const data = result.data as BridgeScreenshotResponse;
+  const mimeType = data.format === 'jpeg' ? 'image/jpeg' : 'image/png';
+  const meta: Record<string, unknown> = {
+    format: data.format,
+    byteLength: data.byteLength,
+    width: data.width,
+    height: data.height,
+    viewportWidth: data.viewportWidth,
+    viewportHeight: data.viewportHeight,
+    deviceScaleFactor: data.deviceScaleFactor,
+    scale: data.scale,
+    fullPage: data.fullPage,
+    elementClip: data.elementClip,
+    retries: data.retries,
+  };
+  if (result._timing) meta._timing = result._timing;
+  if (data.mode === 'file') {
+    meta.mode = 'file';
+    meta.filePath = data.filePath;
+    meta.fileUri = data.fileUri;
+    meta.reason = data.reason;
+    const summary = `Screenshot persisted to ${data.filePath} (${formatBytes(data.byteLength)}, ${data.width}x${data.height}, ${data.format}). Reason: ${data.reason ?? 'over-inline-ceiling'}. Use Read to view.`;
+    const filename = data.filePath ? data.filePath.split(/[\\/]/).pop() : null;
+    return {
+      content: [
+        {
+          type: 'resource_link',
+          uri: data.fileUri ?? '',
+          mimeType,
+          name: filename || 'screenshot',
+          description: summary,
+        },
+        { type: 'text', text: JSON.stringify(meta, null, 2) },
+      ],
+      structuredContent: meta,
+    };
+  }
+  meta.mode = 'inline';
+  return {
+    content: [
+      { type: 'image', data: data.base64 ?? '', mimeType },
+      { type: 'text', text: JSON.stringify(meta, null, 2) },
+    ],
+    structuredContent: meta,
+  };
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)}MB`;
 }
 
 /**
@@ -323,21 +466,29 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
     'kangentic_devtools_screenshot',
     {
       description:
-        'Capture a PNG screenshot of the inspected preview window. Returns base64-encoded image bytes. Use kangentic_devtools_screenshot_element for a clipped capture of one element. Dev-only.',
+        'Capture the inspected preview window. Returns an MCP image content block inline (under ~3.5MB) or a resource_link to a file when the capture exceeds the inline ceiling. The response also carries metadata: viewport dims, image dims, deviceScaleFactor (so image-space coords can be mapped to viewport-space). Defaults: jpeg q80 (q75 for fullPage); pass `format: "png"` for lossless. For specific components prefer kangentic_devtools_screenshot_element to clip down before capture. Dev-only.',
       inputSchema: z.object({
-        format: z.enum(['png', 'jpeg']).optional().describe('Image format. Default png.'),
-        quality: z.number().int().min(1).max(100).optional().describe('JPEG quality 1-100. Ignored for PNG.'),
+        format: z.enum(['png', 'jpeg']).optional().describe('Image format. Default jpeg.'),
+        quality: z.number().int().min(1).max(100).optional().describe('JPEG quality 1-100. Ignored for PNG. Default 80 (75 fullPage).'),
         fullPage: z.boolean().optional().describe('Capture beyond the viewport. Default false.'),
+        maxBytes: z.number().int().positive().optional().describe('Decoded byte budget. The server retries with lower quality / scale to fit, then falls back to a file when it cannot. Bounded by the 3.5MB inline ceiling.'),
+        maxKb: z.number().int().positive().optional().describe('Convenience alias for maxBytes expressed in KB.'),
         instanceId: z.string().optional().describe(INSTANCE_ARG_DESCRIPTION),
       }),
       annotations: READ_ONLY_ANNOTATIONS,
     },
-    async ({ format, quality, fullPage, instanceId }) =>
-      toolResult(
+    async ({ format, quality, fullPage, maxBytes, maxKb, instanceId }) =>
+      screenshotToolResult(
         await callBridge({
           method: 'GET',
           path: '/screenshot',
-          query: { format, quality, fullPage: fullPage ? 'true' : undefined },
+          query: {
+            format,
+            quality,
+            fullPage: fullPage ? 'true' : undefined,
+            maxBytes,
+            maxKb,
+          },
           instanceId,
           timeoutMs: 10000,
         }),
@@ -348,19 +499,23 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
     'kangentic_devtools_screenshot_element',
     {
       description:
-        'Capture a PNG of just the element matching `selector`, clipped to its bounding box. Useful for visual debugging of a specific component without the surrounding chrome. Dev-only.',
+        'Capture only the element matching `selector`, clipped to its bounding box. Returns a PNG inline (default; small clips stay well under the inline ceiling) or a resource_link to a file when the capture is unusually large. Dev-only.',
       inputSchema: z.object({
         selector: z.string().describe('CSS selector. Defaults to clipping the matched element\'s box.'),
+        format: z.enum(['png', 'jpeg']).optional().describe('Image format. Default png (element clips usually fit losslessly).'),
+        quality: z.number().int().min(1).max(100).optional().describe('JPEG quality 1-100. Ignored for PNG.'),
+        maxBytes: z.number().int().positive().optional().describe('Decoded byte budget; the server fits to size or falls back to a file.'),
+        maxKb: z.number().int().positive().optional().describe('Convenience alias for maxBytes expressed in KB.'),
         instanceId: z.string().optional().describe(INSTANCE_ARG_DESCRIPTION),
       }),
       annotations: READ_ONLY_ANNOTATIONS,
     },
-    async ({ selector, instanceId }) =>
-      toolResult(
+    async ({ selector, format, quality, maxBytes, maxKb, instanceId }) =>
+      screenshotToolResult(
         await callBridge({
           method: 'GET',
           path: '/screenshot-element',
-          query: { selector },
+          query: { selector, format, quality, maxBytes, maxKb },
           instanceId,
           timeoutMs: 10000,
         }),
@@ -371,16 +526,22 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
     'kangentic_devtools_query_dom',
     {
       description:
-        'Return the outer HTML of the first element matching `selector`. Useful to verify what is rendered: check whether a dialog opened, a button is enabled, an error banner is showing. Dev-only.',
+        'Return the outer HTML of the first element matching `selector`. Useful to verify what is rendered: check whether a dialog opened, a button is enabled, an error banner is showing. Selector forms: standard CSS, or `text="Cancel"` (exact text), `text*="Cancel"` (substring), `aria="Cancel"` (accessible name) - the same forms work on every selector-taking tool. Pass `includeBox: true` to also get the {x,y,width,height} bounding box in one call. Dev-only.',
       inputSchema: z.object({
-        selector: z.string().describe('CSS selector.'),
+        selector: z.string().describe('CSS selector, or `text="..."` / `text*="..."` / `aria="..."`.'),
+        includeBox: z.boolean().optional().describe('Include {x,y,width,height} bounding box in the response. Default false.'),
         instanceId: z.string().optional().describe(INSTANCE_ARG_DESCRIPTION),
       }),
       annotations: READ_ONLY_ANNOTATIONS,
     },
-    async ({ selector, instanceId }) =>
+    async ({ selector, includeBox, instanceId }) =>
       toolResult(
-        await callBridge({ method: 'GET', path: '/dom', query: { selector }, instanceId }),
+        await callBridge({
+          method: 'GET',
+          path: '/dom',
+          query: { selector, includeBox: includeBox ? 'true' : undefined },
+          instanceId,
+        }),
       ),
   );
 
@@ -567,21 +728,25 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
     'kangentic_devtools_click',
     {
       description:
-        'Dispatch a real mouse click. Either pass `selector` to click the centroid of the matched element, or pass `x` and `y` for absolute coordinates. Dev-only.',
+        'Dispatch a real mouse click. Either pass `selector` to click the centroid of the matched element, or pass `x` and `y` for absolute coordinates. When picking coords from a screenshot, set `coordSpace: "image"` so the server divides by deviceScaleFactor before dispatching - skips the coord-scaling math the agent would otherwise have to do. For multi-step sequences, prefer kangentic_devtools_script - it cuts MCP overhead by ~10x. Dev-only.',
       inputSchema: z.object({
         selector: z.string().optional().describe('CSS selector to click.'),
-        x: z.number().optional().describe('Absolute X coordinate (alternative to selector).'),
-        y: z.number().optional().describe('Absolute Y coordinate.'),
+        x: z.number().optional().describe('X coordinate (alternative to selector). See coordSpace.'),
+        y: z.number().optional().describe('Y coordinate. See coordSpace.'),
+        coordSpace: z
+          .enum(['viewport', 'image'])
+          .optional()
+          .describe('Coordinate space for x/y. "viewport" (default) is CSS pixels matching window.innerWidth. "image" is screenshot pixels - server divides by deviceScaleFactor.'),
         instanceId: z.string().optional().describe(INSTANCE_ARG_DESCRIPTION),
       }),
       annotations: MUTATING_ANNOTATIONS,
     },
-    async ({ selector, x, y, instanceId }) =>
+    async ({ selector, x, y, coordSpace, instanceId }) =>
       toolResult(
         await callBridge({
           method: 'POST',
           path: '/click',
-          body: { selector, x, y },
+          body: { selector, x, y, coordSpace },
           instanceId,
         }),
       ),
@@ -591,7 +756,7 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
     'kangentic_devtools_type',
     {
       description:
-        'Type text into the focused field. Pass `selector` to focus + click first; pass `clearFirst: true` to Ctrl+A then Backspace before typing. Use kangentic_devtools_keypress for chord shortcuts. Dev-only.',
+        'Type text into the focused field. Pass `selector` to focus + click first (CSS, `text="..."`, or `aria="..."`); pass `clearFirst: true` to Ctrl+A then Backspace before typing. Use kangentic_devtools_keypress for chord shortcuts. For multi-step sequences, prefer kangentic_devtools_script - it cuts MCP overhead by ~10x. Dev-only.',
       inputSchema: z.object({
         selector: z.string().optional().describe('CSS selector to focus before typing.'),
         text: z.string().describe('Literal text to type.'),
@@ -615,7 +780,7 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
     'kangentic_devtools_keypress',
     {
       description:
-        'Dispatch a keyboard chord like `Ctrl+Shift+P`, `Escape`, `Enter`, `Tab`, `ArrowUp`, etc. Modifiers: Ctrl, Shift, Alt, Meta (alias Cmd). Single-character keys like `a` work. Dev-only.',
+        'Dispatch a keyboard chord like `Ctrl+Shift+P`, `Escape`, `Enter`, `Tab`, `ArrowUp`, etc. Modifiers: Ctrl, Shift, Alt, Meta (alias Cmd). Single-character keys like `a` work. For multi-step sequences, prefer kangentic_devtools_script - it cuts MCP overhead by ~10x. Dev-only.',
       inputSchema: z.object({
         keys: z.string().describe('Key combo (e.g. "Ctrl+Shift+P", "Escape").'),
         instanceId: z.string().optional().describe(INSTANCE_ARG_DESCRIPTION),
@@ -632,7 +797,7 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
     'kangentic_devtools_drag',
     {
       description:
-        'Simulate a drag: press at the centroid of `fromSelector`, smooth-move through `steps` intermediate positions to the centroid of `toSelector`, release. Use this to drag tasks between columns or reorder items. Dev-only.',
+        'Simulate a drag: press at the centroid of `fromSelector`, smooth-move through `steps` intermediate positions to the centroid of `toSelector`, release. Selectors accept CSS, `text="..."`, or `aria="..."`. Use this to drag tasks between columns or reorder items. For multi-step sequences, prefer kangentic_devtools_script - it cuts MCP overhead by ~10x. Dev-only.',
       inputSchema: z.object({
         fromSelector: z.string().describe('CSS selector of the element to drag from.'),
         toSelector: z.string().describe('CSS selector of the drop target.'),
@@ -656,7 +821,7 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
     'kangentic_devtools_wait',
     {
       description:
-        'Block until a selector resolves, contains `domText`, or the timeout elapses. Replaces "click then poll DOM 5 times" round-trips with one server-side wait. Dev-only.',
+        'Block until a selector resolves, contains `domText`, or the timeout elapses. Replaces "click then poll DOM 5 times" round-trips with one server-side wait. Selector accepts CSS, `text="..."`, or `aria="..."`. For multi-step sequences, prefer kangentic_devtools_script - it cuts MCP overhead by ~10x. Dev-only.',
       inputSchema: z.object({
         selector: z.string().optional().describe('CSS selector that must resolve.'),
         domText: z.string().optional().describe('Substring that must appear in the DOM (or in selector, when both are given).'),
@@ -682,7 +847,7 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
     'kangentic_devtools_script',
     {
       description:
-        'Execute an array of UI steps in order against the inspected preview. Each step: { type: "click" | "type" | "keypress" | "drag" | "wait" | "screenshot" | "eval", ...stepArgs }. Returns a step-by-step trace with ok/durationMs/error. Cuts MCP latency dramatically vs. one tool call per step. Dev-only.',
+        'Execute an array of UI steps in order against the inspected preview. Each step: { type: "click" | "type" | "keypress" | "drag" | "wait" | "screenshot" | "eval", ...stepArgs }. Returns a step-by-step trace with ok/durationMs/error. `screenshot` steps persist to disk and the trace entry carries `screenshotPath` + `screenshotUri` (read via Read). Selectors accept CSS, `text="..."`, or `aria="..."`. Cuts MCP latency dramatically vs. one tool call per step. Dev-only.',
       inputSchema: z.object({
         steps: z
           .array(
@@ -711,6 +876,32 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
           body: { steps, abortOnError },
           instanceId,
           timeoutMs: 60000,
+        }),
+      ),
+  );
+
+  // ── Cross-instance command proxy ─────────────────────────────────────
+  server.registerTool(
+    'kangentic_devtools_run_command',
+    {
+      description:
+        'Run a product MCP command (the same handlers used by kangentic_create_task, kangentic_list_tasks, etc.) inside a specific preview instance. Use this when an ephemeral worktree preview is running and you want to operate on its task list - the preview has its own data directory the outer agent\'s MCP server cannot see, so passing `instanceId` here is the bridge. `command` accepts handler names like "create_task", "list_tasks", "list_columns", "move_task", "list_projects". `params` is the raw params shape the handler expects (matches the kangentic_<command> tool inputs minus the `project` arg). Dev-only.',
+      inputSchema: z.object({
+        command: z.string().describe('Command name (e.g. "create_task", "list_tasks", "list_columns", "list_projects").'),
+        params: z.record(z.string(), z.unknown()).optional().describe('Params object the handler expects.'),
+        projectId: z.string().optional().describe('Optional project UUID to target inside the preview. Defaults to the preview\'s currently open project.'),
+        instanceId: z.string().optional().describe(INSTANCE_ARG_DESCRIPTION),
+      }),
+      annotations: MUTATING_ANNOTATIONS,
+    },
+    async ({ command, params, projectId, instanceId }) =>
+      toolResult(
+        await callBridge({
+          method: 'POST',
+          path: '/command',
+          body: { command, params, projectId },
+          instanceId,
+          timeoutMs: 30000,
         }),
       ),
   );

@@ -88,6 +88,7 @@ if (__KANGENTIC_DEV__) {
     getProjectId: () => getOptionalIpcContext()?.currentProjectId ?? null,
     getWorktreePath: () => getOptionalIpcContext()?.currentProjectPath ?? null,
     getSessionManager: () => getOptionalIpcContext()?.sessionManager ?? null,
+    getIpcContext: () => getOptionalIpcContext() ?? null,
     getInspectionServerEnabled: () => safeReadDeveloperFlag('previewInspectionServer'),
     getEvalEnabled: () => safeReadDeveloperFlag('previewEvalEnabled'),
   });

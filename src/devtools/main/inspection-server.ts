@@ -3,7 +3,6 @@ import * as http from 'node:http';
 import * as path from 'node:path';
 import { app, type BrowserWindow } from 'electron';
 import {
-  captureScreenshot,
   clickAtCenterOfSelector,
   dispatchKeyEvent,
   dispatchKeypress,
@@ -11,13 +10,32 @@ import {
   dragFromTo,
   getAccessibilityTree,
   getBoundingBox,
+  getBoundingBoxByNodeId,
   getComputedStyle,
   getConsoleEntries,
+  getLayoutMetrics,
   getOuterHtml,
+  getOuterHtmlByNodeId,
   isDebuggerAttached,
+  resolveSelectorPublic,
   runtimeEvaluate,
   typeText,
 } from './cdp';
+import {
+  captureElementClip,
+  captureScreenshotWithBudget,
+  configureScreenshotProjectRoot,
+  type ScreenshotCaptureOptions,
+} from './screenshot';
+// `commandHandlers` and `buildCommandContextForProject` are loaded lazily
+// inside respondCommand. Eagerly importing them at module top would pull
+// the full agent/analytics import graph into every consumer of this
+// file, including unit tests that transitively load
+// `notifyDevtoolsRefresh` via applyRuntimeConfig - those tests then blow
+// up on aptabase's `import { ipcMain } from 'electron'` because their
+// own `vi.mock('electron', ...)` only takes effect for their own module
+// graph. The cost of the lazy import is one microtask per /command call.
+import type { IpcContext } from '../../main/ipc/ipc-context';
 import { getProcessMetrics } from '../../main/diagnostics/process-metrics';
 import type { SessionManager } from '../../main/pty/session-manager';
 
@@ -41,6 +59,8 @@ interface InspectionServerOptions {
   getEvalEnabled: () => boolean;
   getSessionManager: () => SessionManager | null;
   getProjectRoot: () => string | null;
+  getIpcContext: () => IpcContext | null;
+  getProjectId: () => string | null;
 }
 
 let server: http.Server | null = null;
@@ -52,6 +72,7 @@ export async function startInspectionServer(
 ): Promise<number | null> {
   if (server !== null) return boundPort;
   activeOptions = options;
+  configureScreenshotProjectRoot(() => options.getProjectRoot());
 
   const httpServer = http.createServer((request, response) => {
     handleRequest(request, response).catch((error) => {
@@ -235,6 +256,10 @@ async function handlePostRequest(
 
   if (route === 'POST /script') {
     return respondScript(options, window, body, response);
+  }
+
+  if (route === 'POST /command') {
+    return respondCommand(options, body, response);
   }
 
   if (route === 'POST /pty-input') {
@@ -485,15 +510,25 @@ async function respondScreenshot(
   url: URL,
   response: http.ServerResponse,
 ): Promise<void> {
-  const format = (url.searchParams.get('format') as 'png' | 'jpeg' | null) ?? 'png';
-  const qualityParam = url.searchParams.get('quality');
-  const quality = qualityParam ? Number.parseInt(qualityParam, 10) : undefined;
   const fullPage = url.searchParams.get('fullPage') === 'true';
-  const data = await captureScreenshot(window, { format, quality, fullPage });
-  if (!data) {
+  const formatParam = url.searchParams.get('format') as 'png' | 'jpeg' | null;
+  const format = formatParam ?? (fullPage ? 'jpeg' : 'jpeg');
+  const qualityParam = url.searchParams.get('quality');
+  const defaultQuality = format === 'jpeg' ? (fullPage ? 75 : 80) : undefined;
+  const quality = qualityParam ? Number.parseInt(qualityParam, 10) : defaultQuality;
+  const maxBytesParam = url.searchParams.get('maxBytes') ?? url.searchParams.get('maxKb');
+  const maxBytes = parseMaxBytes(maxBytesParam, url.searchParams.get('maxKb') !== null);
+  const captureOptions: ScreenshotCaptureOptions = {
+    format,
+    quality,
+    fullPage,
+    maxBytes,
+  };
+  const result = await captureScreenshotWithBudget(window, captureOptions);
+  if (!result) {
     return respondError(response, 500, 'screenshot-failed', 'Page.captureScreenshot returned no data.');
   }
-  respondJson(response, 200, { format, base64: data });
+  respondJson(response, 200, result);
 }
 
 async function respondScreenshotElement(
@@ -505,25 +540,29 @@ async function respondScreenshotElement(
   if (!selector) {
     return respondError(response, 400, 'missing-selector', 'selector query parameter is required.');
   }
-  const box = await getBoundingBox(window, selector);
-  if (!box || !Array.isArray(box.content) || box.content.length < 8) {
-    return respondError(response, 404, 'selector-not-found', `No element matched ${selector}.`);
-  }
-  // BoxModel `content` is a quad: [x0,y0, x1,y1, x2,y2, x3,y3]
-  const xs = [box.content[0], box.content[2], box.content[4], box.content[6]];
-  const ys = [box.content[1], box.content[3], box.content[5], box.content[7]];
-  const minX = Math.min(...xs);
-  const minY = Math.min(...ys);
-  const maxX = Math.max(...xs);
-  const maxY = Math.max(...ys);
-  const data = await captureScreenshot(window, {
-    format: 'png',
-    clip: { x: minX, y: minY, width: maxX - minX, height: maxY - minY, scale: 1 },
+  const formatParam = url.searchParams.get('format') as 'png' | 'jpeg' | null;
+  const qualityParam = url.searchParams.get('quality');
+  const maxBytesParam = url.searchParams.get('maxBytes') ?? url.searchParams.get('maxKb');
+  const maxBytes = parseMaxBytes(maxBytesParam, url.searchParams.get('maxKb') !== null);
+  const result = await captureElementClip(window, selector, {
+    format: formatParam ?? 'png',
+    quality: qualityParam ? Number.parseInt(qualityParam, 10) : undefined,
+    maxBytes,
   });
-  if (!data) {
+  if (!result) {
     return respondError(response, 500, 'screenshot-failed', 'Element clip capture returned no data.');
   }
-  respondJson(response, 200, { format: 'png', base64: data });
+  if ('error' in result) {
+    return respondError(response, 404, 'selector-not-found', `No element matched ${selector}.`);
+  }
+  respondJson(response, 200, result);
+}
+
+function parseMaxBytes(rawValue: string | null, isKb: boolean): number | undefined {
+  if (!rawValue) return undefined;
+  const parsed = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return isKb ? parsed * 1024 : parsed;
 }
 
 async function respondDom(
@@ -532,11 +571,44 @@ async function respondDom(
   response: http.ServerResponse,
 ): Promise<void> {
   const selector = url.searchParams.get('selector') ?? 'html';
-  const html = await getOuterHtml(window, selector);
+  const includeBox = url.searchParams.get('includeBox') === 'true';
+  // Resolve the selector once so getOuterHTML and (optionally)
+  // getBoxModel can target the same nodeId without paying for a second
+  // DOM.getDocument + DOM.querySelector roundtrip.
+  const nodeId = await resolveSelectorPublic(window, selector);
+  if (!nodeId) {
+    return respondError(response, 404, 'selector-not-found', `No element matched ${selector}.`);
+  }
+  const html = await getOuterHtmlByNodeId(window, nodeId);
   if (html === null) {
     return respondError(response, 404, 'selector-not-found', `No element matched ${selector}.`);
   }
-  respondJson(response, 200, { selector, outerHTML: html });
+  if (!includeBox) {
+    return respondJson(response, 200, { selector, outerHTML: html });
+  }
+  const box = await getBoundingBoxByNodeId(window, nodeId);
+  if (!box || !Array.isArray(box.content) || box.content.length < 8) {
+    return respondJson(response, 200, { selector, outerHTML: html, box: null });
+  }
+  // Reduce the box quad to the {x,y,width,height} the agent actually
+  // wants for click/screenshot follow-ups. The full quad is still
+  // available via /bounding-box for callers that need the raw shape.
+  const cornerXs = [box.content[0], box.content[2], box.content[4], box.content[6]];
+  const cornerYs = [box.content[1], box.content[3], box.content[5], box.content[7]];
+  const minX = Math.min(...cornerXs);
+  const minY = Math.min(...cornerYs);
+  const maxX = Math.max(...cornerXs);
+  const maxY = Math.max(...cornerYs);
+  respondJson(response, 200, {
+    selector,
+    outerHTML: html,
+    box: {
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+    },
+  });
 }
 
 async function respondComputedStyle(
@@ -667,6 +739,7 @@ interface ClickBody {
   selector?: string;
   x?: number;
   y?: number;
+  coordSpace?: 'viewport' | 'image';
 }
 
 async function respondClick(
@@ -683,11 +756,42 @@ async function respondClick(
     return respondJson(response, 200, { ok: true });
   }
   if (typeof click.x === 'number' && typeof click.y === 'number') {
-    await dispatchMouseEvent(window, { type: 'mousePressed', x: click.x, y: click.y });
-    await dispatchMouseEvent(window, { type: 'mouseReleased', x: click.x, y: click.y });
-    return respondJson(response, 200, { ok: true });
+    const mapped = await mapClickCoordsToViewport(
+      window,
+      { x: click.x, y: click.y },
+      click.coordSpace ?? 'viewport',
+    );
+    if (!mapped) {
+      return respondError(
+        response,
+        500,
+        'coord-mapping-failed',
+        'Could not read deviceScaleFactor for image-space coordinate mapping.',
+      );
+    }
+    await dispatchMouseEvent(window, { type: 'mousePressed', x: mapped.x, y: mapped.y });
+    await dispatchMouseEvent(window, { type: 'mouseReleased', x: mapped.x, y: mapped.y });
+    return respondJson(response, 200, {
+      ok: true,
+      coordSpace: click.coordSpace ?? 'viewport',
+      dispatched: { x: mapped.x, y: mapped.y },
+    });
   }
   return respondError(response, 400, 'missing-target', 'Provide either `selector` or both `x` and `y`.');
+}
+
+async function mapClickCoordsToViewport(
+  window: BrowserWindow,
+  point: { x: number; y: number },
+  coordSpace: 'viewport' | 'image',
+): Promise<{ x: number; y: number } | null> {
+  if (coordSpace === 'viewport') return point;
+  const layout = await getLayoutMetrics(window);
+  if (!layout) return null;
+  return {
+    x: point.x / layout.deviceScaleFactor,
+    y: point.y / layout.deviceScaleFactor,
+  };
 }
 
 interface TypeBody {
@@ -812,6 +916,16 @@ interface ScriptStep {
   [key: string]: unknown;
 }
 
+interface ScriptStepTrace {
+  index: number;
+  type: string;
+  ok: boolean;
+  durationMs: number;
+  error?: string;
+  screenshotPath?: string;
+  screenshotUri?: string;
+}
+
 async function respondScript(
   options: InspectionServerOptions,
   window: BrowserWindow,
@@ -822,13 +936,19 @@ async function respondScript(
   if (!Array.isArray(params.steps)) {
     return respondError(response, 400, 'missing-steps', '`steps` array is required.');
   }
-  const trace: { index: number; type: string; ok: boolean; durationMs: number; error?: string }[] = [];
+  const trace: ScriptStepTrace[] = [];
   for (let stepIndex = 0; stepIndex < params.steps.length; stepIndex++) {
     const step = params.steps[stepIndex];
     const stepStart = performance.now();
     try {
-      await runScriptStep(options, window, step);
-      trace.push({ index: stepIndex, type: step.type, ok: true, durationMs: performance.now() - stepStart });
+      const stepOutput = await runScriptStep(options, window, step);
+      trace.push({
+        index: stepIndex,
+        type: step.type,
+        ok: true,
+        durationMs: performance.now() - stepStart,
+        ...(stepOutput ?? {}),
+      });
     } catch (error) {
       trace.push({
         index: stepIndex,
@@ -843,11 +963,16 @@ async function respondScript(
   respondJson(response, 200, { trace });
 }
 
+interface ScriptStepOutput {
+  screenshotPath?: string;
+  screenshotUri?: string;
+}
+
 async function runScriptStep(
   options: InspectionServerOptions,
   window: BrowserWindow,
   step: ScriptStep,
-): Promise<void> {
+): Promise<ScriptStepOutput | void> {
   switch (step.type) {
     case 'click': {
       const selector = step.selector as string | undefined;
@@ -888,11 +1013,19 @@ async function runScriptStep(
       return;
     }
     case 'screenshot': {
-      // Returned as part of the trace would balloon the response; the
-      // /screenshot endpoint exists for the actual capture. This step
-      // exists so a script can fail loudly when an expected screenshot
-      // step is reachable but the agent forgot to follow it up.
-      return;
+      // Always persist screenshots taken during a script to disk so the
+      // trace stays small. The agent reads the resulting file via Read
+      // (the path is included in the per-step trace entry). This keeps
+      // a 50-step script trace from ballooning even if the agent
+      // requests a screenshot every step.
+      const captured = await captureScreenshotWithBudget(window, {
+        format: 'jpeg',
+        quality: 75,
+        // Force file mode by setting a tight inline ceiling.
+        inlineCeiling: 1,
+      });
+      if (!captured || captured.mode !== 'file') return;
+      return { screenshotPath: captured.filePath, screenshotUri: captured.fileUri };
     }
     case 'eval': {
       if (!options.getEvalEnabled()) throw new Error('eval step requires `previewEvalEnabled`.');
@@ -904,6 +1037,76 @@ async function runScriptStep(
     }
     default:
       throw new Error(`Unknown step type: ${step.type}.`);
+  }
+}
+
+interface CommandBody {
+  command: string;
+  params?: Record<string, unknown>;
+  projectId?: string;
+}
+
+/**
+ * Proxy that runs a product MCP command (`commandHandlers`) inside the
+ * preview process. Solves the "ephemeral preview projects can't be
+ * targeted by project tools" gap: an outer agent can call
+ * kangentic_devtools_run_command with `instanceId` to operate on the
+ * preview's actual DB, since the preview holds the only live IpcContext
+ * for its data dir.
+ *
+ * Optional `projectId` lets the caller target a specific project the
+ * preview knows about (rare). Default uses whatever project the preview
+ * has open right now.
+ */
+async function respondCommand(
+  options: InspectionServerOptions,
+  body: unknown,
+  response: http.ServerResponse,
+): Promise<void> {
+  const params = body as CommandBody;
+  if (typeof params.command !== 'string') {
+    return respondError(response, 400, 'missing-command', '`command` is required.');
+  }
+  const ipcContext = options.getIpcContext();
+  if (!ipcContext) {
+    return respondError(response, 503, 'no-ipc-context', 'IPC context is not available yet.');
+  }
+  const targetProjectId = params.projectId ?? options.getProjectId();
+  if (!targetProjectId) {
+    return respondError(
+      response,
+      503,
+      'no-project',
+      'Preview has no project open and no projectId was provided.',
+    );
+  }
+  const { commandHandlers } = await import('../../main/agent/commands');
+  const { buildCommandContextForProject } = await import('../../main/agent/mcp-project-context');
+  const commandContext = buildCommandContextForProject(ipcContext, targetProjectId);
+  if (!commandContext) {
+    return respondError(
+      response,
+      404,
+      'unknown-project',
+      `Project ${targetProjectId} is not registered in this preview.`,
+    );
+  }
+  const handler = (commandHandlers as Record<string, unknown>)[params.command];
+  if (typeof handler !== 'function') {
+    return respondError(response, 400, 'unknown-command', `Unknown command: ${params.command}.`);
+  }
+  try {
+    const handlerFn = handler as (
+      params: Record<string, unknown>,
+      context: typeof commandContext,
+    ) => Promise<unknown> | unknown;
+    const result = await Promise.resolve(handlerFn(params.params ?? {}, commandContext));
+    respondJson(response, 200, result);
+  } catch (error) {
+    respondJson(response, 200, {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

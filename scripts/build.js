@@ -5,6 +5,13 @@ const esbuild = require('esbuild');
 
 const projectDir = path.resolve(__dirname, '..');
 
+// `KANGENTIC_BUILD_DEV=1` keeps the devtools / inspection bridge tree in the
+// produced bundle. Off by default so `npm run build` still produces a
+// production-shaped artifact; on for E2E runs that exercise the dev-only
+// inspection bridge endpoints (devtools-inspection.spec.ts) since the bridge
+// must be physically present in the binary the test launches.
+const keepDevtools = process.env.KANGENTIC_BUILD_DEV === '1';
+
 const esbuildCommon = {
   bundle: true,
   platform: 'node',
@@ -18,7 +25,7 @@ const esbuildCommon = {
     // Build-time constant gating dev-only code. `false` in production drops
     // src/devtools/ entirely from the production main + preload bundles
     // via esbuild's dead-code elimination. See scripts/dev.js for the dev value.
-    '__KANGENTIC_DEV__': 'false',
+    '__KANGENTIC_DEV__': keepDevtools ? 'true' : 'false',
   },
   sourcemap: false,
   minify: true,
@@ -42,7 +49,9 @@ async function build() {
     console.log('[build] Removed stale .vite/renderer/ dev cache');
   }
 
-  console.log('[build] Building renderer with Vite...');
+  console.log(
+    `[build] Building renderer with Vite (main-process devtools ${keepDevtools ? 'INCLUDED' : 'tree-shaken'})...`,
+  );
   const { build: viteBuild } = await import('vite');
   await viteBuild({
     configFile: path.join(projectDir, 'vite.config.mts'),

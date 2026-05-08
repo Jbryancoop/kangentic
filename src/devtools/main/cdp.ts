@@ -171,6 +171,93 @@ export async function captureScreenshot(
   return result.data ?? null;
 }
 
+export interface LayoutMetrics {
+  /** Layout viewport in CSS pixels (matches `window.innerWidth/Height`). */
+  viewportWidth: number;
+  viewportHeight: number;
+  /** Device pixel ratio applied by `Page.captureScreenshot` to produce raster output. */
+  deviceScaleFactor: number;
+  /** Full document size in CSS pixels (used by `fullPage: true` capture). */
+  contentWidth: number;
+  contentHeight: number;
+}
+
+/**
+ * Returns the layout viewport, device scale factor, and full content size.
+ * Used by the screenshot response to surface scale metadata so the agent
+ * can map image-space coordinates back to viewport-space without guessing.
+ */
+export async function getLayoutMetrics(window: BrowserWindow): Promise<LayoutMetrics | null> {
+  try {
+    const result = (await window.webContents.debugger.sendCommand('Page.getLayoutMetrics')) as {
+      cssLayoutViewport?: { clientWidth: number; clientHeight: number };
+      layoutViewport?: { clientWidth: number; clientHeight: number };
+      cssVisualViewport?: { scale?: number };
+      visualViewport?: { scale?: number };
+      cssContentSize?: { width: number; height: number };
+      contentSize?: { width: number; height: number };
+    };
+    const viewport = result.cssLayoutViewport ?? result.layoutViewport;
+    const content = result.cssContentSize ?? result.contentSize;
+    if (!viewport) return null;
+    const deviceScaleFactorResult = (await window.webContents.debugger.sendCommand('Runtime.evaluate', {
+      expression: 'window.devicePixelRatio',
+      returnByValue: true,
+    })) as { result: { value?: number } };
+    const deviceScaleFactor =
+      typeof deviceScaleFactorResult.result.value === 'number'
+        ? deviceScaleFactorResult.result.value
+        : 1;
+    return {
+      viewportWidth: viewport.clientWidth,
+      viewportHeight: viewport.clientHeight,
+      deviceScaleFactor,
+      contentWidth: content?.width ?? viewport.clientWidth,
+      contentHeight: content?.height ?? viewport.clientHeight,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse PNG/JPEG header bytes to recover the rasterized image dimensions.
+ * Avoids paying for a separate CDP roundtrip just to learn what we
+ * already produced. PNG dimensions live at offset 16/20; JPEG SOF
+ * markers carry them in the marker payload.
+ */
+export function decodeImageDimensions(
+  format: 'png' | 'jpeg',
+  buffer: Buffer,
+): { width: number; height: number } | null {
+  if (format === 'png') {
+    if (buffer.length < 24) return null;
+    if (buffer.readUInt32BE(0) !== 0x89504e47) return null;
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+  }
+  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return null;
+  let offset = 2;
+  while (offset < buffer.length - 9) {
+    if (buffer[offset] !== 0xff) break;
+    const marker = buffer[offset + 1];
+    const segmentLength = buffer.readUInt16BE(offset + 2);
+    const isStartOfFrame =
+      marker >= 0xc0 &&
+      marker <= 0xcf &&
+      marker !== 0xc4 &&
+      marker !== 0xc8 &&
+      marker !== 0xcc;
+    if (isStartOfFrame) {
+      return {
+        height: buffer.readUInt16BE(offset + 5),
+        width: buffer.readUInt16BE(offset + 7),
+      };
+    }
+    offset += 2 + segmentLength;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // DOM
 // ---------------------------------------------------------------------------
@@ -198,15 +285,125 @@ interface BoxModel {
   };
 }
 
+/**
+ * Selector spec parsed out of the user-supplied string. Supports the
+ * standard CSS form plus three convenience prefixes that match
+ * Playwright vocabulary:
+ *
+ *   - `text="Cancel"` (or `text=Cancel`)         -> exact visible-text match
+ *   - `text*="Cancel"` (or `text*=Cancel`)       -> substring visible-text match
+ *   - `aria="Cancel"` (or `aria=Cancel`)         -> accessible name match
+ *   - `:has-text("Cancel")`                       -> alias for text*=
+ *
+ * Anything that doesn't match those prefixes falls through to plain
+ * CSS, so existing callers continue to work without changes.
+ */
+interface SelectorSpec {
+  kind: 'css' | 'text' | 'text-contains' | 'aria';
+  value: string;
+}
+
+const TEXT_RE = /^text=(?:"([^"]*)"|'([^']*)'|(.+))$/;
+const TEXT_CONTAINS_RE = /^text\*=(?:"([^"]*)"|'([^']*)'|(.+))$/;
+const ARIA_RE = /^aria=(?:"([^"]*)"|'([^']*)'|(.+))$/;
+const HAS_TEXT_RE = /:has-text\((?:"([^"]*)"|'([^']*)')\)/;
+
+export function parseSelectorSpec(selector: string): SelectorSpec {
+  const trimmed = selector.trim();
+  let match = trimmed.match(TEXT_RE);
+  if (match) return { kind: 'text', value: match[1] ?? match[2] ?? match[3] ?? '' };
+  match = trimmed.match(TEXT_CONTAINS_RE);
+  if (match) return { kind: 'text-contains', value: match[1] ?? match[2] ?? match[3] ?? '' };
+  match = trimmed.match(ARIA_RE);
+  if (match) return { kind: 'aria', value: match[1] ?? match[2] ?? match[3] ?? '' };
+  match = trimmed.match(HAS_TEXT_RE);
+  if (match) return { kind: 'text-contains', value: match[1] ?? match[2] ?? '' };
+  return { kind: 'css', value: trimmed };
+}
+
+interface EvaluateNodeResult {
+  result: { objectId?: string; subtype?: string };
+  exceptionDetails?: unknown;
+}
+
 async function resolveSelector(window: BrowserWindow, selector: string): Promise<number | null> {
-  const root = (await window.webContents.debugger.sendCommand('DOM.getDocument', {
-    depth: 0,
-  })) as DocumentRoot;
-  const queried = (await window.webContents.debugger.sendCommand('DOM.querySelector', {
-    nodeId: root.root.nodeId,
-    selector,
-  })) as QueriedNode;
-  return queried.nodeId || null;
+  const spec = parseSelectorSpec(selector);
+  if (spec.kind === 'css') {
+    const root = (await window.webContents.debugger.sendCommand('DOM.getDocument', {
+      depth: 0,
+    })) as DocumentRoot;
+    const queried = (await window.webContents.debugger.sendCommand('DOM.querySelector', {
+      nodeId: root.root.nodeId,
+      selector: spec.value,
+    })) as QueriedNode;
+    return queried.nodeId || null;
+  }
+  const expression = buildSelectorExpression(spec);
+  const evalResult = (await window.webContents.debugger.sendCommand('Runtime.evaluate', {
+    expression,
+    returnByValue: false,
+  })) as EvaluateNodeResult;
+  if (evalResult.exceptionDetails) return null;
+  const objectId = evalResult.result?.objectId;
+  if (!objectId || evalResult.result.subtype === 'null') return null;
+  try {
+    const nodeResult = (await window.webContents.debugger.sendCommand('DOM.requestNode', {
+      objectId,
+    })) as { nodeId: number };
+    return nodeResult.nodeId || null;
+  } finally {
+    try {
+      await window.webContents.debugger.sendCommand('Runtime.releaseObject', { objectId });
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+export function buildSelectorExpression(spec: SelectorSpec): string {
+  const targetLiteral = JSON.stringify(spec.value);
+  // Limit the candidate pool to interactive / labeled elements so we don't
+  // accidentally match a parent <div> that contains the text. The pool is
+  // intentionally generous - missing a candidate is worse than a benign
+  // over-match because the agent gets a clear "not found" signal.
+  const candidatesJs =
+    "document.querySelectorAll('button, a, input, textarea, select, label, summary, [role], [aria-label], [aria-labelledby], [contenteditable=\"true\"]')";
+  if (spec.kind === 'text') {
+    return `(() => {
+      const target = ${targetLiteral};
+      for (const element of ${candidatesJs}) {
+        const ariaLabel = element.getAttribute('aria-label');
+        const visibleText = (ariaLabel ?? element.innerText ?? element.textContent ?? '').trim();
+        if (visibleText === target) return element;
+      }
+      return null;
+    })()`;
+  }
+  if (spec.kind === 'text-contains') {
+    return `(() => {
+      const target = ${targetLiteral};
+      for (const element of ${candidatesJs}) {
+        const ariaLabel = element.getAttribute('aria-label');
+        const visibleText = (ariaLabel ?? element.innerText ?? element.textContent ?? '').trim();
+        if (visibleText.includes(target)) return element;
+      }
+      return null;
+    })()`;
+  }
+  // aria= -- prefer aria-label, fall back to text content for unlabeled
+  // elements whose name derives from their content per the WAI-ARIA spec
+  // (button, link, heading, etc.).
+  return `(() => {
+    const target = ${targetLiteral};
+    for (const element of document.querySelectorAll('[aria-label]')) {
+      if ((element.getAttribute('aria-label') ?? '').trim() === target) return element;
+    }
+    for (const element of document.querySelectorAll('button, a, [role="button"], [role="link"], [role="menuitem"], [role="tab"], h1, h2, h3, h4, h5, h6')) {
+      const visibleText = (element.innerText ?? element.textContent ?? '').trim();
+      if (visibleText === target) return element;
+    }
+    return null;
+  })()`;
 }
 
 export async function getOuterHtml(
@@ -215,6 +412,13 @@ export async function getOuterHtml(
 ): Promise<string | null> {
   const nodeId = await resolveSelector(window, selector);
   if (!nodeId) return null;
+  return getOuterHtmlByNodeId(window, nodeId);
+}
+
+export async function getOuterHtmlByNodeId(
+  window: BrowserWindow,
+  nodeId: number,
+): Promise<string | null> {
   const result = (await window.webContents.debugger.sendCommand('DOM.getOuterHTML', {
     nodeId,
   })) as OuterHtml;
@@ -227,6 +431,13 @@ export async function getBoundingBox(
 ): Promise<BoxModel['model'] | null> {
   const nodeId = await resolveSelector(window, selector);
   if (!nodeId) return null;
+  return getBoundingBoxByNodeId(window, nodeId);
+}
+
+export async function getBoundingBoxByNodeId(
+  window: BrowserWindow,
+  nodeId: number,
+): Promise<BoxModel['model'] | null> {
   try {
     const result = (await window.webContents.debugger.sendCommand('DOM.getBoxModel', {
       nodeId,
@@ -235,6 +446,18 @@ export async function getBoundingBox(
   } catch {
     return null;
   }
+}
+
+/**
+ * Public selector resolver. Useful when callers want to do multiple CDP
+ * operations against the same element without re-running DOM.querySelector
+ * each time. Returns null when the selector doesn't match.
+ */
+export async function resolveSelectorPublic(
+  window: BrowserWindow,
+  selector: string,
+): Promise<number | null> {
+  return resolveSelector(window, selector);
 }
 
 export async function getComputedStyle(

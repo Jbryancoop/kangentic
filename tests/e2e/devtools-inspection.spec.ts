@@ -19,6 +19,7 @@ import { test, expect } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import {
   launchApp,
   createTempProject,
@@ -27,6 +28,42 @@ import {
   cleanupTestDataDir,
 } from './helpers';
 import type { ElectronApplication } from '@playwright/test';
+
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+const MAIN_BUNDLE = path.join(PROJECT_ROOT, '.vite/build/index.js');
+
+/**
+ * The inspection bridge lives under `src/devtools/` which is gated behind
+ * `__KANGENTIC_DEV__`. Default `npm run build` sets that flag to `false`
+ * and esbuild tree-shakes the entire bridge out of the bundle, so the
+ * tests below would fail with "lockfile never appears" no matter what
+ * `previewInspectionServer: true` is set in config.
+ *
+ * Detect a tree-shaken build via a marker string only present when the
+ * bridge is in the bundle (`preview.lock`), and rebuild with
+ * `KANGENTIC_BUILD_DEV=1` once if it's missing. Subsequent E2E runs that
+ * keep the dev-flagged build skip the rebuild.
+ */
+function ensureDevtoolsBuild(): void {
+  let bundle: string;
+  try {
+    bundle = fs.readFileSync(MAIN_BUNDLE, 'utf-8');
+  } catch {
+    throw new Error(
+      `Built main bundle not found at ${MAIN_BUNDLE}. Run "npm run build" first.`,
+    );
+  }
+  if (bundle.includes('preview.lock')) return;
+  // eslint-disable-next-line no-console
+  console.log(
+    '[devtools-inspection] Build was tree-shaken; rebuilding with KANGENTIC_BUILD_DEV=1...',
+  );
+  execFileSync('node', ['scripts/build.js'], {
+    cwd: PROJECT_ROOT,
+    env: { ...process.env, KANGENTIC_BUILD_DEV: '1' },
+    stdio: 'inherit',
+  });
+}
 
 const TEST_NAME = 'devtools-inspection';
 const runId = Date.now();
@@ -127,6 +164,7 @@ test.describe('Devtools inspection bridge', () => {
   let dataDir: string;
 
   test.beforeAll(async () => {
+    ensureDevtoolsBuild();
     dataDir = getTestDataDir(TEST_NAME, runId);
     projectPath = await createTempProject('devtools-inspection');
 
