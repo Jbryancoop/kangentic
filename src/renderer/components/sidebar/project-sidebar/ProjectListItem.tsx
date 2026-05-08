@@ -1,16 +1,16 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, memo } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { useShallow } from 'zustand/react/shallow';
 import { MoreHorizontal } from 'lucide-react';
 import { SidebarActivityCounts } from './SidebarActivityCounts';
+import { useSessionStore } from '../../../stores/session-store';
 import type { Project } from '../../../../shared/types';
 
 export interface ProjectListItemProps {
   project: Project;
   isActive: boolean;
   isRenaming: boolean;
-  thinkingCount: number;
-  idleCount: number;
   isGrouped: boolean;
   onSelect: (id: string) => void;
   onContextMenu: (e: React.MouseEvent, project: Project) => void;
@@ -18,18 +18,36 @@ export interface ProjectListItemProps {
   onCancelRename: () => void;
 }
 
-export function ProjectListItem({
+function ProjectListItemImpl({
   project,
   isActive,
   isRenaming,
-  thinkingCount,
-  idleCount,
   isGrouped,
   onSelect,
   onContextMenu,
   onRename,
   onCancelRename,
 }: ProjectListItemProps) {
+  // Subscribe per-project to thinking/idle counts. Selector body iterates
+  // sessions on every store update, but useShallow on the {thinking, idle}
+  // result means this item only re-renders when ITS counts change - not on
+  // every activity transition for unrelated projects.
+  const { thinkingCount, idleCount } = useSessionStore(
+    useShallow((store) => {
+      let thinkingSessionsCount = 0;
+      let idleSessionsCount = 0;
+      for (const session of store.sessions) {
+        if (session.status !== 'running' || session.transient) continue;
+        if (session.projectId !== project.id) continue;
+        if (store.sessionActivity[session.id] === 'idle') {
+          idleSessionsCount += 1;
+        } else {
+          thinkingSessionsCount += 1;
+        }
+      }
+      return { thinkingCount: thinkingSessionsCount, idleCount: idleSessionsCount };
+    }),
+  );
   const {
     attributes,
     listeners,
@@ -139,3 +157,5 @@ export function ProjectListItem({
     </div>
   );
 }
+
+export const ProjectListItem = memo(ProjectListItemImpl);

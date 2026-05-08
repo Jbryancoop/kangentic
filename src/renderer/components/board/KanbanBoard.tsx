@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -221,17 +221,41 @@ export function KanbanBoard() {
     sortableColumnIds,
   } = useBoardDragDrop({ swimlanes, tasks, archivedTasks });
 
+  // Stabilize per-lane array identity across renders. When the `tasks` array
+  // reference changes (every loadBoard / optimistic update / structural-share
+  // pass), we still want lanes whose contents are unchanged to keep the same
+  // array reference so that `Swimlane`'s React.memo can bail out. Without
+  // this, every store update re-renders all lanes regardless of which one
+  // actually changed.
+  const stableLanesRef = useRef<Map<string, Task[]>>(new Map());
+
   const tasksPerLane = useMemo(() => {
-    const map = new Map<string, Task[]>();
-    for (const lane of swimlanes) map.set(lane.id, []);
+    const fresh = new Map<string, Task[]>();
+    for (const lane of swimlanes) fresh.set(lane.id, []);
     for (const task of tasks) {
       if (priorityFilters.size > 0 && !priorityFilters.has(task.priority)) continue;
       if (labelFilters.size > 0 && !(task.labels ?? []).some((label) => labelFilters.has(label))) continue;
-      const arr = map.get(task.swimlane_id);
+      const arr = fresh.get(task.swimlane_id);
       if (arr) arr.push(task);
     }
-    for (const arr of map.values()) arr.sort((a, b) => a.position - b.position);
-    return map;
+    for (const arr of fresh.values()) arr.sort((a, b) => a.position - b.position);
+
+    const stable = new Map<string, Task[]>();
+    const previous = stableLanesRef.current;
+    for (const [laneId, freshArray] of fresh) {
+      const previousArray = previous.get(laneId);
+      if (
+        previousArray &&
+        previousArray.length === freshArray.length &&
+        previousArray.every((task, index) => task === freshArray[index])
+      ) {
+        stable.set(laneId, previousArray);
+      } else {
+        stable.set(laneId, freshArray);
+      }
+    }
+    stableLanesRef.current = stable;
+    return stable;
   }, [swimlanes, tasks, priorityFilters, labelFilters]);
 
   const filterButtonElement = (

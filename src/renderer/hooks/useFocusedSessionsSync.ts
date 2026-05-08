@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect } from 'react';
 import { useSessionStore } from '../stores/session-store';
 import { useBoardStore } from '../stores/board-store';
 import { useConfigStore } from '../stores/config-store';
@@ -30,22 +30,22 @@ export function useFocusedSessionsSync(): void {
   const activeView = useBoardStore((s) => s.activeView);
   const terminalPanelVisible = useConfigStore((s) => s.config.terminalPanelVisible);
   const currentProjectId = useProjectStore((s) => s.currentProject?.id ?? null);
-  const sessions = useSessionStore((s) => s.sessions);
-  const sessionActivity = useSessionStore((s) => s.sessionActivity);
-  const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const dialogSessionId = useSessionStore((s) => s.dialogSessionId);
   const commandBarVisible = useSessionStore((s) => s.commandBarVisible);
   const transientSessionId = useSessionStore((s) => s.transientSessionId);
 
-  const panelSessionId = useMemo<string | null>(
-    () =>
-      derivePanelSessionId({
-        activeSessionId,
-        sessions,
-        currentProjectId,
-        sessionActivity,
-      }),
-    [activeSessionId, sessions, currentProjectId, sessionActivity],
+  // Single derived selector: returns the primitive panel session id. The
+  // selector body runs on every store change (O(N) over running sessions),
+  // but Zustand's Object.is comparison on the string|null result means the
+  // hook only re-renders when the resolved id actually changes. This avoids
+  // re-rendering AppLayout on every sessionActivity push.
+  const panelSessionId = useSessionStore((s) =>
+    derivePanelSessionId({
+      activeSessionId: s.activeSessionId,
+      sessions: s.sessions,
+      currentProjectId,
+      sessionActivity: s.sessionActivity,
+    }),
   );
 
   useEffect(() => {

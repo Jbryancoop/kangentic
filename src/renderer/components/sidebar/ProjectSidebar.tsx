@@ -9,7 +9,6 @@ import {
 } from 'lucide-react';
 import { useProjectStore } from '../../stores/project-store';
 import { useConfigStore } from '../../stores/config-store';
-import { useSessionStore } from '../../stores/session-store';
 import { useToastStore } from '../../stores/toast-store';
 import { ConfirmDialog } from '../dialogs/ConfirmDialog';
 import { CountBadge } from '../CountBadge';
@@ -41,8 +40,6 @@ export function ProjectSidebar({ onToggleSidebar }: ProjectSidebarProps) {
   const deleteGroup = useProjectStore((s) => s.deleteGroup);
   const reorderGroups = useProjectStore((s) => s.reorderGroups);
   const toggleGroupCollapsed = useProjectStore((s) => s.toggleGroupCollapsed);
-  const sessions = useSessionStore((s) => s.sessions);
-  const sessionActivity = useSessionStore((s) => s.sessionActivity);
   const openProjectSettings = useConfigStore((state) => state.openProjectSettings);
   const openProjectByPath = useProjectStore((s) => s.openProjectByPath);
 
@@ -105,24 +102,6 @@ export function ProjectSidebar({ onToggleSidebar }: ProjectSidebarProps) {
   const totalFilteredCount =
     filteredUngroupedProjects.length +
     Array.from(filteredGroupedProjects.values()).reduce((sum, list) => sum + list.length, 0);
-
-  const activityCountsByProject = useMemo(() => {
-    const counts = new Map<string, { thinkingCount: number; idleCount: number }>();
-    for (const project of projects) {
-      counts.set(project.id, { thinkingCount: 0, idleCount: 0 });
-    }
-    for (const session of sessions) {
-      if (session.status !== 'running' || session.transient) continue;
-      const entry = counts.get(session.projectId);
-      if (!entry) continue;
-      if (sessionActivity[session.id] === 'idle') {
-        entry.idleCount += 1;
-      } else {
-        entry.thinkingCount += 1;
-      }
-    }
-    return counts;
-  }, [projects, sessions, sessionActivity]);
 
   useEffect(() => {
     if (creatingGroup && newGroupInputRef.current) {
@@ -236,22 +215,21 @@ export function ProjectSidebar({ onToggleSidebar }: ProjectSidebarProps) {
     setProjectGroup(projectId, null);
   }, [setProjectGroup]);
 
+  const handleCancelRename = useCallback(() => setRenamingProjectId(null), []);
+
   const renderProjectItem = (project: Project, isGrouped: boolean) => {
     const isActive = currentProject?.id === project.id;
-    const counts = activityCountsByProject.get(project.id) ?? { thinkingCount: 0, idleCount: 0 };
     return (
       <ProjectListItem
         key={project.id}
         project={project}
         isActive={isActive}
         isRenaming={renamingProjectId === project.id}
-        thinkingCount={counts.thinkingCount}
-        idleCount={counts.idleCount}
         isGrouped={isGrouped}
         onSelect={openProject}
         onContextMenu={handleContextMenu}
         onRename={handleRenameProject}
-        onCancelRename={() => setRenamingProjectId(null)}
+        onCancelRename={handleCancelRename}
       />
     );
   };
