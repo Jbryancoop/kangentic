@@ -30,9 +30,18 @@ export const DEFAULT_BG_SHELL_ESCAPE_HATCH_MS = 5 * 60_000;
  * after this long. Pending tools and counters bypass this watchdog -
  * legitimate long-running work is not stuck state.
  *
- * Default 45 seconds. Override via constructor option for tests.
+ * Default 180 seconds (3 minutes). Long-thinking phases like plan
+ * composition can produce no tool events for >45s, so a tighter
+ * threshold causes false fires. During real thinking, Claude's
+ * `status.json` updates fire `markThinkingSignal` via
+ * `processStatusUpdate` at intervals well under 180s (empirically
+ * validated against Task #121's recorded events.jsonl, where the
+ * worst observed silence-after-signal interval was 45s - well below
+ * 180s). Genuine stuck states (no status updates at all) still
+ * recover within the threshold. Override via constructor option for
+ * tests.
  */
-export const DEFAULT_STALE_THINKING_TIMEOUT_MS = 45_000;
+export const DEFAULT_STALE_THINKING_TIMEOUT_MS = 180_000;
 
 /**
  * Default idle stability window. After computing a Stop-driven idle
@@ -41,7 +50,7 @@ export const DEFAULT_STALE_THINKING_TIMEOUT_MS = 45_000;
  * the idle. Prevents idle->thinking flicker from out-of-order hook
  * arrivals.
  *
- * Bypassed by Interrupted (instant), watchdog timeout (already 45s),
+ * Bypassed by Interrupted (instant), watchdog timeout (already 180s),
  * and PTY silence (already 3s).
  *
  * Default 400ms. Override via constructor option for tests / disable.

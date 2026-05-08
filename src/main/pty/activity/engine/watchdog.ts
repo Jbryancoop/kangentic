@@ -29,7 +29,7 @@ export interface WatchdogHold {
    * a long absence of signal - a stability window catches the rare
    * case where a delayed hook arrives within 400ms of the hatch.
    * Stale-thinking opts out: the hold predicate already requires
-   * 45 sec of silence, so flicker risk is nil.
+   * 180 sec of silence, so flicker risk is nil.
    */
   applyStabilityWindow: boolean;
 }

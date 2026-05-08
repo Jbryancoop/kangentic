@@ -11,7 +11,7 @@
  * - Force paths (forceThinking, forceIdle, markThinkingSignal)
  * - Interrupted bypasses everything to immediate idle
  * - 5-min escape hatch for orphaned background shells
- * - 45s stale-thinking watchdog
+ * - 180s stale-thinking watchdog
  * - 400ms idle stability window
  * - markBackgroundShellEnded (Subsystem B watcher entry point)
  * - adoptAnonymousBackgroundShells (Subsystem G resume entry point)
@@ -1043,7 +1043,7 @@ describe('ActivityEngine', () => {
     });
   });
 
-  describe('45s stale-thinking watchdog (hook loss safety net)', () => {
+  describe('180s stale-thinking watchdog (hook loss safety net)', () => {
     beforeEach(() => {
       engine.initSession(SESSION_ID);
       transitions.length = 0;
@@ -1086,6 +1086,35 @@ describe('ActivityEngine', () => {
       engine.markThinkingSignal(SESSION_ID);
       vi.advanceTimersByTime(TEST_STALE_TIMEOUT_MS / 2 + 100);
       expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+    });
+
+    it('periodic markThinkingSignal calls over many timeout windows keep thinking alive', () => {
+      // Pins the contract used by `processStatusUpdate` in
+      // SessionTelemetry: while Claude's statusline is updating,
+      // each update fires `markThinkingSignal`, refreshing
+      // `lastSignalAt` and re-arming the watchdog timer. As long as the
+      // signals arrive at sub-threshold intervals, the engine stays in
+      // `thinking` indefinitely. This is what kept Task #121's
+      // 189-second plan-composition gap from running away into an
+      // unbounded idle flip-flop - the bumped 180s threshold on top of
+      // status-update intervals handles the recorded scenario.
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      const signalIntervalMs = TEST_STALE_TIMEOUT_MS / 2;
+      const totalDurationMs = TEST_STALE_TIMEOUT_MS * 60;
+      let elapsed = 0;
+      while (elapsed < totalDurationMs) {
+        vi.advanceTimersByTime(signalIntervalMs);
+        elapsed += signalIntervalMs;
+        engine.markThinkingSignal(SESSION_ID);
+        expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      }
+      // No stale-thinking transition should have been recorded across
+      // the entire window.
+      const state = engine.getState(SESSION_ID)!;
+      const staleTransitions = state.recentTransitions.filter(
+        (transition) => transition.trigger === 'timer:stale-thinking',
+      );
+      expect(staleTransitions).toHaveLength(0);
     });
   });
 
