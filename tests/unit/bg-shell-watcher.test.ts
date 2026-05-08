@@ -59,7 +59,6 @@ class MockProcessTreeProbe implements ProcessTreeProbe {
 
 interface CallbackLog {
   naturalExits: Array<{ sessionId: string; exitedCount: number }>;
-  unhookedAdoptions: Array<{ sessionId: string; adoptedCount: number }>;
   shellPidExited: Array<{ sessionId: string; shellId: string }>;
   rootDied: string[];
   shellsObservedAlive: string[];
@@ -72,7 +71,7 @@ function makeWatcher(opts?: {
   pendingToolMap?: Map<string, number>;
 }) {
   const probe = new MockProcessTreeProbe();
-  const log: CallbackLog = { naturalExits: [], unhookedAdoptions: [], shellPidExited: [], rootDied: [], shellsObservedAlive: [] };
+  const log: CallbackLog = { naturalExits: [], shellPidExited: [], rootDied: [], shellsObservedAlive: [] };
   const rootPids = opts?.rootPidMap ?? new Map<string, number>();
   const shellCounts = opts?.shellCountMap ?? new Map<string, number>();
   const pendingTools = opts?.pendingToolMap ?? new Map<string, number>();
@@ -80,12 +79,6 @@ function makeWatcher(opts?: {
   const callbacks: BgShellWatcherCallbacks = {
     onNaturalExit(sessionId, exitedCount) {
       log.naturalExits.push({ sessionId, exitedCount });
-    },
-    onUnhookedBackgroundShells(sessionId, adoptedCount) {
-      log.unhookedAdoptions.push({ sessionId, adoptedCount });
-      // Mimic the engine: track the new shells so subsequent decrements
-      // can be capped at the engine's tracked count.
-      shellCounts.set(sessionId, (shellCounts.get(sessionId) ?? 0) + adoptedCount);
     },
     onShellPidExited(sessionId, shellId) {
       log.shellPidExited.push({ sessionId, shellId });
@@ -431,73 +424,60 @@ describe('BgShellWatcher', () => {
     watcher.registerSession('s1');
     await watcher.pollNow();
 
-    expect(log.unhookedAdoptions).toHaveLength(0);
     expect(log.naturalExits).toHaveLength(0);
     watcher.dispose();
   });
 
-  it('Tier B increment: adopts new shell-like descendants the engine does not know about', async () => {
-    // The user-visible bug: agent runs MonitorBash / BashList / some
-    // tool the hook directives do not catch. Engine never sees
-    // background_shell_start. Watcher polls, sees more shell-like
-    // descendants than baseline, adopts them as anonymous so the
-    // session stays in `thinking` until they exit.
+  it('rebases helper baseline up when shell-like descendants appear post-anchor (no adoption)', async () => {
+    // Empirical bug regression: agent's MCP server / statusline worker
+    // restarts mid-session and spawns a persistent shell-like child.
+    // Pre-fix the watcher adopted it as anonymous bg work; the
+    // resulting phantom counter was then pinned by `onShellsObservedAlive`
+    // and the session stuck in `thinking` indefinitely. Post-fix the
+    // watcher silently rebases `preExistingHelpers` up so the helper
+    // is treated as part of the baseline, not as user-initiated bg work.
     const { watcher, probe, rootPids, log } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
-    // Cycle 1: nothing yet, baseline anchors at 0.
     probe.trees.set(1234, []);
     watcher.registerSession('s1');
-    await watcher.pollNow();
-    expect(log.unhookedAdoptions).toHaveLength(0);
+    await watcher.pollNow(); // anchor preExistingHelpers=0
 
-    // Cycle 2: agent spawned 2 monitors via an unhooked tool.
+    // Cycle 2: 2 helpers materialize after the anchor (e.g. MCP server
+    // restart + npm.cmd wrapper).
     probe.trees.set(1234, [
       { pid: 6001, ppid: 1234, comm: 'bash' },
       { pid: 6002, ppid: 1234, comm: 'sh' },
     ]);
     await watcher.pollNow();
 
-    expect(log.unhookedAdoptions).toEqual([{ sessionId: 's1', adoptedCount: 2 }]);
-    watcher.dispose();
-  });
+    // No adoption: the engine's bg-shell counters are untouched.
+    // Real bg shells fire `background_shell_start` hooks which the
+    // engine ingests directly via processEvent.
+    expect(log.naturalExits).toHaveLength(0);
 
-  it('Tier B increment: subsequent natural exit decrements the previously-adopted count', async () => {
-    // End-to-end round trip: adopt unhooked shells on cycle 2, then
-    // observe their natural exit on cycle 3.
-    const { watcher, probe, rootPids, log } = makeWatcher();
-    rootPids.set('s1', 1234);
-    probe.alive.add(1234);
-    probe.trees.set(1234, []);
-    watcher.registerSession('s1');
-    await watcher.pollNow(); // anchor at 0
+    // Cycle 3: same shape - in balance with the rebased baseline.
+    // No spurious deficit firing, no spurious adoption.
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
 
-    probe.trees.set(1234, [
-      { pid: 6001, ppid: 1234, comm: 'bash' },
-      { pid: 6002, ppid: 1234, comm: 'sh' },
-    ]);
-    await watcher.pollNow(); // adopt 2
-
-    expect(log.unhookedAdoptions).toEqual([{ sessionId: 's1', adoptedCount: 2 }]);
-
-    // One exits, one remains alive. (Probe-failure guard suppresses
-    // drops to 0 when tracked > 0; drop to 1 so the test can observe
-    // the natural-exit firing.)
+    // Cycle 4: one helper exits. Rebase baseline DOWN (existing
+    // deficit-side behavior). Still no natural-exit fire because
+    // tracked=0 (no real bg shells the engine knew about).
     probe.trees.set(1234, [{ pid: 6001, ppid: 1234, comm: 'bash' }]);
-    // Lag-tolerance grace: 2 cycles before natural exit fires.
     await watcher.pollNow();
     await watcher.pollNow();
-
-    expect(log.naturalExits).toEqual([{ sessionId: 's1', exitedCount: 1 }]);
+    expect(log.naturalExits).toHaveLength(0);
     watcher.dispose();
   });
 
-  it('Tier B increment: skips adoption while engine has pending tools (foreground bash spawns)', async () => {
+  it('does not rebase up while engine has pending tools (foreground bash transient)', async () => {
     // Regression: a foreground `Bash` / `BashOutput` / `BashList`
-    // invocation spawns a short-lived direct-child bash. The engine
-    // already counts it via pendingToolCount; the watcher must NOT
-    // also adopt it as a bg shell or we double-count and inflate the
-    // user-visible bg count for the duration of the foreground tool.
+    // invocation spawns a short-lived direct-child bash. The watcher
+    // must NOT bake that transient into `preExistingHelpers`; if it
+    // did, the bash exit would not register as a deficit and
+    // hook-tracked bg-shell exits later in the session would be
+    // miscounted.
     const { watcher, probe, rootPids, log, pendingTools } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
@@ -509,26 +489,23 @@ describe('BgShellWatcher', () => {
     pendingTools.set('s1', 1);
     probe.trees.set(1234, [{ pid: 6001, ppid: 1234, comm: 'bash' }]);
     await watcher.pollNow();
-
-    // Pending tool: NO adoption fires. Baseline silently re-anchors so
-    // when the bash exits, the decrement branch sees no surplus.
-    expect(log.unhookedAdoptions).toHaveLength(0);
+    await watcher.pollNow();
 
     // ToolEnd fires -> pendingToolCount drops. Bash exits same cycle.
     pendingTools.set('s1', 0);
     probe.trees.set(1234, []);
     await watcher.pollNow();
 
-    // No spurious natural exit (we never adopted, so engine has nothing
-    // to decrement; tracked count stayed at 0 throughout).
+    // No spurious natural exit: tracked stayed at 0 throughout.
     expect(log.naturalExits).toHaveLength(0);
     watcher.dispose();
   });
 
-  it('Tier B increment: adopts persistent surplus once pending tools clear', async () => {
-    // Once the foreground tool completes (pendingToolCount drops to 0)
-    // and a shell-like child remains, that's a real bg shell and gets
-    // adopted on the next cycle.
+  it('rebases up only after pending tools clear (defers helper attribution)', async () => {
+    // Once a foreground tool completes and a persistent shell-like
+    // child remains (e.g. MCP server child still running), the
+    // watcher should rebase that into `preExistingHelpers` so future
+    // cycles treat it as baseline.
     const { watcher, probe, rootPids, log, pendingTools } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
@@ -536,23 +513,24 @@ describe('BgShellWatcher', () => {
     watcher.registerSession('s1');
     await watcher.pollNow();
 
-    // Foreground tool spawns bash, watcher polls mid-tool -> skip.
+    // Foreground tool spawns bash, watcher polls mid-tool -> skip rebase.
     pendingTools.set('s1', 1);
     probe.trees.set(1234, [{ pid: 6001, ppid: 1234, comm: 'bash' }]);
     await watcher.pollNow();
-    expect(log.unhookedAdoptions).toHaveLength(0);
 
-    // Tool completes and its transient bash exits. A separate
-    // unhooked tool (e.g. MonitorBash) spawned a persistent shell.
-    // After pendingToolCount drops, the watcher's next cycle adopts
-    // the persistent shell as anonymous bg work.
+    // Tool completes; a separate persistent helper remains.
     pendingTools.set('s1', 0);
-    probe.trees.set(1234, [
-      { pid: 6002, ppid: 1234, comm: 'sh' },
-    ]);
+    probe.trees.set(1234, [{ pid: 6002, ppid: 1234, comm: 'sh' }]);
     await watcher.pollNow();
 
-    expect(log.unhookedAdoptions).toEqual([{ sessionId: 's1', adoptedCount: 1 }]);
+    // No adoption fires (real bg shells go through hooks). And the
+    // baseline now includes the helper so subsequent in-balance cycles
+    // are silent.
+    expect(log.naturalExits).toHaveLength(0);
+
+    // Cycle 4: still in balance with the rebased preExistingHelpers.
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
     watcher.dispose();
   });
 
@@ -640,7 +618,6 @@ describe('BgShellWatcher', () => {
     ]);
     await watcher.pollNow();
     expect(log.naturalExits).toHaveLength(0);
-    expect(log.unhookedAdoptions).toHaveLength(0); // pendingTools > 0, no adoption
 
     // Foreground bash exits but tool is still pending (e.g. processing
     // output). Both bg shells still alive. shellLikeCount drops to 2,
@@ -685,7 +662,6 @@ describe('BgShellWatcher', () => {
     probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
     await watcher.pollNow(); // shellLikeCount=1, expected=1, no change
     expect(log.naturalExits).toHaveLength(0);
-    expect(log.unhookedAdoptions).toHaveLength(0);
 
     // Foreground Bash B runs - adds a transient bash. pendingToolCount=1.
     pendingTools.set('s1', 1);
@@ -695,14 +671,12 @@ describe('BgShellWatcher', () => {
     ]);
     await watcher.pollNow(); // surplus=1 but pendingTools>0, skip
     expect(log.naturalExits).toHaveLength(0);
-    expect(log.unhookedAdoptions).toHaveLength(0);
 
     // Foreground B finishes, its bash exits. A still running.
     pendingTools.set('s1', 0);
     probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
     await watcher.pollNow(); // shellLikeCount=1, expected=1, no false exit fires
     expect(log.naturalExits).toHaveLength(0);
-    expect(log.unhookedAdoptions).toHaveLength(0);
 
     // Hooked bg shell C starts (second hooked start while A still alive).
     shellCounts.set('s1', 2);
@@ -764,21 +738,19 @@ describe('BgShellWatcher', () => {
     // cycles), so no false deficit logic runs.
     await watcher.pollNow();
     expect(log.naturalExits).toHaveLength(0);
-    // No spurious surplus adoption either - count is in sync.
-    expect(log.unhookedAdoptions).toHaveLength(0);
     watcher.dispose();
   });
 
   it('Tier B: drains anonymous count when all shells exit at once with healthy probe', async () => {
     // Regression for the activity-engine bg-shell leak: when shells
     // truly exit while the engine still holds an
-    // anonymousBackgroundShellCount (from earlier
-    // onUnhookedBackgroundShells adoption), the watcher must drain
-    // the count via onNaturalExit. The previous count-shape
-    // probe-failure guard mis-classified this exact post-exit state
-    // as probe failure and skipped every cycle indefinitely, leaving
-    // the session pinned in 'thinking' until the 5-min bg-shell-hatch
-    // watchdog fired.
+    // anonymousBackgroundShellCount (from real hook-driven
+    // BackgroundShellStart events without a shell_id), the watcher
+    // must drain the count via onNaturalExit. The previous
+    // count-shape probe-failure guard mis-classified this exact
+    // post-exit state as probe failure and skipped every cycle
+    // indefinitely, leaving the session pinned in 'thinking' until
+    // the 5-min bg-shell-hatch watchdog fired.
     const { watcher, probe, rootPids, log, shellCounts } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
@@ -846,18 +818,18 @@ describe('BgShellWatcher', () => {
 
   it('Tier B: regression for activity-engine bg-shell leak (idle tasks shown as Thinking)', async () => {
     // Reproduces the symptom from the bug ticket: engine holds
-    // anonymousBackgroundShellCount=2 from a prior
-    // onUnhookedBackgroundShells adoption (e.g. agent's MonitorBash
-    // / BashList), all OS bashes exited cleanly, no pending tools,
-    // no turn active. Sidebar showed "Thinking - 2 background
-    // shells" until the 5-min bg-shell-hatch fired. After this fix,
-    // the watcher drains the leak within ~2 cycles.
+    // anonymousBackgroundShellCount=2 from real hook-driven
+    // BackgroundShellStart events (no shell_id), all OS bashes
+    // exited cleanly, no pending tools, no turn active. Sidebar
+    // showed "Thinking - 2 background shells" until the 5-min
+    // bg-shell-hatch fired. After this fix, the watcher drains the
+    // leak within ~2 cycles.
     const { watcher, probe, rootPids, log, shellCounts } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
-    // Step 1: agent ran an unhooked tool that spawned 2 bashes. The
-    // watcher adopted them via onUnhookedBackgroundShells. We jump
-    // straight to the post-adoption steady state.
+    // Step 1: agent fired hook BackgroundShellStart events for 2 bg
+    // shells (no shell_id, so they tracked anonymously). We jump
+    // straight to the post-spawn steady state.
     probe.trees.set(1234, [
       { pid: 5001, ppid: 1234, comm: 'bash' },
       { pid: 5002, ppid: 1234, comm: 'bash' },
@@ -945,7 +917,6 @@ describe('BgShellWatcher', () => {
     // shellLikeCount should be 4 (1 shim cmd + 3 bashes), tracked=3,
     // so preExisting = 4 - 3 = 1 (the shim). On subsequent cycles
     // expected stays 4 and shellLikeCount stays 4 - in sync.
-    expect(log.unhookedAdoptions).toHaveLength(0);
     expect(log.naturalExits).toHaveLength(0);
 
     // One bg shell exits.
@@ -993,7 +964,6 @@ describe('BgShellWatcher', () => {
     await watcher.pollNow();
     // First cycle: shellLikeCount = 3 (the 3 bashes - cmds skipped),
     // tracked = 3, preExisting = 0. In sync.
-    expect(log.unhookedAdoptions).toHaveLength(0);
     expect(log.naturalExits).toHaveLength(0);
     watcher.dispose();
   });
@@ -1022,7 +992,6 @@ describe('BgShellWatcher', () => {
     watcher.registerSession('s1');
     await watcher.pollNow();
     // First cycle: shellLikeCount=3, tracked=3 -> preExisting=0, in sync.
-    expect(log.unhookedAdoptions).toHaveLength(0);
     expect(log.naturalExits).toHaveLength(0);
 
     // One bg shell exits.
@@ -1060,12 +1029,17 @@ describe('BgShellWatcher', () => {
 
     // Pre-existing helpers count = 1 (just the bash). Subsequent
     // cycles see no delta. Zero adoptions, zero false natural exits.
-    expect(log.unhookedAdoptions).toHaveLength(0);
     expect(log.naturalExits).toHaveLength(0);
     watcher.dispose();
   });
 
-  it('Tier B increment: only adopts the delta on each cycle (does not re-adopt the same shells)', async () => {
+  it('rebases surplus only once - does not re-rebase the same persistent helper across cycles', async () => {
+    // After a helper appears post-anchor, the watcher rebases
+    // `preExistingHelpers` up by the surplus on the cycle that
+    // detects it. Subsequent cycles with the same shape see expected
+    // == shellLikeCount (in balance) and do nothing. Without correct
+    // rebase, the surplus would be detected on every cycle and
+    // ratchet preExistingHelpers indefinitely.
     const { watcher, probe, rootPids, log } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
@@ -1078,26 +1052,22 @@ describe('BgShellWatcher', () => {
     await watcher.pollNow();
     await watcher.pollNow();
 
-    // Only ONE adoption fires across three cycles with the same shell.
-    expect(log.unhookedAdoptions).toEqual([{ sessionId: 's1', adoptedCount: 1 }]);
+    // No real bg shells (engine-tracked=0) and no helper exits =>
+    // zero natural-exit fires. Watcher state stayed in balance after
+    // the rebase; subsequent cycles are silent.
+    expect(log.naturalExits).toHaveLength(0);
     watcher.dispose();
   });
 
-  it('preExistingHelpers adjusts down when a pre-existing helper exits while engine tracked=0', async () => {
-    // Gap: the `else` branch of `tracked > 0` at watcher.ts line 426.
-    // A pre-existing MCP server / statusline worker that passed the
-    // shell-like filter exits while the engine has 0 tracked shells.
-    // The watcher must silently shrink preExistingHelpers and NOT fire
-    // onNaturalExit or onUnhookedBackgroundShells. After both helpers
-    // exit, a subsequent surplus (new unhooked shell spawns while tracked
-    // remains 0) must be adopted normally, confirming preExistingHelpers
-    // was cleanly adjusted to 0 rather than staying at its original
-    // value.
+  it('preExistingHelpers tracks helper churn symmetrically (rebase down on exit, rebase up on entry)', async () => {
+    // The watcher's helper baseline rebases in BOTH directions:
+    //   - exit (deficit branch with tracked=0): preExistingHelpers -= delta
+    //   - entry (surplus branch with pendingTools=0): preExistingHelpers += surplus
+    // Neither produces engine-state mutation when tracked=0; both
+    // keep `expected` aligned with reality so subsequent cycles are silent.
     const { watcher, probe, rootPids, log } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
-    // Two shell-like pre-existing helpers (e.g. MCP server wrappers).
-    // Engine reports 0 tracked shells so they both anchor as pre-existing.
     probe.trees.set(1234, [
       { pid: 5001, ppid: 1234, comm: 'bash' },
       { pid: 5002, ppid: 1234, comm: 'sh' },
@@ -1107,50 +1077,38 @@ describe('BgShellWatcher', () => {
     watcher.registerSession('s1');
     await watcher.pollNow(); // anchor: preExistingHelpers=2, tracked=0
 
-    // One pre-existing helper exits.
-    probe.trees.set(1234, [
-      { pid: 5001, ppid: 1234, comm: 'bash' },
-    ]);
-
-    // Lag-tolerance grace: deficit must persist 2 cycles before firing.
-    // Even after grace, tracked=0 so the `else` branch fires, shrinking
-    // preExistingHelpers to 1 rather than calling onNaturalExit.
+    // One pre-existing helper exits. After the 2-cycle deficit lag,
+    // the deficit's `else` branch shrinks preExistingHelpers to 1.
+    probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
     await watcher.pollNow();
     await watcher.pollNow();
     expect(log.naturalExits).toHaveLength(0);
-    expect(log.unhookedAdoptions).toHaveLength(0);
 
-    // Second helper also exits.
+    // Second helper exits. preExistingHelpers shrinks to 0.
     probe.trees.set(1234, []);
-
-    // Two more cycles of deficit grace (counter reset after first
-    // adjustment).
     await watcher.pollNow();
     await watcher.pollNow();
     expect(log.naturalExits).toHaveLength(0);
-    expect(log.unhookedAdoptions).toHaveLength(0);
 
-    // Now confirm preExistingHelpers was cleanly adjusted to 0:
-    // raise shellLikeCount to 1 with tracked still 0. If
-    // preExistingHelpers were still 2 (unadjusted), the surplus would
-    // be negative (1 - 0 - 2 < 0) and no adoption would fire. But if
-    // preExistingHelpers was correctly reduced to 0, the surplus is 1
-    // and onUnhookedBackgroundShells fires.
-    probe.trees.set(1234, [
-      { pid: 6001, ppid: 1234, comm: 'bash' },
-    ]);
+    // A new helper spawns. Surplus branch rebases preExistingHelpers
+    // up to 1. NO adoption fires (real bg shells go through hooks).
+    probe.trees.set(1234, [{ pid: 6001, ppid: 1234, comm: 'bash' }]);
     await watcher.pollNow();
-    expect(log.unhookedAdoptions).toEqual([{ sessionId: 's1', adoptedCount: 1 }]);
+    expect(log.naturalExits).toHaveLength(0);
+
+    // Confirm balance: subsequent cycles with the same shape are silent.
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
     watcher.dispose();
   });
 
   it('consecutiveDeficitCycles resets to 0 on surplus (not just on balance), so a subsequent deficit restarts the lag-tolerance counter', async () => {
-    // Gap: three reset sites exist for consecutiveDeficitCycles (lines
-    // 379, 388, 433 in watcher.ts). This test targets the surplus path
-    // (line 388). If the reset were missing from the surplus branch,
-    // a second deficit arriving after a surplus would add to the
-    // leftover counter value and fire prematurely (i.e. without the
-    // full 2-cycle lag grace).
+    // The deficit-counter reset on the surplus path is what prevents
+    // a leftover deficit-cycle count from adding to a fresh deficit
+    // and firing prematurely. With the surplus branch now rebasing
+    // preExistingHelpers (instead of adopting), the reset still
+    // matters: a deficit -> surplus -> deficit transition must give
+    // the second deficit a full 2-cycle lag grace.
     const { watcher, probe, rootPids, shellCounts, log } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
@@ -1166,87 +1124,190 @@ describe('BgShellWatcher', () => {
     await watcher.pollNow(); // anchor
 
     // Cycle 1: one shell exits -> deficit=1, consecutiveDeficitCycles=1.
-    probe.trees.set(1234, [
-      { pid: 5001, ppid: 1234, comm: 'bash' },
-    ]);
+    probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
     await watcher.pollNow();
-    // Still within lag tolerance, no fire yet.
     expect(log.naturalExits).toHaveLength(0);
 
-    // Cycle 2: a surplus arrives (new unhooked shell spawns while the
-    // other one is still gone). Engine has tracked=2 still (we didn't
-    // fire a natural exit on cycle 1), shellLikeCount=3, so surplus=1.
-    // The adoption fires AND consecutiveDeficitCycles must reset to 0.
+    // Cycle 2: a helper materializes while the original tracked shell
+    // is still gone. shellLikeCount=2, expected=preExisting(0)+tracked(2)=2:
+    // wait, that's actually balance - the missing shell and the new
+    // helper cancel out. Let me arrange it more clearly:
+    //   - tracked=2 (engine still thinks 2 hook shells exist)
+    //   - preExisting=0
+    //   - shellLikeCount=3 (1 original tracked + 2 new helpers)
+    //   - expected=2, surplus=1 -> rebase preExistingHelpers to 1
+    //   - consecutiveDeficitCycles reset to 0
     probe.trees.set(1234, [
       { pid: 5001, ppid: 1234, comm: 'bash' },
-      // pid 5002 is still gone; a new unhooked shell appeared instead
       { pid: 6001, ppid: 1234, comm: 'sh' },
       { pid: 6002, ppid: 1234, comm: 'bash' },
     ]);
     await watcher.pollNow();
-    // Adoption fires for the 1 surplus. Engine callback bumps tracked
-    // from 2 to 3 (makeWatcher's onUnhookedBackgroundShells does this).
-    expect(log.unhookedAdoptions).toEqual([{ sessionId: 's1', adoptedCount: 1 }]);
-    // No natural exit fires from cycle 2 (surplus, not deficit path).
+    // No adoption (rebased silently). No natural exit (surplus path).
     expect(log.naturalExits).toHaveLength(0);
 
-    // Cycle 3: now engine has tracked=3 (2 original + 1 adopted),
-    // preExisting=0, expected=3. shellLikeCount=3 -> in balance ->
-    // no deficit.
+    // Cycle 3: balance with rebased preExistingHelpers=1, tracked=2,
+    // expected=3. shellLikeCount=3 -> no deficit, no surplus.
     await watcher.pollNow();
     expect(log.naturalExits).toHaveLength(0);
 
-    // Now simulate a fresh deficit (drop to 2 shells, expected=3).
+    // Fresh deficit: drop one helper. shellLikeCount=2, expected=3.
     probe.trees.set(1234, [
       { pid: 5001, ppid: 1234, comm: 'bash' },
       { pid: 6001, ppid: 1234, comm: 'sh' },
     ]);
 
-    // Cycle 4: deficit=1, consecutiveDeficitCycles becomes 1.
-    // Because the counter was reset to 0 during the surplus in cycle 2
-    // (not preserved as 1 from the earlier deficit), lag tolerance
-    // correctly suppresses the fire.
+    // Cycle 4: deficit=1, consecutiveDeficitCycles=1 (NOT 2 - reset
+    // was honored on cycle 2). Lag tolerance suppresses the fire.
     await watcher.pollNow();
     expect(log.naturalExits).toHaveLength(0);
 
-    // Cycle 5: deficit persists - now at 2 consecutive cycles - fires.
+    // Cycle 5: deficit persists -> 2 consecutive cycles -> tracked>0
+    // path fires natural-exit (capped at tracked count).
     await watcher.pollNow();
     expect(log.naturalExits).toEqual([{ sessionId: 's1', exitedCount: 1 }]);
     watcher.dispose();
   });
 
-  it('anchorBaseline is a public no-op and does not mutate watcher state', async () => {
-    // Gap: anchorBaseline() exists as a backwards-compat shim (watcher
-    // now derives expected shells from engine state each cycle, not from
-    // an explicit anchor snapshot). Verify it neither fires callbacks,
-    // nor perturbs preExistingHelpers, nor changes behavior of the
-    // following cycle.
-    const { watcher, probe, rootPids, log } = makeWatcher();
+  it('surplus rebase-up while tracked > 0: rebased helper does not produce spurious second exit when real bg shell exits', async () => {
+    // Regression guard: watcher anchors with tracked=1 (one real bg shell),
+    // then a helper materializes post-anchor (surplus=1, tracked=1, pendingTools=0).
+    // The surplus branch rebases preExistingHelpers up from 0 to 1.
+    // When the REAL bg shell subsequently exits (not the helper), exactly one
+    // onNaturalExit fires. The rebased helper does NOT produce a second exit.
+    //
+    // Pre-fix: the surplus was adopted (engine.adoptAnonymousBackgroundShells
+    // was called), so the engine believed there were TWO bg shells - the real one
+    // AND the phantom helper. When the real shell exited, TWO onNaturalExit calls
+    // fired (one per watcher cycle decrement), not one. That double-decrement
+    // caused the anonymous counter to underflow, falsely reporting idle.
+    //
+    // Post-fix: the surplus path rebases preExistingHelpers and returns without
+    // touching the engine counter. Only ONE onNaturalExit fires when the real
+    // bg shell exits.
+    const { watcher, probe, rootPids, shellCounts, log } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
-    probe.trees.set(1234, []);
 
+    // Anchor with ONE real bg shell, preExisting=0.
+    probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
+    shellCounts.set('s1', 1);
+
+    watcher.registerSession('s1');
+    await watcher.pollNow(); // first-cycle anchor: preExistingHelpers = max(0, 1-1) = 0
+
+    // Helper materializes post-anchor. shellLikeCount=2, expected=1+1=2? No:
+    // expected = preExistingHelpers(0) + tracked(1) = 1. shellLikeCount=2.
+    // surplus=1, pendingTools=0 -> rebase preExistingHelpers to 1.
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' }, // the real bg shell
+      { pid: 6001, ppid: 1234, comm: 'sh' },   // new helper (MCP server restart, etc.)
+    ]);
+    await watcher.pollNow(); // surplus path: preExistingHelpers=1, no naturalExit
+    expect(log.naturalExits).toHaveLength(0);
+
+    // Now the REAL bg shell exits. Helper still alive.
+    // shellLikeCount=1, expected=preExisting(1)+tracked(1)=2. deficit=1.
+    probe.trees.set(1234, [{ pid: 6001, ppid: 1234, comm: 'sh' }]);
+
+    // Lag-tolerance grace: deficit must persist 2 cycles.
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
+    await watcher.pollNow();
+
+    // EXACTLY one natural exit for the one real bg shell. The rebased helper
+    // (preExistingHelpers=1) is correctly excluded from the tracked drain.
+    expect(log.naturalExits).toEqual([{ sessionId: 's1', exitedCount: 1 }]);
+    watcher.dispose();
+  });
+
+  it('pendingTools > 0 surplus-skip: consecutiveDeficitCycles resets to 0 when pendingTools surplus branch fires', async () => {
+    // Documents the precise semantic: when a surplus-while-pending cycle fires,
+    // the code runs `state.consecutiveDeficitCycles = 0` BEFORE returning.
+    // This means a prior deficit that was building lag tolerance gets WIPED.
+    // A subsequent fresh deficit therefore restarts the 2-cycle grace from zero.
+    //
+    // Scenario: cycle 1 deficit (consecutiveDeficitCycles=1), cycle 2
+    // surplus-while-pending (resets consecutiveDeficitCycles to 0), cycle 3
+    // clean surplus (preExistingHelpers rebased, consecutiveDeficitCycles=0),
+    // cycle 4 fresh deficit -> suppressed (cycle 1 of new deficit grace).
+    // cycle 5 deficit persists -> fires.
+    //
+    // If consecutiveDeficitCycles was NOT reset in the pending-surplus path,
+    // cycle 4 would be cycle 2 of the deficit and fire prematurely.
+    const { watcher, probe, rootPids, shellCounts, log, pendingTools } = makeWatcher();
+    rootPids.set('s1', 1234);
+    probe.alive.add(1234);
+
+    // Anchor: 2 tracked bg shells, no helpers.
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' },
+      { pid: 5002, ppid: 1234, comm: 'sh' },
+    ]);
+    shellCounts.set('s1', 2);
     watcher.registerSession('s1');
     await watcher.pollNow(); // anchor: preExistingHelpers=0
 
-    // Call anchorBaseline - must be a no-op.
-    await watcher.anchorBaseline('s1');
-    expect(log.naturalExits).toHaveLength(0);
-    expect(log.unhookedAdoptions).toHaveLength(0);
-
-    // Follow-up cycle with no process changes: still no callbacks.
+    // Cycle 1: one shell exits -> deficit=1. consecutiveDeficitCycles becomes 1.
+    // Lag tolerance suppresses.
+    probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
     await watcher.pollNow();
     expect(log.naturalExits).toHaveLength(0);
-    expect(log.unhookedAdoptions).toHaveLength(0);
 
-    // Verify state is unchanged: introduce a surplus shell. If
-    // anchorBaseline had silently re-anchored preExistingHelpers to 1,
-    // the surplus would be suppressed (1 shell matches pre-existing=1,
-    // no adoption). Instead, preExistingHelpers stayed at 0 so the
-    // surplus of 1 is adopted normally.
-    probe.trees.set(1234, [{ pid: 6001, ppid: 1234, comm: 'bash' }]);
+    // Cycle 2: surplus-while-pending. A foreground bash appears while
+    // pendingTools=1. shellLikeCount=2, expected=0+2=2. Wait, with only 1
+    // tracked shell visible + foreground bash = 2. tracked still reports 2
+    // (the engine has not received a decrement yet). Hmm - let's set
+    // shellCounts back to 2 to simulate the engine still thinking both alive.
+    //
+    // More precisely: the ENGINE still thinks 2 bg shells exist (no
+    // onNaturalExit was fired yet because lag tolerance suppressed cycle 1).
+    // A foreground Bash tool starts (pendingTools=1) and adds 1 bash.
+    // shellLikeCount=2, expected=preExisting(0)+tracked(2)=2. Balanced -
+    // no surplus, no deficit. That's not what we want to test.
+    //
+    // Rework: set up a scenario where shellLikeCount > expected while
+    // pendingTools>0. Requires preExistingHelpers < shellLikeCount - tracked.
+    // With preExisting=0, tracked=2 (from engine): if we have 3 shell-like
+    // procs visible and pendingTools=1, then surplus=1 with pending tools.
+    // deficit from cycle 1 was: tracked=2, visible=1, so deficit=1,
+    // consecutiveDeficitCycles=1. Now cycle 2: visible=3, tracked=2,
+    // expected=0+2=2, surplus=1, pendingTools=1 -> reset consecutiveDeficitCycles=0, return.
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' }, // bg shell (visible)
+      { pid: 5002, ppid: 1234, comm: 'sh' },   // bg shell comes back? or
+      { pid: 7001, ppid: 1234, comm: 'bash' }, // foreground bash
+    ]);
+    pendingTools.set('s1', 1);
     await watcher.pollNow();
-    expect(log.unhookedAdoptions).toEqual([{ sessionId: 's1', adoptedCount: 1 }]);
+    // consecutiveDeficitCycles should now be 0 (reset by surplus-while-pending path).
+    // Verify by proxy: the NEXT deficit gives a fresh 2-cycle grace,
+    // not a truncated 1-cycle grace.
+    expect(log.naturalExits).toHaveLength(0);
+
+    // Cycle 3: foreground tool ends, its bash exits, surplus helper remains.
+    // pendingTools=0. shellLikeCount=2, expected=0+2=2. Balanced.
+    // Wait, the scenario is getting complex - let's verify the key property:
+    // after the reset in cycle 2, a new deficit from cycle 3 gets FULL grace.
+    pendingTools.set('s1', 0);
+    probe.trees.set(1234, [
+      { pid: 5001, ppid: 1234, comm: 'bash' },
+      { pid: 5002, ppid: 1234, comm: 'sh' },
+    ]);
+    // shellLikeCount=2, expected=0+2=2. In balance -> consecutiveDeficitCycles=0.
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
+
+    // Cycle 4: one bg shell exits again (fresh deficit after reset).
+    // consecutiveDeficitCycles increments from 0 to 1. Suppressed.
+    probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
+    await watcher.pollNow();
+    expect(log.naturalExits).toHaveLength(0);
+
+    // Cycle 5: deficit persists. consecutiveDeficitCycles=2. FIRES.
+    // This confirms the full 2-cycle grace was granted, not a truncated 1.
+    await watcher.pollNow();
+    expect(log.naturalExits).toEqual([{ sessionId: 's1', exitedCount: 1 }]);
     watcher.dispose();
   });
 

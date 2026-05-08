@@ -198,22 +198,6 @@ export class SessionTelemetry {
               this.activityEngine.markBackgroundShellEnded(sessionId);
             }
           },
-          onUnhookedBackgroundShells: (sessionId, adoptedCount) => {
-            // The watcher saw shell-like descendants the engine doesn't
-            // know about (a tool the hook directives don't catch
-            // spawned them). Synthesize start events into the activity
-            // log and adopt them as anonymous bg shells so the
-            // predicate keeps the session in `thinking`.
-            for (let i = 0; i < adoptedCount; i++) {
-              const syntheticEvent: SessionEvent = {
-                ts: Date.now(),
-                type: EventType.BackgroundShellStart,
-                detail: 'unhooked',
-              };
-              this.pushEvent(sessionId, syntheticEvent);
-            }
-            this.activityEngine.adoptAnonymousBackgroundShells(sessionId, adoptedCount);
-          },
           onShellPidExited: (sessionId, shellId) => {
             const syntheticEvent: SessionEvent = {
               ts: Date.now(),

@@ -46,18 +46,6 @@ export interface BgShellWatcherCallbacks {
    * untracked surplus).
    */
   onNaturalExit(sessionId: string, exitedCount: number): void;
-  /**
-   * Called when the watcher detects K shell-like descendants the
-   * engine doesn't know about. Happens when a tool the hook directives
-   * don't catch (e.g. Claude Code's `MonitorBash`, `BashList`) spawns
-   * background work. The engine should treat these as anonymous bg
-   * shells so the predicate keeps the session in `thinking` until
-   * those processes actually exit.
-   *
-   * Without this, agents that use new tooling go idle while their
-   * background work is still in flight - the user-visible bug.
-   */
-  onUnhookedBackgroundShells(sessionId: string, adoptedCount: number): void;
   /** Tier A: a tracked shell PID is no longer alive. */
   onShellPidExited(sessionId: string, shellId: string): void;
   /** Called when the Claude CLI itself dies. Engine should forceIdle. */
@@ -83,12 +71,12 @@ export interface BgShellWatcherCallbacks {
   getActiveShellCount(sessionId: string): number;
   /**
    * In-flight tool count from the engine. The watcher uses this to
-   * suppress adoption while a foreground tool is executing - a
-   * `Bash`, `BashList`, or `BashOutput` invocation spawns a
-   * short-lived direct-child bash that should NOT be adopted as a
-   * background shell. Once the tool ends and pendingToolCount drops
-   * to zero, any persistent shell-like children represent real
-   * unhooked bg work and adoption resumes.
+   * suppress baseline rebasing while a foreground tool is executing -
+   * a `Bash`, `BashList`, or `BashOutput` invocation spawns a
+   * short-lived direct-child bash that we don't want to fold into
+   * `preExistingHelpers`. Once the tool ends and pendingToolCount
+   * drops to zero, any persistent shell-like children are treated
+   * as helpers and rebased up.
    */
   getPendingToolCount(sessionId: string): number;
 }
@@ -195,20 +183,6 @@ export class BgShellWatcher {
     if (!state) return;
     if (!Number.isInteger(pid) || pid <= 0) return;
     state.trackedShellPids.set(shellId, pid);
-  }
-
-  /**
-   * Backwards-compatibility no-op. Older code paths called this on
-   * every `BackgroundShellStart` event to re-snapshot the baseline.
-   * The new model derives expected shells from engine state directly
-   * each cycle, so explicit anchoring is no longer needed.
-   *
-   * Kept as a public no-op so external callers (e.g. session-telemetry
-   * during a slow rollout, or test fixtures) do not break. Can be
-   * removed in a follow-up once all call sites are gone.
-   */
-  async anchorBaseline(_sessionId: string): Promise<void> {
-    return;
   }
 
   /** Force one cycle of polling. Used by tests. */
@@ -367,26 +341,33 @@ export class BgShellWatcher {
     const expected = state.preExistingHelpers + tracked;
 
     if (shellLikeCount > expected) {
+      // Symmetric counterpart to the deficit-side rebase below: a
+      // helper process appeared after the first-cycle anchor (MCP
+      // server restart, statusline worker spawn, npm.cmd wrapper from
+      // an MCP server tool, etc.). Rebase `preExistingHelpers` up so
+      // future cycles treat it as part of the baseline.
+      //
+      // We deliberately do NOT track this as bg work. Real bg shells
+      // fire `background_shell_start` hooks which the engine ingests
+      // via `processEvent`; anything not on disk is by definition not
+      // user/agent-initiated background work. Pre-fix the watcher
+      // adopted these as anonymous bg shells, then the
+      // `onShellsObservedAlive` pulse refreshed `lastSignalAt` every
+      // 2 seconds and pinned the session in `thinking` indefinitely
+      // (the empirical "phantom counter" bug).
       const surplus = shellLikeCount - expected;
       const pendingTools = this.callbacks.getPendingToolCount(sessionId);
       if (pendingTools > 0) {
-        // Foreground tool's transient bash. Don't adopt - it will exit
-        // and rebalance against expected on its own. Crucially: do NOT
-        // touch `preExistingHelpers` here, otherwise the foreground
+        // Foreground tool's transient bash. Don't rebase yet - it
+        // will exit and rebalance against expected on its own. Crucially:
+        // do NOT touch `preExistingHelpers` here, otherwise the foreground
         // bash gets baked into pre-existing and we lose the ability
-        // to detect its exit naturally. Reset deficit counter since
-        // we're in surplus territory now.
+        // to detect its exit naturally.
         state.consecutiveDeficitCycles = 0;
         return;
       }
-      // Real unhooked bg work (e.g. Claude Code's MonitorBash, BashList,
-      // or any future tool that spawns a persistent shell without
-      // firing a background_shell_start hook). Adopt - the engine will
-      // count these as anonymous bg shells, which raises `tracked` and
-      // brings `expected` in sync with `shellLikeCount` on the next
-      // cycle.
+      state.preExistingHelpers += surplus;
       state.consecutiveDeficitCycles = 0;
-      this.callbacks.onUnhookedBackgroundShells(sessionId, surplus);
       return;
     }
 
@@ -419,6 +400,23 @@ export class BgShellWatcher {
 
       const delta = expected - shellLikeCount;
       if (tracked > 0) {
+        // Drain tracked first when the engine has any tracked bg
+        // shells. A "tracked bg shell exited without firing
+        // BackgroundShellEnd" is far more common in production than
+        // "a helper churned while a tracked shell was alive" - the
+        // former covers every Claude `Bash run_in_background:true`
+        // exit on Windows where the end hook can be lost. Optimizing
+        // for the common case keeps the engine drainable.
+        //
+        // Trade-off: when a helper exits while a tracked shell is
+        // alive, this incorrectly drains the tracked counter. That
+        // was a pre-existing pre-fix behavior; the dynamic-helpers
+        // change in the surplus branch makes it slightly more
+        // reachable (helpers churn more) but still rare in practice
+        // (MCP servers / statusline workers stable post-anchor).
+        // Worst-case impact: engine briefly claims idle while bg
+        // shell still alive, recovered when its real
+        // BackgroundShellEnd hook arrives.
         const reported = Math.min(delta, tracked);
         if (reported > 0) {
           this.callbacks.onNaturalExit(sessionId, reported);

@@ -19,8 +19,6 @@ import { handleSpawnFailure } from '../spawn/spawn-failure-handler';
 import { detectPR } from '../pr/pr-connectors';
 import { isShuttingDown } from '../../shutdown-state';
 import { adaptCommandForShell } from '../../../shared/paths';
-import { reconcileBgShellsOnResume } from '../activity/background-shell/resume';
-import { createProcessTreeProbe } from '../activity/background-shell/process-tree';
 
 /**
  * Collaborators that the spawn flow reads and mutates. Grouped into a
@@ -200,23 +198,6 @@ export async function performSpawn(
   });
   context.telemetry.initSession(id, input.agentParser);
 
-  // Resume-only: try to adopt orphan bg shells from the prior session.
-  // The fresh Claude CLI typically has no relevant descendants at this
-  // point, so this is a near-no-op today. Wired in for the future
-  // feature where Kangentic persists bg shell PIDs across restarts and
-  // the watcher walks the wider process table to reattach them. See
-  // `bg-shell-resume.ts` for the rationale.
-  if (input.resuming && ptyProcess.pid) {
-    void reconcileBgShellsOnResume({
-      sessionId: id,
-      rootPid: ptyProcess.pid,
-      probe: createProcessTreeProbe(),
-      engine: context.telemetry.activityEngine,
-      watcher: context.telemetry.bgShellWatcher,
-    }).catch((err) => {
-      console.warn(`[bg-shell-resume] reconciliation failed for session=${id.slice(0, 8)}:`, err);
-    });
-  }
   // Attach the status-file telemetry reader for sessions that provide
   // status/events file paths (today only Claude). The reader owns the
   // FileWatcher instances and dispatches parsed telemetry via the

@@ -271,6 +271,55 @@ describe('performSpawn - KANGENTIC_EVENTS_PATH env injection', () => {
   });
 });
 
+describe('performSpawn - resume path does not adopt bg shells', () => {
+  // Regression guard: reconcileBgShellsOnResume was deleted (bug fix for the
+  // "activity engine stays thinking on idle sessions" phantom-adoption bug).
+  // This test ensures no future change re-introduces bg-shell adoption on the
+  // resume path. If adoptAnonymousBackgroundShells were ever called from inside
+  // performSpawn, the activity engine's anonymousBackgroundShellCount would get
+  // a phantom value, pinning the session in 'thinking' indefinitely (the exact
+  // bug this branch fixes).
+  //
+  // Tier: Unit (no PTY, no OS, no IPC - pure mock collaborators).
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('resuming: true - telemetry.initSession called, adoptAnonymousBackgroundShells NOT called', async () => {
+    const context = makeContext();
+    // Expose adoptAnonymousBackgroundShells as a spy on the telemetry stub.
+    // In production this method lives on ActivityEngine (not SessionTelemetry
+    // directly), but having it present on the mock lets us verify it was never
+    // called even if a future change incorrectly wires the path.
+    const adoptSpy = vi.fn();
+    (context.telemetry as Record<string, unknown>).adoptAnonymousBackgroundShells = adoptSpy;
+
+    const input = makeInput({ resuming: true });
+    await performSpawn(input, context);
+
+    // initSession must still be called on the resume path - this initialises
+    // activity-engine state for the resumed session.
+    expect(context.telemetry.initSession).toHaveBeenCalledOnce();
+    // adoptAnonymousBackgroundShells must NOT be called.
+    expect(adoptSpy).not.toHaveBeenCalled();
+  });
+
+  it('resuming: false (fresh spawn) - adoptAnonymousBackgroundShells NOT called', async () => {
+    // Confirms the method was not added to the spawn path for fresh sessions
+    // either - it has no production caller in session-spawn-flow.ts.
+    const context = makeContext();
+    const adoptSpy = vi.fn();
+    (context.telemetry as Record<string, unknown>).adoptAnonymousBackgroundShells = adoptSpy;
+
+    const input = makeInput({ resuming: false });
+    await performSpawn(input, context);
+
+    expect(context.telemetry.initSession).toHaveBeenCalledOnce();
+    expect(adoptSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('performSpawn - caller-owned session ID wiring', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
