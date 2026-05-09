@@ -1,0 +1,285 @@
+/**
+ * Trace-bundle replay tests: drive captured 4-stream traces (events,
+ * status deltas, PTY chunks, recent-transitions snapshot) through the
+ * activity engine in fixture-time and assert the resulting transition
+ * log against a golden file.
+ *
+ * Bundles are produced by the `kangentic_devtools_capture_trace` MCP
+ * tool. The bundle layout under `tests/fixtures/replay/<name>/`:
+ *
+ *   events.jsonl          - SessionEvent[] from the engine's input
+ *   status-deltas.jsonl   - {ts, model, inputTokens, outputTokens}[]
+ *   pty-chunks.jsonl      - {ts, length}[]
+ *   transitions.json      - ActivityStatsSnapshot at capture time
+ *   meta.json             - {capturedAt, sessionId, kangenticVersion, ...}
+ *   expected-transitions.json - golden TransitionRecord[] (regenerable)
+ *
+ * Regenerate the golden file by setting `UPDATE_GOLDENS=1` in the env.
+ *
+ * The harness mirrors SessionTelemetry's heartbeat-recovery logic
+ * inline so we exercise the engine WITHOUT pulling in the full session
+ * orchestrator (PtyTracker, BgShellWatcher, idle-timeout interval, ...).
+ * If SessionTelemetry's heartbeat rule changes, update applyStatusDelta
+ * below to match.
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { ActivityEngine } from '../../src/main/pty/activity/engine';
+import type { TransitionRecord } from '../../src/main/pty/activity/engine';
+import type { ActivityState, SessionEvent } from '../../src/shared/types';
+
+const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures', 'replay');
+const SESSION_ID = 'replay-session';
+
+interface StatusDelta {
+  ts: number;
+  model?: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+interface PtyChunk {
+  ts: number;
+  length: number;
+}
+
+interface TraceBundle {
+  events: SessionEvent[];
+  statusDeltas: StatusDelta[];
+  ptyChunks: PtyChunk[];
+  meta: { sessionId: string; capturedAt?: string };
+}
+
+interface TimedItem {
+  ts: number;
+  kind: 'event' | 'status' | 'pty';
+  payload: SessionEvent | StatusDelta | PtyChunk;
+}
+
+interface ReplayResult {
+  transitions: TransitionRecord[];
+  finalActivity: ActivityState;
+}
+
+function loadJsonlMaybe<T>(filePath: string): T[] {
+  if (!fs.existsSync(filePath)) return [];
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const out: T[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line) as T);
+    } catch {
+      // skip corrupt
+    }
+  }
+  return out;
+}
+
+export function loadTraceBundle(directory: string): TraceBundle {
+  const eventsPath = path.join(directory, 'events.jsonl');
+  if (!fs.existsSync(eventsPath)) {
+    throw new Error(`Trace bundle missing events.jsonl: ${directory}`);
+  }
+  const events = loadJsonlMaybe<SessionEvent>(eventsPath);
+  const statusDeltas = loadJsonlMaybe<StatusDelta>(path.join(directory, 'status-deltas.jsonl'));
+  const ptyChunks = loadJsonlMaybe<PtyChunk>(path.join(directory, 'pty-chunks.jsonl'));
+  const metaPath = path.join(directory, 'meta.json');
+  const meta = fs.existsSync(metaPath)
+    ? (JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as TraceBundle['meta'])
+    : { sessionId: SESSION_ID };
+  return { events, statusDeltas, ptyChunks, meta };
+}
+
+function mergeStreams(bundle: TraceBundle): TimedItem[] {
+  const merged: TimedItem[] = [];
+  for (const event of bundle.events) merged.push({ ts: event.ts, kind: 'event', payload: event });
+  for (const delta of bundle.statusDeltas) merged.push({ ts: delta.ts, kind: 'status', payload: delta });
+  for (const chunk of bundle.ptyChunks) merged.push({ ts: chunk.ts, kind: 'pty', payload: chunk });
+  // Sort stably so events that share a ts retain relative order. Within
+  // a tie, prefer 'event' first (the most semantically meaningful), then
+  // 'status' (heartbeat), then 'pty' (chunk arrival).
+  const kindOrder: Record<TimedItem['kind'], number> = { event: 0, status: 1, pty: 2 };
+  merged.sort((a, b) => (a.ts !== b.ts ? a.ts - b.ts : kindOrder[a.kind] - kindOrder[b.kind]));
+  return merged;
+}
+
+/**
+ * Mirrors `SessionTelemetry.processStatusUpdate`: status updates that
+ * see the engine in 'thinking' reset lastSignalAt; status updates that
+ * see the engine 'idle' for >1s with token growth force-recover to
+ * thinking. If the production rule changes, update this function.
+ */
+function applyStatusDelta(
+  engine: ActivityEngine,
+  sessionId: string,
+  current: StatusDelta,
+  previous: StatusDelta | null,
+): void {
+  const state = engine.getState(sessionId);
+  if (!state) return;
+  if (state.activity === 'thinking') {
+    engine.markThinkingSignal(sessionId);
+    return;
+  }
+  if (state.activity === 'idle' && previous) {
+    const previousTokens = previous.inputTokens + previous.outputTokens;
+    const currentTokens = current.inputTokens + current.outputTokens;
+    const idleStart = state.idleTimestamp;
+    if (currentTokens > previousTokens && idleStart && Date.now() - idleStart > 1000) {
+      engine.forceThinking(sessionId);
+    }
+  }
+}
+
+export function replayBundle(bundle: TraceBundle): ReplayResult {
+  const merged = mergeStreams(bundle);
+  if (merged.length === 0) {
+    return { transitions: [], finalActivity: 'idle' };
+  }
+
+  vi.setSystemTime(merged[0].ts);
+
+  const engine = new ActivityEngine(
+    {
+      onActivityChange: () => {
+        // Transition records are inspected via getStatsSnapshot below;
+        // no callback bookkeeping needed here.
+      },
+    },
+    {
+      // Faithful production timing - the whole point of trace replay
+      // is to verify the engine under real-world thresholds.
+    },
+  );
+  const sessionId = bundle.meta.sessionId || SESSION_ID;
+  engine.initSession(sessionId);
+
+  let previousStatus: StatusDelta | null = null;
+  let previousTs = merged[0].ts;
+
+  for (const item of merged) {
+    const advance = item.ts - previousTs;
+    if (advance > 0) {
+      vi.advanceTimersByTime(advance);
+    }
+    previousTs = item.ts;
+
+    if (item.kind === 'event') {
+      engine.processEvent(sessionId, item.payload as SessionEvent);
+    } else if (item.kind === 'status') {
+      const delta = item.payload as StatusDelta;
+      applyStatusDelta(engine, sessionId, delta, previousStatus);
+      previousStatus = delta;
+    } else if (item.kind === 'pty') {
+      const state = engine.getState(sessionId);
+      if (state && state.activity === 'thinking') {
+        engine.markThinkingSignal(sessionId);
+      }
+    }
+  }
+
+  // Drain pending timers (stability-window idle, watchdog deadlines)
+  // so the final state reflects what production would observe after a
+  // brief tail. Cap at 60 seconds to keep the harness bounded.
+  vi.advanceTimersByTime(60_000);
+
+  const snapshot = engine.getStatsSnapshot(sessionId);
+  const transitions: TransitionRecord[] = snapshot ? [...snapshot.recentTransitions] : [];
+  const finalActivity = snapshot?.activity ?? 'idle';
+  engine.dispose();
+  return { transitions, finalActivity };
+}
+
+function assertGoldenTransitions(directory: string, transitions: TransitionRecord[]): void {
+  const goldenPath = path.join(directory, 'expected-transitions.json');
+  const portable = transitions.map(({ from, to, trigger, reasonKind, counterDelta }) => ({
+    from,
+    to,
+    trigger,
+    reasonKind,
+    ...(counterDelta ? { counterDelta } : {}),
+  }));
+  if (process.env.UPDATE_GOLDENS === '1') {
+    fs.writeFileSync(goldenPath, JSON.stringify(portable, null, 2));
+    return;
+  }
+  if (!fs.existsSync(goldenPath)) {
+    throw new Error(
+      `Golden file not found: ${goldenPath}. Run with UPDATE_GOLDENS=1 to create it.`,
+    );
+  }
+  const golden = JSON.parse(fs.readFileSync(goldenPath, 'utf-8')) as unknown[];
+  expect(portable).toEqual(golden);
+}
+
+describe('ActivityEngine trace-bundle replay', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('loadTraceBundle handles a synthetic bundle', () => {
+    const baseTs = 1_700_000_000_000;
+    const bundle: TraceBundle = {
+      events: [
+        { ts: baseTs, type: 'session_start' as SessionEvent['type'] },
+        { ts: baseTs + 100, type: 'prompt' as SessionEvent['type'] },
+        { ts: baseTs + 200, type: 'idle' as SessionEvent['type'] },
+      ],
+      statusDeltas: [
+        { ts: baseTs + 50, inputTokens: 10, outputTokens: 5 },
+        { ts: baseTs + 150, inputTokens: 20, outputTokens: 10 },
+      ],
+      ptyChunks: [
+        { ts: baseTs + 75, length: 42 },
+        { ts: baseTs + 175, length: 100 },
+      ],
+      meta: { sessionId: SESSION_ID },
+    };
+    const result = replayBundle(bundle);
+    expect(result.finalActivity).toBe('idle');
+  });
+
+  it('mergeStreams sorts by ts with stable tie-break', () => {
+    const baseTs = 1_700_000_000_000;
+    const bundle: TraceBundle = {
+      events: [{ ts: baseTs, type: 'prompt' as SessionEvent['type'] }],
+      statusDeltas: [{ ts: baseTs, inputTokens: 1, outputTokens: 1 }],
+      ptyChunks: [{ ts: baseTs, length: 10 }],
+      meta: { sessionId: SESSION_ID },
+    };
+    const merged = mergeStreams(bundle);
+    expect(merged.map((item) => item.kind)).toEqual(['event', 'status', 'pty']);
+  });
+
+  // Concrete regression fixture for Task #121 (plan-composition gap).
+  // Skipped until the bundle has been captured via
+  // `kangentic_devtools_capture_trace`. Drop the .skip when the fixture
+  // is populated (see tests/fixtures/replay/task-121-plan-composition/).
+  describe.skip('task-121-plan-composition', () => {
+    let result: ReplayResult;
+    beforeEach(() => {
+      const bundle = loadTraceBundle(path.join(FIXTURES_DIR, 'task-121-plan-composition'));
+      result = replayBundle(bundle);
+    });
+
+    it('does not fire timer:stale-thinking across the 189s thinking window', () => {
+      const staleThinking = result.transitions.filter(
+        (transition) => transition.trigger === 'timer:stale-thinking',
+      );
+      expect(staleThinking).toEqual([]);
+    });
+
+    it('matches the golden transition log', () => {
+      assertGoldenTransitions(
+        path.join(FIXTURES_DIR, 'task-121-plan-composition'),
+        result.transitions,
+      );
+    });
+  });
+});

@@ -11,7 +11,7 @@
  * - no crash on any sequence of legal events
  * - state is internally consistent (e.g. activity matches predicate)
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fc from 'fast-check';
 import { ActivityEngine } from '../../src/main/pty/activity/engine';
 import { EventType, IdleReason } from '../../src/shared/types';
@@ -309,6 +309,372 @@ describe('ActivityEngine property tests', () => {
         refA.dispose();
       }),
       { numRuns: 100 },
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Model-based invariant fuzzer
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Triggers that legitimately produce a thinking → idle transition.
+ * The `event:idle:*` and `event:bg-shell-ended:*` families use prefix
+ * matching because their `:detail` suffix carries the IdleReason or
+ * shell id. Using a fixed Set would either be incomplete (missing
+ * future IdleReason values) or wrong (only matching the `:watcher`
+ * variant of bg-shell-ended).
+ */
+const LEGAL_THINKING_TO_IDLE_EXACT = new Set([
+  'interrupted',
+  'force-idle',
+  'timer:stability',
+  'timer:bg-shell-hatch',
+  'timer:stuck-pending-tools',
+  'timer:stale-thinking',
+]);
+
+function isLegalThinkingToIdleTrigger(trigger: string): boolean {
+  if (LEGAL_THINKING_TO_IDLE_EXACT.has(trigger)) return true;
+  if (trigger === 'event:idle' || trigger.startsWith('event:idle:')) return true;
+  if (trigger.startsWith('event:bg-shell-ended:')) return true;
+  return false;
+}
+
+const DESYNC_SEAM_TRIGGERS = new Set([
+  'interrupted',
+  'force-idle',
+  'timer:stuck-pending-tools',
+  'timer:stale-thinking',
+]);
+
+interface FuzzModel {
+  openToolIds: string[];
+  openShellIds: string[];
+  openSubagents: number;
+}
+
+interface FuzzReal {
+  engine: ActivityEngine;
+  sessionId: string;
+  previousCompensation: {
+    staleThinking: number;
+    bgShellHatch: number;
+    stuckPendingTools: number;
+    forceThinking: number;
+    forceIdle: number;
+  };
+}
+
+type FuzzCommand = fc.Command<FuzzModel, FuzzReal>;
+
+function checkInvariants(real: FuzzReal): void {
+  const state = real.engine.getState(real.sessionId);
+  if (!state) throw new Error('Engine state vanished mid-fuzz - dispose() must not have been called.');
+  const snapshot = real.engine.getStatsSnapshot(real.sessionId);
+  if (!snapshot) throw new Error('getStatsSnapshot returned null on a live session.');
+
+  if (!['idle', 'thinking', 'permission'].includes(state.activity)) {
+    throw new Error(`Illegal activity: ${state.activity}`);
+  }
+
+  let expectedActivity: ActivityState;
+  if (state.permissionPending) {
+    expectedActivity = 'permission';
+  } else if (
+    state.turnActive
+    || state.subagentDepth > 0
+    || state.activeBackgroundShellIds.size + state.anonymousBackgroundShellCount > 0
+  ) {
+    expectedActivity = 'thinking';
+  } else {
+    expectedActivity = 'idle';
+  }
+  if (state.pendingIdleAt === null && state.activity !== expectedActivity) {
+    throw new Error(
+      `Predicate mismatch: state.activity=${state.activity}, expected=${expectedActivity}, ` +
+      `turnActive=${state.turnActive}, tools=${state.pendingToolCount}, ` +
+      `subagents=${state.subagentDepth}, ` +
+      `bgShells=${state.activeBackgroundShellIds.size + state.anonymousBackgroundShellCount}, ` +
+      `permissionPending=${state.permissionPending}`,
+    );
+  }
+
+  if (state.activity === 'idle' && !state.turnActive) {
+    const total =
+      state.pendingToolCount
+      + state.subagentDepth
+      + state.activeBackgroundShellIds.size
+      + state.anonymousBackgroundShellCount;
+    if (total !== 0) {
+      throw new Error(
+        `Idle invariant violation: idle+!turnActive but holders nonzero ` +
+        `(tools=${state.pendingToolCount}, subagents=${state.subagentDepth}, ` +
+        `bgShells=${state.activeBackgroundShellIds.size + state.anonymousBackgroundShellCount})`,
+      );
+    }
+    if (state.permissionPending) {
+      throw new Error('Idle invariant violation: idle but permissionPending=true');
+    }
+  }
+
+  const lastTransition = [...snapshot.recentTransitions].reverse().find(
+    (record) => record.from !== record.to,
+  );
+  if (lastTransition && lastTransition.from === 'thinking' && lastTransition.to === 'idle') {
+    if (!isLegalThinkingToIdleTrigger(lastTransition.trigger)) {
+      throw new Error(
+        `Silent thinking → idle transition with illegal trigger: ${lastTransition.trigger}`,
+      );
+    }
+  }
+
+  const lastRingEntry = snapshot.recentTransitions[snapshot.recentTransitions.length - 1];
+  const isDesyncSeam = lastRingEntry && DESYNC_SEAM_TRIGGERS.has(lastRingEntry.trigger);
+  if (!isDesyncSeam && state.pendingToolStack.length !== state.pendingToolCount) {
+    throw new Error(
+      `Stack/count desync: stack.length=${state.pendingToolStack.length}, ` +
+      `pendingToolCount=${state.pendingToolCount}, lastTrigger=${lastRingEntry?.trigger ?? '(none)'}`,
+    );
+  }
+
+  const current = snapshot.compensationCounters;
+  const previous = real.previousCompensation;
+  for (const key of Object.keys(previous) as (keyof typeof previous)[]) {
+    if (current[key] < previous[key]) {
+      throw new Error(
+        `Compensation counter ${key} decremented: ${previous[key]} → ${current[key]}`,
+      );
+    }
+  }
+  real.previousCompensation = { ...current };
+}
+
+class ToolStartCommand implements FuzzCommand {
+  constructor(private name: string, private id: string) {}
+  check = () => true;
+  run(model: FuzzModel, real: FuzzReal): void {
+    real.engine.processEvent(real.sessionId, {
+      ts: Date.now(),
+      type: EventType.ToolStart,
+      tool: this.name,
+      detail: this.id,
+    });
+    model.openToolIds.push(this.id);
+    checkInvariants(real);
+  }
+  toString = (): string => `ToolStart(${this.name},${this.id})`;
+}
+
+class ToolEndCommand implements FuzzCommand {
+  constructor(private idIndex: number) {}
+  check = (model: Readonly<FuzzModel>): boolean => model.openToolIds.length > 0;
+  run(model: FuzzModel, real: FuzzReal): void {
+    const index = this.idIndex % model.openToolIds.length;
+    const toolId = model.openToolIds[index];
+    real.engine.processEvent(real.sessionId, {
+      ts: Date.now(),
+      type: EventType.ToolEnd,
+      detail: toolId,
+    });
+    model.openToolIds.splice(index, 1);
+    checkInvariants(real);
+  }
+  toString = (): string => `ToolEnd(idx=${this.idIndex})`;
+}
+
+class SubagentStartCommand implements FuzzCommand {
+  check = () => true;
+  run(model: FuzzModel, real: FuzzReal): void {
+    real.engine.processEvent(real.sessionId, { ts: Date.now(), type: EventType.SubagentStart });
+    model.openSubagents += 1;
+    checkInvariants(real);
+  }
+  toString = (): string => 'SubagentStart';
+}
+
+class SubagentStopCommand implements FuzzCommand {
+  check = (model: Readonly<FuzzModel>): boolean => model.openSubagents > 0;
+  run(model: FuzzModel, real: FuzzReal): void {
+    real.engine.processEvent(real.sessionId, { ts: Date.now(), type: EventType.SubagentStop });
+    model.openSubagents -= 1;
+    checkInvariants(real);
+  }
+  toString = (): string => 'SubagentStop';
+}
+
+class BackgroundShellStartCommand implements FuzzCommand {
+  constructor(private id: string) {}
+  check = () => true;
+  run(model: FuzzModel, real: FuzzReal): void {
+    real.engine.processEvent(real.sessionId, {
+      ts: Date.now(),
+      type: EventType.BackgroundShellStart,
+      detail: this.id,
+    });
+    model.openShellIds.push(this.id);
+    checkInvariants(real);
+  }
+  toString = (): string => `BackgroundShellStart(${this.id})`;
+}
+
+class BackgroundShellEndCommand implements FuzzCommand {
+  constructor(private idIndex: number) {}
+  check = (model: Readonly<FuzzModel>): boolean => model.openShellIds.length > 0;
+  run(model: FuzzModel, real: FuzzReal): void {
+    const index = this.idIndex % model.openShellIds.length;
+    const shellId = model.openShellIds[index];
+    real.engine.processEvent(real.sessionId, {
+      ts: Date.now(),
+      type: EventType.BackgroundShellEnd,
+      detail: shellId,
+    });
+    model.openShellIds.splice(index, 1);
+    checkInvariants(real);
+  }
+  toString = (): string => `BackgroundShellEnd(idx=${this.idIndex})`;
+}
+
+class PromptCommand implements FuzzCommand {
+  check = () => true;
+  run(_model: FuzzModel, real: FuzzReal): void {
+    real.engine.processEvent(real.sessionId, { ts: Date.now(), type: EventType.Prompt });
+    checkInvariants(real);
+  }
+  toString = (): string => 'Prompt';
+}
+
+class IdleCommand implements FuzzCommand {
+  constructor(private detail?: IdleReason) {}
+  check = () => true;
+  run(model: FuzzModel, real: FuzzReal): void {
+    real.engine.processEvent(real.sessionId, {
+      ts: Date.now(),
+      type: EventType.Idle,
+      detail: this.detail,
+    });
+    if (this.detail !== IdleReason.Permission) {
+      model.openToolIds.length = 0;
+    }
+    checkInvariants(real);
+  }
+  toString = (): string => `Idle(${this.detail ?? '-'})`;
+}
+
+class InterruptedCommand implements FuzzCommand {
+  check = () => true;
+  run(model: FuzzModel, real: FuzzReal): void {
+    real.engine.processEvent(real.sessionId, { ts: Date.now(), type: EventType.Interrupted });
+    model.openToolIds.length = 0;
+    model.openShellIds.length = 0;
+    model.openSubagents = 0;
+    checkInvariants(real);
+  }
+  toString = (): string => 'Interrupted';
+}
+
+class ForceThinkingCommand implements FuzzCommand {
+  check = () => true;
+  run(_model: FuzzModel, real: FuzzReal): void {
+    real.engine.forceThinking(real.sessionId);
+    checkInvariants(real);
+  }
+  toString = (): string => 'forceThinking';
+}
+
+class ForceIdleCommand implements FuzzCommand {
+  check = () => true;
+  run(model: FuzzModel, real: FuzzReal): void {
+    real.engine.forceIdle(real.sessionId);
+    model.openToolIds.length = 0;
+    model.openShellIds.length = 0;
+    model.openSubagents = 0;
+    checkInvariants(real);
+  }
+  toString = (): string => 'forceIdle';
+}
+
+class AdvanceTimeCommand implements FuzzCommand {
+  constructor(private deltaMs: number) {}
+  check = () => true;
+  run(model: FuzzModel, real: FuzzReal): void {
+    vi.advanceTimersByTime(this.deltaMs);
+    const state = real.engine.getState(real.sessionId);
+    if (state) {
+      if (state.pendingToolCount === 0 && model.openToolIds.length > 0) {
+        model.openToolIds.length = 0;
+      }
+      const totalShells = state.activeBackgroundShellIds.size + state.anonymousBackgroundShellCount;
+      if (totalShells === 0 && model.openShellIds.length > 0) {
+        model.openShellIds.length = 0;
+      }
+      if (state.subagentDepth === 0 && model.openSubagents > 0) {
+        model.openSubagents = 0;
+      }
+    }
+    checkInvariants(real);
+  }
+  toString = (): string => `AdvanceTime(${this.deltaMs}ms)`;
+}
+
+const TOOL_NAMES = ['Bash', 'Read', 'Edit', 'Glob', 'Grep'];
+
+const fuzzCommandArbs: fc.Arbitrary<FuzzCommand>[] = [
+  fc.tuple(fc.constantFrom(...TOOL_NAMES), fc.integer({ min: 0, max: 999 }))
+    .map(([name, id]) => new ToolStartCommand(name, `tool_${id}`)),
+  fc.integer({ min: 0, max: 99 }).map((idx) => new ToolEndCommand(idx)),
+  fc.constant(new SubagentStartCommand()),
+  fc.constant(new SubagentStopCommand()),
+  fc.integer({ min: 0, max: 999 }).map((id) => new BackgroundShellStartCommand(`bash_${id}`)),
+  fc.integer({ min: 0, max: 99 }).map((idx) => new BackgroundShellEndCommand(idx)),
+  fc.constant(new PromptCommand()),
+  fc.oneof(
+    fc.constant(new IdleCommand()),
+    fc.constant(new IdleCommand(IdleReason.Permission)),
+    fc.constant(new IdleCommand(IdleReason.NaturalExit)),
+  ),
+  fc.constant(new InterruptedCommand()),
+  fc.constant(new ForceThinkingCommand()),
+  fc.constant(new ForceIdleCommand()),
+  fc.constantFrom(50, 200, 500, 5_000, 200_000).map((ms) => new AdvanceTimeCommand(ms)),
+];
+
+describe('ActivityEngine invariants (model-based)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('all invariants hold across legal command sequences', () => {
+    fc.assert(
+      fc.property(fc.commands(fuzzCommandArbs, { maxCommands: 60 }), (commands) => {
+        vi.setSystemTime(1_700_000_000_000);
+        const setup = () => {
+          const sessionId = 'fuzz-session';
+          const engine = new ActivityEngine({ onActivityChange: () => {} }, {});
+          engine.initSession(sessionId);
+          return {
+            model: { openToolIds: [], openShellIds: [], openSubagents: 0 },
+            real: {
+              engine,
+              sessionId,
+              previousCompensation: {
+                staleThinking: 0,
+                bgShellHatch: 0,
+                stuckPendingTools: 0,
+                forceThinking: 0,
+                forceIdle: 0,
+              },
+            },
+          };
+        };
+        fc.modelRun(setup, commands);
+      }),
+      { numRuns: 200 },
     );
   });
 });

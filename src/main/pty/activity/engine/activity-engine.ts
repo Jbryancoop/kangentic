@@ -5,6 +5,8 @@ import {
   DEFAULT_STALE_THINKING_TIMEOUT_MS,
   DEFAULT_IDLE_STABILITY_WINDOW_MS,
   RECENT_TRANSITIONS_RING_SIZE,
+  PTY_CHUNK_BUCKET_MS,
+  PTY_CHUNK_WINDOW_MS,
   LOG_ONLY_EVENTS,
   TURN_INITIATING_EVENTS,
   TURN_ENDING_EVENTS,
@@ -153,8 +155,11 @@ export class ActivityEngine {
       turnActive: state.turnActive,
       permissionPending: state.permissionPending,
       msSinceLastSignal: lastSignalAt === null ? null : this.now() - lastSignalAt,
+      lastSignalAt,
       pendingIdleArmed: state.pendingIdleAt !== null,
       recentTransitions: state.recentTransitions.slice(),
+      compensationCounters: { ...state.compensationCounters },
+      recentPtyChunks: state.recentPtyChunks.slice(),
     };
   }
 
@@ -234,6 +239,7 @@ export class ActivityEngine {
     state.lastSignalAt = this.now();
     state.permissionPending = false;
     state.pendingIdleAt = null;
+    state.compensationCounters.forceThinking += 1;
     const delta = formatCounterDelta(before, snapshotCounters(state));
     this.commitTransition(sessionId, state, 'thinking', 'force-thinking', delta);
   }
@@ -257,6 +263,7 @@ export class ActivityEngine {
     state.anonymousBackgroundShellCount = 0;
     state.currentTool = null;
     state.pendingIdleAt = null;
+    state.compensationCounters.forceIdle += 1;
     const delta = formatCounterDelta(before, snapshotCounters(state));
     this.commitTransition(sessionId, state, 'idle', 'force-idle', delta);
   }
@@ -275,6 +282,47 @@ export class ActivityEngine {
       if (state.activity === 'thinking') {
         this.scheduleTimer(sessionId, state);
       }
+    }
+  }
+
+  /**
+   * Record a PTY chunk arrival for the timeline-overlay visualization.
+   * Chunks are aggregated into 100ms buckets so the ring stays small
+   * (~1200 entries for the 120s window). Does NOT affect engine state -
+   * this is observation-only, separate from the PtyActivityTracker
+   * which decides whether a chunk is activity-worthy.
+   *
+   * Dev-only: the body is dead-code-eliminated in production builds
+   * via `__KANGENTIC_DEV__`. The PTY data path runs at ~60Hz across
+   * every session, so paying for the bucket bookkeeping in shipped
+   * binaries (where `recentPtyChunks` is never read) is wasted work.
+   *
+   * No-op if the session is unknown. Older buckets are evicted on
+   * each insert so the array length is bounded.
+   */
+  markPtyChunk(sessionId: string): void {
+    if (!__KANGENTIC_DEV__) return;
+    if (this.disposed) return;
+    const state = this.states.get(sessionId);
+    if (!state) return;
+    const now = this.now();
+    const bucket = Math.floor(now / PTY_CHUNK_BUCKET_MS) * PTY_CHUNK_BUCKET_MS;
+    const ring = state.recentPtyChunks;
+    const last = ring[ring.length - 1];
+    if (last && last.tsBucket === bucket) {
+      last.count += 1;
+    } else {
+      ring.push({ tsBucket: bucket, count: 1 });
+    }
+    // Evict buckets older than the window. Cheap because additions
+    // are append-only and the array is sorted by tsBucket.
+    const cutoff = now - PTY_CHUNK_WINDOW_MS;
+    let removeCount = 0;
+    while (removeCount < ring.length && ring[removeCount].tsBucket < cutoff) {
+      removeCount += 1;
+    }
+    if (removeCount > 0) {
+      ring.splice(0, removeCount);
     }
   }
 
@@ -506,6 +554,16 @@ export class ActivityEngine {
       const before = snapshotCounters(state);
       this.emitSyntheticIdleTimeout(sessionId);
       hold.reset(state);
+      // Tally the compensation. The trigger label is the canonical
+      // discriminator so future watchdogs added to the table are
+      // counted automatically as long as their trigger key matches.
+      if (hold.trigger === 'timer:stale-thinking') {
+        state.compensationCounters.staleThinking += 1;
+      } else if (hold.trigger === 'timer:bg-shell-hatch') {
+        state.compensationCounters.bgShellHatch += 1;
+      } else if (hold.trigger === 'timer:stuck-pending-tools') {
+        state.compensationCounters.stuckPendingTools += 1;
+      }
       const delta = formatCounterDelta(before, snapshotCounters(state));
       // Schedule the idle commit through the stability window unless
       // the hold opted out (stale-thinking watchdog wants instant

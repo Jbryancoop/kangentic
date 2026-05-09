@@ -22,10 +22,14 @@ export type {
   TransitionRecord,
   TransitionTrigger,
   PendingTool,
+  CompensationCounters,
+  PtyChunkTick,
 } from './shapes';
 
 export {
   DEFAULT_BG_SHELL_ESCAPE_HATCH_MS,
   DEFAULT_STALE_THINKING_TIMEOUT_MS,
   DEFAULT_IDLE_STABILITY_WINDOW_MS,
+  PTY_CHUNK_BUCKET_MS,
+  PTY_CHUNK_WINDOW_MS,
 } from './shapes';

@@ -20,5 +20,13 @@ export function createSessionEngineState(): SessionEngineState {
     idleTimestamp: null,
     pendingIdleAt: null,
     recentTransitions: [],
+    compensationCounters: {
+      staleThinking: 0,
+      bgShellHatch: 0,
+      stuckPendingTools: 0,
+      forceThinking: 0,
+      forceIdle: 0,
+    },
+    recentPtyChunks: [],
   };
 }

@@ -37,7 +37,7 @@ This subsystem aims to be near-100% accurate: notification fires within seconds 
    │ Stability window  │ │ Watchdog table (3 holds)│ │ BgShell    │ │ Ctrl+C     │
    │ (400ms)           │ │ - bg-shell hatch (5min) │ │ Watcher    │ │ synthesis  │
    │                   │ │ - stuck-tools  (5min)   │ │ (proc-tree)│ │ (3s settle)│
-   │                   │ │ - stale-think  (45s)    │ │            │ │            │
+   │                   │ │ - stale-think  (180s)   │ │            │ │            │
    └───────────────────┘ └─────────────────────────┘ └────────────┘ └────────────┘
                                                           │
                                                           ▼
@@ -221,7 +221,7 @@ When the predicate flips from `thinking` to `idle` due to a Stop event or a coun
 Bypassed by:
 - `Interrupted` (Esc — instant, no flicker concern)
 - `forceIdle` (PTY-driven; already debounced 3s in PtyActivityTracker)
-- Stale-thinking watchdog (already 45s)
+- Stale-thinking watchdog (already 180s)
 
 Configurable via `ActivityEngineOptions.idleStabilityWindowMs`. Tests set this to 0 for deterministic timing.
 
@@ -229,9 +229,9 @@ Configurable via `ActivityEngineOptions.idleStabilityWindowMs`. Tests set this t
 
 The predicate handles the common case. Three timer-driven safety nets in `engine/watchdog.ts` catch hook-loss / orphan situations. Each is a `WatchdogHold` describing a state shape, threshold, reset action, and audit-log label. `findActiveWatchdogHold(state, holds)` picks the matching one each cycle.
 
-### 1. Stale-thinking watchdog (45s)
+### 1. Stale-thinking watchdog (180s)
 
-Held by `turnActive` alone (no tools, no subagent, no bg shells) for 45 seconds. The matching Idle/Stop hook never arrived. Emits synthetic `Idle/Timeout`, clears `turnActive`. Bypasses the stability window (the 45s already debounced any flicker).
+Held by `turnActive` alone (no tools, no subagent, no bg shells) for 180 seconds. The matching Idle/Stop hook never arrived. Emits synthetic `Idle/Timeout`, clears `turnActive`. Bypasses the stability window (the 180s already debounced any flicker).
 
 ### 2. Bg-shell escape hatch (5 min)
 
@@ -326,7 +326,7 @@ Polls `getActivityStats(sessionId)` every 2 seconds. Hidden by default — power
 
 The engine itself emits synthetic events into the activity log via the `onSyntheticEvent` callback for two cases:
 
-- **Watchdog Idle/Timeout:** when the 45s stale-thinking watchdog or the 5-min bg-shell escape hatch fires. Pushed BEFORE the matching `onActivityChange` so the log entry appears before the state change.
+- **Watchdog Idle/Timeout:** when the 180s stale-thinking watchdog or the 5-min bg-shell escape hatch fires. Pushed BEFORE the matching `onActivityChange` so the log entry appears before the state change.
 - **Natural-exit `BackgroundShellEnd`:** when the watcher infers a bg shell exited naturally. Detail is `IdleReason.NaturalExit` for `onNaturalExit` (anonymous) or the shell_id for `onShellPidExited` (Tier A).
 
 ## Test infrastructure
@@ -345,7 +345,7 @@ Three test tiers:
 ```ts
 interface ActivityEngineOptions {
   bgShellEscapeHatchMs?: number;     // default 5 * 60_000
-  staleThinkingTimeoutMs?: number;   // default 45_000
+  staleThinkingTimeoutMs?: number;   // default 180_000
   idleStabilityWindowMs?: number;    // default 400
   now?: () => number;                // testability
 }

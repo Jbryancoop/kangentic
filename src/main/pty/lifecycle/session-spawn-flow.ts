@@ -1,5 +1,7 @@
 import * as pty from 'node-pty';
+import * as path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
+import * as traceRecorder from '../activity/trace-recorder';
 import type { Session, SessionContext, SpawnSessionInput } from '../../../shared/types';
 import type { SessionRegistry, ManagedSession } from '../session-registry';
 import { toSession } from '../session-registry';
@@ -198,6 +200,14 @@ export async function performSpawn(
   });
   context.telemetry.initSession(id, input.agentParser);
 
+  // Dev-only trace recorder: register the session directory so passive
+  // PTY-chunk and status-delta recording can target the right files.
+  // The recorder's body is dead-code-eliminated in production via
+  // __KANGENTIC_DEV__, so this call becomes a no-op in shipped builds.
+  if (input.statusOutputPath) {
+    traceRecorder.setSessionDir(id, path.dirname(input.statusOutputPath));
+  }
+
   // Attach the status-file telemetry reader for sessions that provide
   // status/events file paths (today only Claude). The reader owns the
   // FileWatcher instances and dispatches parsed telemetry via the
@@ -278,6 +288,16 @@ export async function performSpawn(
   //   - PTY activity detection (yields to hook-based for 'hooks_and_pty').
   ptyProcess.onData((data: string) => {
     context.bufferManager.onData(id, data);
+
+    // Dev-only: record chunk arrival for the trace replay pipeline.
+    // Length-only (no content) keeps the file small and privacy-safe.
+    traceRecorder.recordPtyChunk(id, data.length);
+
+    // Per-session in-memory ring of bucketed PTY chunk arrivals for
+    // the debug overlay's timeline. Cheap (one map lookup + array
+    // push) and bounded (~1200 entries for the 120s window). Body is
+    // dead-code-eliminated in production via __KANGENTIC_DEV__.
+    context.telemetry.activityEngine.markPtyChunk(id);
 
     // Transient sessions (command terminal) have no DB row - the
     // TranscriptWriter's lazy init will fail silently on first flush
@@ -370,6 +390,12 @@ export async function performSpawn(
         context.emit('pr-detected', id, detected.url, detected.number);
       }
     }
+
+    // Dev-only: stop trace recording for this session. Files persist
+    // on disk so a "Capture trace" devtool call after exit still
+    // bundles them. The next attach() with the same sessionId
+    // reattaches.
+    traceRecorder.clearSessionDir(id);
 
     context.emit('exit', id, exitCode);
     context.sessionQueue.notifySlotFreed();

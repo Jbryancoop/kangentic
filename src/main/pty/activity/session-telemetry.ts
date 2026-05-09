@@ -663,6 +663,14 @@ export class SessionTelemetry {
     }
     if (!this.snapshotWriter) return;
     const snapshot = this.activityEngine.getStatsSnapshot(sessionId);
-    if (snapshot) this.snapshotWriter.write(sessionId, snapshot);
+    if (!snapshot) return;
+    // `recentPtyChunks` is a live 120s sliding window that the renderer
+    // overlay polls; persisting it on every state change would bloat
+    // the on-disk snapshot ~10x (up to ~36KB) and proportionally slow
+    // every sync write. Strip it before writing - the post-mortem dump
+    // is for "what was the engine state at the crash" and the chunk
+    // timeline is not load-bearing for that question.
+    const persistable = { ...snapshot, recentPtyChunks: [] };
+    this.snapshotWriter.write(sessionId, persistable);
   }
 }

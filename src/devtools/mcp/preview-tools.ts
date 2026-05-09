@@ -953,4 +953,26 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
         }),
       ),
   );
+
+  server.registerTool(
+    'kangentic_devtools_capture_trace',
+    {
+      description:
+        'Bundle a session\'s passively-recorded input stream (events.jsonl + status-deltas.jsonl + pty-chunks.jsonl) plus the engine\'s current recent-transitions ring into .kangentic/traces/<ts>-<sessionId>/. The resulting directory can be copied into tests/fixtures/replay/ to pin engine behavior. Requires the session\'s recorder taps to have been active during the run (always-on in dev builds). Returns the absolute trace directory path. Dev-only.',
+      inputSchema: z.object({
+        sessionId: z.string().describe('Kangentic session id to capture.'),
+        instanceId: z.string().optional().describe(INSTANCE_ARG_DESCRIPTION),
+      }),
+      annotations: MUTATING_ANNOTATIONS,
+    },
+    async ({ sessionId, instanceId }) =>
+      toolResult(
+        await callBridge({
+          method: 'POST',
+          path: '/capture-trace',
+          body: { sessionId },
+          instanceId,
+        }),
+      ),
+  );
 }

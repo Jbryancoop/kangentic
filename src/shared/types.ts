@@ -411,6 +411,10 @@ export interface ActivityStatsSnapshot {
   turnActive: boolean;
   permissionPending: boolean;
   msSinceLastSignal: number | null;
+  /** Wall-clock ms of the most recent thinking-signal. Lets the
+   *  debug-overlay timeline render the active watchdog deadline as
+   *  `lastSignalAt + thresholdMs`. Null when no signal yet. */
+  lastSignalAt: number | null;
   pendingIdleArmed: boolean;
   recentTransitions: ReadonlyArray<{
     ts: number;
@@ -425,6 +429,37 @@ export interface ActivityStatsSnapshot {
      *  step (e.g. "tools +1", "bg -1, turn no"). Undefined when no
      *  observable counter shifted. */
     counterDelta?: string;
+  }>;
+  /**
+   * Monotonic per-session tally of recovery / compensation events.
+   * Increments on each watchdog fire or force-* call; never decrements.
+   * Used by the debug overlay's counter strip to flag silent
+   * compensations that don't visibly flip the activity pill. In a
+   * clean session, all five fields read 0.
+   */
+  compensationCounters: {
+    /** `timer:stale-thinking` watchdog fires (turnActive held alone). */
+    staleThinking: number;
+    /** `timer:bg-shell-hatch` fires (orphan bg shell, watcher missed). */
+    bgShellHatch: number;
+    /** `timer:stuck-pending-tools` fires (Ctrl+C dropped PostToolUse). */
+    stuckPendingTools: number;
+    /** Heartbeat-recovery / PTY-tracker forced thinking transitions. */
+    forceThinking: number;
+    /** PTY-silence / shutdown forced idle transitions. */
+    forceIdle: number;
+  };
+  /**
+   * Bucketed PTY-chunk arrivals over the last ~120 seconds (100ms
+   * buckets). Lets the debug-overlay timeline render streaming
+   * intensity without piping raw chunk timestamps over IPC. Empty in
+   * production builds where the recorder is dead-code-eliminated.
+   */
+  recentPtyChunks: ReadonlyArray<{
+    /** Bucket lower bound in wall-clock ms (floor to 100ms). */
+    tsBucket: number;
+    /** Number of chunks observed during this bucket. */
+    count: number;
   }>;
 }
 

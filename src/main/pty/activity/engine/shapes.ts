@@ -68,6 +68,16 @@ export const DEFAULT_IDLE_STABILITY_WINDOW_MS = 400;
 export const RECENT_TRANSITIONS_RING_SIZE = 50;
 
 /**
+ * PTY-chunk timeline buffer: bucket size and total window span.
+ * Chunks are aggregated into 100ms buckets ({tsBucket, count}) so the
+ * ring stays small (max ~1200 entries) and the timeline visualization
+ * can render them as ticks without flooding SVG with thousands of
+ * elements when an agent streams quickly.
+ */
+export const PTY_CHUNK_BUCKET_MS = 100;
+export const PTY_CHUNK_WINDOW_MS = 120_000;
+
+/**
  * Snapshot of the counters / flags the predicate keys off. Used to
  * compute a human-readable counter-delta string for the audit log.
  */
@@ -100,6 +110,39 @@ export interface ActivityEngineOptions {
 export interface PendingTool {
   id?: string;
   name: string;
+}
+
+/**
+ * Monotonic per-session tally of recovery and compensation events.
+ * Increments live for the lifetime of the session - never decremented.
+ * Surfaced via `ActivityStatsSnapshot` so the debug overlay can render
+ * a "click into the timeline to see what happened" cue when the
+ * counters go non-zero. In a clean session, all five read zero.
+ *
+ * Reset only on `initSession()` (fresh state) or `dispose()`.
+ */
+export interface CompensationCounters {
+  /** `timer:stale-thinking` watchdog fires (turnActive held alone, hook lost). */
+  staleThinking: number;
+  /** `timer:bg-shell-hatch` fires (orphan bg shell, watcher missed). */
+  bgShellHatch: number;
+  /** `timer:stuck-pending-tools` fires (Ctrl+C dropped PostToolUse). */
+  stuckPendingTools: number;
+  /** Heartbeat-recovery / PTY-tracker forced thinking transitions. */
+  forceThinking: number;
+  /** PTY-silence / shutdown forced idle transitions. */
+  forceIdle: number;
+}
+
+/**
+ * One bucket of PTY-chunk arrival counts. `tsBucket` is the bucket's
+ * lower bound in wall-clock ms (i.e. the chunk's `Date.now()` floored
+ * to `PTY_CHUNK_BUCKET_MS`). Buckets older than `PTY_CHUNK_WINDOW_MS`
+ * are evicted on each insertion so the ring stays bounded.
+ */
+export interface PtyChunkTick {
+  tsBucket: number;
+  count: number;
 }
 
 /**
@@ -181,6 +224,18 @@ export interface SessionEngineState {
    * which prevents accidental writes from outside the engine.
    */
   recentTransitions: TransitionRecord[];
+  /**
+   * Monotonic compensation counters - see `CompensationCounters`.
+   * Live for the session's lifetime so a flip-flop hours into a long
+   * session is still visible.
+   */
+  compensationCounters: CompensationCounters;
+  /**
+   * Bucketed PTY-chunk arrival ring for the timeline visualization.
+   * Each entry is a 100ms bucket with the count of chunks that
+   * arrived during it. Buckets older than 120s are evicted on insert.
+   */
+  recentPtyChunks: PtyChunkTick[];
 }
 
 /**
@@ -237,8 +292,14 @@ export interface ActivityStatsSnapshot {
   turnActive: boolean;
   permissionPending: boolean;
   msSinceLastSignal: number | null;
+  /** Wall-clock ms of the most recent thinking-signal. Lets the
+   *  debug-overlay timeline render the active watchdog deadline as
+   *  `lastSignalAt + thresholdMs`. Null when no signal yet. */
+  lastSignalAt: number | null;
   pendingIdleArmed: boolean;
   recentTransitions: ReadonlyArray<TransitionRecord>;
+  compensationCounters: CompensationCounters;
+  recentPtyChunks: ReadonlyArray<PtyChunkTick>;
 }
 
 export interface ActivityEngineCallbacks {

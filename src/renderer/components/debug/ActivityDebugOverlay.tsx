@@ -1,11 +1,12 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Bug, GripVertical, X, Loader2, Mail, Lock, Wrench, Users, Terminal, ChevronDown, RotateCw } from 'lucide-react';
+import { Bug, GripVertical, X, Loader2, Mail, Lock, Wrench, Users, Terminal, RotateCw } from 'lucide-react';
 import type { ActivityStatsSnapshot, ActivityReason, ActivityState } from '../../../shared/types';
 import { useConfigStore } from '../../stores/config-store';
 import { useSessionStore } from '../../stores/session-store';
 import { useProjectStore } from '../../stores/project-store';
 import { useBoardStore } from '../../stores/board-store';
 import { useToastStore } from '../../stores/toast-store';
+import { ActivityTimeline } from './ActivityTimeline';
 
 const POLL_INTERVAL_MS = 2_000;
 
@@ -695,6 +696,11 @@ function DesyncDiagnostic({
 
 const SnapshotRow = memo(function SnapshotRow({ snapshot, label }: { snapshot: ActivityStatsSnapshot; label: string }) {
   const bgShellCount = snapshot.backgroundShellIds.length + snapshot.anonymousBackgroundShellCount;
+  // Subscribe to the per-session event stream for the timeline's event
+  // ticks track. Reads from the shared cache populated by the activity
+  // log subsystem; cheap because we only re-render when these events
+  // change.
+  const sessionEvents = useSessionStore((state) => state.sessionEvents[snapshot.sessionId]);
   return (
     <div className="space-y-2 min-w-0 border border-edge/50 rounded-md p-2.5 bg-surface/30">
       {/* Title on row 1, status pill on row 2 underneath, always left-aligned.
@@ -750,73 +756,54 @@ const SnapshotRow = memo(function SnapshotRow({ snapshot, label }: { snapshot: A
       {snapshot.recentTransitions.length > 0 && (
         <RecentTransitions snapshot={snapshot} />
       )}
+
+      {/* Visual timeline + compensation counter strip. Renders the last
+          120s as four horizontal tracks: state band, event ticks, PTY
+          chunk ticks, and the active timer (watchdog) deadline. Counter
+          strip above tallies recovery events for quick glance: all
+          zeros = clean session. */}
+      <ActivityTimeline snapshot={snapshot} sessionEvents={sessionEvents} />
     </div>
   );
 });
 
 /**
- * Section showing the most recent engine state transitions. Defaults
- * to last 5 visible (the typical signal envelope is small) with a
- * "show all 10" toggle for the full ring buffer. Each row's trigger
- * label gets a hover tooltip explaining the engine path that fired,
- * and a copy-to-clipboard action exports the table as plain text for
- * bug reports.
+ * Section showing the most recent engine state transitions. Renders
+ * the last 5 entries from the ring buffer; the timeline graph
+ * underneath (`ActivityTimeline`) provides the longer historical view
+ * visually, so the text log stays a tight "what's the agent doing
+ * right now" digest. Older entries remain in the engine's 50-entry
+ * ring and are accessible via `kangentic_devtools_engine_state` for
+ * agents that need exact timestamps.
+ *
+ * Each row's trigger label gets a hover tooltip explaining the engine
+ * path that fired.
  */
+const VISIBLE_TRANSITIONS = 5;
+
 const RecentTransitions = memo(function RecentTransitions({ snapshot }: { snapshot: ActivityStatsSnapshot }) {
   const allEntries = snapshot.recentTransitions;
-  const containerRef = useRef<HTMLDivElement>(null);
-  // Tracks whether the user is "tailing" the log (scrolled to the
-  // bottom). When they are, new entries auto-scroll into view.
-  // When they've scrolled up to read history, we leave them alone.
-  const wasAtBottomRef = useRef(true);
-  const [isAtBottom, setIsAtBottom] = useState(true);
-
-  const handleScroll = useCallback(() => {
-    const element = containerRef.current;
-    if (!element) return;
-    // 4px slop to avoid rounding-error false positives from
-    // sub-pixel scroll positions during smooth-scrolling.
-    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 4;
-    wasAtBottomRef.current = atBottom;
-    setIsAtBottom(atBottom);
-  }, []);
-
-  // When new entries arrive, auto-scroll if the user was tailing.
-  // Depend on the last entry's timestamp so adding without changing
-  // length (ring buffer eviction) still triggers a scroll.
-  const lastEntryTs = allEntries[allEntries.length - 1]?.ts ?? 0;
-  useEffect(() => {
-    if (!wasAtBottomRef.current) return;
-    const element = containerRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }, [lastEntryTs, allEntries.length]);
-
   if (allEntries.length === 0) return null;
-  const baseTs = allEntries[0].ts;
-
-  const jumpToLatest = () => {
-    const element = containerRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  };
+  const visibleEntries = allEntries.length > VISIBLE_TRANSITIONS
+    ? allEntries.slice(allEntries.length - VISIBLE_TRANSITIONS)
+    : allEntries;
+  const baseTs = visibleEntries[0].ts;
 
   return (
-    <div className="space-y-1 pt-1 relative">
+    <div className="space-y-1 pt-1">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[10px] uppercase tracking-wider font-medium text-fg-faint">
           Activity log
         </span>
-        <span className="text-[10px] text-fg-disabled tabular-nums" title={`${allEntries.length} entries in ring buffer`}>
-          {allEntries.length}
+        <span
+          className="text-[10px] text-fg-disabled tabular-nums"
+          title={`Showing last ${visibleEntries.length} of ${allEntries.length} ring-buffer entries (full history via kangentic_devtools_engine_state)`}
+        >
+          {visibleEntries.length}/{allEntries.length}
         </span>
       </div>
-      <div
-        ref={containerRef}
-        onScroll={handleScroll}
-        // Sized for ~10 rows of compact text-[11px] content. Exceeds
-        // that, the scrollbar engages and the user can scroll up.
-        className="max-h-48 overflow-y-auto pr-1 space-y-1"
-      >
-        {allEntries.map((entry, index) => {
+      <div className="space-y-1">
+        {visibleEntries.map((entry, index) => {
           const deltaSeconds = (entry.ts - baseTs) / 1000;
           const deltaLabel = deltaSeconds === 0 ? '+0.0s' : `+${deltaSeconds.toFixed(1)}s`;
           const isTransition = entry.from !== entry.to;
@@ -849,18 +836,6 @@ const RecentTransitions = memo(function RecentTransitions({ snapshot }: { snapsh
           );
         })}
       </div>
-      {!isAtBottom && (
-        <button
-          type="button"
-          data-overlay-button
-          onClick={jumpToLatest}
-          className="absolute bottom-1 right-3 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-surface-raised border border-edge text-fg-secondary hover:bg-surface-hover shadow-sm"
-          title="Jump to latest entry and resume tailing"
-        >
-          <ChevronDown size={10} />
-          <span>latest</span>
-        </button>
-      )}
     </div>
   );
 });
@@ -876,7 +851,7 @@ const TRIGGER_EXACT_EXPLANATIONS: Record<string, string> = {
   'force-idle': 'PTY silence timeout / shutdown / external caller forced idle and reset all counters',
   'interrupted': 'User pressed Esc - all counters reset and session forced to idle',
   'timer:stability': 'The 400ms idle stability window expired and the queued idle commit fired',
-  'timer:stale-thinking': 'The 45s stale-thinking watchdog forced idle (turn was active but no other counters held it)',
+  'timer:stale-thinking': 'The 180s stale-thinking watchdog forced idle (turn was active but no other counters held it)',
   'timer:bg-shell-hatch': 'The 5-min orphan-bg-shell escape hatch fired (only bg shells were holding thinking, no signals received)',
   'event:bg-shells-adopted': 'Watcher saw shell-like processes the hooks did not fire for and adopted them as anonymous bg shells',
 };

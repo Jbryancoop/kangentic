@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { FileWatcher } from './file-watcher';
+import * as traceRecorder from '../activity/trace-recorder';
 import type { SessionUsage, SessionEvent, AdapterRuntimeStrategy } from '../../../shared/types';
 
 /**
@@ -243,6 +244,10 @@ export class StatusFileReader {
       const raw = fs.readFileSync(state.statusOutputPath, 'utf-8');
       const usage = state.statusFileHook.parseStatus(raw);
       if (!usage) return;
+      // Dev-only: append the parsed delta to status-deltas.jsonl for
+      // the trace replay pipeline. Recorded at read time so the ts
+      // matches the heartbeat path's wall clock.
+      traceRecorder.recordStatusDelta(sessionId, usage);
       this.callbacks.onUsageParsed(sessionId, usage);
     } catch {
       // File may not exist yet, or be partially written - ignore.

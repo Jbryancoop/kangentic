@@ -290,6 +290,10 @@ async function handlePostRequest(
     return respondInjectSessionEvent(options, body, response);
   }
 
+  if (route === 'POST /capture-trace') {
+    return respondCaptureTrace(options, body, response);
+  }
+
   return respondError(response, 404, 'unknown-route', route);
 }
 
@@ -1220,6 +1224,140 @@ function respondInjectSessionEvent(
   }
   injector.telemetry.ingestEvents(params.sessionId, [params.event]);
   respondJson(response, 200, { ok: true });
+}
+
+interface CaptureTraceBody {
+  sessionId: string;
+}
+
+/**
+ * Bundle a session's full input stream into a portable replay fixture.
+ *
+ * Reads four passively-recorded streams from `.kangentic/sessions/<id>/`
+ * (events.jsonl, status-deltas.jsonl, pty-chunks.jsonl), snapshots the
+ * engine's recent transitions ring, and writes them all into
+ * `.kangentic/traces/<isoTs>-<id>/` along with a meta.json. The
+ * resulting directory can be copied straight into
+ * `tests/fixtures/replay/` to pin the engine's behavior on this trace.
+ *
+ * Pre-condition: passive recording has been active during the session
+ * (always-on in dev builds via trace-recorder.ts). Missing input files
+ * are skipped silently. For rotatable files (status-deltas / pty-chunks)
+ * the rotated `.1` copy is concatenated before the live primary so the
+ * bundle is a single chronological file representing the recorder's
+ * full retained stream.
+ */
+function respondCaptureTrace(
+  options: InspectionServerOptions,
+  body: unknown,
+  response: http.ServerResponse,
+): void {
+  const params = body as CaptureTraceBody;
+  if (typeof params.sessionId !== 'string' || !params.sessionId) {
+    return respondError(response, 400, 'missing-sessionId', '`sessionId` is required.');
+  }
+  // Defense in depth: the inspection bridge is localhost-only and
+  // dev-only, but the sessionId flows directly into path.join below.
+  // Rejecting traversal-shaped values prevents an MCP caller from
+  // mkdir'ing outside .kangentic/traces/.
+  if (/[/\\\0]/.test(params.sessionId) || params.sessionId.includes('..')) {
+    return respondError(response, 400, 'invalid-sessionId', '`sessionId` contains illegal characters.');
+  }
+  const projectRoot = options.getProjectRoot();
+  if (!projectRoot) {
+    return respondError(response, 503, 'no-project', 'Preview has no project open.');
+  }
+  const sessionManager = options.getSessionManager();
+  if (!sessionManager) {
+    return respondError(response, 503, 'no-session-manager', 'SessionManager is not available.');
+  }
+  type EngineHolder = {
+    telemetry?: { activityEngine?: { getStatsSnapshot(id: string): unknown } };
+  };
+  const holder = sessionManager as unknown as EngineHolder;
+  const engine = holder.telemetry?.activityEngine;
+
+  const sessionDir = path.join(projectRoot, '.kangentic', 'sessions', params.sessionId);
+  if (!fs.existsSync(sessionDir)) {
+    return respondError(response, 404, 'no-session-dir', `No session directory at ${sessionDir}.`);
+  }
+
+  const isoTs = new Date().toISOString().replace(/[:.]/g, '-');
+  const traceDir = path.join(projectRoot, '.kangentic', 'traces', `${isoTs}-${params.sessionId}`);
+  try {
+    fs.mkdirSync(traceDir, { recursive: true });
+  } catch (error) {
+    return respondError(
+      response,
+      500,
+      'mkdir-failed',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
+  // Files the trace recorder writes (and may have rotated). For these,
+  // bundle the rotated copy + the live primary concatenated in
+  // chronological order so the resulting bundle is a single file
+  // representing the recorder's full retained stream. events.jsonl is
+  // not in this set because the agent's hook writes it directly and
+  // never rotates it.
+  const ROTATABLE_FILES = new Set(['status-deltas.jsonl', 'pty-chunks.jsonl']);
+  const copied: string[] = [];
+  const skipped: string[] = [];
+  for (const name of ['events.jsonl', 'status-deltas.jsonl', 'pty-chunks.jsonl']) {
+    const sourcePath = path.join(sessionDir, name);
+    const rotatedPath = sourcePath + '.1';
+    const destPath = path.join(traceDir, name);
+    const parts: Buffer[] = [];
+    if (ROTATABLE_FILES.has(name) && fs.existsSync(rotatedPath)) {
+      try {
+        parts.push(fs.readFileSync(rotatedPath));
+      } catch {
+        // Rotated copy unreadable - fall through and keep just the
+        // primary so the bundle is partial rather than missing.
+      }
+    }
+    if (fs.existsSync(sourcePath)) {
+      try {
+        parts.push(fs.readFileSync(sourcePath));
+      } catch {
+        // Primary unreadable - bundle whatever we already collected.
+      }
+    }
+    if (parts.length === 0) {
+      skipped.push(name);
+      continue;
+    }
+    try {
+      fs.writeFileSync(destPath, parts.length === 1 ? parts[0] : Buffer.concat(parts));
+      copied.push(name);
+    } catch {
+      skipped.push(name);
+    }
+  }
+
+  // Save the full ActivityStatsSnapshot (counters, recentTransitions
+  // ring, compensation tallies) so the trace bundle is self-contained
+  // for human inspection. The replay harness only consumes the JSONL
+  // streams; this file is for "what was the engine seeing at capture
+  // time" diagnostics.
+  const engineSnapshot = engine ? engine.getStatsSnapshot(params.sessionId) : null;
+  fs.writeFileSync(
+    path.join(traceDir, 'transitions.json'),
+    JSON.stringify(engineSnapshot, null, 2),
+  );
+
+  const meta = {
+    capturedAt: new Date().toISOString(),
+    sessionId: params.sessionId,
+    kangenticVersion: app.getVersion(),
+    copied,
+    skipped,
+    note: 'Bundled by kangentic_devtools_capture_trace. Replay via tests/unit/activity-engine-trace-replay.test.ts:replayBundle.',
+  };
+  fs.writeFileSync(path.join(traceDir, 'meta.json'), JSON.stringify(meta, null, 2));
+
+  respondJson(response, 200, { path: traceDir, copied, skipped });
 }
 
 // ---------------------------------------------------------------------------
