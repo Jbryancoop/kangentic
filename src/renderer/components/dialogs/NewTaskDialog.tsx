@@ -16,6 +16,7 @@ import { slugify, computeAutoBranchName } from '../../../shared/slugify';
 import { DEFAULT_PRIORITY_CONFIG } from '../../../shared/types';
 import { DescriptionEditor } from '../DescriptionEditor';
 import { MAX_ATTACHMENT_BYTES, MEDIA_TYPE_EXT, resolveMediaType, isImageMediaType, getFileTypeIcon, getExtension } from './attachment-utils';
+import { compressClipboardImage } from './image-compress';
 
 interface PendingAttachment {
   id: string;
@@ -95,6 +96,7 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const nextIdRef = useRef(0);
+  const pendingPasteCount = useRef(0);
 
   const isDirty = title.trim() !== '' || description.trim() !== '' || customBranchName.trim() !== '' || attachments.length > 0 || labels.length > 0 || priority !== 0;
 
@@ -122,7 +124,7 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
     return () => document.removeEventListener('keydown', handleKeyDown, true);
   }, [previewAttachment]);
 
-  const addFile = useCallback((file: File, filenameOverride?: string) => {
+  const addFile = useCallback(async (file: File, filenameOverride?: string) => {
     if (file.size > MAX_ATTACHMENT_BYTES) {
       useToastStore.getState().addToast({
         message: `File "${file.name}" exceeds 10MB limit`,
@@ -133,22 +135,29 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
 
     const mediaType = resolveMediaType(file);
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const base64 = dataUrl.split(',')[1];
-      const previewUrl = URL.createObjectURL(file);
-      const id = `pending-${nextIdRef.current++}`;
-      const filename = filenameOverride || file.name;
-      setAttachments((previous) => [...previous, {
-        id,
-        filename,
-        data: base64,
-        media_type: mediaType,
-        previewUrl,
-      }]);
-    };
-    reader.readAsDataURL(file);
+    let dataUrl: string;
+    try {
+      dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+    } catch (error) {
+      console.error('Failed to read attachment:', error);
+      return;
+    }
+    const base64 = dataUrl.split(',')[1];
+    const previewUrl = URL.createObjectURL(file);
+    const id = `pending-${nextIdRef.current++}`;
+    const filename = filenameOverride || file.name;
+    setAttachments((previous) => [...previous, {
+      id,
+      filename,
+      data: base64,
+      media_type: mediaType,
+      previewUrl,
+    }]);
   }, []);
 
   const removeAttachment = useCallback((id: string) => {
@@ -174,12 +183,22 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
       const isImage = isImageMediaType(mediaType);
       const prefix = isImage ? 'pasted-image-' : 'pasted-file-';
       const extensionStart = file.name ? file.name.lastIndexOf('.') : -1;
-      const extension = MEDIA_TYPE_EXT[mediaType] || (extensionStart >= 0 ? file.name.slice(extensionStart) : '.bin');
-      const name = (() => {
-        const count = attachments.filter((attachment) => attachment.filename.startsWith(prefix)).length;
-        return `${prefix}${count + 1}${extension}`;
+      const fallbackExtension = MEDIA_TYPE_EXT[mediaType] || (extensionStart >= 0 ? file.name.slice(extensionStart) : '.bin');
+      const baseCount =
+        attachments.filter((attachment) => attachment.filename.startsWith(prefix)).length +
+        pendingPasteCount.current;
+      pendingPasteCount.current += 1;
+      void (async () => {
+        try {
+          const { file: outFile } = await compressClipboardImage(file);
+          const finalMediaType = resolveMediaType(outFile);
+          const finalExtension = MEDIA_TYPE_EXT[finalMediaType] ?? fallbackExtension;
+          const finalName = `${prefix}${baseCount + 1}${finalExtension}`;
+          await addFile(outFile, finalName);
+        } finally {
+          pendingPasteCount.current -= 1;
+        }
       })();
-      addFile(file, name);
     }
   }, [attachments, addFile]);
 

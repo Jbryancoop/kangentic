@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useToastStore } from '../../../stores/toast-store';
 import { MAX_ATTACHMENT_BYTES, MEDIA_TYPE_EXT, resolveMediaType, isImageMediaType } from '../attachment-utils';
+import { compressClipboardImage } from '../image-compress';
 import type { TaskAttachment } from '../../../../shared/types';
 
 export interface AttachmentWithPreview extends TaskAttachment {
@@ -12,6 +13,7 @@ export function useAttachments(taskId: string, updateAttachmentCount: (taskId: s
   const [previewAttachment, setPreviewAttachment] = useState<{ url: string; filename: string } | null>(null);
   const previewOpenRef = useRef(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const pendingPasteCount = useRef(0);
 
   // Load attachments on mount
   useEffect(() => {
@@ -52,34 +54,42 @@ export function useAttachments(taskId: string, updateAttachmentCount: (taskId: s
     }
 
     const mediaType = resolveMediaType(file);
+    const filename = filenameOverride || file.name;
 
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const dataUrl = reader.result as string;
-      const base64 = dataUrl.split(',')[1];
-      const filename = filenameOverride || file.name;
-      try {
-        const attachment = await window.electronAPI.attachments.add({
-          task_id: taskId,
-          filename,
-          data: base64,
-          media_type: mediaType,
-        });
-        let previewUrl: string | undefined;
-        if (isImageMediaType(mediaType)) {
-          try {
-            previewUrl = await window.electronAPI.attachments.getDataUrl(attachment.id);
-          } catch {
-            // Preview not available
-          }
+    let dataUrl: string;
+    try {
+      dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+    } catch (error) {
+      console.error('Failed to read attachment:', error);
+      return;
+    }
+    const base64 = dataUrl.split(',')[1];
+
+    try {
+      const attachment = await window.electronAPI.attachments.add({
+        task_id: taskId,
+        filename,
+        data: base64,
+        media_type: mediaType,
+      });
+      let previewUrl: string | undefined;
+      if (isImageMediaType(mediaType)) {
+        try {
+          previewUrl = await window.electronAPI.attachments.getDataUrl(attachment.id);
+        } catch {
+          // Preview not available
         }
-        setSavedAttachments((previous) => [...previous, { ...attachment, previewUrl }]);
-        updateAttachmentCount(taskId, 1);
-      } catch (error) {
-        console.error('Failed to add attachment:', error);
       }
-    };
-    reader.readAsDataURL(file);
+      setSavedAttachments((previous) => [...previous, { ...attachment, previewUrl }]);
+      updateAttachmentCount(taskId, 1);
+    } catch (error) {
+      console.error('Failed to add attachment:', error);
+    }
   }, [taskId, updateAttachmentCount]);
 
   const removeAttachment = useCallback(async (id: string) => {
@@ -107,10 +117,22 @@ export function useAttachments(taskId: string, updateAttachmentCount: (taskId: s
       const isImage = isImageMediaType(mediaType);
       const prefix = isImage ? 'pasted-image-' : 'pasted-file-';
       const extensionStart = file.name ? file.name.lastIndexOf('.') : -1;
-      const extension = MEDIA_TYPE_EXT[mediaType] || (extensionStart >= 0 ? file.name.slice(extensionStart) : '.bin');
-      const count = savedAttachments.filter((attachment) => attachment.filename.startsWith(prefix)).length;
-      const name = `${prefix}${count + 1}${extension}`;
-      addFile(file, name);
+      const fallbackExtension = MEDIA_TYPE_EXT[mediaType] || (extensionStart >= 0 ? file.name.slice(extensionStart) : '.bin');
+      const baseCount =
+        savedAttachments.filter((attachment) => attachment.filename.startsWith(prefix)).length +
+        pendingPasteCount.current;
+      pendingPasteCount.current += 1;
+      void (async () => {
+        try {
+          const { file: outFile } = await compressClipboardImage(file);
+          const finalMediaType = resolveMediaType(outFile);
+          const finalExtension = MEDIA_TYPE_EXT[finalMediaType] ?? fallbackExtension;
+          const finalName = `${prefix}${baseCount + 1}${finalExtension}`;
+          await addFile(outFile, finalName);
+        } finally {
+          pendingPasteCount.current -= 1;
+        }
+      })();
     }
   }, [savedAttachments, addFile]);
 
