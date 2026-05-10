@@ -68,6 +68,13 @@ export function createTransientSessionSlice(preserved: {
         projectId: currentProject.id,
         branch,
       });
+      // Insert the session synchronously so anything that filters
+      // state.sessions for `projectId === current && status === 'running'`
+      // (Activity Engine Debugger overlay, restoreTransientSession's
+      // liveness check) sees the row immediately. The push-based
+      // session-changed event from the main process arrives a moment
+      // later and calls upsertSession again; that call is idempotent.
+      get().upsertSession(result.session);
       set((state) => ({
         transientSessions: {
           ...state.transientSessions,
