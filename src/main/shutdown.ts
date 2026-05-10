@@ -33,6 +33,7 @@ const HARD_SHUTDOWN_DEADLINE_MS = 6000;
  * the quit proceed, Electron's normal shutdown tears down all child processes.
  */
 export function syncShutdownCleanup(dependencies: ShutdownDependencies): void {
+  console.log('[SHUTDOWN] cleanup:start');
   // Clear pending timers that could fire during shutdown
   dependencies.clearPendingTimers();
   dependencies.stopUpdaterTimers();
@@ -124,6 +125,7 @@ export function syncShutdownCleanup(dependencies: ShutdownDependencies): void {
   } catch (error) {
     console.error('[APP] Shutdown error:', error);
   }
+  console.log('[SHUTDOWN] cleanup:done');
 }
 
 /**
@@ -133,7 +135,7 @@ export function syncShutdownCleanup(dependencies: ShutdownDependencies): void {
  */
 export function startHardShutdownFailsafe(): void {
   setTimeout(() => {
-    console.error('[APP] Hard shutdown deadline reached - forcing exit');
+    console.error('[SHUTDOWN] hard-failsafe:fired');
     if (process.platform === 'win32') {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -141,6 +143,7 @@ export function startHardShutdownFailsafe(): void {
           `taskkill /PID ${process.pid} /T /F`,
           { windowsHide: true, stdio: 'ignore' },
         );
+        console.error('[SHUTDOWN] taskkill:done');
       } catch {
         // taskkill may fail if process is already dying
       }

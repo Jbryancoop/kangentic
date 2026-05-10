@@ -203,6 +203,10 @@ describe('WorktreeManager -- fetch and base branch', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearFetchCache();
+    // recordedSpawnCalls and spawnOverrides are module-scoped, must be
+    // reset here so per-test fetch outcomes don't leak across tests.
+    recordedSpawnCalls.length = 0;
+    spawnOverrides.length = 0;
   });
 
   it('fetches from origin and uses origin/<baseBranch> as start point when fetch succeeds', async () => {
@@ -218,10 +222,13 @@ describe('WorktreeManager -- fetch and base branch', () => {
     const mgr = new WorktreeManager('/project');
     await mgr.createWorktree('abcd1234-0000', 'Fetch test', 'develop');
 
-    // First call: fetch origin develop
-    expect(mockProjectGit.raw).toHaveBeenCalledWith(['fetch', 'origin', 'develop']);
+    // Fetch now goes through child_process.spawn (runGitWithTimeout), not git.raw
+    const fetchSpawn = recordedSpawnCalls.find(
+      (call) => call.command === 'git' && call.args[0] === 'fetch' && call.args[2] === 'develop',
+    );
+    expect(fetchSpawn).toBeDefined();
 
-    // Second call: worktree add with origin/develop as start point
+    // worktree add still goes through simple-git raw with origin/develop as start point
     const worktreeAddCall = mockProjectGit.raw.mock.calls.find(
       (c: string[][]) => c[0]?.includes('worktree') && c[0]?.includes('add'),
     );
@@ -233,11 +240,14 @@ describe('WorktreeManager -- fetch and base branch', () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
     mockWorktreeGit.raw.mockResolvedValue('');
 
-    // Fetch rejects, rev-parse rejects (no existing branch), worktree add resolves
+    // Make the spawn-based fetch fail with a non-zero exit code
+    spawnOverrides.push({
+      match: (args) => args[0] === 'fetch' && args[1] === 'origin',
+      behavior: { exitCode: 128, stderr: 'fatal: no remote' },
+    });
+
+    // rev-parse rejects (no existing branch), worktree add resolves
     mockProjectGit.raw.mockImplementation((args: string[]) => {
-      if (args[0] === 'fetch') {
-        return Promise.reject(new Error('fatal: no remote'));
-      }
       if (args[0] === 'rev-parse' && args[1] === '--verify') {
         return Promise.reject(new Error('not found'));
       }
@@ -538,6 +548,8 @@ describe('WorktreeManager -- ensureWorktree', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearFetchCache();
+    recordedSpawnCalls.length = 0;
+    spawnOverrides.length = 0;
     // Default: isGitRepo returns true, isInsideWorktree returns false
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.statSync).mockImplementation(() => { throw new Error('not a file'); });
@@ -606,8 +618,12 @@ describe('WorktreeManager -- ensureWorktree', () => {
     // Branch name encodes the non-default base as a namespace prefix so the
     // worktree's origin is visible at-a-glance in git log / GitHub branch lists.
     expect(result!.branchName).toBe('develop/test-abcd1234');
-    // Should have used 'develop' (task override) not 'main' (config default)
-    expect(mockProjectGit.raw).toHaveBeenCalledWith(['fetch', 'origin', 'develop']);
+    // Should have used 'develop' (task override) not 'main' (config default).
+    // Fetch goes through child_process.spawn (runGitWithTimeout), not git.raw.
+    const fetchSpawn = recordedSpawnCalls.find(
+      (call) => call.command === 'git' && call.args[0] === 'fetch' && call.args[2] === 'develop',
+    );
+    expect(fetchSpawn).toBeDefined();
   });
 });
 

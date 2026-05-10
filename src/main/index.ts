@@ -247,6 +247,7 @@ if (!isEphemeral && !isE2ETest) {
 let mainWindow: BrowserWindow | null = null;
 let activateAllProjectsTimer: ReturnType<typeof setTimeout> | null = null;
 let mcpServerHandle: McpHttpServerHandle | null = null;
+let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
 // Parse --cwd=<path> from command line args
 function getCwdArg(): string | null {
@@ -594,7 +595,7 @@ app.whenReady().then(async () => {
   // Fire app_launch event (analytics initialized before app.whenReady above).
   // trackEvent is a no-op if analytics is disabled, so no guard needed here.
   trackEvent('app_launch', { platform: process.platform, arch: process.arch });
-  setInterval(trackHeartbeat, 30 * 60 * 1000);
+  heartbeatInterval = setInterval(trackHeartbeat, 30 * 60 * 1000);
 
   // Load React DevTools extension in development (fire-and-forget, after window is visible)
   if (!app.isPackaged) {
@@ -604,6 +605,41 @@ app.whenReady().then(async () => {
   // Prune stale worktree projects from crashed/force-killed preview instances.
   // Only runs in the main app during development -- preview is a dev-only feature.
   if (!isEphemeral && !app.isPackaged) {
+    // Skip the zombie reaper under E2E. It would add ~1.5-2s per Electron
+    // launch (PowerShell Get-CimInstance startup) across 95+ tests = several
+    // minutes of wall-clock regression for zero benefit -- E2E spawns are
+    // strictly parented by the Playwright worker, so there are no orphans
+    // to find. The reaper's intended audience is interactive `npm start`
+    // sessions and `/preview` windows, not headless test workers.
+    if (__KANGENTIC_DEV__ && !isE2ETest) {
+      phase('reapZombieElectron');
+      try {
+        const { reapWorktreeElectronZombies } = await import('./git/zombie-reaper');
+        // Outer 2s cap. The empty array is the "no zombies killed"
+        // sentinel when the inner scan hangs (PowerShell Get-CimInstance
+        // stalling, etc). `never[]` is assignable to the reaper's
+        // ReapedProcess[] return so Promise.race resolves correctly.
+        const cap = new Promise<never[]>((resolve) =>
+          setTimeout(() => resolve([]), 2000));
+        const reaped = await Promise.race([
+          reapWorktreeElectronZombies({
+            projectPath: process.cwd(),
+            scanTimeoutMs: 1500,
+          }).catch((err) => {
+            console.warn('[REAPER] scan failed:', err);
+            return [];
+          }),
+          cap,
+        ]);
+        if (reaped.length > 0) {
+          console.log(`[REAPER] killed ${reaped.length} zombie(s)`);
+        }
+      } catch (err) {
+        console.warn('[REAPER] skipped:', err);
+      } finally {
+        endPhase('reapZombieElectron');
+      }
+    }
     phase('pruneStaleWorktreeProjects');
     pruneStaleWorktreeProjects()
       .catch((err) => console.error('[APP] Failed to prune stale worktree projects:', err))
@@ -667,6 +703,12 @@ function getShutdownDependencies() {
       if (activateAllProjectsTimer) {
         clearTimeout(activateAllProjectsTimer);
         activateAllProjectsTimer = null;
+      }
+      // The recurring heartbeat keeps the event loop alive on its own and
+      // would otherwise prevent Node from exiting cleanly during shutdown.
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
       }
       // Stop accepting new MCP requests synchronously. The server's close()
       // is non-blocking; in-flight requests are abandoned, which is fine

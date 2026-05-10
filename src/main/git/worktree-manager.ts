@@ -1,12 +1,12 @@
 import simpleGit, { SimpleGit } from 'simple-git';
 import path from 'node:path';
 import fs from 'node:fs';
-import { spawn } from 'node:child_process';
 import { slugify, computeSlugBudget, computeAutoBranchName } from '../../shared/slugify';
 import { isGitRepo, isInsideWorktree } from './git-checks';
 import { linkNodeModules, removeNodeModulesPath } from './node-modules-link';
 import { fetchIfStale } from './fetch-throttle';
 import { removeWithRetry } from './rm-with-retry';
+import { runGitWithTimeout as runGitWithTimeoutShared } from './git-spawn';
 
 /**
  * Wall-clock ceiling for git ops in the worktree-removal path. Small repos
@@ -18,55 +18,16 @@ import { removeWithRetry } from './rm-with-retry';
 const GIT_REMOVAL_TIMEOUT_MS = 15_000;
 
 /**
- * Run git via child_process.spawn with kill-on-timeout. Used instead of
- * simple-git's `.raw()` for the three ops in the worktree-removal path
- * (`worktree remove`, `worktree prune`, `branch -D`) because simple-git
- * has no abort primitive. Stdio is drained so Windows conpty buffers
- * can't block the child on write.
+ * Wrapper that pins the (cwd, args, timeoutMs) call shape used by the
+ * worktree-removal path. The shared helper accepts an optional external
+ * AbortSignal that this path doesn't currently use.
  */
 function runGitWithTimeout(
   projectPath: string,
   args: readonly string[],
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController();
-    const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
-
-    const child = spawn('git', [...args], {
-      cwd: projectPath,
-      signal: controller.signal,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-
-    child.on('error', (error: NodeJS.ErrnoException) => {
-      clearTimeout(timeoutHandle);
-      if (error.name === 'AbortError' || error.code === 'ABORT_ERR') {
-        reject(new Error(`git ${args.join(' ')} timed out after ${timeoutMs}ms (child process killed)`));
-        return;
-      }
-      reject(error);
-    });
-
-    child.on('close', (code, signal) => {
-      clearTimeout(timeoutHandle);
-      if (signal) {
-        reject(new Error(`git ${args.join(' ')} killed by signal ${signal} after ${timeoutMs}ms timeout`));
-        return;
-      }
-      if (code !== 0) {
-        reject(new Error(`git ${args.join(' ')} exited with code ${code}: ${stderr.trim() || stdout.trim()}`));
-        return;
-      }
-      resolve({ stdout, stderr });
-    });
-  });
+  return runGitWithTimeoutShared(projectPath, args, { timeoutMs });
 }
 
 /** Background prune debounce per project. */
@@ -203,7 +164,7 @@ export class WorktreeManager {
 
     // Fetch the latest from origin so worktrees start from up-to-date code.
     // Uses throttle cache to skip redundant fetches within a 5-minute window.
-    const startPoint = await fetchIfStale(this.git, this.projectPath, baseBranch);
+    const startPoint = await fetchIfStale(this.git, this.projectPath, baseBranch, { signal: options?.signal });
     options?.onProgress?.('creating-worktree');
     options?.signal?.throwIfAborted();
 

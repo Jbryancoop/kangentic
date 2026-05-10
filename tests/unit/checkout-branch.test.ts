@@ -36,9 +36,22 @@ vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
 }));
 
+// fetchIfStale now invokes runGitWithTimeout (child_process.spawn under the
+// hood) instead of git.raw, so any test that asserts the fetch happened or
+// makes the fetch fail must drive the git-spawn mock here.
+const { mockRunGitWithTimeout } = vi.hoisted(() => ({
+  mockRunGitWithTimeout: vi.fn(async () => ({ stdout: '', stderr: '' })),
+}));
+vi.mock('../../src/main/git/git-spawn', () => ({
+  runGitWithTimeout: mockRunGitWithTimeout,
+  isGitTimeoutError: (error: unknown): boolean =>
+    error instanceof Error && error.message.includes('aborted (timeout after'),
+}));
+
 import fs from 'node:fs';
 import { WorktreeManager } from '../../src/main/git/worktree-manager';
 import { ensureTaskBranchCheckout } from '../../src/main/ipc/helpers';
+import { clearFetchCache } from '../../src/main/git/fetch-throttle';
 import type { Task } from '../../src/shared/types';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -271,6 +284,9 @@ describe('ensureTaskBranchCheckout - custom branch name', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    clearFetchCache();
+    mockRunGitWithTimeout.mockReset();
+    mockRunGitWithTimeout.mockResolvedValue({ stdout: '', stderr: '' });
   });
 
   it('fetches from origin before checking branch existence', async () => {
@@ -281,8 +297,12 @@ describe('ensureTaskBranchCheckout - custom branch name', () => {
     const task = makeTask({ branch_name: 'maint/59294', base_branch: 'develop' });
     await ensureTaskBranchCheckout(task, '/project');
 
-    // First raw call should be the fetch
-    expect(mockGit.raw).toHaveBeenCalledWith(['fetch', 'origin', 'maint/59294']);
+    // Fetch now goes through runGitWithTimeout (spawn) instead of git.raw
+    expect(mockRunGitWithTimeout).toHaveBeenCalledWith(
+      '/project',
+      ['fetch', 'origin', 'maint/59294'],
+      expect.objectContaining({ timeoutMs: 15_000 }),
+    );
   });
 
   it('checks out local branch when it already exists', async () => {
@@ -372,12 +392,9 @@ describe('ensureTaskBranchCheckout - custom branch name', () => {
 
   it('fetch failure is silent and does not block checkout', async () => {
     setupCheckoutMocks();
-    let fetchCalled = false;
+    // Make the spawn-based fetch fail
+    mockRunGitWithTimeout.mockRejectedValue(new Error('network timeout'));
     mockGit.raw.mockImplementation((args: string[]) => {
-      if (args[0] === 'fetch') {
-        fetchCalled = true;
-        return Promise.reject(new Error('network timeout'));
-      }
       // local rev-parse fails, remote rev-parse fails, branch create succeeds
       if (args[0] === 'rev-parse') return Promise.reject(new Error('not found'));
       if (args[0] === 'branch') return Promise.resolve('');
@@ -387,7 +404,11 @@ describe('ensureTaskBranchCheckout - custom branch name', () => {
     const task = makeTask({ branch_name: 'feature/offline', base_branch: 'main' });
     await ensureTaskBranchCheckout(task, '/project');
 
-    expect(fetchCalled).toBe(true);
+    expect(mockRunGitWithTimeout).toHaveBeenCalledWith(
+      '/project',
+      ['fetch', 'origin', 'feature/offline'],
+      expect.objectContaining({ timeoutMs: 15_000 }),
+    );
     // Should still proceed to create and checkout
     expect(mockGit.checkout).toHaveBeenCalledWith('feature/offline');
   });

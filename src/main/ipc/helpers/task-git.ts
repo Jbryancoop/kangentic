@@ -59,7 +59,7 @@ export async function ensureTaskBranchCheckout(
       const git = simpleGit(projectPath);
 
       // Fetch latest from origin (throttled to avoid redundant network I/O)
-      await fetchIfStale(git, projectPath, task.branch_name!);
+      await fetchIfStale(git, projectPath, task.branch_name!, { signal: options?.signal });
       options?.onProgress?.('switching-branch');
       options?.signal?.throwIfAborted();
 

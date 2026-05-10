@@ -101,14 +101,28 @@ export async function startInspectionServer(
 
 export function stopInspectionServer(): void {
   if (server) {
-    try {
-      server.close();
-    } catch {
-      // best-effort
-    }
+    closeInspectionServerSafely(server);
     server = null;
     boundPort = null;
     activeOptions = null;
+  }
+}
+
+/**
+ * Synchronous, best-effort shutdown for the inspection server. See
+ * `closeMcpHttpServerSafely` in mcp-http-server.ts for the full
+ * keep-alive-zombie rationale -- the contract is identical.
+ *
+ * Exported so unit tests can verify the call ordering without booting
+ * the full inspection-server module (it transitively pulls in CDP,
+ * screenshot, and the agent commands map).
+ */
+export function closeInspectionServerSafely(httpServer: Pick<http.Server, 'closeAllConnections' | 'close'>): void {
+  try {
+    httpServer.closeAllConnections();
+    httpServer.close();
+  } catch {
+    // best-effort
   }
 }
 

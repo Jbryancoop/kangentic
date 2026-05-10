@@ -133,74 +133,9 @@ test.describe('Cursor Agent - Activity Detection', () => {
   });
 });
 
-test.describe('Cursor Agent - Idle Detection with TUI Redraws', () => {
-  const TEST_NAME = 'cursor-tui-idle';
-  const PROJECT_NAME = `Cursor TUI Idle Test ${runId}`;
-
-  let app: ElectronApplication;
-  let page: Page;
-  let tmpDir: string;
-  let dataDir: string;
-
-  test.beforeAll(async () => {
-    // Enable TUI redraw simulation: mock-cursor.js will emit periodic
-    // ANSI-only cursor repositioning sequences every 500ms, mimicking
-    // real Cursor CLI TUI behavior when idle.
-    process.env.MOCK_CURSOR_TUI_REDRAWS = '1';
-
-    tmpDir = createTempProject(TEST_NAME);
-    dataDir = getTestDataDir(TEST_NAME);
-    fs.writeFileSync(
-      path.join(dataDir, 'config.json'),
-      JSON.stringify({
-        agent: {
-          cliPaths: { cursor: mockAgentPath('cursor') },
-          permissionMode: 'default',
-          maxConcurrentSessions: 5,
-          queueOverflow: 'queue',
-        },
-        git: { worktreesEnabled: false },
-      }),
-    );
-
-    const result = await launchApp({ dataDir });
-    app = result.app;
-    page = result.page;
-    await createProject(page, PROJECT_NAME, tmpDir);
-    await setProjectDefaultAgent(page, 'cursor');
-  });
-
-  test.afterAll(async () => {
-    delete process.env.MOCK_CURSOR_TUI_REDRAWS;
-    await app?.close();
-    cleanupTempProject(TEST_NAME);
-    cleanupTestDataDir(TEST_NAME);
-  });
-
-  test('settles to idle despite continuous TUI redraws', async () => {
-    // This test verifies that Cursor tasks don't get stuck in 'active' when
-    // idle. The mock emits continuous ANSI-only PTY data (cursor redraws)
-    // every 500ms, mimicking real TUI behavior. The content dedup in
-    // SessionManager should classify identical frames as noise. The
-    // silence timer (3s) should fire and transition to idle.
-    const title = `Cursor TUI Idle ${runId}`;
-    await createTask(page, title, 'Verify idle detection with TUI redraws');
-
-    const swimlaneIds = await getSwimlaneIds(page);
-    const taskId = await getTaskIdByTitle(page, title);
-
-    await moveTaskIpc(page, taskId, swimlaneIds.planning);
-    await waitForScrollback(page, 'MOCK_CURSOR_SESSION:');
-
-    // Despite continuous ANSI redraws every 500ms, the content dedup in
-    // SessionManager should classify identical frames as noise. The
-    // silence timer should fire and transition to idle.
-    await expect.poll(async () => {
-      const activity = await page.evaluate(() => window.electronAPI.sessions.getActivity());
-      return Object.values(activity as Record<string, ActivityState>);
-    }, { timeout: 20000, message: 'Expected session to reach idle despite TUI redraws' }).toContain('idle');
-  });
-});
+// "Idle Detection with TUI Redraws" coverage moved to
+// agent-activity-special-modes.spec.ts so it can share an Electron launch
+// with the codex/cursor/copilot/warp special-mode regression guards.
 
 test.describe('Cursor Agent - Session Lifecycle', () => {
   const TEST_NAME = 'cursor-session-lifecycle';

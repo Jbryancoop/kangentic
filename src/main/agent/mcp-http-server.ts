@@ -116,14 +116,32 @@ export async function startMcpHttpServer(
     baseUrl,
     token,
     urlForProject: (projectId: string) => `${baseUrl}/${projectId}`,
-    close: () => {
-      try {
-        httpServer.close();
-      } catch (error) {
-        console.error('[mcp-http] close() failed:', error);
-      }
-    },
+    close: () => closeMcpHttpServerSafely(httpServer),
   };
+}
+
+/**
+ * Synchronous, best-effort shutdown for the MCP HTTP server.
+ *
+ * Terminates keep-alive sockets via `closeAllConnections()` BEFORE calling
+ * `close()`. Without that order, an attached agent holding an idle
+ * keep-alive against the MCP endpoint keeps the underlying socket alive
+ * past Electron's 6s hard-failsafe and the main process becomes a zombie.
+ *
+ * Only invoked from the synchronous shutdown path, so any in-flight
+ * request is going to lose its connection in under 6s anyway; this just
+ * makes the truncation deterministic. closeAllConnections is Node 18.2+.
+ *
+ * Exported for unit-test isolation -- testing the close-handle behavior
+ * via startMcpHttpServer would require booting the full MCP module graph.
+ */
+export function closeMcpHttpServerSafely(httpServer: Pick<Server, 'closeAllConnections' | 'close'>): void {
+  try {
+    httpServer.closeAllConnections();
+    httpServer.close();
+  } catch (error) {
+    console.error('[mcp-http] close() failed:', error);
+  }
 }
 
 /** Validates the URL path and token, then dispatches to a per-request McpServer. */
