@@ -1,4 +1,12 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import type { Readable, Writable } from 'node:stream';
+
+/**
+ * Shape of the long-lived PowerShell child. `stdio: ['pipe', 'pipe', 'ignore']`
+ * means stdin is writable, stdout is readable, stderr is null (suppressed).
+ */
+type PowerShellChild = ChildProcessByStdio<Writable, Readable, null>;
 
 /**
  * Cross-platform process-tree probe.
@@ -51,6 +59,14 @@ export interface ProcessTreeProbe {
    * Returns [] on probe failure.
    */
   listDescendants(rootPid: number): Promise<ProcessInfo[]>;
+  /**
+   * Tear down any long-lived resources the probe holds (e.g. the
+   * persistent PowerShell child on Windows). Idempotent. Synchronous
+   * so it slots into the `before-quit` shutdown contract.
+   *
+   * POSIX probe is a no-op because it spawns per-call.
+   */
+  dispose(): void;
 }
 
 /** Default per-spawn timeout for process enumeration. */
@@ -63,7 +79,39 @@ export function createProcessTreeProbe(): ProcessTreeProbe {
   return new PosixProbe();
 }
 
+/**
+ * Windows probe with a persistent PowerShell child for the steady-state
+ * polling path. Spawning `pwsh.exe` on every cycle pays ~500 ms-1 s
+ * of .NET startup per call, which at the watcher's 2 s cadence pins
+ * a CPU core continuously. Keeping one child alive across the session
+ * collapses that to a single startup cost and ~50 ms WMI queries
+ * thereafter.
+ *
+ * Protocol:
+ *   - Parent writes `Q\n` to stdin → child runs the Win32_Process WMI
+ *     query, emits CSV, then a one-line sentinel (`===KANGENTIC_PS_..`)
+ *     so the parent can detect query completion in a streaming buffer.
+ *   - Parent writes `EXIT\n` (or closes stdin) → child breaks its
+ *     read loop and exits.
+ *
+ * Failure modes are handled the same way the watcher already tolerates:
+ * a hung query times out, kills the child, and returns []. The child
+ * lazily respawns on the next call. On ENOENT for `pwsh.exe`, the
+ * spawner falls back to `powershell.exe`.
+ *
+ * `listDescendants(rootPid)` (used by resume reconciliation) remains
+ * a thin wrapper around `listAllProcesses()` + `walkDescendants`.
+ */
 class WindowsProbe implements ProcessTreeProbe {
+  private child: PowerShellChild | null = null;
+  private sentinel = '';
+  private stdoutBuffer = '';
+  private pendingQuery: {
+    resolve: (result: ProcessInfo[]) => void;
+    timer: NodeJS.Timeout;
+  } | null = null;
+  private disposed = false;
+
   isAlive(pid: number): boolean {
     if (!Number.isInteger(pid) || pid <= 0) return false;
     try {
@@ -71,7 +119,6 @@ class WindowsProbe implements ProcessTreeProbe {
       return true;
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException).code;
-      // EPERM = exists but no permission. Treat as alive.
       return code === 'EPERM';
     }
   }
@@ -83,67 +130,268 @@ class WindowsProbe implements ProcessTreeProbe {
   }
 
   async listAllProcesses(): Promise<ProcessInfo[]> {
-    // Try PowerShell 7+ (`pwsh.exe`) first - faster startup, modern.
-    // Fall back to Windows PowerShell 5.x (`powershell.exe`) which
-    // ships with all supported Windows installs. If neither is
-    // available, return [] and the watcher falls back to the escape
-    // hatch.
-    const pwsh = await runPowerShellQuery('pwsh.exe');
-    if (pwsh !== null) return pwsh;
-    const wps = await runPowerShellQuery('powershell.exe');
-    if (wps !== null) return wps;
+    if (this.disposed) return [];
+    if (this.pendingQuery !== null) {
+      // Defense-in-depth: the watcher's `polling` guard serializes
+      // cycles, so this should never happen in practice. Returning
+      // [] preserves the existing "probe failure → skip cycle"
+      // semantics rather than stomping on the in-flight query.
+      return [];
+    }
+    if (this.child === null) {
+      return this.spawnAndFirstQuery();
+    }
+    return this.queryExistingChild();
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    const pending = this.pendingQuery;
+    this.pendingQuery = null;
+    if (pending !== null) {
+      clearTimeout(pending.timer);
+      pending.resolve([]);
+    }
+    this.shutdownChild();
+  }
+
+  /**
+   * Try pwsh.exe first; if that's not installed, fall back to
+   * powershell.exe (Windows PowerShell 5.x, shipped with all
+   * supported Windows installs). The first sentinel-delimited reply
+   * doubles as a health check: if the child can answer one query,
+   * we trust it for subsequent ones.
+   */
+  private async spawnAndFirstQuery(): Promise<ProcessInfo[]> {
+    for (const executable of ['pwsh.exe', 'powershell.exe']) {
+      const result = await this.attemptSpawn(executable);
+      if (result !== null) return result;
+    }
     return [];
+  }
+
+  /**
+   * Spawn `executable`, kick off the first query, and commit the child
+   * to instance state on success.
+   *
+   * Returns:
+   *   - null on ENOENT (binary not found) so the caller can try the
+   *     next executable
+   *   - [] on any other failure (spawn error, write error, timeout,
+   *     exit before sentinel)
+   *   - parsed ProcessInfo[] on success
+   */
+  private attemptSpawn(executable: string): Promise<ProcessInfo[] | null> {
+    return new Promise((resolve) => {
+      const sentinel = `===KANGENTIC_PS_PROBE_END_${randomUUID()}===`;
+      const script = buildReadLoopScript(sentinel);
+      let child: PowerShellChild;
+      try {
+        child = spawn(
+          executable,
+          ['-NoProfile', '-NonInteractive', '-Command', script],
+          { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] },
+        );
+      } catch {
+        resolve(null);
+        return;
+      }
+      let settled = false;
+      let bootstrapBuffer = '';
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { child.kill(); } catch { /* ignore */ }
+        resolve([]);
+      }, PROBE_TIMEOUT_MS);
+      timer.unref();
+      child.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const errno = (err as NodeJS.ErrnoException).code;
+        resolve(errno === 'ENOENT' ? null : []);
+      });
+      child.on('exit', () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve([]);
+      });
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (settled) return;
+        bootstrapBuffer += chunk.toString('utf-8');
+        const sentinelIndex = bootstrapBuffer.indexOf(sentinel);
+        if (sentinelIndex < 0) return;
+        settled = true;
+        clearTimeout(timer);
+        const csvBlock = bootstrapBuffer.slice(0, sentinelIndex);
+        const remainder = bootstrapBuffer.slice(sentinelIndex + sentinel.length);
+        this.commitChild(child, sentinel, remainder);
+        resolve(_parseWindowsCsv(csvBlock));
+      });
+      try {
+        child.stdin.write('Q\n');
+      } catch {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { child.kill(); } catch { /* ignore */ }
+        resolve([]);
+      }
+    });
+  }
+
+  /**
+   * Commit a freshly-spawned, health-checked child to instance state.
+   * Replaces the bootstrap data handler with the long-lived one that
+   * feeds `processStdoutBuffer`.
+   */
+  private commitChild(
+    child: PowerShellChild,
+    sentinel: string,
+    initialBuffer: string,
+  ): void {
+    this.child = child;
+    this.sentinel = sentinel;
+    this.stdoutBuffer = initialBuffer;
+    child.stdout.removeAllListeners('data');
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (this.disposed) return;
+      this.stdoutBuffer += chunk.toString('utf-8');
+      this.processStdoutBuffer();
+    });
+    const onExitOrError = () => this.handleChildExit();
+    child.removeAllListeners('exit');
+    child.removeAllListeners('error');
+    child.on('exit', onExitOrError);
+    child.on('error', onExitOrError);
+    // Suppress unhandled-error noise from stdin pipe writes that race
+    // with child exit (EPIPE / ECONNRESET).
+    child.stdin.on('error', () => { /* ignore */ });
+  }
+
+  private processStdoutBuffer(): void {
+    if (this.pendingQuery === null) return;
+    if (this.sentinel === '') return;
+    const sentinelIndex = this.stdoutBuffer.indexOf(this.sentinel);
+    if (sentinelIndex < 0) return;
+    const csvBlock = this.stdoutBuffer.slice(0, sentinelIndex);
+    this.stdoutBuffer = this.stdoutBuffer.slice(sentinelIndex + this.sentinel.length);
+    const pending = this.pendingQuery;
+    this.pendingQuery = null;
+    clearTimeout(pending.timer);
+    pending.resolve(_parseWindowsCsv(csvBlock));
+  }
+
+  /**
+   * Child exited (clean EXIT, crash, or stdin closed). Reject any
+   * in-flight query with [] and clear state so the next call respawns.
+   */
+  private handleChildExit(): void {
+    const pending = this.pendingQuery;
+    this.pendingQuery = null;
+    if (pending !== null) {
+      clearTimeout(pending.timer);
+      pending.resolve([]);
+    }
+    this.child = null;
+    this.sentinel = '';
+    this.stdoutBuffer = '';
+  }
+
+  private queryExistingChild(): Promise<ProcessInfo[]> {
+    return new Promise((resolve) => {
+      const child = this.child;
+      if (child === null) {
+        resolve([]);
+        return;
+      }
+      const timer = setTimeout(() => {
+        if (this.pendingQuery === null) return;
+        this.pendingQuery = null;
+        // Unresponsive child - kill it so the next call respawns.
+        this.shutdownChild();
+        resolve([]);
+      }, PROBE_TIMEOUT_MS);
+      timer.unref();
+      this.pendingQuery = { resolve, timer };
+      try {
+        child.stdin.write('Q\n');
+      } catch {
+        // Write failed (child stdin closed before exit handler fired).
+        // Tear down and return [].
+        const pending = this.pendingQuery;
+        this.pendingQuery = null;
+        if (pending !== null) clearTimeout(pending.timer);
+        this.shutdownChild();
+        resolve([]);
+      }
+    });
+  }
+
+  private shutdownChild(): void {
+    const child = this.child;
+    this.child = null;
+    this.sentinel = '';
+    this.stdoutBuffer = '';
+    if (child === null) return;
+    try {
+      if (child.stdin.writable) {
+        child.stdin.write('EXIT\n');
+        child.stdin.end();
+      }
+    } catch { /* ignore */ }
+    try { child.kill(); } catch { /* ignore */ }
   }
 }
 
 /**
- * Run the Win32_Process CSV query against a specific PowerShell
- * executable. Returns null on spawn failure (binary not found, etc.)
- * so callers can attempt a fallback. Returns [] on timeout / non-zero
- * exit / parse failure.
+ * Build the PowerShell read-loop script that the persistent child
+ * runs. Exported with `_` prefix so unit tests can assert the
+ * sentinel substitution and command vocabulary without spawning a
+ * real PowerShell process.
+ *
+ * Why each bit matters:
+ *   - `$ErrorActionPreference = 'SilentlyContinue'`: a transient
+ *     WMI access-denied error on a protected process must not kill
+ *     the loop. An empty CSV from one query is benign because the
+ *     watcher's probe-health guard (snapshot must contain rootPid)
+ *     treats it as "probe failure → skip cycle".
+ *   - `[Console]::In.ReadLine()` (not `Read-Host`): Read-Host writes
+ *     a prompt to stdout which would inject extraneous bytes into
+ *     our parse stream. Console.In reads the raw pipe.
+ *   - `if ($null -eq $cmd ...)`: ReadLine returns $null on EOF
+ *     (parent closed stdin) so we exit cleanly during shutdown.
+ *   - Sentinel emitted via `Write-Output` after the CSV pipeline
+ *     completes; its UUID component makes collision with any CSV
+ *     value impossible in practice.
  */
-function runPowerShellQuery(executable: string): Promise<ProcessInfo[] | null> {
-  // The query: every process with ProcessId, ParentProcessId, Name.
-  // CSV output is simpler than JSON (no pipeline JSON quoting issues).
-  const command =
-    "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | "
-    + "ConvertTo-Csv -NoTypeInformation";
-  return new Promise((resolve) => {
-    let resolved = false;
-    const child = spawn(
-      executable,
-      ['-NoProfile', '-NonInteractive', '-Command', command],
-      { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-    let stdout = '';
-    const timer = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      child.kill();
-      resolve([]);
-    }, PROBE_TIMEOUT_MS);
-    timer.unref();
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8'); });
-    child.on('error', () => {
-      // ENOENT (binary not found) returns null so caller can try the
-      // next executable. Other errors return [] (caller should NOT
-      // try the fallback).
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timer);
-      resolve(null);
-    });
-    child.on('exit', (code) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timer);
-      if (code !== 0) { resolve([]); return; }
-      resolve(_parseWindowsCsv(stdout));
-    });
-  });
+export function _buildReadLoopScript(sentinel: string): string {
+  return buildReadLoopScript(sentinel);
+}
+
+function buildReadLoopScript(sentinel: string): string {
+  return (
+    `$ErrorActionPreference = 'SilentlyContinue'; `
+    + `while ($true) { `
+    +   `$cmd = [Console]::In.ReadLine(); `
+    +   `if ($null -eq $cmd -or $cmd -eq 'EXIT') { break } `
+    +   `if ($cmd -eq 'Q') { `
+    +     `Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Csv -NoTypeInformation; `
+    +     `Write-Output '${sentinel}' `
+    +   `} `
+    + `}`
+  );
 }
 
 class PosixProbe implements ProcessTreeProbe {
+  // ps -A is fast enough (~10ms per spawn) that the per-call model
+  // does not need amortizing. dispose() exists to satisfy the
+  // cross-platform interface contract.
+  dispose(): void { /* no-op */ }
+
   isAlive(pid: number): boolean {
     if (!Number.isInteger(pid) || pid <= 0) return false;
     try {

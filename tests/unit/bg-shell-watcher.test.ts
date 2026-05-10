@@ -55,6 +55,12 @@ class MockProcessTreeProbe implements ProcessTreeProbe {
     this.listDescendantsCalls += 1;
     return this.trees.get(rootPid) ?? [];
   }
+
+  /** Track dispose calls so the BgShellWatcher.dispose() wiring can be asserted. */
+  disposeCalls = 0;
+  dispose(): void {
+    this.disposeCalls += 1;
+  }
 }
 
 interface CallbackLog {
@@ -1309,6 +1315,35 @@ describe('BgShellWatcher', () => {
     await watcher.pollNow();
     expect(log.naturalExits).toEqual([{ sessionId: 's1', exitedCount: 1 }]);
     watcher.dispose();
+  });
+
+  it('dispose() calls probe.dispose() exactly once', () => {
+    // BgShellWatcher.dispose() must release the probe's long-lived
+    // resources (Windows persistent PowerShell child). Without this
+    // call, `pwsh.exe` would survive as an orphan after app shutdown,
+    // paying .NET startup cost on the next launch instead of on the
+    // next query. The `disposeCalls` counter on MockProcessTreeProbe
+    // exists precisely to verify this wiring.
+    const { watcher, probe, rootPids } = makeWatcher();
+    rootPids.set('s1', 1234);
+    probe.alive.add(1234);
+    watcher.registerSession('s1');
+
+    expect(probe.disposeCalls).toBe(0);
+    watcher.dispose();
+    expect(probe.disposeCalls).toBe(1);
+  });
+
+  it('dispose() calls probe.dispose() exactly once (idempotent - second dispose is a no-op)', () => {
+    // BgShellWatcher.dispose() is itself idempotent (guarded by `this.disposed`).
+    // The probe must receive exactly one dispose call regardless of how many
+    // times watcher.dispose() is called. A double-dispose on the probe would
+    // be a bug if the probe's teardown is not itself idempotent.
+    const { watcher, probe } = makeWatcher();
+
+    watcher.dispose();
+    watcher.dispose();
+    expect(probe.disposeCalls).toBe(1);
   });
 
   it('cycle is non-overlapping (setInterval drops ticks while polling)', async () => {

@@ -224,6 +224,13 @@ function ActivityDebugOverlayContent() {
   }, [sessions, tasks, transientSessionId]);
 
   const [snapshots, setSnapshots] = useState<ActivityStatsSnapshot[]>([]);
+  // Wall-clock anchor captured at the start of each poll tick and
+  // prop-drilled to children that need a "now" value (timeline window,
+  // activity-log ages, header wall-clock readout). Stable between
+  // polls so the timeline's `useMemo` caches actually hit on off-cycle
+  // re-renders triggered by `sessionEvents` updates or other store
+  // subscriptions. Updated every 2 s alongside `setSnapshots`.
+  const [pollNow, setPollNow] = useState<number>(() => Date.now());
   // Cache prior snapshot references keyed by sessionId. Each poll
   // checks structural equality against the cache and reuses the prior
   // reference when content matches, so memoized children short-circuit
@@ -363,6 +370,12 @@ function ActivityDebugOverlayContent() {
       }
       if (!cancelled) {
         previousSnapshotsRef.current = nextCache;
+        // Capture one canonical wall clock per poll tick so all
+        // children share the same "now" anchor. Updating this every
+        // tick (rather than only when snapshots change) is intentional:
+        // the timeline's now-marker, gridlines, and the captured-at
+        // readout must advance with real time even on idle sessions.
+        setPollNow(Date.now());
         setSnapshots((prev) => {
           // If every per-session reference matches the prior state,
           // bail out of the setState entirely so React skips the
@@ -649,7 +662,7 @@ function ActivityDebugOverlayContent() {
               every other timestamp in absolute time so a recipient
               can reason about whether a "1.4s since signal" reading
               was hours old or fresh. */}
-          <CapturedAt />
+          <CapturedAt pollNow={pollNow} />
         </div>
         <button
           type="button"
@@ -686,6 +699,7 @@ function ActivityDebugOverlayContent() {
                 key={snapshot.sessionId}
                 snapshot={snapshot}
                 label={sessionLabels.get(snapshot.sessionId) ?? snapshot.sessionId.slice(0, 8)}
+                pollNow={pollNow}
               />
             ))}
           </div>
@@ -762,7 +776,7 @@ function DesyncDiagnostic({
   );
 }
 
-const SnapshotRow = memo(function SnapshotRow({ snapshot, label }: { snapshot: ActivityStatsSnapshot; label: string }) {
+const SnapshotRow = memo(function SnapshotRow({ snapshot, label, pollNow }: { snapshot: ActivityStatsSnapshot; label: string; pollNow: number }) {
   const bgShellCount = snapshot.backgroundShellIds.length + snapshot.anonymousBackgroundShellCount;
   // Subscribe to the per-session event stream for the timeline's event
   // ticks track. Reads from the shared cache populated by the activity
@@ -828,7 +842,7 @@ const SnapshotRow = memo(function SnapshotRow({ snapshot, label }: { snapshot: A
           transition; the trigger label tells you which event/timer/force
           path caused it. Read top-to-bottom = oldest-to-newest. */}
       {snapshot.recentTransitions.length > 0 && (
-        <RecentTransitions snapshot={snapshot} />
+        <RecentTransitions snapshot={snapshot} pollNow={pollNow} />
       )}
 
       {/* Visual timeline + compensation counter strip. Renders the last
@@ -836,7 +850,7 @@ const SnapshotRow = memo(function SnapshotRow({ snapshot, label }: { snapshot: A
           chunk ticks, and the active timer (watchdog) deadline. Counter
           strip above tallies recovery events for quick glance: all
           zeros = clean session. */}
-      <ActivityTimeline snapshot={snapshot} sessionEvents={sessionEvents} />
+      <ActivityTimeline snapshot={snapshot} sessionEvents={sessionEvents} pollNow={pollNow} />
     </div>
   );
 });
@@ -855,18 +869,19 @@ const SnapshotRow = memo(function SnapshotRow({ snapshot, label }: { snapshot: A
  */
 const VISIBLE_TRANSITIONS = 5;
 
-const RecentTransitions = memo(function RecentTransitions({ snapshot }: { snapshot: ActivityStatsSnapshot }) {
+const RecentTransitions = memo(function RecentTransitions({ snapshot, pollNow }: { snapshot: ActivityStatsSnapshot; pollNow: number }) {
   const allEntries = snapshot.recentTransitions;
   if (allEntries.length === 0) return null;
   const visibleEntries = allEntries.length > VISIBLE_TRANSITIONS
     ? allEntries.slice(allEntries.length - VISIBLE_TRANSITIONS)
     : allEntries;
-  // Anchor timestamps to "now" so each row reads as "Xs ago", aligning
-  // with the timeline chart's `-120s … now` X-axis. A screenshot of
-  // the overlay carries directly correlatable temporal context this
-  // way - the +1.8s entry in a `+0` baseline format would have the
-  // viewer doing arithmetic to spot it on the chart.
-  const now = Date.now();
+  // Anchor timestamps to the parent's poll-time "now" so each row reads
+  // as "Xs ago" using the same wall-clock value the timeline chart
+  // does. Sharing the anchor (rather than each component calling
+  // `Date.now()` independently) keeps the activity-log ages and the
+  // chart's gridlines in lockstep - the +1.8s entry sits at exactly
+  // the matching x-position on the chart's `-120s … now` axis.
+  const now = pollNow;
 
   return (
     <div className="space-y-1 pt-1">
@@ -995,13 +1010,8 @@ export function formatHHMMSS(date: Date): string {
   );
 }
 
-function CapturedAt() {
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const interval = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(interval);
-  }, []);
-  const formatted = formatHHMMSS(now);
+function CapturedAt({ pollNow }: { pollNow: number }) {
+  const formatted = formatHHMMSS(new Date(pollNow));
   return (
     <span
       className="font-mono text-[10px] text-fg-disabled tabular-nums shrink-0 ml-auto pr-1"

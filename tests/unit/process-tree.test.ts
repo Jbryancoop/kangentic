@@ -5,13 +5,14 @@
  * spawn `ps` / PowerShell. Skip in CI containers without those
  * binaries (set `SKIP_PROCESS_TREE_PROBE=1`).
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   createProcessTreeProbe,
   isShellLike,
   SHELL_LIKE_COMM_PATTERNS,
   _parseWindowsCsv,
   _parsePosixPs,
+  _buildReadLoopScript,
 } from '../../src/main/pty/activity/background-shell/process-tree';
 
 const skip = process.env.SKIP_PROCESS_TREE_PROBE === '1';
@@ -233,5 +234,100 @@ describe('_parsePosixPs (real ps -A output shape)', () => {
     const output = '100 1 /usr/local/bin/python3';
     const parsed = _parsePosixPs(output);
     expect(parsed[0].comm).toBe('python3');
+  });
+});
+
+describe('_buildReadLoopScript', () => {
+  it('embeds the sentinel literal in the Write-Output command', () => {
+    const sentinel = '===KANGENTIC_PS_PROBE_END_test-uuid===';
+    const script = _buildReadLoopScript(sentinel);
+    expect(script).toContain(`Write-Output '${sentinel}'`);
+  });
+
+  it('reads from [Console]::In.ReadLine rather than Read-Host', () => {
+    // Read-Host would write a prompt to stdout and corrupt the
+    // sentinel-delimited parse stream. Console.In reads the raw pipe.
+    const script = _buildReadLoopScript('S');
+    expect(script).toContain('[Console]::In.ReadLine()');
+    expect(script).not.toContain('Read-Host');
+  });
+
+  it('exits the loop on EXIT command and on stdin EOF', () => {
+    const script = _buildReadLoopScript('S');
+    // EOF guard: ReadLine returns $null when stdin closes
+    expect(script).toContain('$null -eq $cmd');
+    // Explicit EXIT command for graceful shutdown via dispose()
+    expect(script).toContain("$cmd -eq 'EXIT'");
+  });
+
+  it('runs the Win32_Process WMI query on Q command', () => {
+    const script = _buildReadLoopScript('S');
+    expect(script).toContain("$cmd -eq 'Q'");
+    expect(script).toContain('Get-CimInstance Win32_Process');
+    expect(script).toContain('ProcessId,ParentProcessId,Name');
+    expect(script).toContain('ConvertTo-Csv -NoTypeInformation');
+  });
+
+  it('silences WMI errors so transient access-denied does not kill the loop', () => {
+    const script = _buildReadLoopScript('S');
+    expect(script).toContain("ErrorActionPreference = 'SilentlyContinue'");
+  });
+});
+
+/**
+ * Real-OS smoke test for the persistent PowerShell child on Windows.
+ * Asserts that:
+ *   - First listAllProcesses() spawns and returns a non-empty snapshot
+ *     that includes the current process.
+ *   - Second listAllProcesses() reuses the child (no new spawn) and
+ *     also includes the current process.
+ *   - dispose() is idempotent and tears the child down.
+ *
+ * Skipped on non-Windows (POSIX probe has nothing to test here) and
+ * when SKIP_PROCESS_TREE_PROBE is set (CI containers without
+ * PowerShell available).
+ */
+describe.skipIf(skip || process.platform !== 'win32')('WindowsProbe long-lived child', () => {
+  let probe: ReturnType<typeof createProcessTreeProbe>;
+
+  beforeAll(() => {
+    probe = createProcessTreeProbe();
+  });
+
+  afterAll(() => {
+    probe.dispose();
+  });
+
+  it('returns a snapshot containing the current process on first query', async () => {
+    const all = await probe.listAllProcesses();
+    expect(all.length).toBeGreaterThan(0);
+    expect(all.some((info) => info.pid === process.pid)).toBe(true);
+  });
+
+  it('returns a snapshot containing the current process on a reused-child query', async () => {
+    // The first query above committed the long-lived child. This call
+    // should reuse it - verifiable indirectly by completing well under
+    // the cold-spawn budget (a fresh PowerShell startup is 500ms-1s,
+    // a reused-child query is ~50ms).
+    const start = Date.now();
+    const all = await probe.listAllProcesses();
+    const elapsed = Date.now() - start;
+    expect(all.length).toBeGreaterThan(0);
+    expect(all.some((info) => info.pid === process.pid)).toBe(true);
+    // Generous cap: 800ms. Cold spawn would clear this only on the
+    // fastest machines. The internal per-query timeout is 1500ms.
+    expect(elapsed).toBeLessThan(800);
+  });
+
+  it('dispose() is idempotent', () => {
+    probe.dispose();
+    expect(() => probe.dispose()).not.toThrow();
+  });
+
+  it('listAllProcesses() after dispose returns []', async () => {
+    // dispose() above set the disposed flag. Subsequent queries must
+    // return [] without trying to respawn.
+    const all = await probe.listAllProcesses();
+    expect(all).toEqual([]);
   });
 });

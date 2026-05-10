@@ -145,16 +145,24 @@ const COUNTER_LABELS: Record<keyof ActivityStatsSnapshot['compensationCounters']
 interface ActivityTimelineProps {
   snapshot: ActivityStatsSnapshot;
   sessionEvents: SessionEvent[] | undefined;
+  /**
+   * Wall-clock anchor for "now" on the timeline. Captured once per
+   * 2 s poll tick by the parent overlay and prop-drilled here so the
+   * three useMemo caches below (`bands`, `eventTicks`, `maxChunkCount`)
+   * actually hit on off-cycle re-renders driven by unrelated stores
+   * (e.g. `sessionEvents` updates from hook traffic). Reading
+   * `Date.now()` in the render body would change the value on every
+   * render and bust all three caches.
+   */
+  pollNow: number;
 }
 
 export const ActivityTimeline = memo(function ActivityTimeline({
   snapshot,
   sessionEvents,
+  pollNow,
 }: ActivityTimelineProps) {
-  // Anchor the window at the snapshot's poll time. Date.now() is fine
-  // here - the snapshot is at most 2s old (poll interval) so the
-  // visual drift is invisible at our scale.
-  const now = Date.now();
+  const now = pollNow;
   const windowStart = now - WINDOW_MS;
 
   // Reconstruct activity bands from recentTransitions.

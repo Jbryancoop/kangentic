@@ -54,6 +54,8 @@ class MockProcessTreeProbe implements ProcessTreeProbe {
   async listDescendants(rootPid: number): Promise<ProcessInfo[]> {
     return this.trees.get(rootPid) ?? [];
   }
+
+  dispose(): void { /* no-op; long-lived child is Windows-probe-only */ }
 }
 
 // ==== Minimal SessionTelemetry callbacks stub ====

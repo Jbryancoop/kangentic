@@ -196,6 +196,10 @@ export class BgShellWatcher {
     this.disposed = true;
     this.stopPolling();
     this.states.clear();
+    // Release the probe's long-lived resources (Windows persistent
+    // PowerShell child). Synchronous so it slots into the
+    // before-quit shutdown contract.
+    this.probe.dispose();
   }
 
   // ==== Internal ====
