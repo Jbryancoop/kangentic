@@ -46,6 +46,7 @@ import type { SessionUsage } from '../../src/shared/types';
       resume: async () => ({}),
       getUsage: async () => ({}),
       getActivity: async () => ({}),
+      getActivityReasons: async () => ({}),
       getEventsCache: async () => ({}),
     },
   },

@@ -1,7 +1,7 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ipcMain } from 'electron';
 import type { IpcLogEntry } from '../../shared/types';
+import { queueAppend } from './async-file-queue';
 
 /**
  * Records every IPC handler invocation when `developer.recordIpcTraffic` is on.
@@ -38,6 +38,7 @@ const SAFE_CHANNELS = new Set<string>([
   'session:list',
   'session:getActivity',
   'session:getActivityReason',
+  'session:getActivityReasons',
   'session:getActivityStats',
   'session:getEvents',
   'session:getEventsCache',
@@ -113,19 +114,15 @@ export function installIpcRecorder(options: IpcRecorderOptions): void {
 
 function writeEntry(projectRoot: string | null, entry: IpcLogEntry): void {
   if (!projectRoot) return;
-  const directory = path.join(projectRoot, '.kangentic', 'logs');
-  try {
-    fs.mkdirSync(directory, { recursive: true });
-  } catch {
-    return;
-  }
   const date = entry.ts.slice(0, 10);
-  const file = path.join(directory, `ipc-${date}.jsonl`);
-  try {
-    fs.appendFileSync(file, JSON.stringify(entry) + '\n', 'utf-8');
-  } catch {
-    // Best-effort.
-  }
+  const file = path.join(projectRoot, '.kangentic', 'logs', `ipc-${date}.jsonl`);
+  // Async-buffered: queueAppend returns immediately. The previous
+  // appendFileSync ran inside the IPC handler's `finally`, blocking the
+  // main event loop on every IPC call (incl. IPC.SESSION_WRITE per
+  // terminal keystroke). On Windows that costs 5-50 ms per call and
+  // was the dominant source of typing-stutter when recordIpcTraffic
+  // is on.
+  queueAppend(file, JSON.stringify(entry) + '\n');
 }
 
 /** Exported for unit tests only. */

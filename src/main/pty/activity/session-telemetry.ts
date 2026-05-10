@@ -604,6 +604,20 @@ export class SessionTelemetry {
     return this.activityEngine.getActivityReason(sessionId);
   }
 
+  /**
+   * Batch ActivityReason map for every session the engine tracks.
+   * Mirrors getActivityCache() so the renderer can reconcile reasons
+   * after HMR / full reload via the same eviction semantics.
+   */
+  getActivityReasonsCache(): Record<string, ActivityReason> {
+    const result: Record<string, ActivityReason> = {};
+    this.activityEngine.forEachState((sessionId) => {
+      const reason = this.activityEngine.getActivityReason(sessionId);
+      if (reason) result[sessionId] = reason;
+    });
+    return result;
+  }
+
   getActivityStatsSnapshot(sessionId: string): ActivityStatsSnapshot | null {
     return this.activityEngine.getStatsSnapshot(sessionId);
   }

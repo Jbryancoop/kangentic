@@ -658,6 +658,11 @@ export class SessionManager extends EventEmitter {
     return this.telemetry.getActivityReason(sessionId);
   }
 
+  /** Return cached ActivityReason for all sessions (HMR/full-reload reconcile). */
+  getActivityReasonsCache(): Record<string, ActivityReason> {
+    return this.telemetry.getActivityReasonsCache();
+  }
+
   /**
    * Rich activity stats snapshot for the debug overlay (Developer tab).
    * Returns null for unknown sessions.
@@ -712,6 +717,15 @@ export class SessionManager extends EventEmitter {
   getActivityCacheForProject(projectId: string): Record<string, ActivityState> {
     return filterCacheByProject(
       this.telemetry.getActivityCache(),
+      (sessionId) => this.registry.getSessionProjectId(sessionId),
+      projectId,
+    );
+  }
+
+  /** Return cached ActivityReason filtered to a specific project. */
+  getActivityReasonsCacheForProject(projectId: string): Record<string, ActivityReason> {
+    return filterCacheByProject(
+      this.telemetry.getActivityReasonsCache(),
       (sessionId) => this.registry.getSessionProjectId(sessionId),
       projectId,
     );

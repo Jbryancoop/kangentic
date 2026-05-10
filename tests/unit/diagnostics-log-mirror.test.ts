@@ -37,7 +37,7 @@ let originalError: typeof console.error;
 let originalInfo: typeof console.info;
 let originalDebug: typeof console.debug;
 
-beforeEach(() => {
+beforeEach(async () => {
   ipcHandlers.clear();
   tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'log-mirror-test-'));
   originalLog = console.log;
@@ -45,7 +45,17 @@ beforeEach(() => {
   originalError = console.error;
   originalInfo = console.info;
   originalDebug = console.debug;
+  // log-mirror has a module-scoped `installed` flag; vi.resetModules
+  // forces a fresh module on each `await import('...log-mirror')` so
+  // each test re-installs with its own getProjectRoot closure pointing
+  // at the per-test tmpdir. async-file-queue must be re-imported via
+  // the same fresh registry so resetForTest() targets the SAME queue
+  // instance that log-mirror's queueAppend writes to. A static top-level
+  // import would bind to a pre-reset copy and silently flush an empty
+  // queue.
   vi.resetModules();
+  const { resetForTest } = await import('../../src/main/diagnostics/async-file-queue');
+  resetForTest();
 });
 
 afterEach(() => {
@@ -61,7 +71,12 @@ afterEach(() => {
   }
 });
 
-function readLogLines(date: string): Array<{ ts: string; level: string; source: string; args: string[] }> {
+async function readLogLines(date: string): Promise<Array<{ ts: string; level: string; source: string; args: string[] }>> {
+  // Writes are async-buffered through the file queue; await pending
+  // flushes before reading. Dynamic import binds to the same fresh
+  // queue instance that log-mirror is using post-resetModules.
+  const { flushAllForTest } = await import('../../src/main/diagnostics/async-file-queue');
+  await flushAllForTest();
   const file = path.join(tempDirectory, '.kangentic', 'logs', `${date}.log`);
   if (!fs.existsSync(file)) return [];
   return fs
@@ -89,7 +104,7 @@ describe('log-mirror', () => {
     console.debug('verbose');
     console.log('plain');
 
-    const lines = readLogLines(todayUtc());
+    const lines = await readLogLines(todayUtc());
     const levels = lines.map((entry) => entry.level).sort();
     expect(levels).toEqual(['error', 'warn']);
 
@@ -111,7 +126,7 @@ describe('log-mirror', () => {
     console.debug('verbose');
     console.log('plain');
 
-    const lines = readLogLines(todayUtc());
+    const lines = await readLogLines(todayUtc());
     const levels = lines.map((entry) => entry.level).sort();
     expect(levels).toEqual(['debug', 'info', 'log']);
   });
@@ -128,6 +143,10 @@ describe('log-mirror', () => {
       console.info('still no-project');
     }).not.toThrow();
 
+    // Drain the queue (no work expected - getProjectRoot returned null
+    // so nothing was queued).
+    const { flushAllForTest } = await import('../../src/main/diagnostics/async-file-queue');
+    await flushAllForTest();
     expect(fs.existsSync(path.join(tempDirectory, '.kangentic', 'logs'))).toBe(false);
   });
 
@@ -150,7 +169,7 @@ describe('log-mirror', () => {
     };
     handler!({}, rendererEntry);
 
-    const lines = readLogLines(todayUtc());
+    const lines = await readLogLines(todayUtc());
     expect(lines.find((entry) => entry.source === 'renderer')).toMatchObject({
       level: 'error',
       args: ['from renderer'],

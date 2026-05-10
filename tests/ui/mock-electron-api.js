@@ -1018,6 +1018,11 @@
         // production "session unknown" path.
         return null;
       },
+      getActivityReasons: async function (/* projectId */) {
+        // Batch reason map; mirrors getActivity's mock. UI tests don't
+        // assert on reason content, so an empty record is fine.
+        return {};
+      },
       getActivityStats: async function (/* sessionId */) {
         // Debug overlay only; UI tests rarely need this. Return null
         // to mirror "session unknown" path.

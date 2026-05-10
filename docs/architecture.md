@@ -152,7 +152,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `transition:set` | invoke | Set action chain for lane A→B |
 | `transition:getFor` | invoke | Get transitions for lane pair (exact match, then wildcard) |
 
-### Sessions (31 channels)
+### Sessions (32 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `session:spawn` | invoke | Spawn PTY session (may queue) |
@@ -168,6 +168,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `session:getUsage` | invoke | Fetch session usage (tokens, cost). Optional `projectId` scopes to one project. |
 | `session:getActivity` | invoke | Fetch activity state (thinking/idle). Optional `projectId` scopes to one project. |
 | `session:getActivityReason` | invoke | Fetch the current `ActivityReason` discriminated-union value for one session |
+| `session:getActivityReasons` | invoke | Fetch a `Record<sessionId, ActivityReason>` for batch reconcile after HMR / full reload. Optional `projectId` scopes to one project. |
 | `session:getActivityStats` | invoke | Fetch a raw engine-counter snapshot for the debug overlay |
 | `session:getEvents` | invoke | Fetch activity log events for one session |
 | `session:getEventsCache` | invoke | Fetch cached event arrays. Optional `projectId` scopes to one project. |

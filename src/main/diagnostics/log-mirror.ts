@@ -1,9 +1,9 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ipcMain } from 'electron';
 import { IPC } from '../../shared/ipc-channels';
 import type { LogEntry } from '../../shared/types';
 import { resolveLogEntry } from './source-map-resolver';
+import { queueAppend } from './async-file-queue';
 
 /**
  * Persistent console-output mirror. Patches `console.log/warn/error/info/debug`
@@ -83,20 +83,14 @@ function appendLog(projectRoot: string | null, entry: LogEntry): void {
   // (V1 is a passthrough; replacing the resolver body adds real
   // source-map lookup with no caller changes).
   const resolved = resolveLogEntry(entry);
-  const directory = path.join(projectRoot, '.kangentic', 'logs');
-  try {
-    fs.mkdirSync(directory, { recursive: true });
-  } catch {
-    return;
-  }
   // YYYY-MM-DD slice of an ISO 8601 timestamp.
   const date = resolved.ts.slice(0, 10);
-  const file = path.join(directory, `${date}.log`);
-  try {
-    fs.appendFileSync(file, JSON.stringify(resolved) + '\n', 'utf-8');
-  } catch {
-    // Best-effort; disk full / permissions / locked file are non-fatal.
-  }
+  const file = path.join(projectRoot, '.kangentic', 'logs', `${date}.log`);
+  // Async-buffered: queueAppend returns immediately; the disk write
+  // happens on the next setImmediate turn. Eliminates the per-call
+  // appendFileSync + mkdirSync that blocked the main event loop on
+  // every console.* and IPC.LOG_APPEND.
+  queueAppend(file, JSON.stringify(resolved) + '\n');
 }
 
 function stringifyArg(argument: unknown): string {

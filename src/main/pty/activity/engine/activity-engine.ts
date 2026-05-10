@@ -347,18 +347,23 @@ export class ActivityEngine {
       if (!state.activeBackgroundShellIds.has(shellId)) return;
       state.activeBackgroundShellIds.delete(shellId);
     } else {
-      // Anonymous decrement (count-based heuristic from watcher).
-      // The watcher saw N fewer descendants - SOMETHING ended. Drain
-      // anonymous first; if anonymous is empty but the named set still
-      // has entries, drain one named entry as a last resort. Without
-      // this fallback, named-set entries left over from prior bookkeeping
-      // drift would never decrement, freezing the bg-shell count.
+      // Anonymous decrement (count-based heuristic from the watcher).
+      // The watcher saw N fewer descendants - SOMETHING ended. We drain
+      // anonymous only; we do NOT fall back to draining a named entry,
+      // because the watcher cannot prove the exit was a tracked named
+      // shell vs. helper-process churn (MCP server, statusline worker).
+      // Falling back would clobber a real, alive named bg shell every
+      // time a helper exits. Genuinely stuck named entries are recovered
+      // by the 5-min bg-shell escape hatch (watchdog.ts).
       if (state.anonymousBackgroundShellCount > 0) {
         state.anonymousBackgroundShellCount -= 1;
-      } else if (state.activeBackgroundShellIds.size > 0) {
-        const firstId = state.activeBackgroundShellIds.values().next().value;
-        if (firstId !== undefined) state.activeBackgroundShellIds.delete(firstId);
       } else {
+        if (state.activeBackgroundShellIds.size > 0) {
+          console.warn(
+            `[activity-engine] ignoring ambiguous anonymous bg-shell decrement for ${sessionId}: ` +
+            `anon=0, named=${state.activeBackgroundShellIds.size}`,
+          );
+        }
         return;
       }
     }

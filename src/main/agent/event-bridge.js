@@ -194,7 +194,19 @@ process.stdin.on('end', () => {
 
   try {
     fs.appendFileSync(outputPath, JSON.stringify(event) + '\n');
-  } catch {
-    // Best effort - file may be locked or path may not exist
+  } catch (err) {
+    // Don't swallow silently - write a sibling error log so genuine
+    // pipeline failures (file locked, path missing, disk full) are
+    // diagnosable. Best-effort: the error log itself may also fail.
+    try {
+      const errorPath = outputPath.replace(/events\.jsonl$/, 'events-bridge.error.log');
+      const errorMessage = err && err.message ? err.message : String(err);
+      fs.appendFileSync(
+        errorPath,
+        `${new Date().toISOString()} ${event.type || 'unknown'} ${errorMessage}\n`,
+      );
+    } catch {
+      // Truly nothing we can do
+    }
   }
 });

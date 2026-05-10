@@ -55,6 +55,7 @@ const configSetSpy = vi.fn();
       resume: async () => ({}),
       getUsage: async () => ({}),
       getActivity: async () => ({}),
+      getActivityReasons: async () => ({}),
       getEventsCache: async () => ({}),
     },
   },

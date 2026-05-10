@@ -147,11 +147,12 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
     // Sessions list is always unscoped -- sidebar needs cross-project data.
     // Usage/events are scoped to current project; activity is unscoped
     // because sidebar badges need cross-project activity data.
-    // Parallelize all four IPC calls -- they're independent.
-    const [freshSessions, cachedUsage, cachedActivity, cachedEvents] = await Promise.all([
+    // Parallelize all five IPC calls; they're independent.
+    const [freshSessions, cachedUsage, cachedActivity, cachedReasons, cachedEvents] = await Promise.all([
       window.electronAPI.sessions.list(),
       window.electronAPI.sessions.getUsage(currentProjectId),
       window.electronAPI.sessions.getActivity(),
+      window.electronAPI.sessions.getActivityReasons(),
       window.electronAPI.sessions.getEventsCache(currentProjectId),
     ]);
     if (signal.aborted) return false;
@@ -206,6 +207,7 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
       sessionUsage: reconcileCache(cachedUsage, currentState.sessionUsage),
       latestRateLimits: nextLatestRateLimits,
       sessionActivity: reconcileCache(cachedActivity, currentState.sessionActivity),
+      sessionActivityReason: reconcileCache(cachedReasons, currentState.sessionActivityReason),
       sessionEvents: reconcileCache(cachedEvents, currentState.sessionEvents),
     });
 

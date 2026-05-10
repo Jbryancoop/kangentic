@@ -12,10 +12,7 @@
  * These tests verify that the emit happens, carries the correct payload, and
  * that the returned session matches the emitted one.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // node-pty must be mocked before importing SessionManager
 vi.mock('node-pty', () => ({
@@ -44,16 +41,10 @@ import { SessionManager } from '../../src/main/pty/session-manager';
 
 describe('SessionManager.registerSuspendedPlaceholder emit', () => {
   let manager: SessionManager;
-  let tmpDir: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kangentic-placeholder-emit-'));
-    manager = new SessionManager(tmpDir);
-  });
-
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    manager = new SessionManager();
   });
 
   it('emits session-changed exactly once when registering a suspended placeholder', () => {

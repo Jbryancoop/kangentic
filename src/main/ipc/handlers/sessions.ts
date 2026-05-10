@@ -68,6 +68,10 @@ export function registerSessionHandlers(context: IpcContext): void {
   ipcMain.handle(IPC.SESSION_GET_ACTIVITY, (_, projectId?: string) =>
     projectId ? context.sessionManager.getActivityCacheForProject(projectId) : context.sessionManager.getActivityCache());
   ipcMain.handle(IPC.SESSION_GET_ACTIVITY_REASON, (_, sessionId: string) => context.sessionManager.getActivityReason(sessionId));
+  ipcMain.handle(IPC.SESSION_GET_ACTIVITY_REASONS, (_, projectId?: string) =>
+    projectId
+      ? context.sessionManager.getActivityReasonsCacheForProject(projectId)
+      : context.sessionManager.getActivityReasonsCache());
   ipcMain.handle(IPC.SESSION_GET_ACTIVITY_STATS, (_, sessionId: string) => context.sessionManager.getActivityStatsSnapshot(sessionId));
   ipcMain.handle(IPC.SESSION_GET_EVENTS, (_, sessionId: string) => context.sessionManager.getEventsForSession(sessionId));
   ipcMain.handle(IPC.SESSION_GET_EVENTS_CACHE, (_, projectId?: string) =>

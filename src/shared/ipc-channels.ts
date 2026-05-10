@@ -81,6 +81,7 @@ export const IPC = {
   SESSION_ACTIVITY: 'session:activity',
   SESSION_GET_ACTIVITY: 'session:getActivity',
   SESSION_GET_ACTIVITY_REASON: 'session:getActivityReason',
+  SESSION_GET_ACTIVITY_REASONS: 'session:getActivityReasons',
   SESSION_GET_ACTIVITY_STATS: 'session:getActivityStats',
   SESSION_EVENT: 'session:event',
   SESSION_GET_EVENTS: 'session:getEvents',

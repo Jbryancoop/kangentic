@@ -1999,6 +1999,7 @@ export interface ElectronAPI {
     getActivity: (projectId?: string) => Promise<Record<string, ActivityState>>;
     onActivity: (callback: (sessionId: string, state: ActivityState, reason: ActivityReason, projectId?: string, taskId?: string, taskTitle?: string) => void) => () => void;
     getActivityReason: (sessionId: string) => Promise<ActivityReason | null>;
+    getActivityReasons: (projectId?: string) => Promise<Record<string, ActivityReason>>;
     getActivityStats: (sessionId: string) => Promise<ActivityStatsSnapshot | null>;
     getEvents: (sessionId: string) => Promise<SessionEvent[]>;
     getEventsCache: (projectId?: string) => Promise<Record<string, SessionEvent[]>>;

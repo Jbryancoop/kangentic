@@ -45,6 +45,9 @@ beforeEach(async () => {
   electron.ipcMain.handle = vi.fn((_channel: string, handler: (...args: unknown[]) => Promise<unknown>) => {
     registeredHandler = handler;
   }) as unknown as typeof electron.ipcMain.handle;
+  // Drain any leftover queue state from the prior test.
+  const { resetForTest } = await import('../../src/main/diagnostics/async-file-queue');
+  resetForTest();
 });
 
 afterEach(() => {
@@ -55,7 +58,11 @@ afterEach(() => {
   }
 });
 
-function readJsonlEntries(channelOrAny?: string): unknown[] {
+async function readJsonlEntries(channelOrAny?: string): Promise<unknown[]> {
+  // Writes are async-buffered through the file queue; await pending
+  // flushes before reading.
+  const { flushAllForTest } = await import('../../src/main/diagnostics/async-file-queue');
+  await flushAllForTest();
   const directory = path.join(tempDirectory, '.kangentic', 'logs');
   if (!fs.existsSync(directory)) return [];
   const today = new Date().toISOString().slice(0, 10);
@@ -101,7 +108,7 @@ describe('ipc-recorder', () => {
     const result = await registeredHandler!({});
     expect(result).toEqual(['project-a']);
 
-    expect(readJsonlEntries()).toEqual([]);
+    expect(await readJsonlEntries()).toEqual([]);
   });
 
   it('logs args + result for safe channels when enabled', async () => {
@@ -115,7 +122,7 @@ describe('ipc-recorder', () => {
     ipcMain.handle('project:list', async (_event: unknown, _arg: string) => ['project-a']);
     await registeredHandler!({}, 'unused');
 
-    const entries = readJsonlEntries('project:list');
+    const entries = await readJsonlEntries('project:list');
     expect(entries).toHaveLength(1);
     const entry = entries[0] as {
       channel: string;
@@ -140,7 +147,7 @@ describe('ipc-recorder', () => {
     ipcMain.handle('config:set', async (_event: unknown, _settings: unknown) => 'ok');
     await registeredHandler!({}, { apiKey: 'sk-secret', other: 'data' });
 
-    const entries = readJsonlEntries('config:set');
+    const entries = await readJsonlEntries('config:set');
     expect(entries).toHaveLength(1);
     const entry = entries[0] as {
       args: { redacted: boolean; channel: string };
@@ -164,7 +171,7 @@ describe('ipc-recorder', () => {
 
     await expect(registeredHandler!({})).rejects.toThrow('database locked');
 
-    const entries = readJsonlEntries('project:list');
+    const entries = await readJsonlEntries('project:list');
     expect(entries).toHaveLength(1);
     const entry = entries[0] as {
       error: { name: string; message: string };

@@ -26,7 +26,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '../../src/shared/types';
-import type { ActivityState, Session, SessionEvent, SessionUsage } from '../../src/shared/types';
+import type { ActivityReason, ActivityState, Session, SessionEvent, SessionUsage } from '../../src/shared/types';
 
 // ---------------------------------------------------------------------------
 // Stub window.electronAPI before importing the store.
@@ -53,6 +53,7 @@ import type { ActivityState, Session, SessionEvent, SessionUsage } from '../../s
       reconcile: async () => null,
       getUsage: async () => ({}),
       getActivity: async () => ({}),
+      getActivityReasons: async () => ({}),
       getEventsCache: async () => ({}),
     },
   },
@@ -84,10 +85,11 @@ function makeEvent(detail: string): SessionEvent {
   return { ts: Date.now(), type: 'idle', detail };
 }
 
-type MockableMethod = 'getActivity' | 'getUsage' | 'getEventsCache';
+type MockableMethod = 'getActivity' | 'getActivityReasons' | 'getUsage' | 'getEventsCache';
 
 interface MockResults {
   getActivity?: Record<string, ActivityState>;
+  getActivityReasons?: Record<string, ActivityReason>;
   getUsage?: Record<string, SessionUsage>;
   getEventsCache?: Record<string, SessionEvent[]>;
 }
@@ -102,11 +104,15 @@ async function syncWithMocks(results: MockResults): Promise<void> {
   }).electronAPI.sessions;
   const originals: Partial<Record<MockableMethod, unknown>> = {
     getActivity: sessions.getActivity,
+    getActivityReasons: sessions.getActivityReasons,
     getUsage: sessions.getUsage,
     getEventsCache: sessions.getEventsCache,
   };
   if (results.getActivity !== undefined) {
     sessions.getActivity = (async () => results.getActivity) as () => unknown;
+  }
+  if (results.getActivityReasons !== undefined) {
+    sessions.getActivityReasons = (async () => results.getActivityReasons) as () => unknown;
   }
   if (results.getUsage !== undefined) {
     sessions.getUsage = (async () => results.getUsage) as () => unknown;
@@ -119,6 +125,9 @@ async function syncWithMocks(results: MockResults): Promise<void> {
   } finally {
     if (originals.getActivity !== undefined) {
       sessions.getActivity = originals.getActivity as () => unknown;
+    }
+    if (originals.getActivityReasons !== undefined) {
+      sessions.getActivityReasons = originals.getActivityReasons as () => unknown;
     }
     if (originals.getUsage !== undefined) {
       sessions.getUsage = originals.getUsage as () => unknown;
@@ -141,6 +150,7 @@ function resetStore(): void {
     latestRateLimits: null,
     sessionFirstOutput: {},
     sessionActivity: {},
+    sessionActivityReason: {},
     sessionEvents: {},
     seenIdleSessions: {},
     pendingCommandLabel: {},
@@ -186,6 +196,26 @@ describe('syncSessions - cache reconciliation evicts stale entries', () => {
     const usage = useSessionStore.getState().sessionUsage;
     expect(Object.keys(usage)).toEqual(['sess-a']);
     expect(usage['sess-stale']).toBeUndefined();
+  });
+
+  it('drops a sessionActivityReason entry that no longer exists in the cache', async () => {
+    // Regression: pre-fix, sessionActivityReason was never reconciled by
+    // syncSessions, so HMR / full reload left stale idle reasons in the
+    // map indefinitely. The reconcile must use the same eviction
+    // semantics as sessionActivity.
+    const staleReason: ActivityReason = { kind: 'idle' };
+    const liveReason: ActivityReason = { kind: 'turn-active' };
+    useSessionStore.setState({
+      sessionActivityReason: { 'sess-a': liveReason, 'sess-stale': staleReason },
+    });
+
+    await syncWithMocks({
+      getActivityReasons: { 'sess-a': liveReason },
+    });
+
+    const reasons = useSessionStore.getState().sessionActivityReason;
+    expect(Object.keys(reasons)).toEqual(['sess-a']);
+    expect(reasons['sess-stale']).toBeUndefined();
   });
 
   it('drops a sessionEvents entry that no longer exists in the cache', async () => {
@@ -258,6 +288,22 @@ describe('syncSessions - cache reconciliation preserves IPC-during-async-gap upd
     });
 
     expect(useSessionStore.getState().sessionUsage['sess-a']).toBe(liveUsage);
+  });
+
+  it('keeps the store value for sessionActivityReason when the id is in both maps', async () => {
+    // onActivity push during the async gap may have delivered a fresher
+    // reason than the cache snapshot; reconcile must keep the store value.
+    const liveReason: ActivityReason = { kind: 'turn-active' };
+    const cacheReason: ActivityReason = { kind: 'idle' };
+    useSessionStore.setState({
+      sessionActivityReason: { 'sess-a': liveReason },
+    });
+
+    await syncWithMocks({
+      getActivityReasons: { 'sess-a': cacheReason },
+    });
+
+    expect(useSessionStore.getState().sessionActivityReason['sess-a']).toBe(liveReason);
   });
 
   it('keeps the store value for sessionEvents when the id is in both maps', async () => {

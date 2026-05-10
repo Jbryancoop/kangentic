@@ -958,23 +958,47 @@ describe('ActivityEngine', () => {
       expect(state.anonymousBackgroundShellCount).toBe(1);
     });
 
-    it('watcher anonymous decrement drains named set when anonymous is empty (drift safety net)', () => {
-      // Simulates the bookkeeping drift seen in production: bg shells
-      // accumulated in the named set under non-id keys; the agent
-      // never called BashOutput or KillBash; the watcher's count-based
-      // path is the only thing that can decrement. Without this
-      // fallback the count would freeze at the named-set size forever.
+    it('watcher anonymous decrement does NOT drain named set when anonymous is empty', () => {
+      // The anonymous decrement path (no shellId, fired by the
+      // background-shell watcher) used to drain a named entry as a
+      // last resort. That clobbered live named bg shells whenever a
+      // helper process (MCP server, statusline worker) churned, since
+      // the watcher cannot distinguish "tracked named shell exited"
+      // from "helper exited" without PID-aware identity decrement.
+      //
+      // New contract: anonymous decrement is a no-op when anon=0.
+      // Genuinely stuck named entries are recovered by the 5-min
+      // bg-shell escape-hatch watchdog (engine/watchdog.ts), not by
+      // the watcher's count-based heuristic.
       const state = engine.getState(SESSION_ID)!;
       state.activeBackgroundShellIds.add('legacy-key-1');
       state.activeBackgroundShellIds.add('legacy-key-2');
       expect(state.anonymousBackgroundShellCount).toBe(0);
 
-      engine.markBackgroundShellEnded(SESSION_ID); // no shellId
-      expect(state.activeBackgroundShellIds.size).toBe(1);
-
-      engine.markBackgroundShellEnded(SESSION_ID); // no shellId
-      expect(state.activeBackgroundShellIds.size).toBe(0);
+      engine.markBackgroundShellEnded(SESSION_ID); // no shellId, anon=0
+      // Named entries preserved.
+      expect(state.activeBackgroundShellIds.size).toBe(2);
       expect(state.anonymousBackgroundShellCount).toBe(0);
+
+      engine.markBackgroundShellEnded(SESSION_ID);
+      expect(state.activeBackgroundShellIds.size).toBe(2);
+    });
+
+    it('helper churn while a named bg shell is alive does not flip session to idle', () => {
+      // Repro for task #121: a real named bg shell is running
+      // (e.g. `npm run build` via Claude's `Bash run_in_background:true`).
+      // A helper process exits and the watcher fires its deficit
+      // signal -> markBackgroundShellEnded(sessionId) (no shellId).
+      // With the bug this would drain the named entry and flip the
+      // engine to idle while the bash is still alive.
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { detail: 'bash_1' }));
+      expect(engine.getState(SESSION_ID)!.activity).toBe('thinking');
+
+      engine.markBackgroundShellEnded(SESSION_ID);
+
+      const state = engine.getState(SESSION_ID)!;
+      expect(state.activeBackgroundShellIds.has('bash_1')).toBe(true);
+      expect(state.activity).toBe('thinking');
     });
 
     it('BackgroundShellEnd event with unknown shellId drains named set as last resort', () => {
