@@ -265,17 +265,23 @@ function ActivityDebugOverlayContent() {
   //   4. State is committed once on pointer-up. After the commit, the
   //      next poll re-renders with the current position and the next
   //      drag starts fresh.
-  const [position, setPosition] = useState<OverlayPosition>(
-    () => cachedPosition ?? computeCenteredPosition(computeGridLayout(Math.max(projectSessionIds.length, 1)).widthPx),
-  );
-  // True once the panel has been positioned for the current mount. When
-  // false the panel renders with `visibility: hidden` so the user never
-  // sees a flash at the className-anchored top-left position before the
-  // transform commits. Starts true if a cached drag position exists
-  // (we trust that immediately) or false on a fresh launch (waiting for
-  // the centering layout effect to measure real dimensions).
+  // Position starts as `null` until the layout effect below has
+  // measured the panel and confirmed `window.innerWidth > 0`. Doing
+  // the centering math in a `useState` lazy initializer used to read
+  // `window.innerWidth` during Electron's startup window when the
+  // outer BrowserWindow is still zero-sized; `computeCenteredPosition`
+  // would floor to its (20, 20) minimum and the panel would mount in
+  // the top-left corner where it stayed until the user dragged it.
+  // Driving the first commit from a layout effect that bails until
+  // dimensions are real eliminates that path.
+  const [position, setPosition] = useState<OverlayPosition | null>(() => cachedPosition);
+  // True once the panel has been positioned for the current mount.
+  // When false the panel renders with `visibility: hidden` so the
+  // user never sees a flash at the className-anchored top-left
+  // position before the transform commits. Starts true only if a
+  // cached drag position exists (we trust that immediately).
   const [isPositioned, setIsPositioned] = useState<boolean>(cachedPosition !== null);
-  const positionRef = useRef<OverlayPosition>(position);
+  const positionRef = useRef<OverlayPosition | null>(position);
   const dragRef = useRef<{
     pointerId: number;
     offsetX: number;
@@ -284,6 +290,40 @@ function ActivityDebugOverlayContent() {
     panelHeight: number;
   } | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  // Fires the moment the panel attaches to the DOM. Earlier we relied
+  // on a `useLayoutEffect` keyed on `[isPositioned, hasOverlayContent]`
+  // to detect the contentless-to-content transition, but the deps
+  // didn't actually change in the bug path: on the contentless mount
+  // the effect bailed (panelRef.current was null because the JSX
+  // returned null), `isPositioned` stayed `false`, and when content
+  // arrived `hasOverlayContent` flipped true so the effect re-ran -
+  // EXCEPT auto-spawn flows can race the effect's measurement.
+  // Driving centering from the ref callback removes the indirection:
+  // the moment React attaches the DOM node we have a real rect, and
+  // we commit the centered position in the same synchronous flush.
+  const isPositionedRef = useRef(isPositioned);
+  isPositionedRef.current = isPositioned;
+  const handlePanelRef = useCallback((node: HTMLDivElement | null) => {
+    panelRef.current = node;
+    if (node === null) {
+      // Panel unmounted (component returned null because all sessions
+      // ended). Reset positioning state so the NEXT mount re-centers
+      // against current window/panel dimensions rather than reusing
+      // a position that was computed against a possibly-different
+      // panel size or window state.
+      isPositionedRef.current = false;
+      setIsPositioned(false);
+      setPosition(null);
+      return;
+    }
+    if (isPositionedRef.current) return;
+    if (window.innerWidth === 0 || window.innerHeight === 0) return;
+    const rect = node.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    isPositionedRef.current = true;
+    setPosition(computeCenteredPosition(rect.width, rect.height));
+    setIsPositioned(true);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -380,24 +420,38 @@ function ActivityDebugOverlayContent() {
   // mount and pointer-up. During a drag the ref+rAF path owns the DOM
   // uncontested.
   useLayoutEffect(() => {
+    if (position === null) return;
     applyPositionToDom(position.left, position.top);
   }, [position, applyPositionToDom]);
 
-  // First-mount centering using REAL measured panel dimensions. The lazy
-  // useState initializer falls back to PANEL_ESTIMATED_HEIGHT_PX (300px)
-  // because it runs before the panel exists in the DOM, which can leave
-  // the panel off-center vertically. This effect runs once on mount,
-  // measures the actual rendered panel, and recenters precisely. Only
-  // runs on the very first launch (no cached drag position); a user
-  // who has dragged the overlay keeps their position across reopens.
-  useLayoutEffect(() => {
+  // Backstop for the Electron-startup edge case: the panel ref
+  // callback bails when `window.innerWidth === 0` (BrowserWindow
+  // hasn't finished its initial layout yet). The first resize fires
+  // when dimensions become real, and this listener does the same
+  // measure-then-center the ref callback would have done.
+  useEffect(() => {
     if (isPositioned) return;
-    const panel = panelRef.current;
-    if (!panel) return;
-    const rect = panel.getBoundingClientRect();
-    const centered = computeCenteredPosition(rect.width, rect.height);
-    setPosition(centered);
-    setIsPositioned(true);
+    const tryCenter = () => {
+      // Re-check the ref each call: a resize landing between the
+      // first successful `tryCenter` and React's re-render would
+      // otherwise re-run the measure-and-setState path with the same
+      // result. The ref is the freshest source - the closure's
+      // `isPositioned` is the value captured when the effect ran.
+      if (isPositionedRef.current) return false;
+      if (window.innerWidth === 0 || window.innerHeight === 0) return false;
+      const panel = panelRef.current;
+      if (!panel) return false;
+      const rect = panel.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      isPositionedRef.current = true;
+      setPosition(computeCenteredPosition(rect.width, rect.height));
+      setIsPositioned(true);
+      return true;
+    };
+    if (tryCenter()) return;
+    const onResize = () => { tryCenter(); };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
   }, [isPositioned]);
 
   // rAF coalescing: pointermove can fire at 1000Hz on Windows, but we
@@ -408,8 +462,9 @@ function ActivityDebugOverlayContent() {
   const pendingFrameRef = useRef<number | null>(null);
   const flushPendingPosition = useCallback(() => {
     pendingFrameRef.current = null;
-    const { left, top } = positionRef.current;
-    applyPositionToDom(left, top);
+    const current = positionRef.current;
+    if (!current) return;
+    applyPositionToDom(current.left, current.top);
   }, [applyPositionToDom]);
 
   // Track the currently-active native pointer listeners so unmount
@@ -525,6 +580,10 @@ function ActivityDebugOverlayContent() {
     const maxLeft = Math.max(0, window.innerWidth - gridLayout.widthPx);
     const maxTop = Math.max(0, window.innerHeight - panelHeight);
     setPosition((prev) => {
+      // Pre-positioning state: nothing to clamp yet. The first-mount
+      // centering effect will commit a position that is already
+      // bounded against the current window dimensions.
+      if (prev === null) return prev;
       const clampedLeft = Math.min(prev.left, maxLeft);
       const clampedTop = Math.min(prev.top, maxTop);
       if (clampedLeft === prev.left && clampedTop === prev.top) return prev;
@@ -545,7 +604,7 @@ function ActivityDebugOverlayContent() {
 
   return (
     <div
-      ref={panelRef}
+      ref={handlePanelRef}
       className="fixed top-0 left-0 z-50 bg-surface-raised border border-edge rounded-md shadow-lg text-xs select-none"
       style={{
         // Width is dynamic: the overlay grows with the running session
@@ -581,7 +640,16 @@ function ActivityDebugOverlayContent() {
         <GripVertical size={12} className="text-fg-disabled shrink-0" />
         <div className="flex items-center gap-1.5 text-fg-faint flex-1 min-w-0">
           <Bug size={12} />
-          <span className="font-medium">Activity Engine Debug</span>
+          <span className="font-medium">Activity Engine Debugger</span>
+          {/* Wall-clock timestamp for the most recent poll. Critical
+              when a screenshot is shared with an agent or pasted into
+              a bug report - the rest of the overlay uses now-relative
+              timestamps that lose meaning the moment the image
+              leaves the live session. The captured-at line anchors
+              every other timestamp in absolute time so a recipient
+              can reason about whether a "1.4s since signal" reading
+              was hours old or fresh. */}
+          <CapturedAt />
         </div>
         <button
           type="button"
@@ -701,6 +769,12 @@ const SnapshotRow = memo(function SnapshotRow({ snapshot, label }: { snapshot: A
   // log subsystem; cheap because we only re-render when these events
   // change.
   const sessionEvents = useSessionStore((state) => state.sessionEvents[snapshot.sessionId]);
+  // Model identifier (e.g. claude-opus-4-7, codex/o4-mini) is the
+  // most telegraphed-adapter info available to the renderer. The
+  // shared `Session` IPC type doesn't carry adapter name; the model
+  // id implicitly identifies the adapter for screenshot diagnosis
+  // ("claude-*" → Claude adapter, "codex-*" → Codex, etc.).
+  const modelId = useSessionStore((state) => state.sessionUsage[snapshot.sessionId]?.model.id);
   return (
     <div className="space-y-2 min-w-0 border border-edge/50 rounded-md p-2.5 bg-surface/30">
       {/* Title on row 1, status pill on row 2 underneath, always left-aligned.
@@ -711,6 +785,11 @@ const SnapshotRow = memo(function SnapshotRow({ snapshot, label }: { snapshot: A
         <span className="font-mono text-fg-disabled shrink-0" title="Session ID prefix">
           {snapshot.sessionId.slice(0, 8)}
         </span>
+        {modelId && (
+          <span className="font-mono text-fg-disabled shrink-0 truncate" title="Model id (adapter is implicit from the prefix - claude-* / codex-* / etc.)">
+            {modelId}
+          </span>
+        )}
       </div>
       <StatusRow snapshot={snapshot} />
 
@@ -742,11 +821,6 @@ const SnapshotRow = memo(function SnapshotRow({ snapshot, label }: { snapshot: A
           label="Permission"
           value={snapshot.permissionPending}
           tooltip="Agent is waiting for the user to approve a tool use"
-        />
-        <FlagRow
-          label="Idle pending"
-          value={snapshot.pendingIdleArmed}
-          tooltip="An idle transition is queued in the 400ms stability window (suppresses idle→thinking flicker)"
         />
       </div>
 
@@ -787,7 +861,12 @@ const RecentTransitions = memo(function RecentTransitions({ snapshot }: { snapsh
   const visibleEntries = allEntries.length > VISIBLE_TRANSITIONS
     ? allEntries.slice(allEntries.length - VISIBLE_TRANSITIONS)
     : allEntries;
-  const baseTs = visibleEntries[0].ts;
+  // Anchor timestamps to "now" so each row reads as "Xs ago", aligning
+  // with the timeline chart's `-120s … now` X-axis. A screenshot of
+  // the overlay carries directly correlatable temporal context this
+  // way - the +1.8s entry in a `+0` baseline format would have the
+  // viewer doing arithmetic to spot it on the chart.
+  const now = Date.now();
 
   return (
     <div className="space-y-1 pt-1">
@@ -804,12 +883,12 @@ const RecentTransitions = memo(function RecentTransitions({ snapshot }: { snapsh
       </div>
       <div className="space-y-1">
         {visibleEntries.map((entry, index) => {
-          const deltaSeconds = (entry.ts - baseTs) / 1000;
-          const deltaLabel = deltaSeconds === 0 ? '+0.0s' : `+${deltaSeconds.toFixed(1)}s`;
+          const ageSeconds = Math.max(0, (now - entry.ts) / 1000);
+          const ageLabel = ageSeconds < 0.1 ? 'now' : `-${ageSeconds.toFixed(1)}s`;
           const isTransition = entry.from !== entry.to;
           return (
             <div key={`${entry.ts}-${index}`} className="flex items-center gap-2 font-mono text-[11px] min-w-0">
-              <span className="text-fg-disabled w-12 shrink-0 tabular-nums">{deltaLabel}</span>
+              <span className="text-fg-disabled w-12 shrink-0 tabular-nums">{ageLabel}</span>
               {isTransition ? (
                 <span className="flex items-center gap-1 shrink-0">
                   <ActivityChip state={entry.from} />
@@ -896,16 +975,84 @@ export function triggerExplanation(trigger: string, reasonKind: ActivityReason['
  * Replaces the previous `ActivityBadge + ReasonCallout` pair, which
  * duplicated the state in two places.
  */
+/**
+ * Live wall-clock readout in the overlay header. Refreshes once per
+ * second so the displayed time stays close to "now" without spinning
+ * the rAF clock. The whole point of this readout is anchoring shared
+ * screenshots in absolute time - precision below a second adds noise
+ * without value, since the rest of the overlay's timestamps round to
+ * 0.1s anyway.
+ */
+/**
+ * Format a Date as HH:MM:SS (24-hour, zero-padded). Pure function so
+ * tests can pass an arbitrary Date without touching `Date.now()`.
+ */
+export function formatHHMMSS(date: Date): string {
+  return (
+    `${String(date.getHours()).padStart(2, '0')}:`
+    + `${String(date.getMinutes()).padStart(2, '0')}:`
+    + `${String(date.getSeconds()).padStart(2, '0')}`
+  );
+}
+
+function CapturedAt() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const interval = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+  const formatted = formatHHMMSS(now);
+  return (
+    <span
+      className="font-mono text-[10px] text-fg-disabled tabular-nums shrink-0 ml-auto pr-1"
+      title="Wall-clock time at the most recent poll. Anchors the now-relative timestamps elsewhere in the overlay so a screenshot stays interpretable when shared."
+    >
+      {formatted}
+    </span>
+  );
+}
+
 const StatusRow = memo(function StatusRow({ snapshot }: { snapshot: ActivityStatsSnapshot }) {
   const presentation = statusPresentation(snapshot);
   const { Icon, iconClass, pillClasses, label } = presentation;
+  // The engine's "is the agent alive" metric. Critical for diagnosis:
+  // a thinking session at "178s since signal" is one tick away from a
+  // stale-thinking watchdog fire; an idle session at "60s since signal"
+  // has been quiet for a minute. Surfacing this inline next to the pill
+  // means a screenshot of the overlay carries the answer to "how long
+  // ago did anything actually happen" without needing a separate query.
+  const signalLabel = formatSignalAge(snapshot.msSinceLastSignal);
   return (
-    <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium ${pillClasses}`}>
-      <Icon size={12} className={`shrink-0 ${iconClass}`} />
-      <span className="truncate">{label}</span>
+    <div className="flex items-center gap-2 min-w-0">
+      <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium ${pillClasses}`}>
+        <Icon size={12} className={`shrink-0 ${iconClass}`} />
+        <span className="truncate">{label}</span>
+      </div>
+      {signalLabel && (
+        <span
+          className="text-[11px] font-mono text-fg-disabled tabular-nums truncate"
+          title="Wall-clock time since the engine last received an activity-proving signal (events.jsonl, status.json heartbeat). Watchdog deadlines fire `lastSignalAt + thresholdMs`."
+        >
+          {signalLabel}
+        </span>
+      )}
     </div>
   );
 });
+
+/**
+ * Format `msSinceLastSignal` as a compact human-readable age. Returns
+ * null when no signal has arrived yet for this session - avoid
+ * surfacing a meaningless "0.0s" placeholder.
+ */
+export function formatSignalAge(ms: number | null): string | null {
+  if (ms === null) return null;
+  if (ms < 1000) return `${ms}ms since signal`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s since signal`;
+  const minutes = seconds / 60;
+  return `${minutes.toFixed(1)}m since signal`;
+}
 
 function statusPresentation(snapshot: ActivityStatsSnapshot): {
   Icon: typeof Wrench;

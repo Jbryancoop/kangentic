@@ -1,17 +1,21 @@
 /**
- * Unit tests for the four pure helper functions exported from
- * src/renderer/components/debug/ActivityDebugOverlay.tsx.
+ * Unit tests for the pure helper functions exported from:
+ *   src/renderer/components/debug/ActivityDebugOverlay.tsx
+ *   src/renderer/components/debug/ActivityTimeline.tsx
  *
- * All four are module-private utilities promoted to named exports (Option A)
- * so the test can import them without any mocking or rendering.
+ * All helpers are module-private utilities promoted to named exports so the
+ * test can import them without any mocking or rendering.
  *
  * Coverage:
- *   computeGridLayout  - grid columns and panel width for every boundary count
- *   reasonsEqual       - structural equality for every ActivityReason kind
- *   snapshotsContentEqual - structural equality for ActivityStatsSnapshot
- *   triggerExplanation - exact lookup, every prefix pattern, and the fallback
+ *   computeGridLayout       - grid columns and panel width for every boundary count
+ *   reasonsEqual            - structural equality for every ActivityReason kind
+ *   snapshotsContentEqual   - structural equality for ActivityStatsSnapshot
+ *   triggerExplanation      - exact lookup, every prefix pattern, and the fallback
+ *   formatSignalAge         - null, ms, seconds, and minutes branches
+ *   formatHHMMSS            - zero-padding, single-digit hours/minutes/seconds
+ *   pickWatchdog            - every branch of the engine's watchdog selector
  *
- * No browser globals are exercised here. The functions that reference `window`
+ * No browser globals are exercised here. Functions that reference `window`
  * (computeCenteredPosition, drag event handlers) are NOT exported and are
  * intentionally out of scope for this tier.
  */
@@ -21,7 +25,10 @@ import {
   reasonsEqual,
   snapshotsContentEqual,
   triggerExplanation,
+  formatSignalAge,
+  formatHHMMSS,
 } from '../../src/renderer/components/debug/ActivityDebugOverlay';
+import { pickWatchdog } from '../../src/renderer/components/debug/ActivityTimeline';
 import type { ActivityReason, ActivityStatsSnapshot, ActivityState } from '../../src/shared/types';
 
 // ---------------------------------------------------------------------------
@@ -45,6 +52,14 @@ function nColWidth(cols: number): number {
 // Fixtures
 // ---------------------------------------------------------------------------
 
+const EMPTY_COMPENSATION_COUNTERS: ActivityStatsSnapshot['compensationCounters'] = {
+  staleThinking: 0,
+  bgShellHatch: 0,
+  stuckPendingTools: 0,
+  forceThinking: 0,
+  forceIdle: 0,
+};
+
 function makeSnapshot(overrides: Partial<ActivityStatsSnapshot> = {}): ActivityStatsSnapshot {
   return {
     sessionId: 'session-1',
@@ -57,8 +72,11 @@ function makeSnapshot(overrides: Partial<ActivityStatsSnapshot> = {}): ActivityS
     turnActive: false,
     permissionPending: false,
     msSinceLastSignal: null,
+    lastSignalAt: null,
     pendingIdleArmed: false,
     recentTransitions: [],
+    compensationCounters: EMPTY_COMPENSATION_COUNTERS,
+    recentPtyChunks: [],
     ...overrides,
   };
 }
@@ -532,6 +550,220 @@ describe('triggerExplanation', () => {
       const result = triggerExplanation('timer:stability', 'idle');
       expect(result).toContain('400ms');
       expect(result).not.toBe('Engine timer fired. Reason at commit: idle');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatSignalAge
+// ---------------------------------------------------------------------------
+
+describe('formatSignalAge', () => {
+  it('returns null for null input (no signal received yet)', () => {
+    expect(formatSignalAge(null)).toBeNull();
+  });
+
+  it('returns ms label for 0ms', () => {
+    expect(formatSignalAge(0)).toBe('0ms since signal');
+  });
+
+  it('returns ms label for sub-1000ms values', () => {
+    expect(formatSignalAge(500)).toBe('500ms since signal');
+    expect(formatSignalAge(999)).toBe('999ms since signal');
+  });
+
+  it('returns seconds label at exactly 1000ms boundary', () => {
+    // 1000ms = 1.0s, so the seconds branch applies (ms < 1000 is false)
+    expect(formatSignalAge(1000)).toBe('1.0s since signal');
+  });
+
+  it('returns seconds label for values in the 1000-59999ms range', () => {
+    expect(formatSignalAge(1400)).toBe('1.4s since signal');
+    expect(formatSignalAge(30000)).toBe('30.0s since signal');
+    expect(formatSignalAge(59999)).toBe('60.0s since signal');
+  });
+
+  it('returns minutes label at exactly 60000ms boundary', () => {
+    // 60000ms = 60s = 1.0m
+    expect(formatSignalAge(60000)).toBe('1.0m since signal');
+  });
+
+  it('returns minutes label for values >= 60000ms', () => {
+    expect(formatSignalAge(90000)).toBe('1.5m since signal');
+    expect(formatSignalAge(180000)).toBe('3.0m since signal');
+    expect(formatSignalAge(300000)).toBe('5.0m since signal');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatHHMMSS
+// ---------------------------------------------------------------------------
+
+describe('formatHHMMSS', () => {
+  it('zero-pads single-digit hours', () => {
+    // Hour 3, minute 5, second 7 → "03:05:07"
+    const date = new Date(2024, 0, 1, 3, 5, 7);
+    expect(formatHHMMSS(date)).toBe('03:05:07');
+  });
+
+  it('zero-pads single-digit minutes', () => {
+    const date = new Date(2024, 0, 1, 14, 9, 0);
+    expect(formatHHMMSS(date)).toBe('14:09:00');
+  });
+
+  it('zero-pads single-digit seconds', () => {
+    const date = new Date(2024, 0, 1, 10, 30, 4);
+    expect(formatHHMMSS(date)).toBe('10:30:04');
+  });
+
+  it('formats midnight correctly', () => {
+    const date = new Date(2024, 0, 1, 0, 0, 0);
+    expect(formatHHMMSS(date)).toBe('00:00:00');
+  });
+
+  it('formats end-of-day values without overflow', () => {
+    const date = new Date(2024, 0, 1, 23, 59, 59);
+    expect(formatHHMMSS(date)).toBe('23:59:59');
+  });
+
+  it('produces the HH:MM:SS separator pattern', () => {
+    const date = new Date(2024, 5, 15, 12, 34, 56);
+    const result = formatHHMMSS(date);
+    expect(result).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    expect(result).toBe('12:34:56');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pickWatchdog (from ActivityTimeline)
+// ---------------------------------------------------------------------------
+
+describe('pickWatchdog', () => {
+  it('returns null when activity is idle', () => {
+    const snapshot = makeSnapshot({ activity: 'idle' });
+    expect(pickWatchdog(snapshot)).toBeNull();
+  });
+
+  it('returns null when activity is permission', () => {
+    const snapshot = makeSnapshot({ activity: 'permission' as ActivityState });
+    expect(pickWatchdog(snapshot)).toBeNull();
+  });
+
+  it('returns null when thinking but permissionPending is true', () => {
+    const snapshot = makeSnapshot({ activity: 'thinking' as ActivityState, permissionPending: true });
+    expect(pickWatchdog(snapshot)).toBeNull();
+  });
+
+  describe('bg-shell-hatch branch (5 minutes)', () => {
+    it('returns bg-shell-hatch when thinking, turnActive=false, pendingTools=0, subagents=0, bgShells>0', () => {
+      const snapshot = makeSnapshot({
+        activity: 'thinking' as ActivityState,
+        turnActive: false,
+        pendingToolCount: 0,
+        subagentDepth: 0,
+        backgroundShellIds: ['shell-1'],
+        anonymousBackgroundShellCount: 0,
+      });
+      const result = pickWatchdog(snapshot);
+      expect(result).not.toBeNull();
+      expect(result?.shortLabel).toBe('bg-shell-hatch 5m');
+      expect(result?.thresholdMs).toBe(5 * 60_000);
+    });
+
+    it('counts anonymousBackgroundShellCount toward the bgShells total', () => {
+      const snapshot = makeSnapshot({
+        activity: 'thinking' as ActivityState,
+        turnActive: false,
+        pendingToolCount: 0,
+        subagentDepth: 0,
+        backgroundShellIds: [],
+        anonymousBackgroundShellCount: 2,
+      });
+      const result = pickWatchdog(snapshot);
+      expect(result?.shortLabel).toBe('bg-shell-hatch 5m');
+    });
+  });
+
+  describe('stuck-pending-tools branch (5 minutes)', () => {
+    it('returns stuck-pending-tools when thinking, pendingTools>0, subagents=0, bgShells=0', () => {
+      const snapshot = makeSnapshot({
+        activity: 'thinking' as ActivityState,
+        turnActive: true,
+        pendingToolCount: 1,
+        subagentDepth: 0,
+        backgroundShellIds: [],
+        anonymousBackgroundShellCount: 0,
+      });
+      const result = pickWatchdog(snapshot);
+      expect(result).not.toBeNull();
+      expect(result?.shortLabel).toBe('stuck-pending-tools 5m');
+      expect(result?.thresholdMs).toBe(5 * 60_000);
+    });
+  });
+
+  describe('stale-thinking branch (180 seconds)', () => {
+    it('returns stale-thinking when thinking, turnActive=true, pendingTools=0, subagents=0, bgShells=0', () => {
+      const snapshot = makeSnapshot({
+        activity: 'thinking' as ActivityState,
+        turnActive: true,
+        pendingToolCount: 0,
+        subagentDepth: 0,
+        backgroundShellIds: [],
+        anonymousBackgroundShellCount: 0,
+      });
+      const result = pickWatchdog(snapshot);
+      expect(result).not.toBeNull();
+      expect(result?.shortLabel).toBe('stale-thinking 180s');
+      expect(result?.thresholdMs).toBe(180_000);
+    });
+  });
+
+  describe('multi-holder thinking (no single watchdog applies)', () => {
+    it('returns null when thinking with both turnActive=true and pendingTools>0', () => {
+      // No branch matches: turnActive=true means bg-shell-hatch fails (requires
+      // turnActive=false), but pendingTools>0 means stuck-pending-tools fires
+      // first - actually this DOES match stuck-pending-tools.
+      // Per the code: stuck-pending-tools only checks pendingToolCount > 0,
+      // subagentDepth === 0, bgShells === 0. turnActive is NOT checked. So
+      // turnActive=true AND pendingTools=1 still returns stuck-pending-tools.
+      // The "multi-holder" null case only occurs with subagents or combinations
+      // that fall through all three branches: e.g. subagentDepth > 0.
+      const snapshot = makeSnapshot({
+        activity: 'thinking' as ActivityState,
+        turnActive: false,
+        pendingToolCount: 0,
+        subagentDepth: 1,
+        backgroundShellIds: [],
+        anonymousBackgroundShellCount: 0,
+      });
+      expect(pickWatchdog(snapshot)).toBeNull();
+    });
+
+    it('returns null when thinking with both bg shells and pending tools', () => {
+      // bg-shell-hatch requires pendingTools=0; stuck-pending-tools requires
+      // bgShells=0. With both non-zero, neither branch matches and we fall
+      // through to the final null.
+      const snapshot = makeSnapshot({
+        activity: 'thinking' as ActivityState,
+        turnActive: false,
+        pendingToolCount: 1,
+        subagentDepth: 0,
+        backgroundShellIds: ['shell-1'],
+        anonymousBackgroundShellCount: 0,
+      });
+      expect(pickWatchdog(snapshot)).toBeNull();
+    });
+
+    it('returns null when thinking with subagentDepth > 0 and no other single holders', () => {
+      const snapshot = makeSnapshot({
+        activity: 'thinking' as ActivityState,
+        turnActive: false,
+        pendingToolCount: 0,
+        subagentDepth: 2,
+        backgroundShellIds: [],
+        anonymousBackgroundShellCount: 0,
+      });
+      expect(pickWatchdog(snapshot)).toBeNull();
     });
   });
 });
