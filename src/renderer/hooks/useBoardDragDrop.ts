@@ -355,19 +355,32 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
 
     // Done target: defer moveTask and fly the card into the drop zone.
     // Moving to Done deletes the local worktree (branch + session preserved),
-    // so a confirmation dialog runs first unless the user has opted into
-    // silent auto-delete via config.skipDoneWorktreeConfirm.
+    // so a confirmation dialog runs first. The user-config skip flag only
+    // suppresses the dialog when the worktree is clean - any uncommitted edits
+    // or unpushed commits force an unskippable confirm, since the worktree
+    // delete would destroy that work.
     const doneLane = swimlanes.find((swimlane) => swimlane.role === 'done');
     if (doneLane && targetSwimlaneId === doneLane.id && originalSwimlane) {
       const task = state.tasks.find((candidate) => candidate.id === taskId);
       if (!task) return;
-      // Skip the dialog when there is no worktree to delete - the user opted
-      // into auto-delete OR the task never created one (To Do -> Done direct).
-      // The dialog only exists to warn about worktree removal; without that
-      // side effect, the move is purely an archive operation.
+
+      // Probe for unsaved work whenever a worktree exists. A missing
+      // worktree means there is nothing destructive to confirm - the move is
+      // purely an archive operation, and the dialog has nothing to warn about.
+      let pendingChanges = { uncommittedFileCount: 0, unpushedCommitCount: 0, hasPendingChanges: false };
+      if (task.worktree_path) {
+        try {
+          pendingChanges = await window.electronAPI.git.checkPendingChanges({ checkPath: task.worktree_path });
+        } catch {
+          // Treat git failures as "potentially has changes" - safer to ask
+          // than to silently destroy. Mirrors the To Do path in task-slice.ts.
+          pendingChanges = { uncommittedFileCount: 0, unpushedCommitCount: 0, hasPendingChanges: true };
+        }
+      }
+
       const skipConfirm =
-        useConfigStore.getState().config.skipDoneWorktreeConfirm
-        || !task.worktree_path;
+        !task.worktree_path
+        || (useConfigStore.getState().config.skipDoneWorktreeConfirm && !pendingChanges.hasPendingChanges);
       const directInput = { taskId, targetSwimlaneId, targetPosition };
 
       // Capture where the DragOverlay was at drop time. A missing rect means
@@ -378,7 +391,7 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
         if (skipConfirm) {
           await moveTask(directInput);
         } else {
-          requestDoneConfirmDirect(task, directInput);
+          requestDoneConfirmDirect(task, directInput, pendingChanges);
         }
         return;
       }
@@ -401,7 +414,7 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
       if (skipConfirm) {
         setCompletingTask(completing);
       } else {
-        requestDoneConfirmAnimated(completing);
+        requestDoneConfirmAnimated(completing, pendingChanges);
       }
       return;
     }

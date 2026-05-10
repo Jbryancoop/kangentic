@@ -125,53 +125,82 @@ export function BoardDialogs() {
         />
       )}
 
-      {pendingDoneConfirm && (
-        <ConfirmDialog
-          title="Move to Done?"
-          variant="warning"
-          confirmLabel="Move"
-          cancelLabel="Cancel"
-          showDontAskAgain
-          dontAskAgainLabel="Delete automatically in the future"
-          message={
-            <div className="space-y-2">
-              <p className="font-medium text-fg break-words">
-                "{pendingDoneConfirm.task.title}"
-              </p>
-              <ul className="space-y-1.5">
-                <li className="flex items-start gap-2">
-                  <Check size={14} className="text-emerald-500 mt-0.5 shrink-0" aria-hidden />
-                  <span>Local worktree will be deleted</span>
-                </li>
-                {pendingDoneConfirm.task.branch_name && (
+      {pendingDoneConfirm && (() => {
+        const { hasPendingChanges, uncommittedFileCount, unpushedCommitCount } = pendingDoneConfirm;
+        return (
+          <ConfirmDialog
+            title="Move to Done?"
+            variant={hasPendingChanges ? 'danger' : 'warning'}
+            confirmLabel="Move"
+            cancelLabel="Cancel"
+            // Hide the "don't ask again" escape hatch when there is real work
+            // at risk. The skip preference must never silence a destructive
+            // worktree delete - only a clean Done move should be skippable.
+            showDontAskAgain={!hasPendingChanges}
+            dontAskAgainLabel="Delete automatically in the future"
+            message={
+              <div className="space-y-2">
+                <p className="font-medium text-fg break-words">
+                  "{pendingDoneConfirm.task.title}"
+                </p>
+                {hasPendingChanges && (
+                  uncommittedFileCount > 0 || unpushedCommitCount > 0 ? (
+                    <ul className="list-disc list-inside text-red-400 font-medium">
+                      {uncommittedFileCount > 0 && (
+                        <li>
+                          {uncommittedFileCount} uncommitted file{uncommittedFileCount !== 1 ? 's' : ''} will be lost
+                        </li>
+                      )}
+                      {unpushedCommitCount > 0 && (
+                        <li>
+                          {unpushedCommitCount} unpushed commit{unpushedCommitCount !== 1 ? 's' : ''} will be lost
+                        </li>
+                      )}
+                    </ul>
+                  ) : (
+                    // Git probe failed; we don't know the exact damage, but we
+                    // know the worktree is suspect. Mirror MoveConfirmMessage's
+                    // fallback copy so the user still sees a danger signal.
+                    <p className="text-red-400 font-medium">
+                      Unable to verify pending changes. There may be unsaved work.
+                    </p>
+                  )
+                )}
+                <ul className="space-y-1.5">
                   <li className="flex items-start gap-2">
                     <Check size={14} className="text-emerald-500 mt-0.5 shrink-0" aria-hidden />
-                    <span>
-                      Branch{' '}
-                      <code className="font-mono text-[11px] bg-surface px-1 py-0.5 rounded break-all">
-                        {pendingDoneConfirm.task.branch_name}
-                      </code>{' '}
-                      will be unaffected
-                    </span>
+                    <span>Local worktree will be deleted</span>
                   </li>
-                )}
-                <li className="flex items-start gap-2">
-                  <Check size={14} className="text-emerald-500 mt-0.5 shrink-0" aria-hidden />
-                  <span>Session history will be kept</span>
-                </li>
-              </ul>
-              <p className="text-fg-muted">
-                If this task is resumed, session history and worktree will be restored.
-              </p>
-            </div>
-          }
-          onConfirm={(dontAskAgain) => {
-            if (dontAskAgain) updateConfig({ skipDoneWorktreeConfirm: true });
-            void confirmPendingDone();
-          }}
-          onCancel={cancelPendingDone}
-        />
-      )}
+                  {pendingDoneConfirm.task.branch_name && (
+                    <li className="flex items-start gap-2">
+                      <Check size={14} className="text-emerald-500 mt-0.5 shrink-0" aria-hidden />
+                      <span>
+                        Branch{' '}
+                        <code className="font-mono text-[11px] bg-surface px-1 py-0.5 rounded break-all">
+                          {pendingDoneConfirm.task.branch_name}
+                        </code>{' '}
+                        will be unaffected
+                      </span>
+                    </li>
+                  )}
+                  <li className="flex items-start gap-2">
+                    <Check size={14} className="text-emerald-500 mt-0.5 shrink-0" aria-hidden />
+                    <span>Session history will be kept</span>
+                  </li>
+                </ul>
+                <p className="text-fg-muted">
+                  If this task is resumed, session history and worktree will be restored.
+                </p>
+              </div>
+            }
+            onConfirm={(dontAskAgain) => {
+              if (dontAskAgain) updateConfig({ skipDoneWorktreeConfirm: true });
+              void confirmPendingDone();
+            }}
+            onCancel={cancelPendingDone}
+          />
+        );
+      })()}
 
       {boardManagerOpen && (
         <BoardManagerDialog

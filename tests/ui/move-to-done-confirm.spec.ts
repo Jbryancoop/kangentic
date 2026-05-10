@@ -33,8 +33,23 @@ async function launchWithState(preConfigScript: string): Promise<{ browser: Brow
   return { browser, page };
 }
 
-function makePreConfig(options: { skipConfirm?: boolean } = {}): string {
+function makePreConfig(options: {
+  skipConfirm?: boolean;
+  pendingChanges?: { uncommittedFileCount: number; unpushedCommitCount: number };
+} = {}): string {
   const skipConfirm = options.skipConfirm === true;
+  const pendingChanges = options.pendingChanges;
+  const pendingChangesOverride = pendingChanges
+    ? `
+      window.electronAPI.git.checkPendingChanges = async function () {
+        return {
+          hasPendingChanges: ${pendingChanges.uncommittedFileCount > 0 || pendingChanges.unpushedCommitCount > 0},
+          uncommittedFileCount: ${pendingChanges.uncommittedFileCount},
+          unpushedCommitCount: ${pendingChanges.unpushedCommitCount},
+        };
+      };
+    `
+    : '';
   return `
     window.__mockConfigOverrides = Object.assign(
       window.__mockConfigOverrides || {},
@@ -98,6 +113,8 @@ function makePreConfig(options: { skipConfirm?: boolean } = {}): string {
         created_at: ts,
         updated_at: ts,
       });
+
+      ${pendingChangesOverride}
 
       return { currentProjectId: '${PROJECT_ID}' };
     });
@@ -248,6 +265,237 @@ test.describe('Move to Done - Delete Worktree Confirmation', () => {
 
       // No confirmation dialog at all
       await expect(page.locator('text=Move to Done?')).toBeHidden({ timeout: 2000 });
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('pending uncommitted files force the dialog even when skipDoneWorktreeConfirm is true', async () => {
+    // Even if the user has previously opted into silent auto-delete, a dirty
+    // worktree must still trigger a confirm - the destructive delete would
+    // wipe real work.
+    const { browser, page } = await launchWithState(
+      makePreConfig({
+        skipConfirm: true,
+        pendingChanges: { uncommittedFileCount: 3, unpushedCommitCount: 0 },
+      }),
+    );
+
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 15000 });
+
+      await dragTaskToColumn(page, 'Ready To Ship', 'Done');
+
+      // Dialog must appear despite the skip preference
+      await expect(page.locator('text=Move to Done?')).toBeVisible({ timeout: 3000 });
+      await expect(page.locator('text=3 uncommitted files will be lost')).toBeVisible();
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('pending unpushed commits force the dialog even when skipDoneWorktreeConfirm is true', async () => {
+    const { browser, page } = await launchWithState(
+      makePreConfig({
+        skipConfirm: true,
+        pendingChanges: { uncommittedFileCount: 0, unpushedCommitCount: 2 },
+      }),
+    );
+
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 15000 });
+
+      await dragTaskToColumn(page, 'Ready To Ship', 'Done');
+
+      await expect(page.locator('text=Move to Done?')).toBeVisible({ timeout: 3000 });
+      await expect(page.locator('text=2 unpushed commits will be lost')).toBeVisible();
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('don\'t-ask-again checkbox is hidden when there are pending changes', async () => {
+    // The checkbox is an escape hatch for clean Done moves only. When real
+    // work is at risk, the user must not be able to re-suppress the warning
+    // during this destructive operation.
+    const { browser, page } = await launchWithState(
+      makePreConfig({
+        pendingChanges: { uncommittedFileCount: 1, unpushedCommitCount: 1 },
+      }),
+    );
+
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 15000 });
+
+      await dragTaskToColumn(page, 'Ready To Ship', 'Done');
+
+      await expect(page.locator('text=Move to Done?')).toBeVisible({ timeout: 3000 });
+      // Both counts surface in the dialog body
+      await expect(page.locator('text=1 uncommitted file will be lost')).toBeVisible();
+      await expect(page.locator('text=1 unpushed commit will be lost')).toBeVisible();
+      // The "don't ask again" escape hatch is suppressed
+      await expect(page.locator('text=Delete automatically in the future')).toBeHidden();
+    } finally {
+      await browser.close();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Finding #1 / #4: git failure catch path
+  //
+  // When checkPendingChanges throws, useBoardDragDrop sets:
+  //   pendingChanges = { uncommittedFileCount: 0, unpushedCommitCount: 0, hasPendingChanges: true }
+  //
+  // The slice stores only the counts (both 0). BoardDialogs then recomputes
+  // hasPendingChanges = uncommittedFileCount > 0 || unpushedCommitCount > 0,
+  // which evaluates to FALSE even though git failed and the worktree state is
+  // unknown.
+  //
+  // As a result the dialog appears as variant='warning' (yellow, not red) and
+  // the "Delete automatically in the future" checkbox IS shown - meaning a user
+  // could suppress the safety net just after a git failure.
+  //
+  // This test documents the current (broken) behavior so that any future fix
+  // causes an intentional test update. The dialog SHOULD be variant='danger'
+  // and the checkbox SHOULD be hidden when git fails.
+  // ---------------------------------------------------------------------------
+  test('git failure with skipDoneWorktreeConfirm=true forces a locked danger dialog', async () => {
+    // Override checkPendingChanges to throw so the catch block fires. Even
+    // with skip=true, the dialog must appear AND must be locked into its
+    // danger styling - the slice now stores hasPendingChanges explicitly so
+    // BoardDialogs no longer recomputes it from the zero counts.
+    const { browser, page } = await launchWithState(makePreConfig({ skipConfirm: true }));
+
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 15000 });
+
+      await page.evaluate(() => {
+        (window as unknown as { electronAPI: { git: { checkPendingChanges: () => Promise<never> } } })
+          .electronAPI.git.checkPendingChanges = async function () {
+          throw new Error('git binary not found');
+        };
+      });
+
+      await dragTaskToColumn(page, 'Ready To Ship', 'Done');
+
+      // The dialog MUST appear - git failure should never be a silent skip.
+      await expect(page.locator('text=Move to Done?')).toBeVisible({ timeout: 3000 });
+
+      // Suppression checkbox is hidden - the user must not be able to silence
+      // future warnings during a destructive move whose damage is unverified.
+      await expect(page.locator('text=Delete automatically in the future')).toBeHidden();
+
+      // The git-failure fallback copy is rendered in red, matching the
+      // MoveConfirmMessage pattern from the To Do confirm path.
+      await expect(page.locator('text=Unable to verify pending changes')).toBeVisible();
+    } finally {
+      await browser.close();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Finding #2: requestDoneConfirmDirect path with pending counts
+  //
+  // When active.rect.current.initial is null (HMR / DOM destruction mid-drag)
+  // the code falls back to requestDoneConfirmDirect instead of the animated
+  // path. This test exercises that code path directly via the store action
+  // without needing to simulate a real DOM destruction race.
+  // ---------------------------------------------------------------------------
+  test('requestDoneConfirmDirect with pending changes shows danger dialog', async () => {
+    const { browser, page } = await launchWithState(makePreConfig());
+
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 15000 });
+
+      // Drive the store directly to exercise the direct (non-animated) path.
+      // This is equivalent to what useBoardDragDrop does when initialRect is null.
+      await page.evaluate(() => {
+        const stores = (window as unknown as {
+          __zustandStores?: {
+            board: {
+              getState: () => {
+                requestDoneConfirmDirect: (
+                  task: { id: string; title: string; branch_name: string; worktree_path: string },
+                  input: { taskId: string; targetSwimlaneId: string; targetPosition: number },
+                  pendingChanges: { hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number },
+                ) => void;
+              };
+            };
+          };
+        }).__zustandStores;
+        stores?.board.getState().requestDoneConfirmDirect(
+          {
+            id: 'task-done-confirm',
+            title: 'Ready To Ship',
+            branch_name: 'ready-to-ship-abcd1234',
+            worktree_path: '/mock/worktrees/ready-to-ship',
+          },
+          {
+            taskId: 'task-done-confirm',
+            targetSwimlaneId: 'lane-done',
+            targetPosition: 0,
+          },
+          { hasPendingChanges: true, uncommittedFileCount: 2, unpushedCommitCount: 1 },
+        );
+      });
+
+      // The dialog should appear with the correct content.
+      await expect(page.locator('text=Move to Done?')).toBeVisible({ timeout: 3000 });
+      await expect(page.locator('text=2 uncommitted files will be lost')).toBeVisible();
+      await expect(page.locator('text=1 unpushed commit will be lost')).toBeVisible();
+      // Danger variant: "don't ask again" checkbox is suppressed.
+      await expect(page.locator('text=Delete automatically in the future')).toBeHidden();
+    } finally {
+      await browser.close();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Finding #3: regression spy - checkPendingChanges is always called
+  //
+  // Even when skipDoneWorktreeConfirm=true and the worktree is clean, the IPC
+  // probe must still fire. A future optimisation that short-circuits the probe
+  // based on the config flag alone would reintroduce the silent-delete bug.
+  // ---------------------------------------------------------------------------
+  test('checkPendingChanges is called even when skipDoneWorktreeConfirm is true', async () => {
+    const { browser, page } = await launchWithState(makePreConfig({ skipConfirm: true }));
+
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 15000 });
+
+      // Replace checkPendingChanges with a call-counting spy that returns a
+      // clean result so the dialog is still skipped (verifying the probe fired
+      // without changing the observable drag outcome).
+      await page.evaluate(() => {
+        (window as unknown as {
+          __checkPendingChangesCalled: boolean;
+          electronAPI: { git: { checkPendingChanges: () => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number }> } };
+        }).__checkPendingChangesCalled = false;
+
+        const originalFn = (window as unknown as {
+          electronAPI: { git: { checkPendingChanges: () => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number }> } };
+        }).electronAPI.git.checkPendingChanges;
+
+        (window as unknown as {
+          electronAPI: { git: { checkPendingChanges: () => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number }> } };
+        }).electronAPI.git.checkPendingChanges = async function (...args) {
+          (window as unknown as { __checkPendingChangesCalled: boolean }).__checkPendingChangesCalled = true;
+          return originalFn.apply(this, args as []);
+        };
+      });
+
+      await dragTaskToColumn(page, 'Ready To Ship', 'Done');
+
+      // No dialog because skip=true AND the worktree is clean.
+      // (intentional fixed wait - we cannot poll for non-occurrence)
+      await page.waitForTimeout(1000);
+      await expect(page.locator('text=Move to Done?')).toBeHidden();
+
+      // The probe MUST have fired despite the skip flag.
+      const wasCalled = await page.evaluate(() => {
+        return (window as unknown as { __checkPendingChangesCalled: boolean }).__checkPendingChangesCalled;
+      });
+      expect(wasCalled).toBe(true);
     } finally {
       await browser.close();
     }

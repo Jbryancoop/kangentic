@@ -31,10 +31,29 @@ export interface CompletingTask {
  *     through the confirm dialog so the destructive worktree delete
  *     isn't silent.
  * `task` is kept on both shapes so the dialog can show the task title.
+ * `uncommittedFileCount` / `unpushedCommitCount` come from a pre-drop
+ * `checkPendingChanges` probe and drive the dialog copy. `hasPendingChanges`
+ * is stored separately rather than recomputed from the counts, so the
+ * git-failure fallback path (which knows the worktree is suspect but has no
+ * counts to report) can still lock the dialog into its danger styling.
  */
 export type PendingDoneConfirm =
-  | { kind: 'animated'; task: Task; completing: CompletingTask }
-  | { kind: 'direct'; task: Task; input: TaskMoveInput };
+  | {
+      kind: 'animated';
+      task: Task;
+      completing: CompletingTask;
+      hasPendingChanges: boolean;
+      uncommittedFileCount: number;
+      unpushedCommitCount: number;
+    }
+  | {
+      kind: 'direct';
+      task: Task;
+      input: TaskMoveInput;
+      hasPendingChanges: boolean;
+      uncommittedFileCount: number;
+      unpushedCommitCount: number;
+    };
 
 /**
  * Composite board store type. Every slice file declares its own
