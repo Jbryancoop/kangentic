@@ -337,6 +337,134 @@ describe('syncSessions - cache reconciliation preserves IPC-during-async-gap upd
 });
 
 // ---------------------------------------------------------------------------
+// HMR-resilience: missing preload method, throwing IPC, list() failure.
+//
+// When the renderer HMRs to code that calls a freshly-added preload IPC
+// method, the running preload may not yet have it (preload changes
+// require a full app restart). syncSessions must NOT throw out of
+// Promise.all and leave the store at its post-HMR initial empty state -
+// that breaks every xterm's session binding.
+// ---------------------------------------------------------------------------
+
+describe('syncSessions - HMR resilience: tolerates missing or failing preload methods', () => {
+  beforeEach(resetStore);
+
+  it('preserves existing sessionActivityReason when getActivityReasons is missing from the preload', async () => {
+    // Simulates HMR skew: renderer code calls getActivityReasons(),
+    // but the running preload bundle is older and does not have it.
+    // safeFetch + the optional-call should yield undefined; the
+    // reconcile branch must keep the existing store map intact.
+    const liveReason: ActivityReason = { kind: 'turn-active' };
+    useSessionStore.setState({
+      sessionActivityReason: { 'sess-a': liveReason },
+    });
+
+    const sessions = (window as Record<string, unknown> & {
+      electronAPI: { sessions: { getActivityReasons?: unknown } };
+    }).electronAPI.sessions;
+    const original = sessions.getActivityReasons;
+    sessions.getActivityReasons = undefined;
+    try {
+      await useSessionStore.getState().syncSessions();
+    } finally {
+      sessions.getActivityReasons = original;
+    }
+
+    // Existing reason map preserved exactly. NOT cleared/evicted.
+    expect(useSessionStore.getState().sessionActivityReason['sess-a']).toBe(liveReason);
+  });
+
+  it('preserves existing sessionActivityReason when getActivityReasons rejects', async () => {
+    const liveReason: ActivityReason = { kind: 'tool', tool: 'Read' };
+    useSessionStore.setState({
+      sessionActivityReason: { 'sess-a': liveReason },
+    });
+
+    const sessions = (window as Record<string, unknown> & {
+      electronAPI: { sessions: Record<string, () => unknown> };
+    }).electronAPI.sessions;
+    const original = sessions.getActivityReasons;
+    sessions.getActivityReasons = (async () => {
+      throw new Error('IPC: handler not registered');
+    }) as () => unknown;
+    try {
+      await useSessionStore.getState().syncSessions();
+    } finally {
+      sessions.getActivityReasons = original;
+    }
+
+    expect(useSessionStore.getState().sessionActivityReason['sess-a']).toBe(liveReason);
+  });
+
+  it('bails without mutating store state when sessions.list() fails', async () => {
+    // The session list is foundational. If it fails, blanking out the
+    // store would unmount every xterm. Better to keep stale data until
+    // the next sync succeeds.
+    const liveSession: Session = makeSession({
+      id: 'sess-a', taskId: 'task-a', projectId: 'proj-a',
+    });
+    const liveActivity: ActivityState = 'thinking';
+    useSessionStore.setState({
+      sessions: [liveSession],
+      sessionActivity: { 'sess-a': liveActivity },
+    });
+
+    const sessions = (window as Record<string, unknown> & {
+      electronAPI: { sessions: Record<string, () => unknown> };
+    }).electronAPI.sessions;
+    const original = sessions.list;
+    sessions.list = (async () => {
+      throw new Error('IPC: handler not registered');
+    }) as () => unknown;
+    try {
+      const result = await useSessionStore.getState().syncSessions();
+      expect(result).toBe(false);
+    } finally {
+      sessions.list = original;
+    }
+
+    // Both the sessions array and the activity cache survive untouched.
+    expect(useSessionStore.getState().sessions).toEqual([liveSession]);
+    expect(useSessionStore.getState().sessionActivity['sess-a']).toBe(liveActivity);
+  });
+
+  it('reconciles successful fetches even when one sibling fetch is missing', async () => {
+    // Mixed scenario: the renderer HMRs to a state where one of several
+    // preload methods is missing. The OTHER fetches must still reconcile
+    // (so HMR isn't fully blocked - users keep getting fresh data for
+    // the methods that DO exist).
+    useSessionStore.setState({
+      sessionActivity: { 'sess-stale': 'thinking' },
+      sessionActivityReason: { 'sess-stale': { kind: 'idle' } },
+    });
+
+    const sessions = (window as Record<string, unknown> & {
+      electronAPI: { sessions: { getActivityReasons?: unknown; getActivity?: () => unknown } };
+    }).electronAPI.sessions;
+    const originalReasons = sessions.getActivityReasons;
+    const originalActivity = sessions.getActivity;
+    sessions.getActivityReasons = undefined;
+    sessions.getActivity = (async () => ({ 'sess-fresh': 'idle' })) as () => unknown;
+    try {
+      await useSessionStore.getState().syncSessions();
+    } finally {
+      sessions.getActivityReasons = originalReasons;
+      sessions.getActivity = originalActivity;
+    }
+
+    // sessionActivity reconciled (evicted sess-stale, added sess-fresh).
+    const activity = useSessionStore.getState().sessionActivity;
+    expect(activity['sess-stale']).toBeUndefined();
+    expect(activity['sess-fresh']).toBe('idle');
+
+    // sessionActivityReason preserved unchanged because the fetch was
+    // unavailable (NOT evicted).
+    const reasons = useSessionStore.getState().sessionActivityReason;
+    expect(reasons['sess-stale']).toEqual({ kind: 'idle' });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // reconcileSession action
 //
 // Contract:

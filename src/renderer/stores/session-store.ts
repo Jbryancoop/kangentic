@@ -43,6 +43,38 @@ function reconcileCache<T>(
   return result;
 }
 
+/**
+ * HMR-resilient IPC fetch.
+ *
+ * Returns the resolved value on success, or `undefined` when:
+ *   - The preload method does not exist (older preload bundle while the
+ *     renderer has HMR'd to newer code that calls a freshly-added IPC).
+ *   - The IPC call itself rejected.
+ *
+ * Callers handle `undefined` by preserving the existing store value
+ * instead of treating a missing fetch as "the engine has nothing to
+ * report" (which would evict every entry and blank out the session
+ * list / terminal bindings).
+ *
+ * Triggered by the failure mode where adding a new preload method
+ * (e.g. `getActivityReasons`) and HMR-reloading the renderer leaves the
+ * renderer expecting a method the running preload doesn't have. Without
+ * this wrapper, `Promise.all` rejects, `syncSessions` throws, and the
+ * Zustand store stays at its post-HMR initial empty state - terminals
+ * lose their session binding.
+ */
+async function safeFetch<T>(
+  label: string,
+  fn: () => Promise<T> | undefined,
+): Promise<T | undefined> {
+  try {
+    return await fn();
+  } catch (error) {
+    console.warn(`[syncSessions] ${label} failed (likely HMR / preload skew):`, error);
+    return undefined;
+  }
+}
+
 /** Aborts in-flight syncSessions() calls when the project switches.
  *  Persisted across HMR via import.meta.hot.data so cancelSync() can
  *  still abort an in-flight sync after a module replacement. */
@@ -148,14 +180,31 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
     // Usage/events are scoped to current project; activity is unscoped
     // because sidebar badges need cross-project activity data.
     // Parallelize all five IPC calls; they're independent.
+    //
+    // Each call is wrapped in safeFetch so a missing preload method (HMR
+    // skew: renderer ahead of preload) or a transient IPC failure does
+    // NOT throw out of Promise.all and leave the store at its post-HMR
+    // initial empty state. Successful calls reconcile normally; missing
+    // ones preserve the existing store snapshot. The optional-call
+    // operator on getActivityReasons specifically handles the case where
+    // the running preload predates that method.
+    const sessionsApi = window.electronAPI.sessions;
     const [freshSessions, cachedUsage, cachedActivity, cachedReasons, cachedEvents] = await Promise.all([
-      window.electronAPI.sessions.list(),
-      window.electronAPI.sessions.getUsage(currentProjectId),
-      window.electronAPI.sessions.getActivity(),
-      window.electronAPI.sessions.getActivityReasons(),
-      window.electronAPI.sessions.getEventsCache(currentProjectId),
+      safeFetch('list', () => sessionsApi.list()),
+      safeFetch('getUsage', () => sessionsApi.getUsage(currentProjectId)),
+      safeFetch('getActivity', () => sessionsApi.getActivity()),
+      safeFetch('getActivityReasons', () => sessionsApi.getActivityReasons?.()),
+      safeFetch('getEventsCache', () => sessionsApi.getEventsCache(currentProjectId)),
     ]);
     if (signal.aborted) return false;
+
+    // Sessions list is foundational - if it failed, bail without
+    // mutating store state. Better to keep stale data than to wipe the
+    // session list and unmount every xterm.
+    if (!freshSessions) {
+      console.warn('[syncSessions] sessions.list() failed; preserving existing state');
+      return false;
+    }
 
     const currentState = get();
     const postAsyncSessions = new Map(currentState.sessions.map((s) => [s.id, s]));
@@ -183,13 +232,19 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
     // Entries the engine has dropped are evicted; this prevents stale
     // 'thinking' (and matching usage/events) from accumulating across
     // suspend/respawn/HMR cycles.
+    //
+    // When a fetch returned undefined (HMR skew or transient failure),
+    // we preserve the existing store map instead of treating it as an
+    // empty cache. An empty cache would evict every entry, which is the
+    // exact failure mode we're guarding against.
+    //
     // latestRateLimits: seed from any cached entry with rateLimits when we
     // don't already have one. IPC-delivered updates that arrived during the
     // async gap have already populated the store's snapshot, so we leave
     // those alone. Without this seed the global snapshot would stay null
     // until the next status update, leaving a noticeable gap on app start.
     let nextLatestRateLimits = currentState.latestRateLimits;
-    if (!nextLatestRateLimits) {
+    if (!nextLatestRateLimits && cachedUsage) {
       for (const [sessionId, usage] of Object.entries(cachedUsage)) {
         if (usage.rateLimits) {
           nextLatestRateLimits = {
@@ -204,11 +259,19 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
       sessions: mergedSessions,
       _sessionByTaskId: buildSessionByTaskId(mergedSessions),
       activeSessionId: stillExists ? currentState.activeSessionId : null,
-      sessionUsage: reconcileCache(cachedUsage, currentState.sessionUsage),
+      sessionUsage: cachedUsage
+        ? reconcileCache(cachedUsage, currentState.sessionUsage)
+        : currentState.sessionUsage,
       latestRateLimits: nextLatestRateLimits,
-      sessionActivity: reconcileCache(cachedActivity, currentState.sessionActivity),
-      sessionActivityReason: reconcileCache(cachedReasons, currentState.sessionActivityReason),
-      sessionEvents: reconcileCache(cachedEvents, currentState.sessionEvents),
+      sessionActivity: cachedActivity
+        ? reconcileCache(cachedActivity, currentState.sessionActivity)
+        : currentState.sessionActivity,
+      sessionActivityReason: cachedReasons
+        ? reconcileCache(cachedReasons, currentState.sessionActivityReason)
+        : currentState.sessionActivityReason,
+      sessionEvents: cachedEvents
+        ? reconcileCache(cachedEvents, currentState.sessionEvents)
+        : currentState.sessionEvents,
     });
 
     // Recover transient session pointers after a full page reload.
