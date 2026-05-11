@@ -782,6 +782,16 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Find the first live (running/queued) Session for a task. Used by
+   * reconcileTaskSessionRef to heal `task.session_id` drift when the
+   * registry still holds a live PTY for the task but the DB pointer was
+   * cleared (or points at a now-suspended id).
+   */
+  findLiveSessionByTaskId(taskId: string): Session | undefined {
+    return this.registry.findLiveSessionByTaskId(taskId);
+  }
+
+  /**
    * Gracefully suspend all running PTY sessions.
    *
    * Sends Ctrl+C then /exit to each Claude Code process so it saves its

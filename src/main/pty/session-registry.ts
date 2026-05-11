@@ -184,6 +184,28 @@ export class SessionRegistry {
     return undefined;
   }
 
+  /**
+   * Find the first live (running/queued) Session DTO for a task. Used by
+   * reconcileTaskSessionRef to heal cases where the DB pointer
+   * (`task.session_id`) is null or points at a now-suspended entry while
+   * the registry still holds a live PTY for the same task. Returns a
+   * Session DTO so callers don't depend on the internal ManagedSession
+   * shape.
+   *
+   * Prefers a live entry over any non-live entry that shares the taskId,
+   * so a stale suspended placeholder co-existing with a fresh running
+   * spawn cannot mask the running one.
+   */
+  findLiveSessionByTaskId(taskId: string): Session | undefined {
+    for (const session of this.sessions.values()) {
+      if (session.taskId === taskId
+          && (session.status === 'running' || session.status === 'queued')) {
+        return toSession(session);
+      }
+    }
+    return undefined;
+  }
+
   hasSessionForTask(taskId: string): boolean {
     return this.findByTaskId(taskId) !== undefined;
   }

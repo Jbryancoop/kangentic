@@ -179,6 +179,173 @@ test.describe('Task detail proactive reconcile - heal path', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Project-switch round-trip: stale renderer view survives navigating away
+// and back. Covers the user-visible bug where the renderer's session cache
+// drifts to 'suspended' for a task whose PTY is still alive on main, and the
+// dialog paints "Resume session" after the round-trip. With the heal-by-
+// taskId fallback in `reconcileTaskSessionRef`, main re-discovers the live
+// session and the renderer probe swaps it in on dialog mount.
+// ---------------------------------------------------------------------------
+test.describe('Task detail proactive reconcile - survives project-switch round-trip', () => {
+  let browser: Browser;
+  let page: Page;
+  const OTHER_PROJECT_ID = `proj-other-${RUN_ID}`;
+
+  test.beforeAll(async () => {
+    await waitForViteReady(VITE_URL);
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+    page = await context.newPage();
+
+    await page.addInitScript({ path: MOCK_SCRIPT });
+
+    // Two-project fixture: project A holds the stale-suspended task + cached
+    // session entry; project B is an empty sibling so the sidebar has
+    // somewhere to navigate to and back.
+    await page.addInitScript(`
+      window.__mockPreConfigure(function (state) {
+        var ts = new Date().toISOString();
+
+        state.projects.push({
+          id: '${PROJECT_ID}',
+          name: 'Reconcile Probe Test ${RUN_ID}',
+          path: '/mock/reconcile-${RUN_ID}',
+          github_url: null,
+          default_agent: 'claude',
+          last_opened: ts,
+          created_at: ts,
+        });
+        state.projects.push({
+          id: '${OTHER_PROJECT_ID}',
+          name: 'Other Project ${RUN_ID}',
+          path: '/mock/other-${RUN_ID}',
+          github_url: null,
+          default_agent: 'claude',
+          last_opened: ts,
+          created_at: ts,
+        });
+
+        var executingLaneId = null;
+        state.DEFAULT_SWIMLANES.forEach(function (template, index) {
+          var laneId = 'lane-rt-' + template.name.toLowerCase().replace(/\\s+/g, '-') + '-${RUN_ID}';
+          if (template.name === 'Executing') executingLaneId = laneId;
+          state.swimlanes.push(Object.assign({}, template, {
+            id: laneId,
+            position: index,
+            created_at: ts,
+          }));
+        });
+
+        var planningLane = state.swimlanes.find(function (s) { return s.name === 'Planning'; });
+        var executingLane = state.swimlanes.find(function (s) { return s.name === 'Executing'; });
+        if (planningLane && executingLane) {
+          planningLane.plan_exit_target_id = executingLane.id;
+        }
+
+        // Stale suspended session in the renderer cache - same bug shape
+        // as the single-project fixture above. After the project round-trip
+        // re-runs syncSessions, this entry is still what the dialog sees
+        // because the mock's sessions list is project-agnostic and returns
+        // it on every list() call.
+        state.sessions.push({
+          id: '${SESSION_ID}',
+          taskId: '${TASK_ID}',
+          projectId: '${PROJECT_ID}',
+          pid: null,
+          status: 'suspended',
+          shell: 'bash',
+          cwd: '/mock/reconcile-${RUN_ID}',
+          startedAt: ts,
+          exitCode: null,
+          resuming: false,
+        });
+
+        state.tasks.push({
+          id: '${TASK_ID}',
+          title: 'Round-trip Probe Task ${RUN_ID}',
+          description: 'Verifies reconcile survives project switch',
+          swimlane_id: executingLaneId,
+          position: 0,
+          agent: 'claude',
+          session_id: null,
+          worktree_path: null,
+          branch_name: null,
+          pr_number: null,
+          pr_url: null,
+          base_branch: null,
+          labels: [],
+          priority: 0,
+          archived_at: null,
+          created_at: ts,
+          updated_at: ts,
+        });
+
+        return { currentProjectId: '${PROJECT_ID}' };
+      });
+    `);
+
+    await page.goto(VITE_URL);
+    await page.waitForLoadState('load');
+    await page.waitForSelector('text=Kangentic', { timeout: 15000 });
+    await page.locator('[data-swimlane-name="Executing"]').waitFor({ state: 'visible', timeout: 10000 });
+
+    // Mock the heal: reconcile probe returns a running session, simulating
+    // main's heal-by-taskId fallback finding the live PTY.
+    await page.evaluate((sessionId) => {
+      window.electronAPI.sessions.reconcile = async function (taskId: string) {
+        return {
+          id: sessionId,
+          taskId: taskId,
+          projectId: '',
+          pid: 4242,
+          status: 'running',
+          shell: 'bash',
+          cwd: '/mock/reconcile',
+          startedAt: new Date().toISOString(),
+          exitCode: null,
+          resuming: false,
+        };
+      };
+    }, SESSION_ID);
+  });
+
+  test.afterAll(async () => {
+    await browser?.close();
+  });
+
+  test('Resume button stays hidden after switching projects and re-opening the dialog', async () => {
+    const dialog = page.locator('[data-testid="task-detail-dialog"]');
+    const resumeButton = dialog.locator('button:has-text("Resume session")');
+
+    // Round 1: open the dialog, verify the probe healed it.
+    await openTaskDialog(page);
+    await expect(resumeButton).toBeHidden({ timeout: 3000 });
+
+    // Close the dialog before navigating - its overlay intercepts clicks
+    // on the sidebar. The X button is the canonical close affordance and
+    // is always rendered in the dialog header.
+    await page.locator('[data-testid="task-detail-close"]').click();
+    await dialog.waitFor({ state: 'hidden', timeout: 3000 });
+
+    // Switch to the other project, then back. App.tsx's currentProject
+    // useEffect re-runs syncSessions on each change; the mock keeps the
+    // stale-suspended session in state.sessions across both calls.
+    await page.locator(`[data-testid="project-row-${OTHER_PROJECT_ID}"]`).click();
+    await page.locator(`[data-testid="project-row-${PROJECT_ID}"]`).click();
+
+    // Wait for project A's board to re-render before re-opening the task.
+    await page.locator('[data-swimlane-name="Executing"]').waitFor({ state: 'visible', timeout: 5000 });
+
+    // Round 2: re-open the dialog. The bug repro would now paint Resume;
+    // with the fix in place the probe re-fires and heals on this fresh
+    // dialog mount (probedKeyRef is component-instance scoped, so a fresh
+    // mount always probes once).
+    await openTaskDialog(page);
+    await expect(resumeButton).toBeHidden({ timeout: 3000 });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Confirm-suspended path: probe returns null -> Resume button still renders
 // ---------------------------------------------------------------------------
 test.describe('Task detail proactive reconcile - genuinely suspended', () => {

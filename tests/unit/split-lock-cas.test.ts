@@ -191,6 +191,11 @@ function createMockContext() {
     sessionManager: {
       listSessions: vi.fn(() => []),
       getSession: vi.fn(() => null),
+      // Required by reconcileTaskSessionRef's heal-by-taskId fallback.
+      // Default to undefined (no live session) so existing CAS scenarios
+      // see the stale-clear behavior they did before the fallback was
+      // introduced.
+      findLiveSessionByTaskId: vi.fn(() => undefined),
       getSessionTaskId: vi.fn(() => null),
       getSessionProjectId: vi.fn(() => null),
       killByTaskId: vi.fn(),

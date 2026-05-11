@@ -1811,3 +1811,48 @@ describe('attachSession dispatch contract', () => {
     expect(spawnedSession?.status).toBe('running');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 16. findLiveSessionByTaskId delegate
+// ---------------------------------------------------------------------------
+
+describe('findLiveSessionByTaskId delegate', () => {
+  let manager: SessionManager;
+
+  beforeEach(() => {
+    manager = new SessionManager();
+  });
+
+  afterEach(async () => {
+    manager.killAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+
+  it('forwards the call to the registry and passes through the return value', async () => {
+    // Spawn a running session so the registry has a live entry for the task.
+    const mock = createMockPty();
+    vi.mocked(pty.spawn).mockReturnValue(mock.mockPty as unknown as pty.IPty);
+
+    const session = await manager.spawn({
+      taskId: 'task-delegate-live',
+      command: '',
+      cwd: tmpDir,
+    });
+
+    // The delegate must return the same session DTO as querying by id directly.
+    const result = manager.findLiveSessionByTaskId('task-delegate-live');
+
+    expect(result).toBeDefined();
+    expect(result!.id).toBe(session.id);
+    expect(result!.taskId).toBe('task-delegate-live');
+    expect(result!.status).toBe('running');
+    // Confirm the DTO does not expose internal ManagedSession fields.
+    expect('pty' in result!).toBe(false);
+  });
+
+  it('returns undefined when no live session exists for the taskId', () => {
+    // Empty registry - delegate must pass through undefined without throwing.
+    const result = manager.findLiveSessionByTaskId('task-delegate-missing');
+    expect(result).toBeUndefined();
+  });
+});

@@ -54,23 +54,30 @@ export function applySuspendDbWrites(
 /**
  * Read a task and reconcile its `session_id` against the live SessionRegistry.
  *
- * Three outcomes:
+ * Four outcomes:
  *
- *   - `liveSession` set: the registry has a running/queued session matching
- *     the DB reference. The caller must NOT spawn (would duplicate); use the
- *     returned session as the existing handle.
- *   - `liveSession` null + `task.session_id` was non-null: the DB reference
- *     was stale (registry says suspended/exited or has no entry). This
- *     function clears `task.session_id` so the caller can proceed with a
- *     fresh spawn / resume safely.
- *   - `liveSession` null + `task.session_id` was already null: clean state,
- *     nothing to reconcile.
+ *   - `liveSession` set (primary path): `task.session_id` points at a
+ *     running/queued registry entry. Returned as-is, no DB writes.
+ *   - `liveSession` set (heal-by-taskId): `task.session_id` was null or
+ *     pointed at a now-suspended/exited entry, but the registry still
+ *     holds a live PTY for the same taskId. Re-link `task.session_id` to
+ *     the live session and return it. The renderer's `reconcileSession`
+ *     action evicts the stale row by taskId and upserts the live one.
+ *   - `liveSession` null + `task.session_id` was non-null: the DB
+ *     reference was stale AND no live registry entry exists for the
+ *     task. Clears `task.session_id` so resume/spawn paths start clean.
+ *   - `liveSession` null + `task.session_id` was already null: clean
+ *     state, nothing to reconcile.
  *
  * Why this exists: every internal suspend path SHOULD pair `session.status =
  * 'suspended'` with `tasks.update({ session_id: null })`, but `requestSuspend`
  * (idle-timeout) historically didn't, and the auto-spawn placeholder safety
- * net at startup also doesn't. Reconciling here means a single recovery point
- * defends every present and future suspend path that misses the DB clear.
+ * net at startup also doesn't. The heal-by-taskId fallback additionally
+ * covers the project-switch round-trip race where `task.session_id` gets
+ * cleared while the registry still holds a live PTY: without it the task
+ * detail dialog paints "Resume session" even though the agent is alive.
+ * Reconciling here means a single recovery point defends every present and
+ * future drift between the DB pointer and the live registry.
  */
 export function reconcileTaskSessionRef(
   context: IpcContext,
@@ -80,12 +87,44 @@ export function reconcileTaskSessionRef(
   const { tasks } = getProjectRepos(context, projectId);
   const task = tasks.getById(taskId);
   if (!task) throw new Error(`Task ${taskId} not found`);
-  if (!task.session_id) return { task, liveSession: null };
 
-  const existing = context.sessionManager.getSession(task.session_id);
+  // Read the registry entry pointed at by task.session_id once, up front.
+  // Reused by both the primary path (live check) and the stale-clear log
+  // line below, so we avoid a second registry lookup.
+  const existing = task.session_id
+    ? context.sessionManager.getSession(task.session_id)
+    : undefined;
+
+  // Primary path: DB pointer matches a live registry entry.
   if (existing && isLiveSession(existing)) {
     return { task, liveSession: existing };
   }
+
+  // Fallback: registry may still hold a live PTY for this task even when
+  // task.session_id is null or points at a now-suspended/exited entry.
+  // Re-link so subsequent reads (including the renderer's session view)
+  // are consistent. Grep `[SESSION_RECONCILE] Re-linked` to find hits.
+  const liveByTaskId = context.sessionManager.findLiveSessionByTaskId(taskId);
+  if (liveByTaskId) {
+    if (task.session_id === liveByTaskId.id) {
+      // Defensive: pointer already matches; nothing to write. Shouldn't
+      // be reachable because the primary path would have returned this,
+      // but handle it idempotently rather than rely on that invariant.
+      return { task, liveSession: liveByTaskId };
+    }
+    const previous = task.session_id ? task.session_id.slice(0, 8) : 'null';
+    console.log(
+      `[SESSION_RECONCILE] Re-linked task.session_id for task ${taskId.slice(0, 8)}`
+      + ` -> live session ${liveByTaskId.id.slice(0, 8)} (was: ${previous})`,
+    );
+    tasks.update({ id: taskId, session_id: liveByTaskId.id });
+    const refreshed = tasks.getById(taskId);
+    if (!refreshed) throw new Error(`Task ${taskId} not found`);
+    return { task: refreshed, liveSession: liveByTaskId };
+  }
+
+  // No live session anywhere. Clear a stale DB pointer if one is still set.
+  if (!task.session_id) return { task, liveSession: null };
 
   // This log firing means a suspend path mutated the registry without
   // clearing task.session_id (idle-timeout, auto-spawn placeholder safety

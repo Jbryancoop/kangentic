@@ -6,14 +6,17 @@
  * stub IpcContext rather than the full handler stack. Only the fields
  * actually accessed by the function under test are provided.
  *
- * Five scenarios:
- *   - Stale DB reference: registry status is 'suspended'  -> clear + null
- *   - Stale DB reference: registry status is 'exited'     -> clear + null
- *   - Missing registry entry: getSession returns undefined -> clear + null
- *   - Live registry entry: status 'running'               -> do not clear, return session
- *   - Live registry entry: status 'queued'                -> do not clear, return session
- *   - Clean state: task.session_id already null           -> getSession not called, return null
- *   - Task not found: getById returns undefined           -> throws
+ * Scenarios:
+ *   - Stale DB reference: registry status is 'suspended', no live by taskId -> clear + null
+ *   - Stale DB reference: registry status is 'exited', no live by taskId    -> clear + null
+ *   - Missing registry entry: getSession undefined, no live by taskId       -> clear + null
+ *   - Live registry entry: status 'running'                                 -> do not clear, return session
+ *   - Live registry entry: status 'queued'                                  -> do not clear, return session
+ *   - Clean state: task.session_id null AND no live by taskId               -> getSession not called, return null
+ *   - Heal-by-taskId: task.session_id null, registry has live session       -> re-link + return live
+ *   - Heal-by-taskId: task.session_id points at suspended entry, registry has DIFFERENT live -> re-link + return live
+ *   - Heal-by-taskId idempotence: task.session_id matches the live id       -> no write, return live
+ *   - Task not found: getById returns undefined                             -> throws
  *
  * The functions this replaces coverage for:
  *   - SESSION_RESUME Phase 1 and Phase 3 both call reconcileTaskSessionRef
@@ -21,6 +24,10 @@
  *     described in the branch: idle-timeout suspended the registry entry but
  *     never cleared task.session_id, so SESSION_RESUME threw "already has an
  *     active session" instead of recovering.
+ *   - The heal-by-taskId path covers the project-switch round-trip case
+ *     where task.session_id is cleared but the registry still holds a live
+ *     PTY for the task. Without this, the task detail dialog paints
+ *     "Resume session" even though the agent is alive.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -130,18 +137,23 @@ function makeSession(status: Session['status']): Session {
 
 /**
  * Build a minimal stub IpcContext with the fields that
- * reconcileTaskSessionRef actually reads. The stub tasks repo and
- * sessionManager.getSession are configurable per-test.
+ * reconcileTaskSessionRef actually reads. The stub tasks repo,
+ * sessionManager.getSession, and sessionManager.findLiveSessionByTaskId
+ * are configurable per-test. findLiveSessionByTaskId defaults to
+ * returning undefined so tests that don't exercise the heal-by-taskId
+ * fallback keep their original semantics.
  */
 function makeContext(
   taskRepo: { getById: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> },
   getSession: ReturnType<typeof vi.fn>,
+  findLiveSessionByTaskId: ReturnType<typeof vi.fn> = vi.fn(() => undefined),
 ) {
   return {
     currentProjectId: 'proj-1',
     currentProjectPath: '/mock/project',
     sessionManager: {
       getSession,
+      findLiveSessionByTaskId,
       getUsageCache: vi.fn(() => ({})),
       getEventsForSession: vi.fn(() => []),
     },
@@ -155,6 +167,7 @@ function makeContext(
 describe('reconcileTaskSessionRef', () => {
   let taskRepo: { getById: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
   let getSession: ReturnType<typeof vi.fn>;
+  let findLiveSessionByTaskId: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -163,6 +176,7 @@ describe('reconcileTaskSessionRef', () => {
       update: vi.fn(),
     };
     getSession = vi.fn();
+    findLiveSessionByTaskId = vi.fn(() => undefined);
     mockGetProjectRepos.mockReturnValue({ tasks: taskRepo });
   });
 
@@ -170,7 +184,7 @@ describe('reconcileTaskSessionRef', () => {
   // Stale-clear paths (registry status != running/queued or missing)
   // -------------------------------------------------------------------------
 
-  it('clears session_id and returns liveSession:null when registry status is "suspended"', () => {
+  it('clears session_id and returns liveSession:null when registry status is "suspended" and no live by taskId', () => {
     const initialTask = makeTask({ session_id: 'sess-1' });
     const refreshedTask = makeTask({ session_id: null });
     taskRepo.getById
@@ -178,15 +192,16 @@ describe('reconcileTaskSessionRef', () => {
       .mockReturnValueOnce(refreshedTask); // re-read after update
     getSession.mockReturnValue(makeSession('suspended'));
 
-    const context = makeContext(taskRepo, getSession);
+    const context = makeContext(taskRepo, getSession, findLiveSessionByTaskId);
     const result = reconcileTaskSessionRef(context as never, 'proj-1', 'task-1');
 
+    expect(findLiveSessionByTaskId).toHaveBeenCalledWith('task-1');
     expect(taskRepo.update).toHaveBeenCalledWith({ id: 'task-1', session_id: null });
     expect(result.liveSession).toBeNull();
     expect(result.task.session_id).toBeNull();
   });
 
-  it('clears session_id and returns liveSession:null when registry status is "exited"', () => {
+  it('clears session_id and returns liveSession:null when registry status is "exited" and no live by taskId', () => {
     const initialTask = makeTask({ session_id: 'sess-1' });
     const refreshedTask = makeTask({ session_id: null });
     taskRepo.getById
@@ -194,7 +209,7 @@ describe('reconcileTaskSessionRef', () => {
       .mockReturnValueOnce(refreshedTask);
     getSession.mockReturnValue(makeSession('exited'));
 
-    const context = makeContext(taskRepo, getSession);
+    const context = makeContext(taskRepo, getSession, findLiveSessionByTaskId);
     const result = reconcileTaskSessionRef(context as never, 'proj-1', 'task-1');
 
     expect(taskRepo.update).toHaveBeenCalledWith({ id: 'task-1', session_id: null });
@@ -202,7 +217,7 @@ describe('reconcileTaskSessionRef', () => {
     expect(result.task.session_id).toBeNull();
   });
 
-  it('clears session_id and returns liveSession:null when getSession returns undefined (missing from registry)', () => {
+  it('clears session_id and returns liveSession:null when getSession returns undefined and no live by taskId', () => {
     // Auto-spawn placeholder safety-net case: task.session_id was set but the
     // registry never had the entry (app restart, or session was removed before
     // reconcile ran).
@@ -213,7 +228,7 @@ describe('reconcileTaskSessionRef', () => {
       .mockReturnValueOnce(refreshedTask);
     getSession.mockReturnValue(undefined);
 
-    const context = makeContext(taskRepo, getSession);
+    const context = makeContext(taskRepo, getSession, findLiveSessionByTaskId);
     const result = reconcileTaskSessionRef(context as never, 'proj-1', 'task-1');
 
     expect(taskRepo.update).toHaveBeenCalledWith({ id: 'task-1', session_id: null });
@@ -231,11 +246,13 @@ describe('reconcileTaskSessionRef', () => {
     const liveSession = makeSession('running');
     getSession.mockReturnValue(liveSession);
 
-    const context = makeContext(taskRepo, getSession);
+    const context = makeContext(taskRepo, getSession, findLiveSessionByTaskId);
     const result = reconcileTaskSessionRef(context as never, 'proj-1', 'task-1');
 
-    // session_id must NOT have been cleared
+    // session_id must NOT have been cleared; primary path short-circuits
+    // before the heal-by-taskId fallback runs.
     expect(taskRepo.update).not.toHaveBeenCalled();
+    expect(findLiveSessionByTaskId).not.toHaveBeenCalled();
     expect(result.liveSession).toBe(liveSession);
     expect(result.task.session_id).toBe('sess-running');
   });
@@ -246,10 +263,11 @@ describe('reconcileTaskSessionRef', () => {
     const liveSession = makeSession('queued');
     getSession.mockReturnValue(liveSession);
 
-    const context = makeContext(taskRepo, getSession);
+    const context = makeContext(taskRepo, getSession, findLiveSessionByTaskId);
     const result = reconcileTaskSessionRef(context as never, 'proj-1', 'task-1');
 
     expect(taskRepo.update).not.toHaveBeenCalled();
+    expect(findLiveSessionByTaskId).not.toHaveBeenCalled();
     expect(result.liveSession).toBe(liveSession);
   });
 
@@ -257,20 +275,119 @@ describe('reconcileTaskSessionRef', () => {
   // Clean-state path (task.session_id already null)
   // -------------------------------------------------------------------------
 
-  it('does not call getSession and returns liveSession:null when task.session_id is already null', () => {
-    // No session reference in DB - nothing to reconcile. This is the normal
-    // post-suspend state (every other suspend path paired registry suspend
-    // with tasks.update({ session_id: null })).
+  it('returns liveSession:null when task.session_id is null AND no live by taskId', () => {
+    // No session reference in DB and no live registry entry for the task -
+    // nothing to reconcile. This is the normal post-suspend state (every
+    // other suspend path paired registry suspend with tasks.update({
+    // session_id: null })). The heal-by-taskId fallback runs but finds
+    // nothing; getSession is never reached.
     const task = makeTask({ session_id: null });
     taskRepo.getById.mockReturnValue(task);
 
-    const context = makeContext(taskRepo, getSession);
+    const context = makeContext(taskRepo, getSession, findLiveSessionByTaskId);
     const result = reconcileTaskSessionRef(context as never, 'proj-1', 'task-1');
 
     expect(getSession).not.toHaveBeenCalled();
+    expect(findLiveSessionByTaskId).toHaveBeenCalledWith('task-1');
     expect(taskRepo.update).not.toHaveBeenCalled();
     expect(result.liveSession).toBeNull();
     expect(result.task).toBe(task);
+  });
+
+  // -------------------------------------------------------------------------
+  // Heal-by-taskId paths
+  //
+  // These cover the project-switch round-trip race: the DB pointer
+  // (task.session_id) can be cleared OR left pointing at a now-suspended
+  // entry while the registry still holds a live PTY for the same taskId.
+  // Without the fallback, the task-detail dialog's reconcile probe returns
+  // null and paints the "Resume session" button on a still-running session.
+  // -------------------------------------------------------------------------
+
+  it('re-links task.session_id and returns the live session when task.session_id is null but the registry has a live PTY for the taskId', () => {
+    const initialTask = makeTask({ session_id: null });
+    const refreshedTask = makeTask({ session_id: 'sess-alive' });
+    taskRepo.getById
+      .mockReturnValueOnce(initialTask)   // first read inside reconcile
+      .mockReturnValueOnce(refreshedTask); // re-read after re-link update
+
+    const live = { ...makeSession('running'), id: 'sess-alive' };
+    findLiveSessionByTaskId.mockReturnValue(live);
+
+    const context = makeContext(taskRepo, getSession, findLiveSessionByTaskId);
+    const result = reconcileTaskSessionRef(context as never, 'proj-1', 'task-1');
+
+    expect(getSession).not.toHaveBeenCalled();
+    expect(findLiveSessionByTaskId).toHaveBeenCalledWith('task-1');
+    expect(taskRepo.update).toHaveBeenCalledWith({ id: 'task-1', session_id: 'sess-alive' });
+    expect(result.liveSession).toBe(live);
+    expect(result.task.session_id).toBe('sess-alive');
+  });
+
+  it('re-links task.session_id when the DB pointer is stale (registry shows suspended) but a DIFFERENT live session exists for the taskId', () => {
+    // Pathological but possible: an old session id is still on the task
+    // row pointing at a suspended entry, while a fresh PTY for the same
+    // task was spawned with a new id. Heal by re-linking to the live id.
+    const initialTask = makeTask({ session_id: 'sess-old-suspended' });
+    const refreshedTask = makeTask({ session_id: 'sess-new-running' });
+    taskRepo.getById
+      .mockReturnValueOnce(initialTask)
+      .mockReturnValueOnce(refreshedTask);
+
+    getSession.mockReturnValue(makeSession('suspended')); // primary lookup hits stale entry
+    const live = { ...makeSession('running'), id: 'sess-new-running' };
+    findLiveSessionByTaskId.mockReturnValue(live);
+
+    const context = makeContext(taskRepo, getSession, findLiveSessionByTaskId);
+    const result = reconcileTaskSessionRef(context as never, 'proj-1', 'task-1');
+
+    // Re-linked to the new id; the stale-clear branch must NOT have run
+    // (it would write session_id: null instead of the new id).
+    expect(taskRepo.update).toHaveBeenCalledTimes(1);
+    expect(taskRepo.update).toHaveBeenCalledWith({ id: 'task-1', session_id: 'sess-new-running' });
+    expect(result.liveSession).toBe(live);
+    expect(result.task.session_id).toBe('sess-new-running');
+  });
+
+  it('does not write to the DB when findLiveSessionByTaskId would defensively return the same id as task.session_id', () => {
+    // Idempotence check. Shouldn't be reachable in practice because the
+    // primary path returns first when the registry entry is live, but the
+    // heal-by-taskId branch defensively short-circuits to avoid a redundant
+    // tasks.update if it ever is.
+    const task = makeTask({ session_id: 'sess-same' });
+    taskRepo.getById.mockReturnValue(task);
+    getSession.mockReturnValue(makeSession('suspended')); // primary path skips
+    const live = { ...makeSession('running'), id: 'sess-same' };
+    findLiveSessionByTaskId.mockReturnValue(live);
+
+    const context = makeContext(taskRepo, getSession, findLiveSessionByTaskId);
+    const result = reconcileTaskSessionRef(context as never, 'proj-1', 'task-1');
+
+    expect(taskRepo.update).not.toHaveBeenCalled();
+    expect(result.liveSession).toBe(live);
+    expect(result.task.session_id).toBe('sess-same');
+  });
+
+  it('falls through to stale-clear when the only registry entry for the taskId is a suspended placeholder', () => {
+    // Genuine user-paused case: registry has a suspended placeholder for
+    // the task, no live entry. findLiveSessionByTaskId returns undefined
+    // (it filters to running/queued); reconcile should clear the stale
+    // pointer rather than heal.
+    const initialTask = makeTask({ session_id: 'sess-placeholder' });
+    const refreshedTask = makeTask({ session_id: null });
+    taskRepo.getById
+      .mockReturnValueOnce(initialTask)
+      .mockReturnValueOnce(refreshedTask);
+
+    getSession.mockReturnValue(makeSession('suspended'));
+    findLiveSessionByTaskId.mockReturnValue(undefined); // no live by taskId
+
+    const context = makeContext(taskRepo, getSession, findLiveSessionByTaskId);
+    const result = reconcileTaskSessionRef(context as never, 'proj-1', 'task-1');
+
+    expect(taskRepo.update).toHaveBeenCalledWith({ id: 'task-1', session_id: null });
+    expect(result.liveSession).toBeNull();
+    expect(result.task.session_id).toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -280,7 +397,7 @@ describe('reconcileTaskSessionRef', () => {
   it('throws when the task does not exist in the DB', () => {
     taskRepo.getById.mockReturnValue(undefined);
 
-    const context = makeContext(taskRepo, getSession);
+    const context = makeContext(taskRepo, getSession, findLiveSessionByTaskId);
 
     expect(() => {
       reconcileTaskSessionRef(context as never, 'proj-1', 'task-missing');
