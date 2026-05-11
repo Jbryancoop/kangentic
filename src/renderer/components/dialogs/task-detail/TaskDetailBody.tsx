@@ -2,6 +2,7 @@ import { Suspense, lazy } from 'react';
 import { Loader2, Play, RotateCcw } from 'lucide-react';
 import { TerminalTab } from '../../terminal/TerminalTab';
 import { ContextBar } from '../../terminal/ContextBar';
+import { PreSpawnContextBar } from '../../terminal/PreSpawnContextBar';
 import { ShimmerOverlay } from '../../ShimmerOverlay';
 import { SessionSummaryPanel } from '../SessionSummaryPanel';
 import { BrowserPane } from '../../browser/BrowserPane';
@@ -201,16 +202,19 @@ export function TaskDetailBody({
   if ((isSuspended || toggling) && !isArchived && !isInTodo) {
     if (pendingCommandLabel) {
       return (
-        <div className="flex-1 min-h-0 flex">
-          {!changesExpanded && (
-            <div className={`${changesOpen ? 'w-1/2' : 'flex-1'} min-h-0 relative`}>
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-surface">
-                <ShimmerOverlay label={pendingCommandLabel} />
+        <>
+          <div className="flex-1 min-h-0 flex">
+            {!changesExpanded && (
+              <div className={`${changesOpen ? 'w-1/2' : 'flex-1'} min-h-0 relative`}>
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-surface">
+                  <ShimmerOverlay label={pendingCommandLabel} />
+                </div>
               </div>
-            </div>
-          )}
-          {changesPanelElement}
-        </div>
+            )}
+            {changesPanelElement}
+          </div>
+          <PreSpawnContextBar taskId={task.id} />
+        </>
       );
     }
     // When not toggling, we're in this branch only because isSuspended is true,
@@ -225,71 +229,92 @@ export function TaskDetailBody({
         ? 'Pausing agent...'
         : 'Resuming agent...';
     return (
-      <div className="flex-1 min-h-0 flex">
-        {!changesExpanded && (
-          <div className={`${changesOpen ? 'w-1/2' : 'flex-1'} flex flex-col items-center justify-center gap-3 bg-surface/50`}>
-            <button
-              onClick={handleToggle}
-              disabled={toggling}
-              className="flex items-center gap-2.5 px-6 py-3 rounded-lg bg-accent/20 border border-accent/40 text-base text-accent-fg hover:bg-accent/30 transition-colors disabled:opacity-50"
-            >
-              {toggleIcon}
-              {toggleLabel}
-            </button>
-            {resumeFailed && onResetSession && (
-              <div className="flex flex-col items-center gap-2 mt-1">
-                <p className="text-xs text-fg-muted text-center max-w-sm">
-                  {resumeError || 'Session could not be resumed.'}
-                </p>
-                <button
-                  onClick={onResetSession}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs text-fg-muted hover:text-fg hover:bg-surface-hover border border-edge-input transition-colors"
-                >
-                  <RotateCcw size={14} />
-                  Reset session
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-        {changesPanelElement}
-      </div>
+      <>
+        <div className="flex-1 min-h-0 flex">
+          {!changesExpanded && (
+            <div className={`${changesOpen ? 'w-1/2' : 'flex-1'} flex flex-col items-center justify-center gap-3 bg-surface/50`}>
+              <button
+                onClick={handleToggle}
+                disabled={toggling}
+                className="flex items-center gap-2.5 px-6 py-3 rounded-lg bg-accent/20 border border-accent/40 text-base text-accent-fg hover:bg-accent/30 transition-colors disabled:opacity-50"
+              >
+                {toggleIcon}
+                {toggleLabel}
+              </button>
+              {resumeFailed && onResetSession && (
+                <div className="flex flex-col items-center gap-2 mt-1">
+                  <p className="text-xs text-fg-muted text-center max-w-sm">
+                    {resumeError || 'Session could not be resumed.'}
+                  </p>
+                  <button
+                    onClick={onResetSession}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs text-fg-muted hover:text-fg hover:bg-surface-hover border border-edge-input transition-colors"
+                  >
+                    <RotateCcw size={14} />
+                    Reset session
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {changesPanelElement}
+        </div>
+        <PreSpawnContextBar taskId={task.id} />
+      </>
     );
   }
 
   // Changes-only view (no session but changes panel open)
   if (changesOpen) {
     return (
-      <div className="flex-1 min-h-0 flex">
-        {!changesExpanded && (
-          <div className="w-1/2 min-h-0 overflow-y-auto">
-            {task.description ? (
-              <div className="px-4 py-4 space-y-2">
-                <MarkdownRenderer content={task.description} />
-                {labelsAndPriorityRow}
-                {thumbnailStrip}
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-full text-fg-disabled text-sm p-8">
-                No active session
-              </div>
-            )}
-          </div>
-        )}
-        {changesPanelElement}
-      </div>
+      <>
+        <div className="flex-1 min-h-0 flex">
+          {!changesExpanded && (
+            <div className="w-1/2 min-h-0 overflow-y-auto">
+              {task.description ? (
+                <div className="px-4 py-4 space-y-2">
+                  <MarkdownRenderer content={task.description} />
+                  {labelsAndPriorityRow}
+                  {thumbnailStrip}
+                </div>
+              ) : (
+                <div className="flex items-center justify-center h-full text-fg-disabled text-sm p-8">
+                  No active session
+                </div>
+              )}
+            </div>
+          )}
+          {changesPanelElement}
+        </div>
+        <PreSpawnContextBar taskId={task.id} />
+      </>
     );
   }
 
   // Empty state
   if (!task.description && savedAttachments.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-fg-disabled text-sm p-8">
-        No active session. Drag this task to a column with a transition to start one.
-      </div>
+      <>
+        <div className="flex-1 flex items-center justify-center text-fg-disabled text-sm p-8">
+          No active session. Drag this task to a column with a transition to start one.
+        </div>
+        <PreSpawnContextBar taskId={task.id} />
+      </>
     );
   }
 
-  // Description-only view (no session)
-  return descriptionBar || null;
+  // Description-only view (no session). All earlier branches return, so
+  // descriptionBar is truthy here in practice; the conditional spacer keeps
+  // the layout consistent if that ever changes (no orphan flex spacer + bar
+  // when there's nothing above).
+  if (!descriptionBar) {
+    return <PreSpawnContextBar taskId={task.id} />;
+  }
+  return (
+    <>
+      {descriptionBar}
+      <div className="flex-1" />
+      <PreSpawnContextBar taskId={task.id} />
+    </>
+  );
 }

@@ -8,6 +8,7 @@ import { resolveShortcutCommand } from '../../../shared/template-vars';
 import { PriorityBadge } from '../backlog/PriorityBadge';
 import { BaseDialog } from './BaseDialog';
 import { ConfirmDialog } from './ConfirmDialog';
+import { PreSpawnContextBar } from '../terminal/PreSpawnContextBar';
 import {
   TaskDetailHeader,
   TaskDetailEditForm,
@@ -361,24 +362,34 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
         ) : undefined}
       >
         {isEditing && (
-          <TaskDetailEditForm
-            task={task}
-            title={title}
-            setTitle={setTitle}
-            description={description}
-            setDescription={setDescription}
-            prUrl={prUrl}
-            setPrUrl={setPrUrl}
-            labels={labels}
-            setLabels={setLabels}
-            priority={priority}
-            setPriority={setPriority}
-            attachments={attachments}
-            branchConfig={branchConfig}
-            isSessionActive={sessionState.isSessionActive}
-            isArchived={isArchived}
-            isInTodo={isInTodo}
-          />
+          <>
+            <TaskDetailEditForm
+              task={task}
+              title={title}
+              setTitle={setTitle}
+              description={description}
+              setDescription={setDescription}
+              prUrl={prUrl}
+              setPrUrl={setPrUrl}
+              labels={labels}
+              setLabels={setLabels}
+              priority={priority}
+              setPriority={setPriority}
+              attachments={attachments}
+              branchConfig={branchConfig}
+              isSessionActive={sessionState.isSessionActive}
+              isArchived={isArchived}
+              isInTodo={isInTodo}
+            />
+            {!hasSessionContext && !isArchived && (
+              // Negative margins counter BaseDialog's content padding so the
+              // bar spans dialog edges (matches the live ContextBar surface).
+              // If BaseDialog padding ever changes, retune these offsets.
+              <div className="-mx-6 -mb-4 mt-4">
+                <PreSpawnContextBar taskId={task.id} />
+              </div>
+            )}
+          </>
         )}
 
         {!isEditing && (

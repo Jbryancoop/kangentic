@@ -1346,6 +1346,8 @@ export interface TaskCreateInput {
   baseBranch?: string;
   useWorktree?: boolean | null;
   customBranchName?: string;
+  model_override?: string | null;
+  effort_override?: string | null;
   pendingAttachments?: Array<{
     filename: string;
     data: string; // base64

@@ -1,5 +1,4 @@
-import { useRef, useState } from 'react';
-import { ArrowUp, ArrowDown, Loader2, Clock, Calendar, ChevronDown } from 'lucide-react';
+import { ArrowUp, ArrowDown, Loader2, Clock, Calendar } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { RateLimitWindow } from '../../../shared/types';
 import { useBoardStore } from '../../stores/board-store';
@@ -12,7 +11,7 @@ import { formatDateTime, formatTime } from '../../lib/datetime';
 import { agentDisplayName } from '../../utils/agent-display-name';
 import { shellDisplayName } from '../../utils/shell-display-name';
 import { useValuePulse } from '../../hooks/useValuePulse';
-import { ContextBarPopover } from './ContextBarPopover';
+import { ModelEffortPicker } from './ModelEffortPicker';
 
 interface ContextBarProps {
   sessionId: string;
@@ -55,19 +54,6 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
   const isResuming = session?.resuming ?? false;
   const task = useBoardStore((s) => s.tasks.find((t) => t.session_id === sessionId));
   const taskAgent = task?.agent ?? agentFallback;
-  const setTaskRuntimeOverride = useBoardStore((s) => s.setTaskRuntimeOverride);
-  // Effort fallback chain: live status (truth) -> task override -> swimlane
-  // override. Some Claude models (Haiku 4.5) accept --effort but never echo
-  // it back in status updates, so without this chain the pill stays blank
-  // even though the user explicitly configured an effort tier.
-  const taskEffortOverride = task?.effort_override ?? null;
-  const swimlaneEffortOverride = useBoardStore((s) =>
-    task ? s.swimlanes.find((lane) => lane.id === task.swimlane_id)?.effort_override ?? null : null,
-  );
-  const swimlaneModelOverride = useBoardStore((s) =>
-    task ? s.swimlanes.find((lane) => lane.id === task.swimlane_id)?.model_override ?? null : null,
-  );
-  const taskEffortFallback = taskEffortOverride ?? swimlaneEffortOverride;
   // Resolve the agent that contributed the latest rate-limit snapshot so the
   // tooltip can name it. Falls back to undefined when the source session has
   // no task row (e.g. transient command-terminal sessions).
@@ -82,20 +68,6 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
   const agentLiveTelemetryUnsupported = useConfigStore(
     (s) => s.agentList.find((a) => a.name === taskAgent)?.liveTelemetryUnsupported
   );
-  // Capabilities from `discoverCapabilities` -- gates the popover triggers.
-  // No agent-name branching: the model trigger is shown iff the adapter
-  // returned a non-empty `models` array, and the effort trigger iff
-  // `effortLevels` is non-empty. Adapters without discovery render the
-  // pills as static labels, exactly as before.
-  const agentCapabilities = useConfigStore(
-    (s) => s.agentList.find((a) => a.name === taskAgent)?.capabilities,
-  );
-
-  // Popover state. One of the two triggers is open at a time; tracked here
-  // so opening the model picker auto-closes the effort picker.
-  const [openPopover, setOpenPopover] = useState<'model' | 'effort' | null>(null);
-  const modelTriggerRef = useRef<HTMLButtonElement>(null);
-  const effortTriggerRef = useRef<HTMLButtonElement>(null);
 
   // Pulse hooks -- always called unconditionally (hooks rules)
   const costRef = useValuePulse(usage?.cost.totalCostUsd);
@@ -206,97 +178,26 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
           )}
         </span>
       )}
-      {(() => {
-        // Effort source order: live status (truth) -> task override -> column
-        // override. Falling back covers Claude models that accept --effort
-        // but do not echo it in status JSON (e.g. Haiku 4.5).
-        const effectiveEffort = usage.model.effort || taskEffortFallback;
-        const modelOptions = agentCapabilities?.models ?? [];
-        const effortOptions = agentCapabilities?.effortLevels ?? [];
-        const showModelTrigger = !!task && agentCapabilities?.supportsModelOverride && modelOptions.length > 0;
-        const showEffortTrigger = !!task && effortOptions.length > 0;
-        const triggerBase = `${pill} text-fg-muted inline-flex items-center gap-1`;
-        const interactiveBase = 'cursor-pointer hover:bg-surface-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-fg-faint';
-        // Resolve the "current" value the popover should checkmark. For the
-        // model picker we use the live displayName when it matches a known
-        // option, otherwise the task override; same fallback chain for effort.
-        const currentModelValue = modelOptions.find((id) => id === usage.model.id)
-          ?? task?.model_override
-          ?? null;
-        const currentEffortValue = effectiveEffort ?? null;
-        return (
-          <>
-            {showModelTrigger ? (
-              <span className="relative inline-flex">
-                <button
-                  ref={modelTriggerRef}
-                  type="button"
-                  onClick={() => setOpenPopover((previous) => (previous === 'model' ? null : 'model'))}
-                  className={`${triggerBase} ${interactiveBase}`}
-                  data-testid="context-bar-model-trigger"
-                  title="Click to change model"
-                >
-                  {modelName}
-                  <ChevronDown size={11} className="text-fg-faint flex-shrink-0" />
-                </button>
-                {openPopover === 'model' && task && (
-                  <ContextBarPopover
-                    triggerRef={modelTriggerRef}
-                    title="Model"
-                    options={modelOptions.map((value) => ({ value, label: value }))}
-                    currentValue={currentModelValue}
-                    swimlaneDefault={swimlaneModelOverride}
-                    onSelect={(value) => {
-                      setOpenPopover(null);
-                      setTaskRuntimeOverride(task.id, { model: value });
-                    }}
-                    onClose={() => setOpenPopover(null)}
-                    testId="context-bar-model-popover"
-                  />
-                )}
-              </span>
-            ) : (
-              <span className={`${pill} text-fg-muted`}>{modelName}</span>
-            )}
-            {showEffortTrigger ? (
-              effectiveEffort && (
-                <span className="relative inline-flex">
-                  <button
-                    ref={effortTriggerRef}
-                    type="button"
-                    onClick={() => setOpenPopover((previous) => (previous === 'effort' ? null : 'effort'))}
-                    className={`${triggerBase} ${interactiveBase} text-fg-faint`}
-                    data-testid="context-bar-effort-trigger"
-                    title="Click to change effort"
-                  >
-                    {effectiveEffort}
-                    <ChevronDown size={11} className="flex-shrink-0" />
-                  </button>
-                  {openPopover === 'effort' && task && (
-                    <ContextBarPopover
-                      triggerRef={effortTriggerRef}
-                      title="Effort"
-                      options={effortOptions.map((value) => ({ value, label: value }))}
-                      currentValue={currentEffortValue}
-                      swimlaneDefault={swimlaneEffortOverride}
-                      onSelect={(value) => {
-                        setOpenPopover(null);
-                        setTaskRuntimeOverride(task.id, { effort: value });
-                      }}
-                      onClose={() => setOpenPopover(null)}
-                      testId="context-bar-effort-popover"
-                    />
-                  )}
-                </span>
-              )
-            ) : (
-              effectiveEffort && (
-                <span className={`${pill} text-fg-faint`}>{effectiveEffort}</span>
-              )
-            )}
-          </>
-        );
-      })()}
+      {task ? (
+        <ModelEffortPicker
+          taskId={task.id}
+          agent={taskAgent}
+          liveModelName={modelName}
+          liveModelId={usage.model.id}
+          /* `||` (not `??`) so an empty-string effort coerces to null and the
+             picker falls through to task/swimlane overrides. The CLI never
+             emits "" today, but matches the original ContextBar semantics. */
+          liveEffort={usage.model.effort || null}
+          mode="live"
+        />
+      ) : (
+        <>
+          <span className={`${pill} text-fg-muted`}>{modelName}</span>
+          {usage.model.effort && (
+            <span className={`${pill} text-fg-faint`}>{usage.model.effort}</span>
+          )}
+        </>
+      )}
       {showRateLimits && latestRateLimits && (() => {
         const rateLimits = latestRateLimits.rateLimits;
         const sourceLabel = sourceAgent ? ` via ${agentDisplayName(sourceAgent)}` : '';
