@@ -26,6 +26,7 @@ import type { IpcContext } from '../ipc-context';
 import { isAbortError } from '../../../shared/abort-utils';
 import { abortBacklogPromotion } from './backlog';
 import { withTaskLock } from '../task-lifecycle-lock';
+import { isShuttingDown } from '../../shutdown-state';
 import { emitSpawnProgress, clearSpawnProgress, createProgressCallback } from '../../engine/spawn-progress';
 import { resolveTargetAgent } from '../../engine/agent-resolver';
 import { agentRegistry } from '../../agent/agent-registry';
@@ -447,6 +448,11 @@ export async function handleTaskMove(
 
     if (!plan) return; // Phase 1 fully handled the move
 
+    // Shutdown started while Phase 1 ran. Skip Phase 2 git work and Phase 3
+    // spawn so we don't write to a closed DB. autoSpawnTasks on next launch
+    // will spawn for the destination column.
+    if (isShuttingDown()) return;
+
     const { task, fromSwimlaneId, originalPosition, toLane, skipPromptTemplate, resolvedProjectId, resolvedProjectPath } = plan;
 
     // === Phase 2 (unlocked, slow) ===
@@ -523,6 +529,10 @@ export async function handleTaskMove(
       // with the renderer's state updates.
       await withTaskLock(input.taskId, async () => {
         try {
+          // Shutdown started while we were waiting for the lock or Phase 2 ran.
+          // The DB may already be closed; skip the spawn entirely. The
+          // try/finally still calls clearSpawnProgress to clean the renderer UI.
+          if (isShuttingDown()) return;
           signal.throwIfAborted();
           const { tasks: tasksPhase3, actions: actionsPhase3, attachments: attachmentsPhase3 } = getProjectRepos(context, resolvedProjectId);
           const current = tasksPhase3.getById(task.id);
@@ -552,6 +562,17 @@ export async function handleTaskMove(
         }
       });
     } catch (error) {
+      // Shutdown closed the DB while a Phase 1 / 2 / 3 await was in flight.
+      // Both the post-await DB write inside Phase 1 (e.g. line 226's
+      // tasks.update after sessionManager.suspend) and the rollback below
+      // would throw against the closed connection. Bail silently - shutdown
+      // is already clearing session_id on running sessions and Phase 1's
+      // earlier sync writes (tasks.move, tasks.archive, markRecordSuspended)
+      // are committed. The IPC wrapper's swallow is a backstop; this guard
+      // also keeps the rollback's "Rollback after move failure failed" log
+      // from firing during shutdown.
+      if (isShuttingDown()) return;
+
       clearSpawnProgress(context.mainWindow, task.id);
       const abort = isAbortError(error);
 
@@ -596,5 +617,16 @@ export async function handleTaskMove(
 }
 
 export function registerTaskMoveHandlers(context: IpcContext): void {
-  ipcMain.handle(IPC.TASK_MOVE, async (_, input) => handleTaskMove(context, input));
+  ipcMain.handle(IPC.TASK_MOVE, async (_, input) => {
+    try {
+      return await handleTaskMove(context, input);
+    } catch (error) {
+      // Shutdown closes the DB synchronously; any handler that crossed an
+      // await boundary will throw "database connection is not open" or an
+      // AbortError when it resumes. Swallow these to keep the shutdown log
+      // clean - the user already quit and Phase 1's DB writes are committed.
+      if (isShuttingDown()) return;
+      throw error;
+    }
+  });
 }
