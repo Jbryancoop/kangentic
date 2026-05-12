@@ -41,6 +41,15 @@ export interface IpcContext {
   currentProjectId: string | null;
   currentProjectPath: string | null;
   /**
+   * Project IDs whose suspended-session recovery (`pruneOrphanedWorktreeTasks`,
+   * `cleanupStaleResourcesAsync`, `resumeSuspendedSessions`, `autoSpawnTasks`)
+   * has already completed in this app lifetime. Warm reopens skip recovery
+   * because the registry-resident PTYs and the on-disk worktree state cannot
+   * drift without going through our own handlers. Cleared per-project on
+   * `cleanupProject` (PROJECT_DELETE); the whole set dies with the process.
+   */
+  recoveredProjects: Set<string>;
+  /**
    * In-process MCP HTTP server handle. Set once at app startup before
    * any project opens; null only during the brief startup window before
    * the server has bound its port.

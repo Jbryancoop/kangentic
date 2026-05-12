@@ -5,9 +5,12 @@ import { DevtoolsBootstrap } from '../devtools/renderer/install';
 import { useProjectStore } from './stores/project-store';
 import { useBoardStore } from './stores/board-store';
 import { useConfigStore } from './stores/config-store';
-import { useSessionStore, cancelSync } from './stores/session-store';
+import { useSessionStore } from './stores/session-store';
 import { useBacklogStore } from './stores/backlog-store';
 import { useToastStore } from './stores/toast-store';
+import { useProjectSwitchEffect } from './hooks/useProjectSwitchEffect';
+import { useAgentDrivenInvalidation } from './hooks/useAgentDrivenInvalidation';
+import { invalidateProject } from './stores/project-cache';
 import { resolveAutoFocusTarget } from './utils/auto-focus';
 import {
   autoNameTimers,
@@ -55,7 +58,6 @@ export function App() {
   const loadProjects = useProjectStore((s) => s.loadProjects);
   const loadCurrent = useProjectStore((s) => s.loadCurrent);
   const currentProject = useProjectStore((s) => s.currentProject);
-  const loadBoard = useBoardStore((s) => s.loadBoard);
   const loadConfig = useConfigStore((s) => s.loadConfig);
   const loadAppVersion = useConfigStore((s) => s.loadAppVersion);
   const detectAgent = useConfigStore((s) => s.detectAgent);
@@ -117,94 +119,15 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (currentProject) {
-      // Fire all loads in parallel. Do NOT reset `hydrated` -- the stores
-      // replace state atomically when each load resolves, so the UI
-      // transitions from the previous project's board straight to the new
-      // one without a blank intermediate frame.
-      void Promise.all([
-        loadBoard(),
-        useBacklogStore.getState().loadBacklog(),
-        loadConfig(), // Re-fetch effective config (global + project overrides)
-      ]);
+  // Owns the warm-switch cache lifecycle. See
+  // hooks/useProjectSwitchEffect.ts and stores/project-cache.ts.
+  useProjectSwitchEffect(currentProject);
 
-      // Invalidate any in-flight syncSessions() calls from the previous project
-      cancelSync();
-
-      // Clear all per-project view state before syncing -- prevents stale data
-      // from the previous project leaking into the new project's terminal/events.
-      // Do NOT clear sessionActivity or sessions -- sidebar badges need cross-project data.
-      // Do NOT clear sessionUsage -- eagerly clearing causes a flash-to-0% on HMR
-      // remount. Stale keys from the old project are harmless (components only
-      // render current-project sessions) and get replaced by syncSessions().
-      // Preserve sessionEvents for stashed transient sessions (they have no DB backup).
-      const currentSessionState = useSessionStore.getState();
-      const stashedTransientSessionIds = new Set(
-        Object.values(currentSessionState.transientSessions)
-          .map((entry) => entry.sessionId),
-      );
-      const preservedEvents: Record<string, SessionEvent[]> = {};
-      for (const [sessionId, events] of Object.entries(currentSessionState.sessionEvents)) {
-        if (stashedTransientSessionIds.has(sessionId)) {
-          preservedEvents[sessionId] = events;
-        }
-      }
-      useSessionStore.setState({
-        activeSessionId: null,
-        dialogSessionId: null,
-        detailTaskId: null,
-        sessionEvents: preservedEvents,
-      });
-
-      useSessionStore.getState().syncSessions().then((applied) => {
-        // If project switched again while syncing, don't mark sessions seen
-        if (!applied) {
-          useSessionStore.getState().setPendingOpenTaskId(null);
-          return;
-        }
-        useSessionStore.getState().markIdleSessionsSeen(currentProject.id);
-
-        // Restore the last user-selected task tab for this project. If the
-        // task no longer has a running session (deleted, moved to Done, etc.),
-        // fall through and let TerminalPanel's auto-select pick a default.
-        const rememberedTaskId =
-          useConfigStore.getState().config.lastActiveTaskByProject?.[currentProject.id];
-        if (rememberedTaskId) {
-          const sessionForTask = useSessionStore.getState()._sessionByTaskId.get(rememberedTaskId);
-          if (
-            sessionForTask
-            && sessionForTask.projectId === currentProject.id
-            && sessionForTask.status === 'running'
-            && !sessionForTask.transient
-          ) {
-            useSessionStore.getState().setActiveSession(sessionForTask.id);
-          }
-        }
-
-        // Restore persisted usage period and fetch stats if not 'live'
-        const savedPeriod = useConfigStore.getState().config.statusBarPeriod;
-        if (savedPeriod && savedPeriod !== useSessionStore.getState().selectedPeriod) {
-          useSessionStore.getState().setSelectedPeriod(savedPeriod);
-        }
-
-        // Open task detail dialog if a notification click set a pending task ID
-        const pendingTaskId = useSessionStore.getState()._pendingOpenTaskId;
-        if (pendingTaskId) {
-          useSessionStore.getState().setPendingOpenTaskId(null);
-          useSessionStore.getState().setDetailTaskId(pendingTaskId);
-        }
-      });
-    } else {
-      useBoardStore.setState({ tasks: [], swimlanes: [], archivedTasks: [] });
-      useSessionStore.setState({
-        activeSessionId: null,
-        dialogSessionId: null,
-        detailTaskId: null,
-      });
-      loadConfig(); // Reset effective config to global defaults (no project overrides)
-    }
-  }, [currentProject]);
+  // Subscribes to agent-driven board/backlog/swimlane/label-color
+  // pushes. Each listener either schedules a debounced reload (current
+  // project) or invalidates the warm-switch cache (background project).
+  // See hooks/useAgentDrivenInvalidation.ts.
+  useAgentDrivenInvalidation();
 
   // Listen for IPC session events.
   // Guard with optional chaining: during Vite HMR full reloads, the preload
@@ -469,110 +392,13 @@ export function App() {
       }));
     }
 
-    // Unified debouncers for agent-driven board/backlog reloads. MCP bulk
-    // operations and external imports emit one event per task/item touched; a
-    // 50-issue GitHub import or a scripted `kangentic_create_task` loop
-    // previously fired one full loadBoard() per event. 250ms coalesces rapid
-    // bursts into a single reload while staying below the user-noticeable
-    // threshold. Toasts are intentionally NOT debounced - they are the live
-    // user feedback.
-    let pendingBoardReload: ReturnType<typeof setTimeout> | null = null;
-    let pendingBacklogReload: ReturnType<typeof setTimeout> | null = null;
-    const scheduleBoardReload = () => {
-      if (pendingBoardReload !== null) clearTimeout(pendingBoardReload);
-      pendingBoardReload = setTimeout(() => {
-        pendingBoardReload = null;
-        useBoardStore.getState().loadBoard();
-      }, 250);
-    };
-    const scheduleBacklogReload = () => {
-      if (pendingBacklogReload !== null) clearTimeout(pendingBacklogReload);
-      pendingBacklogReload = setTimeout(() => {
-        pendingBacklogReload = null;
-        useBacklogStore.getState().loadBacklog();
-      }, 250);
-    };
-    cleanups.push(() => {
-      if (pendingBoardReload !== null) {
-        clearTimeout(pendingBoardReload);
-        pendingBoardReload = null;
-      }
-      if (pendingBacklogReload !== null) {
-        clearTimeout(pendingBacklogReload);
-        pendingBacklogReload = null;
-      }
-    });
+    // Agent-driven board/backlog/swimlane/label-color push handlers
+    // and their debouncers live in `useAgentDrivenInvalidation` so the
+    // current/background-project routing policy stays in one place.
+    // The handlers below (onSpawnProgress, onAutoMoved) are tangled
+    // with session-lifecycle or notification concerns and remain here.
 
     const tasks = window.electronAPI?.tasks;
-    if (tasks?.onCreatedByAgent) {
-      cleanups.push(tasks.onCreatedByAgent((_taskId, taskTitle, columnName, createdByAgentProjectId) => {
-        const activeProjectId = useProjectStore.getState().currentProject?.id;
-        if (!createdByAgentProjectId || createdByAgentProjectId === activeProjectId) {
-          scheduleBoardReload();
-          scheduleBacklogReload();
-        }
-        useToastStore.getState().addToast({
-          message: `Task created by agent: "${taskTitle}" in ${columnName}`,
-          variant: 'success',
-        });
-      }));
-    }
-
-    if (tasks?.onUpdatedByAgent) {
-      cleanups.push(tasks.onUpdatedByAgent((_taskId, taskTitle, updatedByAgentProjectId) => {
-        const activeProjectId = useProjectStore.getState().currentProject?.id;
-        if (!updatedByAgentProjectId || updatedByAgentProjectId === activeProjectId) {
-          scheduleBoardReload();
-        }
-        useToastStore.getState().addToast({
-          message: `Task updated by agent: "${taskTitle}"`,
-          variant: 'info',
-        });
-      }));
-    }
-
-    if (tasks?.onDeletedByAgent) {
-      cleanups.push(tasks.onDeletedByAgent((_taskId, taskTitle, deletedByAgentProjectId) => {
-        const activeProjectId = useProjectStore.getState().currentProject?.id;
-        if (!deletedByAgentProjectId || deletedByAgentProjectId === activeProjectId) {
-          scheduleBoardReload();
-        }
-        useToastStore.getState().addToast({
-          message: `Task deleted by agent: "${taskTitle}"`,
-          variant: 'info',
-        });
-      }));
-    }
-
-    const swimlanes = window.electronAPI?.swimlanes;
-    if (swimlanes?.onUpdatedByAgent) {
-      cleanups.push(swimlanes.onUpdatedByAgent((_swimlaneId, swimlaneName, updatedByAgentProjectId) => {
-        const activeProjectId = useProjectStore.getState().currentProject?.id;
-        if (!updatedByAgentProjectId || updatedByAgentProjectId === activeProjectId) {
-          scheduleBoardReload();
-        }
-        useToastStore.getState().addToast({
-          message: `Column updated by agent: "${swimlaneName}"`,
-          variant: 'info',
-        });
-      }));
-    }
-
-    const backlog = window.electronAPI?.backlog;
-    if (backlog?.onChangedByAgent) {
-      cleanups.push(backlog.onChangedByAgent((changedProjectId) => {
-        const activeProjectId = useProjectStore.getState().currentProject?.id;
-        if (changedProjectId && changedProjectId !== activeProjectId) return;
-        scheduleBacklogReload();
-      }));
-    }
-
-    // Label colors changed by agent (MCP server created labels with colors)
-    if (backlog?.onLabelColorsChanged) {
-      cleanups.push(backlog.onLabelColorsChanged(() => {
-        useConfigStore.getState().loadConfig();
-      }));
-    }
 
     // Spawn progress (worktree creation, branch checkout phases)
     if (tasks?.onSpawnProgress) {
@@ -584,7 +410,16 @@ export function App() {
     // Task auto-moved (plan exit → next column)
     if (tasks?.onAutoMoved) {
       cleanups.push(tasks.onAutoMoved((autoMovedTaskId, _targetSwimlaneId, taskTitle, autoMoveProjectId) => {
-        scheduleBoardReload();
+        const activeProjectId = useProjectStore.getState().currentProject?.id;
+        if (autoMoveProjectId && autoMoveProjectId !== activeProjectId) {
+          // Background project: drop the cache so the next warm switch
+          // refetches rather than restoring the pre-move column.
+          invalidateProject(autoMoveProjectId);
+        } else {
+          // Current project: a single auto-move event (one task per plan
+          // completion) does not need debouncing; load directly.
+          useBoardStore.getState().loadBoard();
+        }
 
         const notifyConfig = useConfigStore.getState().config.notifications;
         if (notifyConfig.toasts.onPlanComplete) {

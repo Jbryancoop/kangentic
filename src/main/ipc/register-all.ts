@@ -111,6 +111,7 @@ export function registerAllIpc(mainWindow: BrowserWindow, mcpServerHandle: McpHt
     terminalSubmit,
     currentProjectId: null,
     currentProjectPath: null,
+    recoveredProjects: new Set<string>(),
     mcpServerHandle,
   };
 

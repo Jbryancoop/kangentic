@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { Project, ProjectCreateInput, ProjectGroup, ProjectGroupCreateInput } from '../../shared/types';
 import { useSessionStore } from './session-store';
 import { useConfigStore } from './config-store';
+import { dropProject as dropProjectCache } from './project-cache';
 
 // Hydration gate: tracks whether both loadProjects() and loadCurrent() have
 // resolved at least once. Module-scoped so they don't pollute the store
@@ -74,6 +75,11 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       }));
       window.electronAPI.config.set({ lastActiveTaskByProject: remaining });
     }
+    // Drop the warm-switch cache entry. Mirrors the main-side
+    // `recoveredProjects.delete(id)` in cleanupProject so a future project
+    // sharing the same id (extremely unlikely, but possible after a manual
+    // re-add) starts cold.
+    dropProjectCache(id);
   },
 
   openProject: async (id) => {

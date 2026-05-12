@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { AppConfig, DeepPartial, AgentDetectionInfo } from '../../shared/types';
 import { DEFAULT_CONFIG } from '../../shared/types';
 import { deepMergeConfig } from '../../shared/object-utils';
+import { invalidateAllProjects } from './project-cache';
 
 /** Extract the version number from the raw string (e.g. "2.1.50 (Claude Code)" -> "2.1.50"). */
 function parseAgentVersion(version: string | null): string | null {
@@ -83,6 +84,11 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
     await window.electronAPI.config.set(partial);
     const configs = await refreshConfigs();
     set(configs);
+    // Global settings can change every project's effective config, so
+    // any cached warm-switch snapshot is now stale. The active project's
+    // live config was just updated above; cached non-current projects
+    // need to be invalidated so a future switch refetches.
+    invalidateAllProjects();
     // Re-detect agents when CLI path settings change so the UI
     // updates immediately instead of requiring an app restart.
     if (partial.agent) {

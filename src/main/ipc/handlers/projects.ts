@@ -106,6 +106,7 @@ export async function cleanupProject(context: IpcContext, projectId: string, pro
       context.currentProjectId = null;
       context.currentProjectPath = null;
     }
+    context.recoveredProjects.delete(projectId);
     return;
   }
 
@@ -227,6 +228,7 @@ export async function cleanupProject(context: IpcContext, projectId: string, pro
     context.currentProjectId = null;
     context.currentProjectPath = null;
   }
+  context.recoveredProjects.delete(projectId);
 
   console.log(`[PROJECT_DELETE] Cleaned up project at ${projectPath}`);
 }
@@ -326,8 +328,11 @@ export async function openProjectByPath(context: IpcContext, projectPath: string
     context.configManager.saveProjectOverrides(normalized, defaults);
   }
 
-  // Skip full recovery if re-opening the same project
-  const isReopen = context.currentProjectId === project.id;
+  // Skip full recovery on warm reopens: any project we've already recovered
+  // this process lifetime has live PTYs in the registry and DB rows that
+  // cannot drift without going through our handlers. App restart clears
+  // the set (new IpcContext); PROJECT_DELETE clears the project's entry.
+  const isWarmReopen = context.recoveredProjects.has(project.id);
 
   // Open the project
   context.currentProjectId = project.id;
@@ -358,7 +363,7 @@ export async function openProjectByPath(context: IpcContext, projectPath: string
   // Enable transcript capture for cross-agent handoffs
   context.sessionManager.setTranscriptRepository(new TranscriptRepository(getProjectDb(project.id)));
 
-  if (!isReopen) {
+  if (!isWarmReopen) {
     const db = getProjectDb(project.id);
     const taskRepo = new TaskRepository(db);
     const sessionRepo = new SessionRepository(db);
@@ -377,6 +382,8 @@ export async function openProjectByPath(context: IpcContext, projectPath: string
       .catch((err) => console.error('[PROJECT_OPEN] Session recovery failed:', err))
       .then(() => autoSpawnTasks(project.id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle))
       .catch((err) => console.error('[PROJECT_OPEN] Session reconciliation failed:', err));
+
+    context.recoveredProjects.add(project.id);
   }
 
   return project;
@@ -418,6 +425,7 @@ export async function activateAllProjects(context: IpcContext): Promise<void> {
 
       await resumeSuspendedSessions(project.id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle);
       await autoSpawnTasks(project.id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle);
+      context.recoveredProjects.add(project.id);
     }),
   );
 
@@ -458,9 +466,11 @@ export function registerProjectHandlers(context: IpcContext): void {
     const project = context.projectRepo.getById(id);
     if (!project) throw new Error(`Project ${id} not found`);
 
-    // Skip full recovery if re-opening the same project (e.g. Vite hot-reload
-    // causes the renderer to re-mount and call PROJECT_OPEN again).
-    const isReopen = context.currentProjectId === id;
+    // Skip full recovery on warm reopens: any project we've already recovered
+    // this process lifetime has live PTYs in the registry and DB rows that
+    // cannot drift without going through our handlers. App restart clears
+    // the set (new IpcContext); PROJECT_DELETE clears the project's entry.
+    const isWarmReopen = context.recoveredProjects.has(id);
 
     context.currentProjectId = id;
     context.currentProjectPath = project.path;
@@ -496,7 +506,7 @@ export function registerProjectHandlers(context: IpcContext): void {
     // Apply project config overrides (always -- config may have changed)
     applyRuntimeConfig(context.sessionManager, context.configManager, project.path);
 
-    if (!isReopen) {
+    if (!isWarmReopen) {
       const db = getProjectDb(id);
       const taskRepo = new TaskRepository(db);
       const sessionRepo = new SessionRepository(db);
@@ -513,6 +523,8 @@ export function registerProjectHandlers(context: IpcContext): void {
         .catch((err) => console.error('[PROJECT_OPEN] Session recovery failed:', err))
         .then(() => autoSpawnTasks(id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle))
         .catch((err) => console.error('[PROJECT_OPEN] Session reconciliation failed:', err));
+
+      context.recoveredProjects.add(id);
     }
   });
 

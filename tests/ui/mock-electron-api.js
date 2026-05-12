@@ -404,8 +404,31 @@
         var idx = projects.findIndex(function (p) { return p.id === projectId; });
         if (idx >= 0) projects[idx].group_id = groupId;
       },
-      onAutoOpened: function () {
-        return noop;
+      onAutoOpened: function (callback) {
+        // Tests can fire the programmatic auto-open path via
+        // `window.__mockFireProjectAutoOpened(projectId)`. Useful for
+        // exercising the project-switch effect without going through
+        // the sidebar (which a modal dialog backdrop would intercept).
+        if (!window.__mockProjectAutoOpenListeners) {
+          window.__mockProjectAutoOpenListeners = [];
+        }
+        window.__mockProjectAutoOpenListeners.push(callback);
+        if (!window.__mockFireProjectAutoOpened) {
+          window.__mockFireProjectAutoOpened = function (projectId) {
+            var project = projects.find(function (p) { return p.id === projectId; });
+            if (!project) return;
+            // Mirror PROJECT_OPEN's main-side bookkeeping so the
+            // renderer sees the new currentProject after onAutoOpened.
+            currentProjectId = projectId;
+            var listeners = (window.__mockProjectAutoOpenListeners || []).slice();
+            listeners.forEach(function (fn) { fn(project); });
+          };
+        }
+        return function () {
+          var listeners = window.__mockProjectAutoOpenListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
     },
 
@@ -641,14 +664,53 @@
       onAutoMoved: function () {
         return noop;
       },
-      onCreatedByAgent: function () {
-        return noop;
+      onCreatedByAgent: function (callback) {
+        // Tests can fire this via window.__mockFireTaskCreatedByAgent(taskId, title, column, projectId).
+        if (!window.__mockTaskCreatedListeners) window.__mockTaskCreatedListeners = [];
+        window.__mockTaskCreatedListeners.push(callback);
+        if (!window.__mockFireTaskCreatedByAgent) {
+          window.__mockFireTaskCreatedByAgent = function (taskId, taskTitle, columnName, projectId) {
+            var listeners = (window.__mockTaskCreatedListeners || []).slice();
+            for (var i = 0; i < listeners.length; i++) { listeners[i](taskId, taskTitle, columnName, projectId); }
+          };
+        }
+        return function () {
+          var listeners = window.__mockTaskCreatedListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
-      onUpdatedByAgent: function () {
-        return noop;
+      onUpdatedByAgent: function (callback) {
+        // Tests can fire this via window.__mockFireTaskUpdatedByAgent(taskId, title, projectId).
+        if (!window.__mockTaskUpdatedListeners) window.__mockTaskUpdatedListeners = [];
+        window.__mockTaskUpdatedListeners.push(callback);
+        if (!window.__mockFireTaskUpdatedByAgent) {
+          window.__mockFireTaskUpdatedByAgent = function (taskId, taskTitle, projectId) {
+            var listeners = (window.__mockTaskUpdatedListeners || []).slice();
+            for (var i = 0; i < listeners.length; i++) { listeners[i](taskId, taskTitle, projectId); }
+          };
+        }
+        return function () {
+          var listeners = window.__mockTaskUpdatedListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
-      onDeletedByAgent: function () {
-        return noop;
+      onDeletedByAgent: function (callback) {
+        // Tests can fire this via window.__mockFireTaskDeletedByAgent(taskId, title, projectId).
+        if (!window.__mockTaskDeletedListeners) window.__mockTaskDeletedListeners = [];
+        window.__mockTaskDeletedListeners.push(callback);
+        if (!window.__mockFireTaskDeletedByAgent) {
+          window.__mockFireTaskDeletedByAgent = function (taskId, taskTitle, projectId) {
+            var listeners = (window.__mockTaskDeletedListeners || []).slice();
+            for (var i = 0; i < listeners.length; i++) { listeners[i](taskId, taskTitle, projectId); }
+          };
+        }
+        return function () {
+          var listeners = window.__mockTaskDeletedListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
       onSpawnProgress: function () {
         return noop;
@@ -880,8 +942,21 @@
           if (idx >= 0) swimlanes[idx].position = i;
         });
       },
-      onUpdatedByAgent: function () {
-        return function () { };
+      onUpdatedByAgent: function (callback) {
+        // Tests can fire this via window.__mockFireSwimlaneUpdatedByAgent(swimlaneId, name, projectId).
+        if (!window.__mockSwimlaneUpdatedListeners) window.__mockSwimlaneUpdatedListeners = [];
+        window.__mockSwimlaneUpdatedListeners.push(callback);
+        if (!window.__mockFireSwimlaneUpdatedByAgent) {
+          window.__mockFireSwimlaneUpdatedByAgent = function (swimlaneId, swimlaneName, projectId) {
+            var listeners = (window.__mockSwimlaneUpdatedListeners || []).slice();
+            for (var i = 0; i < listeners.length; i++) { listeners[i](swimlaneId, swimlaneName, projectId); }
+          };
+        }
+        return function () {
+          var listeners = window.__mockSwimlaneUpdatedListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
     },
 
@@ -1561,8 +1636,21 @@
           if (listenerIndex >= 0) listeners.splice(listenerIndex, 1);
         };
       },
-      onLabelColorsChanged: function () {
-        return noop;
+      onLabelColorsChanged: function (callback) {
+        // Tests can fire this via window.__mockFireLabelColorsChanged().
+        if (!window.__mockLabelColorsChangedListeners) window.__mockLabelColorsChangedListeners = [];
+        window.__mockLabelColorsChangedListeners.push(callback);
+        if (!window.__mockFireLabelColorsChanged) {
+          window.__mockFireLabelColorsChanged = function () {
+            var listeners = (window.__mockLabelColorsChangedListeners || []).slice();
+            for (var i = 0; i < listeners.length; i++) { listeners[i](); }
+          };
+        }
+        return function () {
+          var listeners = window.__mockLabelColorsChangedListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
       importCheckCli: async function (/* source */) {
         return { available: true, authenticated: true };
@@ -1793,4 +1881,53 @@
       searchHits = result.searchHits;
     }
   };
+
+  /**
+   * IPC call counter. Wraps the channels that warm-switch assertions care
+   * about: anything fetched by App.tsx's project-switch effect or by
+   * session-store.syncSessions. Tests reset and read via
+   * `window.__resetIpcCallCounts()` / `window.__getIpcCallCounts()`.
+   *
+   * Intentionally narrow scope: only the channels we want to assert "zero
+   * traffic on warm switch" against. Wrapping every channel would create
+   * incidental coupling between unrelated tests and the counter.
+   */
+  (function installIpcCounter() {
+    var counts = {};
+    window.__getIpcCallCounts = function () {
+      return Object.assign({}, counts);
+    };
+    window.__resetIpcCallCounts = function () {
+      for (var key in counts) {
+        if (counts.hasOwnProperty(key)) delete counts[key];
+      }
+    };
+
+    var watched = [
+      ['tasks', 'list'],
+      ['tasks', 'listArchived'],
+      ['swimlanes', 'list'],
+      ['backlog', 'list'],
+      ['config', 'get'],
+      ['config', 'getGlobal'],
+      ['sessions', 'list'],
+      ['sessions', 'getUsage'],
+      ['sessions', 'getActivity'],
+      ['sessions', 'getActivityReasons'],
+      ['sessions', 'getEventsCache'],
+    ];
+    watched.forEach(function (pair) {
+      var namespace = pair[0];
+      var method = pair[1];
+      var ns = window.electronAPI[namespace];
+      if (!ns) return;
+      var original = ns[method];
+      if (typeof original !== 'function') return;
+      ns[method] = function () {
+        var label = namespace + '.' + method;
+        counts[label] = (counts[label] || 0) + 1;
+        return original.apply(ns, arguments);
+      };
+    });
+  })();
 })();
