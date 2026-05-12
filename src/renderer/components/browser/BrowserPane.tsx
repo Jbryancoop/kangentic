@@ -375,9 +375,6 @@ function BrowserPaneActive({
           if (!previous) cancelInspect();
           return !previous;
         });
-      } else if (event.key === 'Enter') {
-        event.preventDefault();
-        if (!sending) void handleSend();
       } else if (!inFormField && (event.key === '=' || event.key === '+' || event.key === '-' || event.key === '0')) {
         // Zoom shortcuts only fire when the browser pane is active: mouse
         // over it OR something inside it has focus. Without this gate,
@@ -394,7 +391,7 @@ function BrowserPaneActive({
     };
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [cancelInspect, handleSend, inspectActive, resetZoom, sending, startInspect, zoomIn, zoomOut]);
+  }, [cancelInspect, inspectActive, resetZoom, startInspect, zoomIn, zoomOut]);
 
   return (
     <div
@@ -619,10 +616,9 @@ function BrowserPaneActive({
           value={note}
           onChange={(event) => setNote(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey && !sending) {
-              event.preventDefault();
-              handleSend();
-            }
+            if (event.key !== 'Enter' || event.shiftKey || sending) return;
+            event.preventDefault();
+            handleSend();
           }}
           placeholder={notePlaceholder(strokes.length, pickedElement ? 1 : 0)}
           className="flex-1 ml-2 bg-surface-input text-fg text-xs px-2 py-1 rounded border border-edge-input focus:outline-none focus:border-accent min-w-0"

@@ -3,7 +3,6 @@
  *
  * BrowserPane registers a CAPTURE-phase document-level keydown listener that
  * handles:
- *   Ctrl+Enter / Meta+Enter  -- Send
  *   Ctrl+D / Meta+D          -- Toggle draw mode
  *   Ctrl+I / Meta+I          -- Start inspect
  *   Esc (while inspect active) -- Cancel inspect WITHOUT closing the dialog
@@ -21,13 +20,14 @@
  *     cannot be tested in the UI tier.
  *   - Ctrl+I calls startInspect() -> webviewRef.current?.executeJavaScript(INSPECT_SCRIPT).
  *     Same crash. Inspect shortcuts cannot be tested in the UI tier.
- *   - Ctrl+Enter calls handleSend() which checks canvasRef.current before
- *     doing anything (null guard). In headless canvasRef is the real canvas
- *     element, but canvasRef.current?.getBoundingClientRect() is called
- *     indirectly via compositeCapture. handleSend checks both webviewRef and
- *     canvasRef at the top: `if (!webview || !overlay) return;`. In headless
- *     both refs are real DOM elements so this guard does NOT short-circuit,
- *     and the function proceeds to call webview.executeJavaScript() -> crash.
+ *   - Ctrl+Enter (plain Enter with ctrlKey) handling moved in the PR that
+ *     introduced this spec: the shortcut is now handled by the note <input>'s
+ *     own onKeyDown, NOT by the document-level listener. A document-level
+ *     Ctrl+Enter dispatch (from outside the note input) is therefore a no-op.
+ *     The in-input path calls handleSend() -> webview.executeJavaScript() ->
+ *     crash in headless. Enter+Shift is a new guard (the onKeyDown bails on
+ *     event.shiftKey) that can be tested here because the guard fires BEFORE
+ *     the webview call.
  *
  * What IS testable in the UI tier:
  *   - Ctrl+D in a form field (URL input) is a no-op -> draw mode stays off.
@@ -39,6 +39,13 @@
  *   - Esc at document level when inspect is NOT active does not close the dialog.
  *     We dispatch Esc while the pane has non-inspect focus and assert the dialog
  *     stays open. This validates the guard without needing a real inspect mode.
+ *   - Ctrl+Enter from outside the note input (document dispatch) is a no-op.
+ *     The send shortcut now lives in the input's own onKeyDown, so a document-
+ *     level Ctrl+Enter never reaches handleSend. Pane stays mounted (no crash).
+ *   - Shift+Enter inside the note input is a no-op -> send NOT triggered.
+ *     The input onKeyDown bails immediately when event.shiftKey is true (new
+ *     guard introduced alongside the Ctrl+Enter -> plain Enter unification).
+ *     Testable here because the guard fires before the webview call.
  *
  * Draw mode and inspect mode shortcut tests (the affirmative paths) belong in
  * tests/e2e/ where a real Electron webview provides executeJavaScript.
@@ -175,6 +182,70 @@ test.describe('BrowserPaneActive keyboard shortcuts - form-field guards', () => 
       // the component would crash -- an implicit crash assertion.
       await expect(drawButton).not.toHaveClass(/bg-accent/);
       await expect(page.locator('[data-testid="browser-pane"]')).toBeVisible();
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('Ctrl+Enter outside the note input does NOT trigger send', async () => {
+    // Regression: previously the document-level capture-phase listener fired
+    // handleSend() on Ctrl+Enter from anywhere, hijacking the terminal's newline
+    // shortcut. The send shortcut is now scoped to the note input's own
+    // onKeyDown, so dispatching Ctrl+Enter at document level (i.e. from outside
+    // the note input) must be a no-op. If handleSend ran, webview.executeJavaScript
+    // would throw in headless and the ErrorBoundary would tear down the pane.
+    // We assert the pane stays mounted to confirm send was NOT triggered.
+    const { browser, page } = await launchBrowserShortcuts();
+    try {
+      await openBrowserPane(page);
+
+      // Move focus away from the note input by clicking the URL bar.
+      await page.locator('[data-testid="browser-url-input"]').click();
+
+      // Dispatch Ctrl+Enter at document level (bypasses xterm capture).
+      await page.evaluate(() => {
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Enter',
+            ctrlKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+
+      // Pane stays mounted (handleSend was NOT called -> no executeJavaScript crash).
+      await expect(page.locator('[data-testid="browser-pane"]')).toBeVisible();
+      await expect(page.locator('[data-testid="task-detail-dialog"]')).toBeVisible();
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('Shift+Enter in the note input does NOT trigger send', async () => {
+    // The note input onKeyDown bails when event.shiftKey is true:
+    //   if (event.key !== 'Enter' || event.shiftKey || sending) return;
+    // This guard preserves Shift+Enter as a literal newline shortcut and
+    // prevents the browser send path from firing. If the guard had NOT fired,
+    // handleSend() would call webview.executeJavaScript() -> crash in headless.
+    // We assert the pane stays mounted as an implicit no-crash assertion.
+    const { browser, page } = await launchBrowserShortcuts();
+    try {
+      await openBrowserPane(page);
+
+      const noteInput = page.locator('[data-testid="browser-note-input"]');
+
+      // Type something so the note is non-empty (send guard also checks sending
+      // state, but the shiftKey guard fires before the webview call regardless).
+      await noteInput.fill('test note');
+
+      // Focus the note input, then press Shift+Enter.
+      await noteInput.click();
+      await page.keyboard.press('Shift+Enter');
+
+      // Dialog and pane must still be visible (handleSend was NOT called).
+      await expect(page.locator('[data-testid="browser-pane"]')).toBeVisible();
+      await expect(page.locator('[data-testid="task-detail-dialog"]')).toBeVisible();
     } finally {
       await browser.close();
     }
