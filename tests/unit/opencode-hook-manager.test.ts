@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execSync } from 'node:child_process';
 import { buildHooks, removeHooks } from '../../src/main/agent/adapters/opencode';
 
 let projectDir: string;
@@ -128,6 +129,116 @@ describe('opencode-hook-manager', () => {
 
     it('handles missing project gracefully', () => {
       expect(() => removeHooks(projectDir)).not.toThrow();
+    });
+  });
+
+  describe('buildHooks gitignore behavior', () => {
+    const PLUGIN_GITIGNORE_ENTRY = '.opencode/plugins/kangentic-activity.mjs';
+
+    function gitignorePath(): string {
+      return path.join(projectDir, '.gitignore');
+    }
+
+    function readGitignore(): string {
+      return fs.readFileSync(gitignorePath(), 'utf-8');
+    }
+
+    function initGitRepo(): void {
+      execSync(`git -C "${projectDir}" init -b main`, {
+        stdio: 'ignore',
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'Test',
+          GIT_AUTHOR_EMAIL: 'test@example.com',
+          GIT_COMMITTER_NAME: 'Test',
+          GIT_COMMITTER_EMAIL: 'test@example.com',
+        },
+      });
+    }
+
+    it('adds the plugin entry to .gitignore after a successful install', () => {
+      initGitRepo();
+      buildHooks(projectDir);
+
+      expect(fs.existsSync(gitignorePath())).toBe(true);
+      expect(readGitignore()).toContain(PLUGIN_GITIGNORE_ENTRY);
+    });
+
+    it('is idempotent on repeated calls (no duplicate entry)', () => {
+      initGitRepo();
+      buildHooks(projectDir);
+      buildHooks(projectDir);
+      buildHooks(projectDir);
+
+      const occurrences = readGitignore()
+        .split('\n')
+        .filter((line) => line.trim() === PLUGIN_GITIGNORE_ENTRY);
+      expect(occurrences).toHaveLength(1);
+    });
+
+    it('does not touch .gitignore when the directory is not a git repo', () => {
+      // projectDir has no .git directory.
+      buildHooks(projectDir);
+
+      // The plugin must still install...
+      expect(fs.existsSync(path.join(projectDir, '.opencode', 'plugins', 'kangentic-activity.mjs'))).toBe(true);
+      // ...but no .gitignore must be created.
+      expect(fs.existsSync(gitignorePath())).toBe(false);
+    });
+
+    it('preserves pre-existing user content in .gitignore', () => {
+      initGitRepo();
+      const userContent = 'node_modules/\ndist/\n*.log\n';
+      fs.writeFileSync(gitignorePath(), userContent);
+
+      buildHooks(projectDir);
+
+      const content = readGitignore();
+      expect(content).toContain('node_modules/');
+      expect(content).toContain('dist/');
+      expect(content).toContain('*.log');
+      expect(content).toContain(PLUGIN_GITIGNORE_ENTRY);
+    });
+
+    it('does not duplicate the entry if it is already present without a trailing newline', () => {
+      initGitRepo();
+      // No trailing newline - the helper must still detect the existing line.
+      fs.writeFileSync(gitignorePath(), `node_modules/\n${PLUGIN_GITIGNORE_ENTRY}`);
+
+      buildHooks(projectDir);
+
+      const occurrences = readGitignore()
+        .split('\n')
+        .filter((line) => line.trim() === PLUGIN_GITIGNORE_ENTRY);
+      expect(occurrences).toHaveLength(1);
+    });
+
+    it('does not write a .gitignore entry when copyFileSync fails', () => {
+      // This test protects the ordering invariant that is the heart of the
+      // "stop appending opencode" fix: ensurePluginGitignored is only called
+      // when fs.existsSync(destinationFile) is true AFTER the copy attempt.
+      // If the copy fails the file does not exist, existsSync returns false,
+      // and the gitignore entry must never be written - otherwise we would
+      // add an entry pointing to a non-existent file.
+      initGitRepo();
+
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const copyFileSpy = vi.spyOn(fs, 'copyFileSync').mockImplementationOnce(() => {
+        throw new Error('EACCES: permission denied, open ...');
+      });
+
+      buildHooks(projectDir);
+
+      // Assert before restoring spies: mockRestore() resets call history.
+      // The plugin file must not exist because the copy threw.
+      expect(fs.existsSync(pluginPath())).toBe(false);
+      // The gitignore entry must not have been written.
+      expect(fs.existsSync(gitignorePath())).toBe(false);
+      // The copy failure must have been logged via console.error.
+      expect(errorSpy).toHaveBeenCalledOnce();
+
+      copyFileSpy.mockRestore();
+      errorSpy.mockRestore();
     });
   });
 });

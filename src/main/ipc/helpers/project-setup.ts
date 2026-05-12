@@ -55,20 +55,10 @@ export function ensureGitignore(projectPath: string): void {
       fs.writeFileSync(gitignorePath, content);
     }
 
-    // 4. Ensure the OpenCode activity plugin is ignored. OpenCode auto-loads
-    //    plugins from `.opencode/plugins/`, which is a directory users may
-    //    legitimately commit (for their own plugins). The kangentic-authored
-    //    file is generated per-session and removed on cleanup, but a crash
-    //    or hard kill can leave it behind. Pin the exact filename so user
-    //    plugins in the same directory remain commitable.
-    const linesAfterPlugin = content.split('\n');
-    const pluginIgnored = linesAfterPlugin.some(
-      (l) => l.trim() === '.opencode/plugins/kangentic-activity.mjs',
-    );
-    if (!pluginIgnored) {
-      const separator = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
-      fs.writeFileSync(gitignorePath, content + separator + '.opencode/plugins/kangentic-activity.mjs\n');
-    }
+    // Note: the OpenCode activity plugin (`.opencode/plugins/kangentic-activity.mjs`)
+    // is NOT ignored here. That entry is added lazily by the OpenCode adapter's
+    // buildHooks() at spawn time, so projects that never use OpenCode never get
+    // a stray ignore line.
   } catch (err) {
     // Non-fatal: log and continue. Project may be read-only or on a network drive.
     console.warn(`[PROJECT_OPEN] Could not update .gitignore at ${projectPath}:`, err);

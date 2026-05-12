@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EventType } from '../../../../shared/types';
 import { resolvePluginScript } from '../../shared/bridge-utils';
+import { isGitRepo } from '../../../git/git-checks';
 
 /**
  * OpenCode plugin events mapped to event-bridge event types. Documented
@@ -33,6 +34,7 @@ export const OPENCODE_HOOK_EVENTS: Array<{
 
 const PLUGIN_FILENAME = 'kangentic-activity.mjs';
 const PLUGIN_SENTINEL = '// kangentic-activity';
+const PLUGIN_GITIGNORE_ENTRY = '.opencode/plugins/kangentic-activity.mjs';
 
 /** Directory under a project root where OpenCode auto-loads plugins. */
 function pluginsDir(projectRoot: string): string {
@@ -41,6 +43,37 @@ function pluginsDir(projectRoot: string): string {
 
 function pluginPath(projectRoot: string): string {
   return path.join(pluginsDir(projectRoot), PLUGIN_FILENAME);
+}
+
+/**
+ * Add `.opencode/plugins/kangentic-activity.mjs` to the project's
+ * `.gitignore` so the auto-installed plugin file is not committed by
+ * mistake. Only runs when the project is a git repo - in non-git
+ * directories there is nothing to ignore. Idempotent: skips the write
+ * if the entry is already present. Wrapped in try/catch so a read-only
+ * directory cannot break the spawn path.
+ */
+function ensurePluginGitignored(projectRoot: string): void {
+  if (!isGitRepo(projectRoot)) return;
+  try {
+    const gitignorePath = path.join(projectRoot, '.gitignore');
+    let content = '';
+    try {
+      content = fs.readFileSync(gitignorePath, 'utf-8');
+    } catch {
+      // No .gitignore yet - we'll create one.
+    }
+
+    const alreadyIgnored = content
+      .split('\n')
+      .some((line) => line.trim() === PLUGIN_GITIGNORE_ENTRY);
+    if (alreadyIgnored) return;
+
+    const separator = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
+    fs.writeFileSync(gitignorePath, content + separator + PLUGIN_GITIGNORE_ENTRY + '\n');
+  } catch (error) {
+    console.warn(`[opencode-hooks] Could not update .gitignore at ${projectRoot}:`, error);
+  }
 }
 
 /**
@@ -91,6 +124,14 @@ export function buildHooks(projectRoot: string): void {
     } catch (error) {
       console.error(`[opencode-hooks] Failed to copy plugin to ${destinationFile}:`, error);
     }
+  }
+
+  // Only ignore the plugin file once it actually exists at the destination.
+  // This covers both "we just copied it" and "it was already there from a
+  // previous spawn", and skips cleanly when the copy/mkdir failed - so the
+  // gitignore entry is never written ahead of the file it ignores.
+  if (fs.existsSync(destinationFile)) {
+    ensurePluginGitignored(projectRoot);
   }
 }
 

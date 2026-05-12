@@ -1,14 +1,16 @@
 /**
  * Unit tests for ensureGitignore() in src/main/ipc/helpers/project-setup.ts.
  *
- * This branch added the fourth gitignore entry:
- *   .opencode/plugins/kangentic-activity.mjs
- *
- * All four entries are tested:
+ * The generic project-open helper adds three universal Kangentic entries:
  *   1. .kangentic/
  *   2. .claude/settings.local.json
  *   3. kangentic.local.json
- *   4. .opencode/plugins/kangentic-activity.mjs
+ *
+ * The OpenCode activity plugin entry (.opencode/plugins/kangentic-activity.mjs)
+ * is intentionally NOT written here - it is added lazily by the OpenCode
+ * adapter's buildHooks() at spawn time, so projects that never use OpenCode
+ * never receive a stray ignore line. See opencode-hook-manager.test.ts for
+ * that behavior.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -59,8 +61,9 @@ const EXPECTED_ENTRIES = [
   '.kangentic/',
   '.claude/settings.local.json',
   'kangentic.local.json',
-  '.opencode/plugins/kangentic-activity.mjs',
 ];
+
+const OPENCODE_PLUGIN_ENTRY = '.opencode/plugins/kangentic-activity.mjs';
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
@@ -72,7 +75,7 @@ describe('ensureGitignore', () => {
       git('init -b main');
     });
 
-    it('creates a .gitignore containing all four expected entries', () => {
+    it('creates a .gitignore containing all three expected entries', () => {
       ensureGitignore(tempDir);
 
       expect(fs.existsSync(gitignorePath())).toBe(true);
@@ -97,9 +100,17 @@ describe('ensureGitignore', () => {
       expect(readGitignore()).toContain('kangentic.local.json');
     });
 
-    it('contains .opencode/plugins/kangentic-activity.mjs entry (OpenCode branch addition)', () => {
+    it('does NOT add the OpenCode plugin entry (added lazily by buildHooks instead)', () => {
+      // Regression guard for the unconditional-append bug: projects that
+      // never use OpenCode must not get a stray .opencode/plugins/... line
+      // in their .gitignore on every project open.
       ensureGitignore(tempDir);
-      expect(readGitignore()).toContain('.opencode/plugins/kangentic-activity.mjs');
+
+      const content = readGitignore();
+      const occurrences = content
+        .split('\n')
+        .filter((line) => line.trim() === OPENCODE_PLUGIN_ENTRY);
+      expect(occurrences).toHaveLength(0);
     });
 
     describe('idempotence', () => {
@@ -154,10 +165,9 @@ describe('ensureGitignore', () => {
         ensureGitignore(tempDir);
 
         const content = readGitignore();
-        // Should still contain the other three entries.
+        // Should still contain the other two entries.
         expect(content).toContain('.claude/settings.local.json');
         expect(content).toContain('kangentic.local.json');
-        expect(content).toContain('.opencode/plugins/kangentic-activity.mjs');
         // Must not have added a duplicate .kangentic/ line.
         const kangenticLines = content.split('\n').filter(
           (line) => line.trim() === '.kangentic' || line.trim() === '.kangentic/',
@@ -166,13 +176,12 @@ describe('ensureGitignore', () => {
       });
 
       it('does not duplicate entries that already exist in the user .gitignore', () => {
-        // Pre-seed all four entries plus a user line.
+        // Pre-seed all three entries plus a user line.
         const preSeeded = [
           '# my project',
           '.kangentic/',
           '.claude/settings.local.json',
           'kangentic.local.json',
-          '.opencode/plugins/kangentic-activity.mjs',
           '',
         ].join('\n');
         fs.writeFileSync(gitignorePath(), preSeeded);
