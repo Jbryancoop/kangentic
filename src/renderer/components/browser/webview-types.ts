@@ -22,6 +22,8 @@ export interface WebviewElement extends HTMLElement {
   isLoading(): boolean;
   capturePage(rect?: { x: number; y: number; width: number; height: number }): Promise<NativeImageLike>;
   executeJavaScript<T = unknown>(code: string, userGesture?: boolean): Promise<T>;
+  setZoomFactor(factor: number): void;
+  getZoomFactor(): number;
 }
 
 type WebviewProps = DetailedHTMLProps<HTMLAttributes<HTMLElement>, HTMLElement> & {

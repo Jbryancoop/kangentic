@@ -1808,6 +1808,10 @@
       // mock just resolves so the renderer can exercise the success/error
       // toast paths via test-time monkeypatching.
       clearStorage: function () { return Promise.resolve(); },
+      // Ctrl+wheel zoom is applied in the main process and broadcast back.
+      // The UI tier has no main process, so the mock just registers the
+      // callback and returns a no-op unsubscribe.
+      onZoomChanged: function (_callback) { return function () { /* no-op */ }; },
     },
 
     // Platform string. Defaults to 'win32' (matches the most common dev

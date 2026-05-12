@@ -259,3 +259,151 @@ test.describe('BrowserPaneActive keyboard shortcuts - URL input Enter', () => {
     }
   });
 });
+
+test.describe('BrowserPaneActive zoom controls', () => {
+  test('toolbar buttons step zoom and the % button resets to 100%', async () => {
+    // applyZoom uses `if (typeof webview.setZoomFactor === 'function')` so the
+    // missing method on the headless HTMLElement does not crash -- the React
+    // state still updates and the toolbar % reflects it.
+    const { browser, page } = await launchBrowserShortcuts();
+    try {
+      await openBrowserPane(page);
+
+      const zoomReset = page.locator('[data-testid="browser-zoom-reset"]');
+      const zoomIn = page.locator('[data-testid="browser-zoom-in"]');
+      const zoomOut = page.locator('[data-testid="browser-zoom-out"]');
+
+      // Initial state: 100%.
+      await expect(zoomReset).toHaveText('100%');
+
+      // Step up once -> 110% (next rung on the Chrome ladder).
+      await zoomIn.click();
+      await expect(zoomReset).toHaveText('110%');
+
+      // Step up again -> 125%.
+      await zoomIn.click();
+      await expect(zoomReset).toHaveText('125%');
+
+      // Reset via the % button.
+      await zoomReset.click();
+      await expect(zoomReset).toHaveText('100%');
+
+      // Step down -> 90%.
+      await zoomOut.click();
+      await expect(zoomReset).toHaveText('90%');
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('Ctrl+= and Ctrl+0 work when focus is inside the pane', async () => {
+    // The keydown handler gates zoom shortcuts on hovered OR focus-within.
+    // Focusing the % button (which is inside paneRef) is the most reliable
+    // way to set focus-within in a headless test, and doesn't mutate state.
+    const { browser, page } = await launchBrowserShortcuts();
+    try {
+      await openBrowserPane(page);
+      const zoomReset = page.locator('[data-testid="browser-zoom-reset"]');
+      await expect(zoomReset).toHaveText('100%');
+
+      // Focus the % button so paneRef.current.contains(document.activeElement)
+      // becomes true; the gate then admits the zoom shortcuts.
+      await zoomReset.focus();
+
+      await page.keyboard.press('Control+=');
+      await expect(zoomReset).toHaveText('110%');
+
+      await page.keyboard.press('Control+0');
+      await expect(zoomReset).toHaveText('100%');
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('Ctrl+= does NOT fire when the pane is neither hovered nor focused', async () => {
+    // Same principle as task #139: global Ctrl+0 should not reset browser
+    // zoom while the user is interacting elsewhere. We move the mouse away
+    // from the pane (onto the page body well outside the pane) and ensure
+    // no input inside the pane is focused.
+    const { browser, page } = await launchBrowserShortcuts();
+    try {
+      await openBrowserPane(page);
+      const zoomReset = page.locator('[data-testid="browser-zoom-reset"]');
+
+      // Prime the zoom to a non-default so a missed reset would be visible.
+      await page.locator('[data-testid="browser-zoom-in"]').click();
+      await expect(zoomReset).toHaveText('110%');
+
+      // First move INTO the pane center so onMouseEnter fires and sets
+      // hoveredRef = true. This ensures that the subsequent move OUT
+      // provably triggers onMouseLeave (not assumed to be starting outside).
+      const paneBox = await page.locator('[data-testid="browser-pane"]').boundingBox();
+      if (paneBox) {
+        await page.mouse.move(
+          paneBox.x + paneBox.width / 2,
+          paneBox.y + paneBox.height / 2,
+        );
+      }
+
+      // Now blur and move to (0,0) so onMouseLeave fires and hoveredRef = false.
+      await page.evaluate(() => {
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      });
+      await page.mouse.move(0, 0);
+
+      // hoveredRef is now false and nothing inside the pane has focus.
+      // Ctrl+0 at the document level must not reset zoom.
+      await page.keyboard.press('Control+0');
+
+      // The gate should have prevented reset.
+      await expect(zoomReset).toHaveText('110%');
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('Ctrl+= fires when pane is hovered but no element inside has focus', async () => {
+    // Positive path for the hover branch of the zoom gate.
+    // hoveredRef.current === true (via onMouseEnter) lets zoom shortcuts fire
+    // even when document.activeElement is completely outside the pane.
+    //
+    // Approach: Hover the zoom-reset button (inside pane, real DOM element,
+    // not covered by the webview overlay) using Playwright's element.hover()
+    // which reliably dispatches pointer events on the target. Then blur focus
+    // and verify the keyboard shortcut fires via the hover path.
+    //
+    // The zoom-reset button is in the URL bar row which sits ABOVE the
+    // webview/canvas overlay, so pointer events reach the element without
+    // being intercepted by absolute-positioned children.
+    const { browser, page } = await launchBrowserShortcuts();
+    try {
+      await openBrowserPane(page);
+      const zoomReset = page.locator('[data-testid="browser-zoom-reset"]');
+      await expect(zoomReset).toHaveText('100%');
+
+      // Hover the zoom-reset button. Playwright's .hover() moves the mouse
+      // and waits for the element to be actionable, then dispatches mouse
+      // events ending with mouseenter on the element and its ancestors -
+      // including the [data-testid="browser-pane"] root which owns
+      // onMouseEnter -> hoveredRef.current = true.
+      await zoomReset.hover();
+
+      // Blur everything. zoomReset.hover() may have left focus on the button
+      // (browsers sometimes focus buttons on hover). We need focusInside to
+      // be false so only the hover branch admits the shortcut.
+      await page.evaluate(() => {
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      });
+
+      // Fire Ctrl+= at the document level. hoveredRef.current should be true
+      // (the hover event chain sets it) so the gate admits the shortcut even
+      // though nothing inside the pane is focused.
+      await page.keyboard.press('Control+=');
+
+      // hoveredRef was true -> shortcut fires -> zoomFactor steps from 1.0 to 1.1.
+      await expect(zoomReset).toHaveText('110%');
+    } finally {
+      await browser.close();
+    }
+  });
+});

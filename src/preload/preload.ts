@@ -358,6 +358,11 @@ const api: ElectronAPI = {
     setTaskUrl: (taskId, url) => ipcRenderer.invoke(IPC.BROWSER_URL_SET_TASK, taskId, url),
     clearTaskUrl: (taskId) => ipcRenderer.invoke(IPC.BROWSER_URL_CLEAR_TASK, taskId),
     clearStorage: () => ipcRenderer.invoke(IPC.BROWSER_CLEAR_STORAGE),
+    onZoomChanged: (callback) => {
+      const handler = (_event: Electron.IpcRendererEvent, factor: number) => callback(factor);
+      ipcRenderer.on(IPC.BROWSER_ZOOM_CHANGED, handler);
+      return () => ipcRenderer.removeListener(IPC.BROWSER_ZOOM_CHANGED, handler);
+    },
   },
 
   search: {

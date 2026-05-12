@@ -2176,6 +2176,12 @@ export interface ElectronAPI {
     setTaskUrl: (taskId: string, url: string) => Promise<void>;
     clearTaskUrl: (taskId: string) => Promise<void>;
     clearStorage: () => Promise<void>;
+    /**
+     * Subscribe to Ctrl+wheel zoom changes that fire inside the embedded
+     * webview. The main process applies the zoom and broadcasts the resulting
+     * factor so the toolbar % can stay in sync.
+     */
+    onZoomChanged: (callback: (factor: number) => void) => () => void;
   };
 
   // Search

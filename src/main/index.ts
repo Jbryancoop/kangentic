@@ -18,6 +18,7 @@ import { resolveBackgroundColor, resolveIconPath, resolveWindowBounds } from './
 import { loadReactDevTools } from './devtools';
 import { syncShutdownCleanup, startHardShutdownFailsafe } from './shutdown';
 import { restoreShellEnv } from './shell-env';
+import { MIN_ZOOM, MAX_ZOOM } from '../shared/zoom-steps';
 
 initStartupTimer(PROCESS_START);
 mark('process_start');
@@ -223,6 +224,26 @@ app.on('web-contents-created', (_event, contents) => {
     if (isF5 || isCtrlR) {
       inputEvent.preventDefault();
       contents.reload();
+    }
+  });
+
+  // Ctrl+wheel inside the webview: Electron emits `zoom-changed` on the
+  // guest webContents as a request - the host must actually apply the zoom.
+  // Without this, Ctrl+wheel in the embedded browser does nothing (the event
+  // is documented on WebContents, NOT on the <webview> DOM tag, so a
+  // renderer-side listener never fires). We respond with a smooth ~10% step
+  // (Chrome-like), clamp to MIN_ZOOM..MAX_ZOOM, and notify the renderer so
+  // the toolbar % stays in sync.
+  const WHEEL_ZOOM_STEP = 1.1;
+  contents.on('zoom-changed', (_zoomEvent, zoomDirection) => {
+    const currentFactor = contents.getZoomFactor();
+    const targetFactor = zoomDirection === 'in'
+      ? currentFactor * WHEEL_ZOOM_STEP
+      : currentFactor / WHEEL_ZOOM_STEP;
+    const clampedFactor = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, targetFactor));
+    contents.setZoomFactor(clampedFactor);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IPC.BROWSER_ZOOM_CHANGED, clampedFactor);
     }
   });
 });

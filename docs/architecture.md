@@ -285,7 +285,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 |---------|---------|---------|
 | `clipboard:saveImage` | invoke | Save clipboard image data to a temp file, returns file path |
 
-### Browser pane (5 channels)
+### Browser pane (6 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `browser:captureSend` | invoke | Composite the embedded webview frame + draw overlay + picked element into a PNG, write it to the session captures dir, and submit a structured prompt to the agent's PTY via PasteEngine |
@@ -293,6 +293,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `browser:urlSetTask` | invoke | Persist a per-task URL override |
 | `browser:urlClearTask` | invoke | Remove the per-task URL override (falls back to project default) |
 | `browser:clearStorage` | invoke | Wipe cookies, localStorage, IndexedDB, service workers, and HTTP/auth caches for the shared embedded browser partition. Saved URLs are kept. |
+| `browser:zoomChanged` | push | Broadcast the new zoom factor after Ctrl+wheel is applied in the main process (the webview's `zoom-changed` event lives on WebContents, not the DOM tag, so the renderer learns about wheel zoom only via this push) |
 
 ### Updater (3 channels)
 | Channel | Pattern | Purpose |

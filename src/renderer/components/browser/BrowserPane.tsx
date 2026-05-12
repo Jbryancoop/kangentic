@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Crosshair, Eraser, Loader2, Pencil, Pin, RotateCcw, Send, Undo2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Crosshair, Eraser, Loader2, Pencil, Pin, RotateCcw, Send, Undo2, ZoomIn, ZoomOut } from 'lucide-react';
 import { useDrawingOverlay } from './useDrawingOverlay';
 import { compositeCapture } from './captureComposite';
 import { BrowserEmptyState } from './BrowserEmptyState';
@@ -10,6 +10,7 @@ import { useToastStore } from '../../stores/toast-store';
 import { BROWSER_PARTITION } from '../../../shared/browser-partition';
 import type { BrowserPickedElement } from '../../../shared/types';
 import type { WebviewElement } from './webview-types';
+import { MIN_ZOOM, MAX_ZOOM, stepZoom } from '../../../shared/zoom-steps';
 
 // Side-pane in TaskDetailDialog that hosts an Electron <webview>, a
 // free-draw annotation overlay, and a "Send to agent" button which composites
@@ -110,6 +111,13 @@ function BrowserPaneActive({
   const webviewRef = useRef<WebviewElement | null>(null);
   const overlayContainerRef = useRef<HTMLDivElement | null>(null);
   const noteInputRef = useRef<HTMLInputElement | null>(null);
+  const paneRef = useRef<HTMLDivElement | null>(null);
+  // Zoom hotkeys (Ctrl+/-/0) are gated to "browser pane active": mouse over
+  // the pane OR focus inside it. Same principle as task #139's Ctrl+Enter
+  // fix - global document-level shortcuts shouldn't fire when the user is
+  // working elsewhere in the dialog.
+  const hoveredRef = useRef(false);
+  const [zoomFactor, setZoomFactorState] = useState(1.0);
 
   const { canvasRef, strokes, handlers, clear, undo } = useDrawingOverlay({ enabled: drawMode });
 
@@ -159,6 +167,34 @@ function BrowserPaneActive({
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const applyZoom = useCallback((factor: number) => {
+    const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, factor));
+    const webview = webviewRef.current;
+    // Optional-chain BOTH the ref and the method: in UI-tier tests the
+    // webview is a plain HTMLElement that doesn't expose setZoomFactor, and
+    // a bare `webview?.setZoomFactor(x)` would throw "not a function".
+    if (webview && typeof webview.setZoomFactor === 'function') {
+      webview.setZoomFactor(clamped);
+    }
+    setZoomFactorState(clamped);
+  }, []);
+
+  const zoomIn = useCallback(() => applyZoom(stepZoom(zoomFactor, +1)), [applyZoom, zoomFactor]);
+  const zoomOut = useCallback(() => applyZoom(stepZoom(zoomFactor, -1)), [applyZoom, zoomFactor]);
+  const resetZoom = useCallback(() => applyZoom(1.0), [applyZoom]);
+
+  // Ctrl+wheel inside the webview: the main process catches the
+  // `zoom-changed` request on the guest webContents, applies the zoom, and
+  // broadcasts the resulting factor here. The webview <tag> itself does NOT
+  // emit zoom-changed (it's a WebContents event, not a DOM event), so this
+  // IPC path is the only way to keep the toolbar % synced with wheel zoom.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.browser.onZoomChanged((factor) => {
+      setZoomFactorState(factor);
+    });
+    return unsubscribe;
   }, []);
 
   const navigate = useCallback((target: string) => {
@@ -342,14 +378,32 @@ function BrowserPaneActive({
       } else if (event.key === 'Enter') {
         event.preventDefault();
         if (!sending) void handleSend();
+      } else if (!inFormField && (event.key === '=' || event.key === '+' || event.key === '-' || event.key === '0')) {
+        // Zoom shortcuts only fire when the browser pane is active: mouse
+        // over it OR something inside it has focus. Without this gate,
+        // Ctrl+0 from anywhere in the app would reset browser zoom. See
+        // task #139 for the same principle applied to Ctrl+Enter.
+        const pane = paneRef.current;
+        const focusInside = !!pane && pane.contains(document.activeElement);
+        if (!hoveredRef.current && !focusInside) return;
+        event.preventDefault();
+        if (event.key === '=' || event.key === '+') zoomIn();
+        else if (event.key === '-') zoomOut();
+        else if (event.key === '0') resetZoom();
       }
     };
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [cancelInspect, handleSend, inspectActive, sending, startInspect]);
+  }, [cancelInspect, handleSend, inspectActive, resetZoom, sending, startInspect, zoomIn, zoomOut]);
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-surface" data-testid="browser-pane">
+    <div
+      ref={paneRef}
+      onMouseEnter={() => { hoveredRef.current = true; }}
+      onMouseLeave={() => { hoveredRef.current = false; }}
+      className="flex flex-col h-full min-h-0 bg-surface"
+      data-testid="browser-pane"
+    >
       {/* URL bar */}
       <form onSubmit={handleUrlSubmit} className="flex items-center gap-1 px-2 py-1.5 border-b border-edge flex-shrink-0">
         <button
@@ -410,6 +464,47 @@ function BrowserPaneActive({
             ? <Loader2 size={14} className="animate-spin" />
             : <Pin size={14} strokeWidth={matchesProjectDefault ? 2 : 1.75} fill={matchesProjectDefault ? 'currentColor' : 'none'} />}
         </button>
+        <div className="w-px h-5 bg-edge mx-1 flex-shrink-0" aria-hidden="true" />
+        {/* Grouped zoom pill: ZoomOut | % | ZoomIn share one rounded surface,
+            individual buttons drop their own rounding so the group reads as a
+            single unit (Chrome-style zoom toolbar). */}
+        <div
+          className="flex items-stretch bg-surface-input border border-edge-input rounded overflow-hidden"
+          data-testid="browser-zoom-pill"
+        >
+          <button
+            type="button"
+            onClick={zoomOut}
+            disabled={zoomFactor <= MIN_ZOOM + 1e-6}
+            className="p-1.5 text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-fg-muted disabled:cursor-default"
+            title="Zoom out (Ctrl+- or Ctrl+scroll wheel)"
+            aria-label="Zoom out"
+            data-testid="browser-zoom-out"
+          >
+            <ZoomOut size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={resetZoom}
+            className="px-1.5 py-1 text-xs text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors tabular-nums min-w-[3.25rem]"
+            title="Reset zoom to 100% (Ctrl+0)"
+            aria-label={`Reset zoom (current ${Math.round(zoomFactor * 100)}%)`}
+            data-testid="browser-zoom-reset"
+          >
+            {Math.round(zoomFactor * 100)}%
+          </button>
+          <button
+            type="button"
+            onClick={zoomIn}
+            disabled={zoomFactor >= MAX_ZOOM - 1e-6}
+            className="p-1.5 text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-fg-muted disabled:cursor-default"
+            title="Zoom in (Ctrl+= or Ctrl+scroll wheel)"
+            aria-label="Zoom in"
+            data-testid="browser-zoom-in"
+          >
+            <ZoomIn size={14} />
+          </button>
+        </div>
       </form>
 
       {/* Webview + canvas overlay */}
