@@ -30,7 +30,25 @@ New projects start with seven columns:
 
 Click the **+** button on any column header or use the "New Task" button. Enter a title and optional description. You can set a priority level, add labels, and attach files (images, documents, or any file type) by pasting from the clipboard or dragging files onto the dialog. Attachments are included in the agent's prompt.
 
+Pasted screenshots are automatically compressed to fit Claude's per-image budget. Kangentic re-encodes large pastes to JPEG and steps quality / dimensions down until each image lands under the budget, so a multi-monitor screen grab does not get rejected by the API.
+
 In the description field, type `@` to trigger file autocomplete. A dropdown lists files and directories from the project root, which you can navigate with arrow keys and select with Enter to insert the path.
+
+#### Advanced: Per-Task Agent / Model / Effort Override
+
+Click **Advanced** in the New Task dialog (or in the task detail edit form for an existing task) to set per-task overrides:
+
+| Field | Description |
+|-------|-------------|
+| **Agent** | Pick a specific agent CLI (Claude, Codex, etc.) for this task. Defaults to the destination column's agent override, then the project default. Hidden when only one agent is detected on the machine. |
+| **Model** | Adapter-specific model identifier (e.g. `opus`, `sonnet`, `claude-opus-4-7`). The dropdown is fed by the shared model cache, which learns new model IDs the moment any agent reports one live. |
+| **Effort** | Adapter-specific reasoning tier (Claude: `low`, `medium`, `high`, `xhigh`, `max`). Only shown when the agent reports effort levels. |
+
+A per-task pick **stays with the task across column moves** - column settings are ignored once a task carries its own override. Changing the Agent resets Model + Effort because the previous picks were valid for the previous agent's capability matrix.
+
+Before the first spawn, the task detail dialog also shows a slim **pre-spawn context bar** with the same Model and Effort pills. Set them there to avoid the spawn -> cancel -> restart loop: the picker writes the override to the DB, and `prepare-spawn` picks it up on the next agent launch.
+
+When an agent is already running, the same Model / Effort pills appear in the live context bar below the terminal. Picking a value there delivers the change to the running session via the adapter's slash-command injection sequence when it supports live model changes (Claude's `/model`), or suspends and respawns when it does not.
 
 ### Spawn an Agent
 
@@ -142,6 +160,21 @@ The Changes tab in the task detail dialog shows a git diff of all files modified
 The Changes panel is available for all tasks, whether or not worktrees are enabled. It uses `git merge-base` to show only branch-specific changes, excluding upstream commits.
 
 When the dialog is open, it claims the terminal session. The bottom panel releases it. When you close the dialog, the bottom panel reclaims the session.
+
+### Browser Pane
+
+Tasks can host an embedded browser inside the task detail dialog. Use it to preview your dev server, capture screenshots with annotations, and submit framed prompts back to the agent without leaving Kangentic. The pane uses a shared Electron webview partition so cookies and storage persist across all task browsers.
+
+| Action | Shortcut |
+|--------|----------|
+| Zoom in | **Ctrl+=** / **Ctrl++** (or **Ctrl+wheel up** inside the page) |
+| Zoom out | **Ctrl+-** (or **Ctrl+wheel down** inside the page) |
+| Reset zoom to 100% | **Ctrl+0** |
+| Reload page | **F5** or **Ctrl+R** (outside the embedded page) |
+
+Zoom snaps to a Chrome-compatible ladder (25%, 33%, 50%, 67%, 75%, 80%, 90%, 100%, 110%, 125%, 150%, ... up to 500%). Ctrl+wheel zoom inside the webview uses a smoother multiplicative step but stays clamped to the same range. The toolbar shows a zoom pill with the current factor, plus dedicated zoom-out / reset / zoom-in buttons.
+
+Keyboard shortcuts are scoped to the browser pane: they fire when the mouse is over the pane or focus is inside it, so Ctrl+0 from elsewhere in the app does not interfere with anything else.
 
 ## Backlog
 

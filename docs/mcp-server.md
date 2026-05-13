@@ -12,12 +12,12 @@ This enables a key workflow: while working on a task, an agent identifies follow
 
 ```
 Claude Code agent calls MCP tool (e.g. kangentic_create_task)
-  -> MCP server (stdio Node.js process, spawned by Claude Code)
-  -> Writes command to .kangentic/sessions/<sessionId>/commands.jsonl
-  -> Electron main process (CommandBridge) watches file via FileWatcher
-  -> Processes command via TaskRepository / SwimlaneRepository
-  -> Writes response to .kangentic/sessions/<sessionId>/responses/<requestId>.json
-  -> MCP server reads response, returns result to Claude Code
+  -> HTTP POST http://127.0.0.1:<port>/mcp/<projectId>
+     (X-Kangentic-Token header, JSON-RPC body)
+  -> In-process MCP HTTP server in Electron main (mcp-http-server.ts)
+  -> Per-request McpServer + Streamable HTTP transport
+  -> Tool handler runs synchronously against project DB
+  -> Response returned in same HTTP request (no SSE, no file polling)
   -> Board refreshes via IPC event + toast notification
 ```
 
@@ -25,26 +25,30 @@ Claude Code agent calls MCP tool (e.g. kangentic_create_task)
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| MCP Server | `src/main/agent/mcp-server.ts` | Stdio MCP server using official SDK. Bundled by esbuild into single JS file. |
-| Command Bridge | `src/main/agent/command-bridge.ts` | Watches commands.jsonl, processes commands via DB repositories, writes responses. |
-| Command Handlers | `src/main/agent/commands/` | Extracted per-domain handlers: task, inventory, search, analytics, backlog commands. |
+| MCP HTTP Server | `src/main/agent/mcp-http-server.ts` | In-process Node `http` server using `@modelcontextprotocol/sdk` Streamable HTTP transport. Binds 127.0.0.1, random `:0` port, random per-launch token validated via `X-Kangentic-Token`. |
+| Task Tools | `src/main/agent/mcp-http/task-tools.ts` | Board/task/column mutations + related reads (`kangentic_create_task`, `kangentic_move_task`, `kangentic_update_task`, `kangentic_update_column`, `kangentic_delete_task`, `kangentic_list_columns`, `kangentic_find_task`, `kangentic_get_current_task`, etc.). |
+| Session Tools | `src/main/agent/mcp-http/session-tools.ts` | Session inspection, backlog, read-only SQL (`kangentic_list_sessions`, `kangentic_get_transcript`, `kangentic_query_db`, `kangentic_list_backlog`, etc.). |
+| Project Tools | `src/main/agent/mcp-http/project-tools.ts` | Multi-project discovery (`kangentic_list_projects`). |
+| Search Tools | `src/main/agent/mcp-http/search-tools.ts` | Unified board+backlog search and cross-project search (`kangentic_search_tasks`, `kangentic_search_everything`). |
+| Diagnostics Tools | `src/main/agent/mcp-http/diagnostics-tools.ts` | Read-only product tools backing crash records, persistent console logs, process metrics, IPC traffic recordings, and worktree state. Annotated `readOnlyHint: true, idempotentHint: true` per the MCP spec. |
+| Command Handlers | `src/main/agent/commands/` | Per-domain handlers shared by the HTTP tools: task, inventory, search, analytics, backlog, handoff commands. |
 | Column Resolver | `src/main/agent/commands/column-resolver.ts` | Shared case-insensitive column name to swimlane lookup used by multiple handlers. |
-| MCP Config Delivery | `src/main/agent/adapters/claude/command-builder.ts` | Writes session `mcp.json` and adds `--mcp-config` flag to CLI command. |
+| MCP Config Delivery | `src/main/agent/adapters/claude/command-builder.ts` | Writes session `mcp.json` (with the per-launch URL + token) and adds `--mcp-config` flag to CLI command. |
 | Trust Manager | `src/main/agent/adapters/claude/trust-manager.ts` | Pre-approves kangentic MCP server in `~/.claude.json`. |
 | Board Refresh | `src/main/ipc/handlers/sessions.ts` | Forwards task-created/updated/backlog-changed events to renderer via IPC. |
-| Diagnostics Tools | `src/main/agent/mcp-http/diagnostics-tools.ts` | Read-only product tools backing crash records, persistent console logs, process metrics, IPC traffic recordings, and worktree state. Annotated `readOnlyHint: true, idempotentHint: true` per the MCP spec. |
+| Dev-only DevTools | `src/devtools/mcp/register.ts`, `src/devtools/mcp/preview-tools.ts` | Registers the `kangentic_devtools_*` tools when `__KANGENTIC_DEV__` is set. Excluded from production builds at compile time. |
 
 ### Discovery
 
 Claude Code supports a `--mcp-config` flag that accepts a path to a JSON file containing MCP server definitions. Kangentic uses this to deliver its MCP server config without modifying `.mcp.json` (which may be tracked in git). When Kangentic spawns a session:
 
-1. `CommandBuilder.createMergedSettings()` writes the kangentic MCP server config to `.kangentic/sessions/<sessionId>/mcp.json`
+1. `CommandBuilder.createMergedSettings()` writes the kangentic MCP server config to `.kangentic/sessions/<sessionId>/mcp.json`. The entry is an HTTP MCP server pointing at the per-launch URL `http://127.0.0.1:<port>/mcp/<projectId>` with the `X-Kangentic-Token` header containing the per-launch token.
 2. `CommandBuilder.buildClaudeCommand()` adds `--mcp-config <path>` to the CLI command
 3. `ensureMcpServerTrust()` adds "kangentic" to `enabledMcpjsonServers` in `~/.claude.json`
-4. Claude Code starts, reads both `.mcp.json` (user servers) and the `--mcp-config` file (kangentic), spawns `node mcp-server.js` as a child process
+4. Claude Code starts, reads both `.mcp.json` (user servers) and the `--mcp-config` file (kangentic), and connects to the in-process HTTP MCP server over loopback. No child process is spawned for kangentic itself.
 5. Claude Code calls `tools/list` and discovers all kangentic tools
 
-This approach keeps `.mcp.json` completely untouched - no injection, no cleanup, no git noise. The `--mcp-config` flag is additive (not `--strict-mcp-config`), so user-configured servers like context7 continue to work normally.
+This approach keeps `.mcp.json` completely untouched - no injection, no cleanup, no git noise. The `--mcp-config` flag is additive (not `--strict-mcp-config`), so user-configured servers like context7 continue to work normally. The token is rotated on every Kangentic launch, so a stale `mcp.json` from a previous run cannot be reused.
 
 
 ## Cross-Project Calls
@@ -221,11 +225,23 @@ Update a swimlane (column) configuration. Use `kangentic_get_column_detail` to i
 | `autoSpawn` | boolean | No | Whether moving a task into this column auto-spawns an agent |
 | `autoCommand` | string \| null | No | Slash command template injected on agent spawn (e.g. `"/review --strict"`). `null` clears. |
 | `agentOverride` | string \| null | No | Force a specific agent for this column. `null` uses project default. |
+| `modelOverride` | string \| null | No | Adapter-specific model identifier passed at spawn time (e.g. Claude `"opus"`, `"sonnet"`, `"claude-opus-4-7"`). `null` inherits the agent default. |
+| `effortOverride` | string \| null | No | Adapter-specific effort/reasoning level (e.g. Claude `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`). Valid values are agent-specific. `null` inherits the agent default. |
 | `permissionMode` | string \| null | No | One of: `default`, `plan`, `acceptEdits`, `dontAsk`, `bypassPermissions`, `auto`. `null` uses project default. |
 | `handoffContext` | boolean | No | Enable multi-agent handoff context preservation when entering this column |
 | `planExitTargetColumn` | string \| null | No | Column to auto-move the task to when an agent in plan mode exits planning. `null` disables. |
 
 At least one updatable field is required.
+
+### kangentic_delete_task
+
+Permanently delete a task from the board. Removes the task, its attachments, and session records. The associated worktree and branch may also be cleaned up. This cannot be undone.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `taskId` | string | Yes | Task ID (numeric display ID like `"42"` or full UUID). |
+
+Find task IDs with `kangentic_find_task` or `kangentic_search_tasks`.
 
 ### kangentic_list_backlog
 
@@ -393,63 +409,43 @@ The `.claude/settings.json` file includes a wildcard permission entry (`mcp__kan
 
 ## Security
 
-- **Project isolation** - each MCP server instance is scoped to one project via session-specific file paths
-- **Rate limiting** - maximum 50 task creations per session
-- **Input validation** - Zod schemas enforce title (200 chars) and description (10000 chars) limits at the protocol level; the CommandBridge validates again
-- **Column safety** - defaults to To Do; creating in an auto_spawn column intentionally triggers agent spawn
-- **No destructive operations** - read and create/update only; no delete or move (which could trigger agent spawns)
-- **Console safety** - MCP server uses `console.error()` only; stdout is reserved for JSON-RPC
-
-## File-Based Command Queue
-
-The MCP server process runs outside the Electron main process (spawned by Claude Code). Communication uses a file-based queue:
-
-### Commands (MCP server writes)
-
-`<project>/.kangentic/sessions/<sessionId>/commands.jsonl`
-
-Each line is a JSON object:
-```json
-{"id":"<uuid>","method":"create_task","params":{"title":"..."},"ts":1234567890}
-```
-
-### Responses (Electron main process writes)
-
-`<project>/.kangentic/sessions/<sessionId>/responses/<requestId>.json`
-
-```json
-{"success":true,"data":{"taskId":"...","title":"...","column":"To Do"},"message":"Created task..."}
-```
-
-The MCP server polls for the response file (100ms interval, 10s timeout), reads it, and deletes it after processing.
+- **Loopback-only bind** - the HTTP server binds explicitly to `127.0.0.1:0` (random port). Not reachable from other machines and does not trigger a Windows Defender Firewall prompt. Not `localhost` (which can resolve to `::1` on IPv6-preferring systems) and not `0.0.0.0`.
+- **Per-launch token** - every Kangentic launch generates a fresh 32-byte random `X-Kangentic-Token`. Clients without the token get `401`. Comparison is constant-time (`timingSafeEqual`) so a local timing oracle cannot byte-by-byte recover the token.
+- **DNS rebinding protection** - the Streamable HTTP transport enforces a host allowlist (`127.0.0.1`, `localhost`, `[::1]`) on top of the loopback bind.
+- **Project routing via URL path** - the URL embeds the project ID (`/mcp/<projectId>`). A stale `mcp.json` for a different project cannot be reused against the current launch.
+- **Rate limiting** - maximum 50 task creations per session, enforced atomically by the shared `TaskCounter`.
+- **Input validation** - Zod schemas enforce title (200 chars) and description (10000 chars) limits at the protocol level; the command handlers validate again.
+- **Column safety** - `kangentic_create_task` defaults to the To Do column; creating in an auto_spawn column intentionally triggers agent spawn.
+- **Destructive operations are explicit** - `kangentic_delete_task`, `kangentic_delete_backlog_item`, and `kangentic_move_task` mutate the board. Agents must invoke them by name; there is no implicit fallback.
 
 ## Build
 
-The MCP server is written in TypeScript and bundled by esbuild into a single `mcp-server.js` file:
+The MCP server runs in-process inside the Electron main bundle - there is no separate `mcp-server.js` and no child process spawned for Kangentic itself.
 
-- **Dev mode** (`npm start`): bundled in `scripts/dev.js` alongside main/preload
-- **Production** (`npm run build`): bundled in `scripts/build.js`
-- **Packaging**: listed in `electron-builder.yml` `asarUnpack` so it runs outside the asar archive
+- **Dev mode** (`npm start`): `mcp-http-server.ts` and the per-domain tool registrations under `mcp-http/` are part of the main esbuild bundle in `scripts/dev.js`.
+- **Production** (`npm run build`): same modules included in the main bundle by `scripts/build.js`.
+- **Dev-only devtools tools** (`src/devtools/mcp/`): excluded from production via `__KANGENTIC_DEV__` esbuild dead-code elimination.
 
-Dependencies (`@modelcontextprotocol/sdk`, `zod`) are bundled inline - not shipped in `node_modules`.
+Dependencies (`@modelcontextprotocol/sdk`, `zod`) are bundled into the main process JS - not shipped in `node_modules`.
 
 ## Troubleshooting
 
 ### MCP tools not showing up
 
-1. Check the session's MCP config: `.kangentic/sessions/<sessionId>/mcp.json` should contain a `kangentic` entry under `mcpServers`
-2. Check the CLI command includes `--mcp-config` pointing to the session's `mcp.json`
-3. Check `~/.claude.json`: the project path should have `"kangentic"` in `enabledMcpjsonServers`
-4. Verify the bundled server exists: `.vite/build/mcp-server.js`
-5. Test the server manually: `node .vite/build/mcp-server.js test-cmd.jsonl test-resp` (should print "[mcp-server] Kangentic MCP server started" to stderr)
+1. Check the session's MCP config: `.kangentic/sessions/<sessionId>/mcp.json` should contain a `kangentic` entry under `mcpServers` with a `type: "http"`, a `url` pointing at `http://127.0.0.1:<port>/mcp/<projectId>`, and an `X-Kangentic-Token` header.
+2. Check the CLI command includes `--mcp-config` pointing to the session's `mcp.json`.
+3. Check `~/.claude.json`: the project path should have `"kangentic"` in `enabledMcpjsonServers`.
+4. Verify the in-process server is listening: look for `[mcp-http] Listening on http://127.0.0.1:<port>/mcp` in the Electron main console at launch.
+5. The token rotates on every launch - if you started Kangentic after the agent was spawned, the agent's `mcp.json` still references the old token. Restart the session.
 
 ### Agent uses TodoWrite instead of kangentic_create_task
 
 The agent may not know about the MCP tools. Ask explicitly: "Use the kangentic_create_task tool to create a task called X". Claude Code discovers the tools but may default to its built-in task system without prompting.
 
-### Command timeout
+### Tool call returns 401
 
-If the MCP server reports timeouts, the CommandBridge in the main process may not be processing commands. Check:
-- Session is still running (not suspended/exited)
-- `.kangentic/sessions/<sessionId>/commands.jsonl` has content
-- No errors in the Electron main process console
+The agent is sending the wrong token. The token is regenerated per launch; close and respawn the session so its `mcp.json` is rewritten with the current token.
+
+### Tool call returns 404
+
+Either the URL path doesn't match `/mcp/<projectId>` (probably a malformed `mcp.json`), or the project ID is no longer registered (deleted while the agent was running). Check `kangentic_list_projects`.

@@ -318,9 +318,32 @@ The activity icon on each task card is wrapped in a tooltip rendering `ActivityR
 A per-project setting under **Developer → Activity Engine Debug Overlay** enables a floating panel showing live engine state:
 - Current activity + reason for each running session
 - Raw counters (tools, subagents, bg shells)
+- **Compensation counters** (`staleThinking`, `bgShellHatch`, `stuckPendingTools`, `forceThinking`, `forceIdle`) - monotonic tallies of silent recovery events. In a clean session all five read 0; any non-zero value flags a watchdog / forced transition that did not visibly flip the activity pill.
 - Ring buffer of last 10 transitions
+- **PTY chunk timeline** - bucketed PTY arrivals over the last ~120 seconds (100ms buckets) from `ActivityStatsSnapshot.recentPtyChunks`, rendered by `ActivityTimeline` alongside the watchdog deadline (`lastSignalAt + thresholdMs`). Empty in production builds where the trace recorder is dead-code-eliminated.
 
 Polls `getActivityStats(sessionId)` every 2 seconds. Hidden by default — power users discover via Developer settings; bug reporters can enable + screenshot.
+
+### Trace capture and replay (dev only)
+
+`src/main/pty/activity/trace-recorder.ts` is a dev-only passive recorder that writes two per-session JSONL files to the session directory:
+
+- `pty-chunks.jsonl` - one `{ts, length}` line per PTY chunk arrival (no content, just timestamps and sizes)
+- `status-deltas.jsonl` - one `{ts, ...usage}` line per `status.json` update
+
+Both files rotate at `TRACE_FILE_MAX_BYTES` (10 MB) with one rotated copy kept (`.1` suffix), capping per-file disk use at ~20 MB. The recorder is always-on in dev so the data is there when a flip-flop or stuck-thinking report comes in after the fact; production builds eliminate the entire module via `__KANGENTIC_DEV__` esbuild dead-code elimination.
+
+The dev-only `kangentic_devtools_capture_trace` MCP tool reads these alongside `events.jsonl` to produce a portable replay fixture. The `activity-engine-trace-replay.test.ts` suite drives captured traces back through the engine to pin expected end-state.
+
+### Invariant property testing
+
+`tests/unit/activity-engine-property.test.ts` uses fast-check to generate random event sequences and assert invariants the engine must preserve:
+- Counters never go negative
+- `activity` always matches `reason.kind` per the priority ladder
+- `dispose` is idempotent
+- Multiple sessions stay isolated (event delivery to session A does not perturb session B)
+
+The fuzz tests complement the deterministic replay fixtures by exercising input shapes the recorded sessions never produced.
 
 ## Synthetic events
 
