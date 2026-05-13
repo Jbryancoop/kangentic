@@ -93,6 +93,15 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
   // Track the original swimlane when drag starts (for proper transitions)
   const dragOriginRef = useRef<string | null>(null);
 
+  // Snapshot the source card's bounding rect at drag start. dnd-kit's
+  // `active.rect.current.initial` is sometimes null at drop time (re-render
+  // during drag clears the measured rect), which used to force the Done
+  // path to bypass setCompletingTask entirely - both the FlyingCard fly and
+  // the grow-in animation got skipped even though the move still landed.
+  // This ref guarantees we can still build a usable startRect for the
+  // animation when dnd-kit's rect is gone.
+  const dragStartRectRef = useRef<DOMRect | null>(null);
+
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 5 },
@@ -247,6 +256,8 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
         if (task) {
           setActiveTask(task);
           dragOriginRef.current = task.swimlane_id;
+          const sourceElement = document.querySelector(`[data-task-id="${id}"]`);
+          dragStartRectRef.current = sourceElement?.getBoundingClientRect() ?? null;
         }
       }
     }
@@ -272,7 +283,9 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
   const handleDragEnd = useCallback(async (event: DragEndEvent) => {
     const { active, over } = event;
     const originalSwimlane = dragOriginRef.current;
+    const stashedStartRect = dragStartRectRef.current;
     dragOriginRef.current = null;
+    dragStartRectRef.current = null;
     setActiveTask(null);
     updateDropHighlight(null);
 
@@ -383,10 +396,14 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
         || (useConfigStore.getState().config.skipDoneWorktreeConfirm && !pendingChanges.hasPendingChanges);
       const directInput = { taskId, targetSwimlaneId, targetPosition };
 
-      // Capture where the DragOverlay was at drop time. A missing rect means
-      // the DOM element was destroyed mid-drag (HMR / re-render), so there's
-      // nothing to animate from - fall through to the direct path.
-      const initialRect = active.rect.current.initial;
+      // Capture where the DragOverlay was at drop time. Prefer dnd-kit's
+      // measured initial rect; fall back to the rect we snapshotted at drag
+      // start. dnd-kit can clear `active.rect.current.initial` when the
+      // source draggable re-renders mid-drag (e.g. structural-sharing
+      // reshuffle, sort animation), and a null rect there would otherwise
+      // force the Done drop to bypass setCompletingTask, silently skipping
+      // both the FlyingCard fly and the grow-in animation.
+      const initialRect = active.rect.current.initial ?? stashedStartRect;
       if (!initialRect) {
         if (skipConfirm) {
           await moveTask(directInput);
@@ -436,6 +453,7 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
     setActiveTask(null);
     updateDropHighlight(null);
     dragOriginRef.current = null;
+    dragStartRectRef.current = null;
     useBoardStore.getState().loadBoard();
   }, [updateDropHighlight]);
 

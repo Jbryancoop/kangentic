@@ -126,6 +126,11 @@ function FlyingCard() {
   const dropZone = document.querySelector('[data-done-drop-zone]');
   const targetRect = dropZone?.getBoundingClientRect();
 
+  // The transition property is set on BOTH styles so the browser sees it
+  // on the element from first paint. Chromium does not reliably trigger a
+  // CSS transition when `transition` is defined on the same render as the
+  // property change - the start style must already carry the transition
+  // declaration for the 2-rAF mitigation below to actually animate.
   const style: React.CSSProperties = flying && targetRect ? {
     position: 'fixed',
     left: targetRect.left + targetRect.width / 2 - startRect.width / 2,
@@ -142,6 +147,7 @@ function FlyingCard() {
     top: startRect.top,
     width: startRect.width,
     opacity: 0.85,
+    transition: 'all 500ms ease-in',
     zIndex: 9999,
     pointerEvents: 'none',
   };
