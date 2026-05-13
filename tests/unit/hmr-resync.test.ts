@@ -78,4 +78,162 @@ describe('HMR store re-sync', () => {
       missingMethods.map((m) => `  - ${m}`).join('\n'),
     ).toHaveLength(0);
   });
+
+  // Catch new top-level mutable module state under stores/ and utils/ that
+  // would silently reset on every Fast Refresh. Each such declaration must
+  // either preserve itself via `import.meta.hot.dispose(` (the canonical
+  // pattern in task-slice.ts, session-store.ts, hmr-flag.ts, etc.) or
+  // opt out with an `// hmr-safe:` directive comment that names the reason.
+  //
+  // Per-variable invariant: a file having ANY dispose() block is not enough.
+  // The specific variable name must appear inside the dispose callback body
+  // (e.g. `data.myVar = myVar`). A blanket file-level `hasDispose` check is
+  // a false-negative: it passes files where a variable is never stashed even
+  // though a sibling variable is. We extract the dispose callback body and
+  // require the literal token for each unprotected `let` to appear there.
+  it('top-level mutable module state has HMR preservation or opt-out', () => {
+    const UTILS_DIR = path.resolve(__dirname, '../../src/renderer/utils');
+    const sourceFiles: string[] = [];
+    const collect = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) collect(full);
+        else if (entry.isFile() && entry.name.endsWith('.ts')) sourceFiles.push(full);
+      }
+    };
+    collect(STORES_DIR);
+    collect(UTILS_DIR);
+
+    // Match any top-level `let` declaration (column-0 = module scope, since
+    // intra-function locals are indented). The dispose-block check and the
+    // per-line opt-out directive below decide whether each match is OK.
+    // Standalone `null`/`undefined` initializers are excluded because there's
+    // nothing to preserve until the first reassignment, and that reassignment
+    // path is responsible for triggering its own preservation if needed.
+    const letPattern = /^let\s+(\w+)\b[^=]*=\s*(.+?);?\s*$/gm;
+    const TRIVIAL_INITIALIZERS = new Set(['null', 'undefined', 'false', 'true']);
+
+    // Extract all dispose callback bodies from the source. A file may have
+    // multiple dispose blocks; we collect all of them and check each variable
+    // against the union.
+    function extractDisposeBodies(source: string): string {
+      // Match `import.meta.hot.dispose((data) => { ... })` with arbitrary
+      // whitespace. We need to find the matching closing brace; a simple
+      // non-greedy [\s\S]*? works well enough for the code patterns in this
+      // repo where dispose blocks are short and not deeply nested.
+      const disposePattern = /import\.meta\.hot\.dispose\s*\(\s*\([^)]*\)\s*=>\s*\{([\s\S]*?)\}\s*\)/g;
+      const bodies: string[] = [];
+      let disposeMatch;
+      while ((disposeMatch = disposePattern.exec(source)) !== null) {
+        bodies.push(disposeMatch[1]);
+      }
+      return bodies.join('\n');
+    }
+
+    const violations: string[] = [];
+    for (const file of sourceFiles) {
+      const source = fs.readFileSync(file, 'utf-8');
+      const lines = source.split('\n');
+      const disposeBodies = extractDisposeBodies(source);
+
+      let match;
+      letPattern.lastIndex = 0;
+      while ((match = letPattern.exec(source)) !== null) {
+        const name = match[1];
+        const initializer = match[2].trim();
+        if (TRIVIAL_INITIALIZERS.has(initializer)) continue;
+
+        const matchIndex = match.index;
+        const lineNumber = source.slice(0, matchIndex).split('\n').length;
+        const sameLine = lines[lineNumber - 1] ?? '';
+        const prevLine = lines[lineNumber - 2] ?? '';
+        // Per-declaration opt-out via `// hmr-safe: <reason>` on the same
+        // line or the line immediately above.
+        if (/\/\/\s*hmr-safe:/.test(sameLine) || /\/\/\s*hmr-safe:/.test(prevLine)) continue;
+
+        // Per-variable check: the variable name must appear in at least one
+        // dispose callback body (e.g. `data.name = name` or `data[name]`).
+        // A file-level hasDispose is insufficient - it would pass files where
+        // a sibling variable is stashed but this particular one is not.
+        if (disposeBodies.length > 0 && new RegExp(`\\b${name}\\b`).test(disposeBodies)) continue;
+
+        // No dispose body references this variable AND no hmr-safe opt-out:
+        // this is a violation.
+        if (disposeBodies.length === 0) {
+          // No dispose block at all in the file.
+          const relativePath = path.relative(path.resolve(__dirname, '../..'), file).replace(/\\/g, '/');
+          violations.push(`${relativePath}:${lineNumber} -> let ${name} = ${initializer}`);
+        } else {
+          // Has a dispose block but this variable is not stashed inside it.
+          const relativePath = path.relative(path.resolve(__dirname, '../..'), file).replace(/\\/g, '/');
+          violations.push(`${relativePath}:${lineNumber} -> let ${name} = ${initializer} (not stashed in dispose)`);
+        }
+      }
+    }
+
+    expect(
+      violations,
+      `Top-level mutable module state lacks HMR preservation.\n` +
+      `Either add an import.meta.hot.dispose() block that stashes the value into hot.data,\n` +
+      `or annotate the declaration with "// hmr-safe: <reason>" if reset-on-HMR is intentional:\n` +
+      violations.map((v) => `  - ${v}`).join('\n'),
+    ).toHaveLength(0);
+  });
+
+  // dnd-kit's per-droppable subscriptions go stale across Vite Fast Refresh
+  // while the surrounding DndContext keeps running. The fix is to re-key the
+  // DndContext on every HMR cycle so the dnd-kit manager remounts cleanly.
+  // This test guards against a new <DndContext> being added without that key
+  // and silently regressing the dev-mode dropzone animation (or similar).
+  it('every <DndContext> has key={...HmrGeneration...} for dev-mode parity', () => {
+    const RENDERER_DIR = path.resolve(__dirname, '../../src/renderer');
+    const sourceFiles: string[] = [];
+    const collect = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) collect(full);
+        else if (entry.isFile() && /\.(tsx|jsx)$/.test(entry.name)) sourceFiles.push(full);
+      }
+    };
+    collect(RENDERER_DIR);
+
+    const violations: string[] = [];
+    for (const file of sourceFiles) {
+      const rawSource = fs.readFileSync(file, 'utf-8');
+      // Strip block + line comments so doc references like
+      // `// Force every <DndContext> to remount...` don't false-positive.
+      // We preserve line breaks (only strip content within them) so reported
+      // line numbers below stay accurate.
+      const source = rawSource
+        .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ' '))
+        .replace(/(^|[^:])\/\/[^\n]*/g, (match, prefix) => prefix + ' '.repeat(match.length - prefix.length));
+      // Locate every <DndContext ...> opening tag. Two forms: same-line
+      // `<DndContext ...>` and multi-line. We capture from the opening `<`
+      // to the closing `>` (non-greedy) and look for a `key=` attribute in
+      // that span.
+      const dndContextPattern = /<DndContext\b([\s\S]*?)>/g;
+      let match;
+      while ((match = dndContextPattern.exec(source)) !== null) {
+        const attrSpan = match[1];
+        const lineNumber = source.slice(0, match.index).split('\n').length;
+        // The convention is `key={hmrGeneration}` (the result of
+        // useHmrGeneration()). We accept any `key=` referencing a name
+        // ending in HmrGeneration to leave room for renames, but reject
+        // a missing key entirely.
+        const hasHmrKey = /key=\{[^}]*[Hh]mrGeneration[^}]*\}/.test(attrSpan);
+        if (hasHmrKey) continue;
+
+        const relativePath = path.relative(path.resolve(__dirname, '../..'), file).replace(/\\/g, '/');
+        violations.push(`${relativePath}:${lineNumber} -> <DndContext> without key={hmrGeneration}`);
+      }
+    }
+
+    expect(
+      violations,
+      `<DndContext> sites missing the HMR generation key.\n` +
+      `Add: const hmrGeneration = useHmrGeneration(); ... <DndContext key={hmrGeneration} ...>\n` +
+      `See src/renderer/utils/hmr-generation.ts and the "HMR patterns" section in CLAUDE.md:\n` +
+      violations.map((v) => `  - ${v}`).join('\n'),
+    ).toHaveLength(0);
+  });
 });

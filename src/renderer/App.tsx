@@ -12,6 +12,7 @@ import { useProjectSwitchEffect } from './hooks/useProjectSwitchEffect';
 import { useAgentDrivenInvalidation } from './hooks/useAgentDrivenInvalidation';
 import { invalidateProject } from './stores/project-cache';
 import { resolveAutoFocusTarget } from './utils/auto-focus';
+import { bumpHmrGeneration } from './utils/hmr-generation';
 import {
   autoNameTimers,
   scheduleAutoNameSuggestion,
@@ -486,6 +487,14 @@ export function App() {
 if (import.meta.hot) {
   // @ts-expect-error Vite HMR API not typed under commonjs module resolution
   import.meta.hot.on('vite:afterUpdate', () => {
+    // Force every <DndContext> to remount with a fresh dnd-kit manager.
+    // After Fast Refresh, the surviving DndContext keeps its internal monitor
+    // state but per-droppable `isOver` subscriptions go stale, so visuals
+    // driven by `useDroppable` (e.g. the Done dropzone's swirling animation)
+    // never fire. Bumping the generation re-keys every DndContext consumer
+    // and re-establishes a clean dnd-kit tree identical to a fresh boot.
+    bumpHmrGeneration();
+
     // Cancel stale drop highlights (HMR unmounts DndContext without firing dragEnd)
     document.querySelectorAll('.drop-highlight').forEach(element => element.classList.remove('drop-highlight'));
 

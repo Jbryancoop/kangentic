@@ -18,6 +18,7 @@ import { ConfirmDialog } from '../../dialogs/ConfirmDialog';
 import { Pill } from '../../Pill';
 import { useBacklogStore } from '../../../stores/backlog-store';
 import { useConfigStore } from '../../../stores/config-store';
+import { useHmrGeneration } from '../../../utils/hmr-generation';
 import type { AppConfig } from '../../../../shared/types';
 import { ColorPickerPopover } from './ColorPickerPopover';
 import { PopoverShell } from './PopoverShell';
@@ -31,6 +32,8 @@ export function PrioritiesPopover() {
   const items = useBacklogStore((state) => state.items);
   const config = useConfigStore((state) => state.config);
   const updateConfig = useConfigStore((state) => state.updateConfig);
+  // Re-key DndContext on HMR; see src/renderer/utils/hmr-generation.ts.
+  const hmrGeneration = useHmrGeneration();
 
   const priorities = config.backlog?.priorities ?? [
     { label: 'None', color: '#6b7280' },
@@ -159,6 +162,7 @@ export function PrioritiesPopover() {
         <div>
           <div className="space-y-0.5 p-2">
             <DndContext
+              key={hmrGeneration}
               sensors={sensors}
               collisionDetection={closestCenter}
               autoScroll={false}

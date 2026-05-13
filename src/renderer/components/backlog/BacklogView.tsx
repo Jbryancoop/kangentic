@@ -13,6 +13,7 @@ import { useFilterPopover } from '../../hooks/useFilterPopover';
 import { useBacklogStore } from '../../stores/backlog-store';
 import { useBoardStore } from '../../stores/board-store';
 import { useConfigStore } from '../../stores/config-store';
+import { useHmrGeneration } from '../../utils/hmr-generation';
 import type { BacklogTask } from '../../../shared/types';
 import { useBacklogColumns, type SortKey } from './view/useBacklogColumns';
 
@@ -223,6 +224,9 @@ export function BacklogView() {
     activeItem,
   } = useBacklogDragDrop(filteredItems, items);
 
+  // Re-key DndContext on HMR; see src/renderer/utils/hmr-generation.ts.
+  const hmrGeneration = useHmrGeneration();
+
   const emptyMessage = searchQuery || hasActiveFilters
     ? 'No items match your filters'
     : undefined;
@@ -333,6 +337,7 @@ export function BacklogView() {
         ) : (
           <>
             <DndContext
+              key={hmrGeneration}
               sensors={sensors}
               collisionDetection={collisionDetection}
               autoScroll={{ enabled: filteredItems.length > 15, threshold: { x: 0, y: 0.15 }, acceleration: 10 }}

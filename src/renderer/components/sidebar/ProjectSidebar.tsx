@@ -10,6 +10,7 @@ import {
 import { useProjectStore } from '../../stores/project-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useToastStore } from '../../stores/toast-store';
+import { useHmrGeneration } from '../../utils/hmr-generation';
 import { ConfirmDialog } from '../dialogs/ConfirmDialog';
 import { CountBadge } from '../CountBadge';
 import type { Project, ProjectGroup } from '../../../shared/types';
@@ -66,6 +67,9 @@ export function ProjectSidebar({ onToggleSidebar }: ProjectSidebarProps) {
     handleDragStart,
     handleDragEnd,
   } = useSidebarDragDrop(projects, groups, reorderProjects, setProjectGroup);
+
+  // Re-key DndContext on HMR; see src/renderer/utils/hmr-generation.ts.
+  const hmrGeneration = useHmrGeneration();
 
   const searchTerm = search.trim().toLowerCase();
   const isSearching = searchTerm.length > 0;
@@ -286,6 +290,7 @@ export function ProjectSidebar({ onToggleSidebar }: ProjectSidebarProps) {
 
       <div className="flex-1 overflow-y-auto">
         <DndContext
+          key={hmrGeneration}
           sensors={sensors}
           collisionDetection={collisionDetection}
           onDragStart={handleDragStart}

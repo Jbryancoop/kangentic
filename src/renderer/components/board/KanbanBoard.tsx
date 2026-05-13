@@ -20,6 +20,7 @@ import { useBoardStore } from '../../stores/board-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useBoardDragDrop } from '../../hooks/useBoardDragDrop';
 import { useFilterPopover } from '../../hooks/useFilterPopover';
+import { useHmrGeneration } from '../../utils/hmr-generation';
 import type { Task } from '../../../shared/types';
 
 /** Wrapper that registers a column with @dnd-kit/sortable.
@@ -221,6 +222,10 @@ export function KanbanBoard() {
     sortableColumnIds,
   } = useBoardDragDrop({ swimlanes, tasks, archivedTasks });
 
+  // Re-key DndContext on HMR to remount dnd-kit with a clean manager.
+  // See src/renderer/utils/hmr-generation.ts; constant 0 in production.
+  const hmrGeneration = useHmrGeneration();
+
   // Stabilize per-lane array identity across renders. When the `tasks` array
   // reference changes (every loadBoard / optimistic update / structural-share
   // pass), we still want lanes whose contents are unchanged to keep the same
@@ -310,6 +315,7 @@ export function KanbanBoard() {
       <div className="flex-1 overflow-x-auto overflow-y-hidden p-4">
       <WelcomeOverlay />
       <DndContext
+        key={hmrGeneration}
         sensors={sensors}
         collisionDetection={collisionDetection}
         onDragStart={handleDragStart}

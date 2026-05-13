@@ -110,10 +110,35 @@ scripts/          # Build and dev scripts
 - **Icons** use Lucide React — no inline SVGs
 - **PTY sessions** handle cross-platform shells (PowerShell needs `& ` prefix, WSL splits into exe + args, fish/nushell skip `--login`)
 - **Claude CLI** is invoked with `cwd` set to the project directory (or worktree path) so that `.claude/`, `CLAUDE.md`, and commands are loaded into context
-- **HMR store re-sync** - The `vite:afterUpdate` handler in `App.tsx` re-fetches every IPC-backed Zustand store after HMR replaces modules. If you add a new store with a `load*` or `sync*` method, add the call there. A unit test (`hmr-resync.test.ts`) enforces this.
-- **HMR state preservation** - Module-scoped state that must survive HMR uses the `import.meta.hot.data` / `import.meta.hot.dispose()` pattern. Currently preserved: `syncController` (AbortController), `moveGeneration` counter, `transientSessions` map + pointers, `savedScrollPositions` (terminal viewport offsets), and `commandBarOpen` (keeps overlay mounted). When adding new module-level state in renderer code, consider whether it needs this treatment.
+- **HMR / dev-mode parity** - The team dogfoods Kangentic from `npm start` daily, so dev mode must be visually and behaviourally indistinguishable from a production boot. See the "HMR patterns" subsection below for the four primitives and which one to reach for when adding a feature.
 - **Command Terminal** - Ctrl+Shift+P opens an ephemeral "transient" session with no DB persistence. The `transientSessions` map in `session-store.ts` tracks per-project transient sessions (keyed by project ID). Unlike task-bound sessions, transient sessions are NOT restored by `syncSessions()` - they rely entirely on the in-memory map. The map is preserved across HMR via `import.meta.hot.data`. Closing the overlay keeps the PTY alive in the background; reopening reattaches to the existing session. Project switching stashes/restores transient session pointers.
 - **Settings tab separator** — In `AppSettingsPanel`, tabs above the `separator: true` marker are per-project settings (saved to `.kangentic/config.json`). Tabs below the separator (Behavior, Notifications, Privacy) are shared settings that apply across all projects (saved to global config). When a project is open, all 7 tabs are shown. When no project is selected, only the 3 shared tabs appear. There is no Global/Project scope toggle. When adding new settings, decide if they are per-project or shared and place the tab accordingly.
+
+### HMR patterns (CRITICAL for dev-mode parity)
+
+The team uses Kangentic itself while building it, so a Vite Fast Refresh during a real session must not regress UX. Four primitives cover every HMR-sensitive surface; mixing them up causes flaky behaviour that only surfaces in dev, which is exactly the failure mode this project cannot tolerate. When adding a feature, pick the right pattern up front rather than reaching for ad-hoc fixes later.
+
+| Pattern | When to reach for it | How to apply | Example sites |
+|---|---|---|---|
+| **A. Preserve** | Module-scope state (timers, AbortControllers, caches, counters, scroll positions) that must survive a module reload | `let x = import.meta.hot?.data?.x ?? <default>;` plus `import.meta.hot?.dispose((d) => { d.x = x; })` | `task-slice.ts` (`moveGeneration`), `session-store.ts` (`syncController`, transient sessions), `useTerminal.ts` (`savedScrollPositions`), `toast-store.ts` (`toasts`), `hmr-generation.ts` (`generation`), `auto-name-scheduler.ts` (timer maps) |
+| **B. Re-sync** | Zustand stores whose truth lives in the main process (IPC-backed) | Add a `load*` / `sync*` call to the `vite:afterUpdate` handler in `App.tsx`. Enforced by `tests/unit/hmr-resync.test.ts` | `loadBoard()`, `loadBacklog()`, `loadConfig()`, `loadProjects()`, `syncSessions()` |
+| **C. Re-key remount** | Stateful third-party React subtrees whose internal subscriptions go stale across Fast Refresh (currently: every `<DndContext>`) | `const hmrGeneration = useHmrGeneration();` then `<DndContext key={hmrGeneration}>`. Enforced by `tests/unit/hmr-resync.test.ts` | All 5 `<DndContext>` sites: `KanbanBoard`, `BacklogView`, `PrioritiesPopover`, `ProjectSidebar`, `ShortcutsTab` |
+| **D. Cleanup** | Imperative DOM/global state no React component owns (e.g. classes toggled via `querySelector`) | Add the clear to the top of the `vite:afterUpdate` handler | `.drop-highlight` class removal in `App.tsx` |
+
+**Picking the pattern (decision tree):**
+
+1. Are you adding a new IPC-backed Zustand store, or a new `load*` / `sync*` method on an existing one? → **Pattern B**: add a call in `App.tsx`'s `vite:afterUpdate` handler. `hmr-resync.test.ts` will fail until you do.
+2. Are you adding a new `<DndContext>` or other React component that wraps a third-party library with internal subscription state? → **Pattern C**: pair it with `useHmrGeneration()` and `key={hmrGeneration}`. The HMR enforcement test will catch a missing key.
+3. Are you adding module-scope `let`/`const` mutable state (Maps, Sets, AbortControllers, counters) under `src/renderer/stores/` or `src/renderer/utils/`? → **Pattern A**: preserve it via `import.meta.hot.data`, or annotate the declaration with `// hmr-safe: <reason>` if reset-on-HMR is intentional. `hmr-resync.test.ts` enforces one or the other.
+4. Are you imperatively setting a class, attribute, or global handle that React won't tear down? → **Pattern D**: add the clear to the existing `vite:afterUpdate` handler.
+
+**Anti-patterns:**
+
+- Don't combine A and C on the same state. Either preserve it across HMR (A) or accept that the component remounts and re-derives it (C).
+- Don't add a fifth ad-hoc HMR workaround. If something doesn't fit A/B/C/D, that's a signal to surface the gap and extend the catalog deliberately, not to add a one-off.
+- Don't gate Pattern A behind `process.env.NODE_ENV` checks. `import.meta.hot` is `undefined` in production builds, so the guards already collapse to no-ops.
+
+**Verification:** the `hmr-parity` agent (`.claude/agents/hmr-parity.md`) audits this catalog after changes that touch HMR-sensitive surfaces. Run it during code review for any feature that adds stores, DndContext sites, module-scope state, or imperative DOM mutation.
 
 ### Shutdown (CRITICAL)
 

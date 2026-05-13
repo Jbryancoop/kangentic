@@ -1,6 +1,6 @@
 ---
 description: Review git changes for quality and conventions
-allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git:*), Bash(npm:*)
+allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git:*), Bash(npm:*), Bash(npx:*)
 argument-hint: [review-only]
 ---
 
@@ -22,12 +22,13 @@ The skill reads `$ARGUMENTS`. If the literal token `review-only` is present, ski
 All commands below run from the **current working directory** - never use `cd <path> && git ...` (triggers an unbypasable security prompt). If the CWD is a worktree, git operates on it automatically.
 
 1. Run `npm run typecheck` to check for type errors. Any type errors are **highest-priority findings** - they represent potential runtime crashes. Include them in the review output even if they are in files not touched by the current diff.
-2. Run `git diff` and `git diff --staged` to identify all changed files and hunks. If both are empty, emit "No changes to review." and stop.
-3. For each changed file, read the full file to understand the surrounding context.
-4. Analyze every change against the criteria below and build the findings table.
-5. **Apply Phase** (skip in `review-only` mode): for every finding, attempt the recommended fix using `Edit`/`Write`. Each fix is its own atomic unit - if one fails or is unsafe, skip it with a reason but keep the others. See "What gets auto-fixed" below.
-6. **Re-typecheck** (skip in `review-only` mode): run `npm run typecheck` again. If a fix introduces a new type error, revert that specific edit and move the finding to `Skipped` with reason `"Fix introduced type error: <message>"`. Do not roll back unrelated fixes.
-7. Emit the output format below.
+2. Run `npx vitest run tests/unit/hmr-resync.test.ts` (fast, ~150ms). This enforces the three mechanical HMR-parity invariants: every IPC-backed store has its `load*` / `sync*` registered in `App.tsx`'s `vite:afterUpdate` handler; every top-level mutable module state under `src/renderer/stores/` or `src/renderer/utils/` either preserves itself via `import.meta.hot.dispose(` or carries a `// hmr-safe:` directive; every `<DndContext>` has `key={...HmrGeneration}`. A failure here is a **Critical** finding (dev-mode regression that production users won't see but dogfooders will mistake for a real bug).
+3. Run `git diff` and `git diff --staged` to identify all changed files and hunks. If both are empty, emit "No changes to review." and stop.
+4. For each changed file, read the full file to understand the surrounding context.
+5. Analyze every change against the criteria below and build the findings table.
+6. **Apply Phase** (skip in `review-only` mode): for every finding, attempt the recommended fix using `Edit`/`Write`. Each fix is its own atomic unit - if one fails or is unsafe, skip it with a reason but keep the others. See "What gets auto-fixed" below.
+7. **Re-typecheck** (skip in `review-only` mode): run `npm run typecheck` again. If a fix introduces a new type error, revert that specific edit and move the finding to `Skipped` with reason `"Fix introduced type error: <message>"`. Do not roll back unrelated fixes.
+8. Emit the output format below.
 
 ## Review Criteria
 
@@ -89,6 +90,13 @@ After identifying changed files in Step 2, read the relevant skill files to load
 - Check `git -C <path>` instead of `cd && git`
 - Check xterm WebGL context loss handling
 - Check PTY resize debouncing is preserved
+
+**HMR-sensitive files.** Trigger this check whenever the diff matches ANY of: a file under `src/renderer/stores/`, a file under `src/renderer/utils/`, `src/renderer/App.tsx`, or a hunk containing `<DndContext`, `import.meta.hot`, or a new top-level `let` declaration in the renderer:
+- Read `.claude/agents/hmr-parity.md` before reviewing these changes. That file is the source of truth for the four HMR primitives (A: Preserve, B: Re-sync, C: Re-key, D: Cleanup) documented in `CLAUDE.md`'s "HMR patterns" section.
+- Apply the decision matrix from `hmr-parity.md`: classify what new HMR-sensitive surface was added (new `<DndContext>`, new IPC-backed store method, new module-scope mutable state, new IPC subscription, new imperative DOM mutation, new code in the `vite:afterUpdate` handler) and verify the correct pattern is used.
+- Flag anti-patterns: mixing A and C on the same state; a fifth ad-hoc HMR workaround; `process.env.NODE_ENV` gating around `import.meta.hot` (redundant, since `hot` is `undefined` in production); module-scope `addEventListener` registered at import time; reassigning `import.meta.hot.data = {...}` instead of mutating `data.x = value`.
+- The Step 2 vitest run already catches the mechanical violations (missing store re-sync, missing dispose block, missing DndContext key). Do not duplicate those checks here; focus on semantic mismatches the test cannot detect.
+- A missing HMR pattern is a **High**-severity finding (visible dogfooding regression). An anti-pattern is **Medium**. A redundant `NODE_ENV` guard is **Low**.
 
 ## Apply Phase
 
@@ -176,9 +184,10 @@ Re-typecheck: PASS
 ```
 
 Edge cases the footer must handle cleanly:
-- No diff at all -> short-circuit at Step 2 with `"No changes to review."`
+- No diff at all -> short-circuit at the `git diff` step (Step 3) with `"No changes to review."`
 - Diff exists, zero findings -> `"No findings, nothing to fix."` and skip the Apply Phase
 - Re-typecheck FAILS -> show the error block, list which fix was reverted, mark Verdict as **Needs revision**
+- Step 2 hmr-resync vitest FAILS -> the failure output is itself a Critical finding. Include the failing assertion's message verbatim in the findings table, attempt the auto-fix in the Apply Phase (e.g. add the missing store re-sync call to `App.tsx`, add the missing `key={hmrGeneration}` to the new `<DndContext>`, add a `// hmr-safe:` directive or `dispose` block to the new module-scope state), then re-run the vitest in addition to typecheck during Step 7. If the test still fails after the fix attempt, mark Verdict as **Needs revision**.
 
 ### Review-only-mode footer
 

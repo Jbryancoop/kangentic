@@ -1,7 +1,9 @@
 ---
 name: hmr-integrity
 description: |
-  HMR and store registration validator. Checks that all Zustand stores with IPC-backed load/sync methods are registered in the App.tsx vite:afterUpdate handler for proper HMR re-sync.
+  Narrow HMR store-registration validator (Pattern B only). Checks that every Zustand store with an IPC-backed `load*` / `sync*` method is registered in the `App.tsx` `vite:afterUpdate` handler so HMR re-fetches main-process truth.
+
+  This is the fast, focused check that fires on store changes. For broader feature reviews that also cover Patterns A (preserve), C (re-key DndContext), and D (cleanup), use the **hmr-parity** agent instead.
 
   Use this agent proactively after changes to:
   - src/renderer/stores/*.ts (any store file)

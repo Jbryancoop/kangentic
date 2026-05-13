@@ -6,6 +6,7 @@ import { Plus, Trash2, GripVertical, ChevronDown, ChevronRight, Info, Zap } from
 import { useBoardStore } from '../../../stores/board-store';
 import { IconPickerDialog } from '../../dialogs/IconPickerDialog';
 import { ICON_REGISTRY } from '../../../utils/swimlane-icons';
+import { useHmrGeneration } from '../../../utils/hmr-generation';
 import { SectionHeader, Select, INPUT_CLASS } from '../shared';
 import { Pill } from '../../Pill';
 import type { ShortcutConfig, ShortcutDisplay } from '../../../../shared/types';
@@ -378,6 +379,8 @@ export function ShortcutsTab() {
 
   const filteredPresets = getFilteredPresets();
   const sortableIds = localActions.map((action, index) => getSortableId(action, index));
+  // Re-key DndContext on HMR; see src/renderer/utils/hmr-generation.ts.
+  const hmrGeneration = useHmrGeneration();
 
   return (
     <div className="space-y-4">
@@ -387,7 +390,7 @@ export function ShortcutsTab() {
         <p className="text-sm text-fg-faint">No shortcuts configured. Add one below or choose a preset.</p>
       )}
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <DndContext key={hmrGeneration} sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
           <div className="space-y-2">
             {localActions.map((action, index) => {

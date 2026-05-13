@@ -62,9 +62,14 @@ export const DoneSwimlane = React.memo(function DoneSwimlane({ swimlane, tasks }
 
   const taskIds = useMemo(() => visibleTasks.map((t) => t.id), [visibleTasks]);
 
+  // Stable identity: a fresh `data` object each render forces dnd-kit to
+  // re-register the droppable, which the HMR-stale-subscription fix
+  // (DndContext re-key on Fast Refresh) depends on to be a no-op between
+  // legitimate state changes.
+  const droppableData = useMemo(() => ({ type: 'swimlane' as const }), []);
   const { setNodeRef, isOver } = useDroppable({
     id: swimlane.id,
-    data: { type: 'swimlane' },
+    data: droppableData,
   });
 
   const filteredArchivedTasks = archivedTasks;
