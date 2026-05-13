@@ -2,8 +2,10 @@ import { useState, useMemo, useEffect, useCallback } from 'react';
 import { Search, ClipboardList } from 'lucide-react';
 import { BaseDialog } from './BaseDialog';
 import { TaskDetailDialog } from './TaskDetailDialog';
+import { TaskChangesDialog } from './TaskChangesDialog';
 import { ConfirmDialog } from './ConfirmDialog';
 import { DataTable } from '../DataTable';
+import { ArchivedTaskContextMenu } from '../board/ArchivedTaskContextMenu';
 import { formatCost } from '../../utils/format-session';
 import { formatTokenCount } from '../../utils/format-tokens';
 import { useBoardStore } from '../../stores/board-store';
@@ -34,6 +36,8 @@ export function CompletedTasksDialog({ onClose }: CompletedTasksDialogProps) {
   const [restorePopoverId, setRestorePopoverId] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [pendingBulkDelete, setPendingBulkDelete] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ position: { x: number; y: number }; task: Task } | null>(null);
+  const [changesTask, setChangesTask] = useState<Task | null>(null);
 
   // Fetch summaries on mount
   useEffect(() => {
@@ -255,6 +259,10 @@ export function CompletedTasksDialog({ onClose }: CompletedTasksDialogProps) {
             data={filteredRows}
             rowKey={(row) => row.task.id}
             onRowClick={(row) => toggleSelect(row.task.id)}
+            onRowContextMenu={(row, event) => setContextMenu({
+              position: { x: event.clientX, y: event.clientY },
+              task: row.task,
+            })}
             defaultSortKey="completed"
             defaultSortDirection="desc"
             emptyMessage={emptyMessage}
@@ -295,6 +303,23 @@ export function CompletedTasksDialog({ onClose }: CompletedTasksDialogProps) {
           task={selectedTask}
           onClose={() => setSelectedTask(null)}
           initialEdit={false}
+        />
+      )}
+
+      {changesTask && (
+        <TaskChangesDialog task={changesTask} onClose={() => setChangesTask(null)} />
+      )}
+
+      {contextMenu && (
+        <ArchivedTaskContextMenu
+          position={contextMenu.position}
+          task={contextMenu.task}
+          swimlanes={swimlanes}
+          onOpen={() => handleViewDetail(contextMenu.task.id)}
+          onShowChanges={() => setChangesTask(contextMenu.task)}
+          onRestoreTo={(targetSwimlaneId) => handleRestore(contextMenu.task.id, targetSwimlaneId)}
+          onDelete={() => handleDelete(contextMenu.task.id)}
+          onClose={() => setContextMenu(null)}
         />
       )}
 

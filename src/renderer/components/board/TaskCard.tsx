@@ -18,6 +18,7 @@ import { getProgressColor } from '../../utils/color-lerp';
 import { LabelPills } from '../Pill';
 import type { Task } from '../../../shared/types';
 import { TaskContextMenu } from './TaskContextMenu';
+import { ArchivedTaskContextMenu } from './ArchivedTaskContextMenu';
 import { formatActivityReasonText } from './ActivityReasonTooltip';
 
 interface TaskCardProps {
@@ -86,7 +87,10 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
   };
 
   const handleContextMenu = (e: React.MouseEvent) => {
-    if (isDragOverlay || compact) return;
+    if (isDragOverlay) return;
+    // Compact cards normally have no menu, but archived compact cards
+    // (DoneSwimlane preview list) get an archived-specific menu.
+    if (compact && !task.archived_at) return;
     e.preventDefault();
     e.stopPropagation();
     setContextMenu({ x: e.clientX, y: e.clientY });
@@ -160,6 +164,7 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
           {...attributes}
           {...listeners}
           onClick={handleClick}
+          onContextMenu={handleContextMenu}
           data-task-id={task.id}
           className={`bg-surface-raised/60 border border-edge/50 rounded-md px-2.5 py-1.5 cursor-grab active:cursor-grabbing hover:border-edge-input transition-colors group/card ${
             isDragOverlay ? 'shadow-xl' : ''
@@ -206,6 +211,27 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
 
         {showDetail && (
           <TaskDetailDialog task={task} onClose={() => setDetailTaskId(null)} initialEdit={displayState.kind === 'none' && !task.archived_at} />
+        )}
+
+        {contextMenu && task.archived_at && (
+          <ArchivedTaskContextMenu
+            position={contextMenu}
+            task={task}
+            swimlanes={useBoardStore.getState().swimlanes}
+            onOpen={() => setDetailTaskId(task.id)}
+            onShowChanges={() => setShowChanges(true)}
+            onRestoreTo={(targetSwimlaneId) => {
+              useBoardStore.getState().unarchiveTask({ id: task.id, targetSwimlaneId });
+            }}
+            onDelete={() => {
+              if (onDelete) onDelete(task.id);
+            }}
+            onClose={() => setContextMenu(null)}
+          />
+        )}
+
+        {showChanges && (
+          <TaskChangesDialog task={task} onClose={() => setShowChanges(false)} />
         )}
       </>
     );
