@@ -152,7 +152,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `transition:set` | invoke | Set action chain for lane A→B |
 | `transition:getFor` | invoke | Get transitions for lane pair (exact match, then wildcard) |
 
-### Sessions (33 channels)
+### Sessions (32 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `session:spawn` | invoke | Spawn PTY session (may queue) |
@@ -330,6 +330,7 @@ Stores the project list. Tables:
 
 - **projects** -- id, name, path, github_url, default_agent, last_opened, created_at
 - **global_config** -- key/value store for app-wide settings
+- **project_groups** -- sidebar grouping for projects. Fields: id, name, position, collapsed
 
 ### Per-Project DB (`<configDir>/projects/<projectId>.db`)
 
@@ -355,9 +356,10 @@ Repositories follow a simple pattern -- one class per table, all queries are syn
 
 `resolveTargetAgent()` determines which agent CLI to use when spawning a session. Resolution priority:
 
-1. **Column `agent_override`** - the target swimlane's per-column agent override (if set)
-2. **Project `default_agent`** - the project-level default agent setting
-3. **Global fallback** - `'claude'`
+1. **Task `agent_override`** - per-task override set at creation time (highest priority)
+2. **Column `agent_override`** - the target swimlane's per-column agent override (if set)
+3. **Project `default_agent`** - the project-level default agent setting
+4. **Global fallback** - `'claude'`
 
 This function is used by task-move (to detect cross-agent handoff), session-recovery (to respawn with the correct agent), and agent-spawn (to build the right CLI command).
 

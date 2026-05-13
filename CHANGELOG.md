@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.19.0] - 2026-05-12
+
+### Features
+
+- Per-task agent override + persisted model cache (d9fc070e)
+- Per-task model/effort override with pre-spawn picker (eee04fa8)
+- Browser: chrome-style zoom controls (ctrl+wheel, ctrl +/-, toolbar pill) (b6abd014)
+- Activity: trace capture/replay, timeline overlay, invariant fuzzing (33da06c6)
+- Attachments: compress pasted screenshots to fit Claude API image budget (ec777690)
+- Skills: refine /test for self-maintaining affected-test selection (8b7acac3)
+- Devtools: expand MCP surface, add latency telemetry, and fix bridge E2E (79ebd7b3)
+- MCP: unify task search across board and backlog (7a7e4d2b)
+- DB: persist lifetime usage stats independent of task/session deletion (cdfd6c64)
+- Devtools: preview-inspection bridge + always-on diagnostics (3c01371d)
+- Activity-debug: grid layout + memoized rows for debug overlay (1ff555ed)
+
+### Fixes
+
+- HMR: restore Done drop-zone animation and harden dev-mode parity (6cf5d819)
+- Dialog: pin PreSpawnContextBar to bottom during pre-spawn (30d828e2)
+- Browser: scope Ctrl+Enter send to the note input (15076930)
+- OpenCode: only ignore activity plugin once it's actually installed (506f77ea)
+- Session-reconcile: heal task.session_id drift by scanning the registry by taskId (d366c9dc)
+- Task-move: silence shutdown race when DB closes mid-handler (e585d9fa)
+- Board: force Done confirm when worktree has unsaved work (7f6e9e37)
+- Activity: include transient sessions in debugger overlay (21983a86)
+- Prevent fetch hang on task spawn and plug shutdown leaks (a2a4cd66)
+- Activity-debug: center overlay on auto-spawn mount; UX polish + helper unit tests (73214d6a)
+- Renderer: make syncSessions HMR-resilient against preload-renderer skew (042913bd)
+- Activity: preserve named bg shells; reconcile HMR reasons; async-buffer diagnostics (e78a744c)
+- Activity: bump stale-thinking watchdog from 45s to 180s (fd78cf60)
+- Activity: eliminate phantom bg-shell counters from watcher adoption (842fc087)
+- Sessions: proactive self-heal probe in task detail dialog (76501f7d)
+- Activity-debug: stack status pill below title in snapshot row (633e665e)
+- Devtools: guard CDP detach against destroyed webContents on quit (b867a01b)
+- Activity-debug: always center overlay on first launch (8fe15775)
+- Sessions: self-heal SESSION_RESUME when renderer view drifts (25758592)
+- Activity: use snapshot health for bg-shell probe-failure detection (f239496a)
+- Updater: guard initUpdater on missing app-update.yml manifest (9c38cfaf)
+
+### Other
+
+- Test(e2e): tighten timeout, replace fixed waits with polls, document mock-CLI flake (f74e0708)
+- Docs: sync docs to source for v0.19.0 anchors (fc72b5d8)
+- Perf(project-switch): warm-cache project state to skip redundant IPC on switch (f57fc62e)
+- Perf(activity): cache useMemo on poll-time anchor + long-lived PS probe (c798a9fd)
+- Perf(activity): async-buffer ActivitySnapshotWriter (c9eec696)
+- Docs(skills): auto-fix findings by default in /code-review (009eed98)
+- Perf(renderer): narrow activity subscriptions and stabilize lane task identity (7143ce3d)
+- Chore(gitignore): defensively ignore stray agent-CLI bin shims at repo root (32439249)
+- Test(pty): disable bg-shell watcher in write-queue tests (69a42bcf)
+
 ## [v0.18.0] - 2026-05-06
 
 ### Features
