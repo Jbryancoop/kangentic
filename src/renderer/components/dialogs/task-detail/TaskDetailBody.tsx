@@ -303,13 +303,10 @@ export function TaskDetailBody({
     );
   }
 
-  // Description-only view (no session). All earlier branches return, so
-  // descriptionBar is truthy here in practice; the conditional spacer keeps
-  // the layout consistent if that ever changes (no orphan flex spacer + bar
-  // when there's nothing above).
-  if (!descriptionBar) {
-    return <PreSpawnContextBar taskId={task.id} />;
-  }
+  // Description-only view (no session) and the transient pre-spawn window
+  // where hasSessionContext is true but session.id has not arrived yet.
+  // The flex-1 spacer keeps PreSpawnContextBar pinned to the bottom in both
+  // cases so it never flashes at the top of the dialog while spawning.
   return (
     <>
       {descriptionBar}
