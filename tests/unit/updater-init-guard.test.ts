@@ -37,11 +37,18 @@ const fakeWindow = {} as Electron.BrowserWindow;
 
 describe('initUpdater manifest guard', () => {
   const originalResourcesPath = process.resourcesPath;
+  const originalPlatform = process.platform;
 
   beforeEach(() => {
     vi.useFakeTimers();
     Object.defineProperty(process, 'resourcesPath', {
       value: '/fake/resources',
+      configurable: true,
+    });
+    // updater.ts short-circuits on Linux; pin platform so CI (ubuntu) runs
+    // the same wiring path as Windows/macOS hosts.
+    Object.defineProperty(process, 'platform', {
+      value: 'win32',
       configurable: true,
     });
     mocks.electronMock.app.isPackaged = true;
@@ -59,6 +66,10 @@ describe('initUpdater manifest guard', () => {
     vi.useRealTimers();
     Object.defineProperty(process, 'resourcesPath', {
       value: originalResourcesPath,
+      configurable: true,
+    });
+    Object.defineProperty(process, 'platform', {
+      value: originalPlatform,
       configurable: true,
     });
   });
