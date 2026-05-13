@@ -45,6 +45,11 @@ const runId = Date.now();
 const PROJECT_NAME = `Activity Special Modes ${runId}`;
 
 test.describe('Agent activity detection - special TUI / output modes', () => {
+  // Each test pairs a 15s spawn-marker wait with a 20s idle-poll, exceeding
+  // the 30s electron default; bump the describe timeout instead of marking
+  // every test slow individually.
+  test.describe.configure({ timeout: 60_000 });
+
   let app: ElectronApplication;
   let page: Page;
   let tmpDir: string;

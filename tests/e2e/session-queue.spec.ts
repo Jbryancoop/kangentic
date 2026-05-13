@@ -254,9 +254,19 @@ test.describe('Claude Agent -- Session Queue', () => {
       await window.electronAPI.sessions.kill(sessionId);
     }, runningSessions[0]);
 
-    // Wait for queue to settle - should still have at least 1 running
-    // (either an original or one promoted from queue)
-    await page.waitForTimeout(2000);
+    // Wait for queue to settle - kill must register as exited, and at least
+    // one slot should still be running (either an original or one promoted
+    // from the queue). Poll instead of a fixed sleep so we leave as soon as
+    // the kill + promotion cycle is reflected.
+    await expect
+      .poll(
+        async () => {
+          const counts = await getSessionCounts(page);
+          return counts.exited >= 1 && counts.running >= 1;
+        },
+        { timeout: 10_000, intervals: [200, 500] },
+      )
+      .toBe(true);
     const finalCounts = await getSessionCounts(page);
     expect(finalCounts.running).toBeGreaterThanOrEqual(1);
     expect(finalCounts.exited).toBeGreaterThanOrEqual(1);

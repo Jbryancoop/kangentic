@@ -79,6 +79,8 @@ test.describe('Session Reconciliation', () => {
   });
 
   test('sessions are reconciled after app restart for tasks in agent columns', async () => {
+    // App restart + 20s + 30s waits exceed the 30s electron default.
+    test.slow();
     const taskName = `Recon Task ${runId}`;
 
     // === Phase 1: Launch app, create project & task, drag to Planning ===

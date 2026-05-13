@@ -90,6 +90,8 @@ test.describe('Codex Agent - Activity Detection', () => {
   });
 
   test('session history reader delivers usage data from rollout JSONL', async () => {
+    // Internal 30s `expect.poll` for usage propagation plus setup exceeds 30s default.
+    test.slow();
     const title = `Codex Usage ${runId}`;
     await createTask(page, title, 'Verify session history pipeline delivers usage');
 

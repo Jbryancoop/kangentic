@@ -575,6 +575,101 @@ All unit and UI tests must pass on Linux, even though most developers run Kangen
 
 During the E2E speedup audit, three tests in `terminal-rendering.spec.ts` were deleted after multiple failed fix attempts. Their deletion comments remain in that file as a permanent reference for what NOT to do. Read those comments before writing any new PTY/terminal/dialog test.
 
+## Historical Reference: 2026-05-12 Suite Speed + Consistency Pass
+
+A follow-up pass focused on cutting wall-clock and reducing flake surface. Key facts to internalize:
+
+### The electron project has a 45s per-test timeout (was 60s)
+
+`playwright.config.ts` sets `timeout: 45_000` on the electron project. Slowest legitimate tests are ~15s, so 45s gives ~3x headroom. The 45s budget also covers `afterAll` Electron `app.close()` + PTY cleanup, which can hit ~25-35s on Windows under suite load. Tests that legitimately need longer **must** opt in via one of:
+
+- `test.slow();` at the top of the test body (triples the timeout to 135s)
+- `test.describe.configure({ timeout: 60_000 });` for a whole describe block
+- `test.setTimeout(120_000);` inside a beforeAll that does heavy multi-phase work (e.g. app restart scenarios)
+
+Signals that a test will exceed 45s:
+- An internal assertion with `timeout: 30000` or larger PLUS substantial setup work
+- Multiple cumulative `timeout: 20000` waits in series
+- App restart (close + relaunch) somewhere in the test body
+- A `beforeAll` that spawns sessions, restarts the app, and re-spawns sessions
+
+**Do not raise the project-level default to mask slow tests.** A test that needs `test.slow()` is a test that should be commented "why >45s" so future readers know it's intentional.
+
+**Pitfall**: Playwright's `afterAll` hook inherits the test timeout. When a spec spawns PTY sessions, `app.close()` in afterAll triggers PTY cleanup which can be slow. 45s typically suffices; if it doesn't, prefer `test.setTimeout(60_000)` inside the afterAll over raising the global default.
+
+### Mock CLI non-determinism on Windows ConPTY is a real flake source
+
+The `mock-claude-eats-all-cr` fixture swallows stdin in JS and even calls `setRawMode(true)`, but Windows ConPTY's kernel-side echo can still leak a CR back to the engine ~20-40% of the time. When that happens the engine's no-evidence path doesn't fire, and assertions on the error-state outcome fail.
+
+**This is a test-infrastructure limitation, not a product bug.** The right response is `test.describe.configure({ retries: 2 })` with a comment that documents the root cause. The wrong response is to chase phantom React rendering races - rendering is in-tick and not the issue.
+
+Pattern to remember:
+
+```ts
+test.describe('...', () => {
+  // Mock-CLI non-determinism on Windows ConPTY: <fixture> swallows stdin in
+  // JS but kernel-side echo can leak the CR back ~20-40% of the time. The
+  // product is correct; this is a test-infra limit. 2 retries -> ~99% pass.
+  test.describe.configure({ retries: 2 });
+  // ...
+});
+```
+
+### `data-testid="browser-send-error"` exists on the BrowserPane inline error strip
+
+When asserting on browser-send error states, prefer the inline strip locator over text matching on a toast:
+
+```ts
+// Preferred: testid'd inline strip
+const inlineError = page.locator('[data-testid="browser-send-error"]');
+await inlineError.waitFor({ state: 'visible' });
+await expect(inlineError).toContainText('Paste landed but Enter did not submit');
+```
+
+The inline strip and the toast surface the same `error` state in `handleSend`. The testid is cleaner than `getByText(...)` and doesn't depend on toast positioning or duration.
+
+### `expect.poll` replaces "fixed-wait then hand-rolled poll"
+
+When you see this pattern:
+
+```ts
+// WRONG - prefix wait that's strictly waste
+await page.waitForTimeout(3000);
+let runningCount = -1;
+for (let i = 0; i < 20; i++) {
+  runningCount = await page.evaluate(...);
+  if (runningCount === 0) break;
+  await page.waitForTimeout(500);
+}
+expect(runningCount).toBe(0);
+```
+
+Replace with a single `expect.poll`:
+
+```ts
+// RIGHT
+await expect
+  .poll(
+    async () => page.evaluate(async () => {
+      const sessions = await window.electronAPI.sessions.list();
+      return sessions.filter((s: any) => s.status === 'running').length;
+    }),
+    { timeout: 13_000, intervals: [200, 500] },
+  )
+  .toBe(0);
+```
+
+The `intervals` array tells Playwright how often to poll - start fast (200ms) for tests where settling is usually quick, then back off (500ms+) to limit total churn.
+
+### Suite-wide flake taxonomy on Windows
+
+Two distinct flake classes show up in full-suite runs:
+
+1. **Mock CLI variance** (handled by per-spec `retries: 2` with documented root cause). Affects: `browser-evidence-retry.spec.ts`.
+2. **Worker process crashes** (`STATUS_STACK_BUFFER_OVERRUN`, 0xC0000409, observed once on `gemini-activity-detection.spec.ts` after ~50min of suite execution). Mitigations: keep wall-clock low (every removed `waitForTimeout` helps), let CI's `retries: 1` catch the rest. Do NOT add spec-level retries to mask this class - it hides real regressions.
+
+If a worker crash is reproducible (same spec, every run), bisect the spec to the smallest failing case. If random across specs, document the run and move on.
+
 ## Validation Commands
 
 ```bash

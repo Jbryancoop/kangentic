@@ -98,6 +98,8 @@ test.describe('Kimi Agent - Activity Detection', () => {
   });
 
   test('session history reader delivers usage data from wire.jsonl', async () => {
+    // 30s internal poll + setup exceeds 30s default.
+    test.slow();
     const title = `Kimi Usage ${runId}`;
     await createTask(page, title, 'Verify wire.jsonl pipeline delivers token + context telemetry');
 
@@ -130,6 +132,8 @@ test.describe('Kimi Agent - Activity Detection', () => {
   });
 
   test('tool events from wire.jsonl appear in the events cache', async () => {
+    // 30s internal poll + setup exceeds 30s default.
+    test.slow();
     const title = `Kimi Tools ${runId}`;
     await createTask(page, title, 'Verify ToolCall/ToolResult parsing into events cache');
 
@@ -202,6 +206,8 @@ test.describe('Kimi Agent - PlanDisplay notification detail round-trip (MOCK_KIM
   });
 
   test('PlanDisplay wire event produces a notification event with file_path and content detail', async () => {
+    // 30s internal poll + setup exceeds 30s default.
+    test.slow();
     const title = `Kimi PlanDisplay ${runId}`;
     await createTask(page, title, 'Verify PlanDisplay detail round-trip through wire.jsonl events-cache IPC');
 
@@ -287,6 +293,8 @@ test.describe('Kimi Agent - SubagentEvent lifecycle decoding (MOCK_KIMI_SUBAGENT
   });
 
   test('SubagentEvent TurnBegin and TurnEnd from wire.jsonl appear as subagent_start and subagent_stop in the events cache', async () => {
+    // 30s internal poll + setup exceeds 30s default.
+    test.slow();
     const title = `Kimi Subagent ${runId}`;
     await createTask(page, title, 'Verify SubagentEvent inner lifecycle decoding through the wire.jsonl pipeline');
 

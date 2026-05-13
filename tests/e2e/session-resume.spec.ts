@@ -144,6 +144,8 @@ test.describe('Claude Agent -- Session Resume via Column Move', () => {
   });
 
   test('moving Planning → Done → Unarchive to Planning resumes with --resume and same session ID', async () => {
+    // Three sequential 15s scrollback waits exceed the 30s electron default.
+    test.slow();
     const title = `Move Resume ${runId}`;
     await createTask(page, title, 'Test suspend and resume via Done/unarchive');
 
@@ -247,6 +249,8 @@ test.describe('Claude Agent -- Session Resume across App Restart', () => {
   });
 
   test('closing and relaunching the app resumes sessions with --resume', async () => {
+    // App restart + dual 30s waits well exceed the 30s electron default.
+    test.slow();
     const title = `Restart Resume ${runId}`;
 
     // === Phase 1: Launch, create task, drag to Planning, verify session ===
@@ -404,6 +408,9 @@ test.describe('Claude Agent -- Session Recovery with autoResumeSessionsOnRestart
   let doneId: string;
 
   test.beforeAll(async () => {
+    // Two-phase setup (launch, spawn 2 sessions, restart app, recover) needs
+    // more than the 30s electron default.
+    test.setTimeout(120_000);
     noAutoResumeTmpDir = createTempProject(`${TEST_NAME}-no-auto-resume`);
     writeTestConfigNoAutoResume(noAutoResumeDataDir);
 
@@ -564,6 +571,8 @@ test.describe('Claude Agent -- Session Recovery with autoResumeSessionsOnRestart
   });
 
   test('Resume button click after restart resumes session with --resume and matching agent_session_id', async () => {
+    // Resume + scrollback waits cumulative >30s.
+    test.slow();
     // Precondition: task A has a suspended session (verified in beforeAll).
     // Call SESSION_RESUME via IPC - this is what the "Resume session" button calls.
     // Before the fix, this threw "Task <id> already has an active session" because
@@ -603,6 +612,8 @@ test.describe('Claude Agent -- Session Recovery with autoResumeSessionsOnRestart
   });
 
   test('Drag Done → Executing after restart auto-spawns with --resume (suspended_by=system does not block)', async () => {
+    // 30s expect.poll + scrollback waits exceed the 30s default.
+    test.slow();
     // Precondition: task B has a suspended session with suspended_by='system'
     // (set by the new shutdown.ts path). Before the fix, shutdown.ts was writing
     // suspended_by='user', which caused spawnAgent to skip auto-spawn on column move.

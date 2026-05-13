@@ -54,6 +54,12 @@ export default defineConfig({
       testDir: './tests/e2e',
       testMatch: '**/*.spec.ts',
       workers: 1,
+      // Slowest legitimate test is ~15s; 45s gives ~3x headroom while still
+      // catching hangs faster than the global 60s default. The 45s budget
+      // also covers `afterAll` Electron app close + PTY cleanup, which can
+      // hit ~25-35s on Windows under suite load. Specs that legitimately
+      // need longer (multi-phase restart scenarios) opt in via `test.slow()`.
+      timeout: 45_000,
       // Retries are CI-only. Local /test runs do not pay 2x cost on the
       // occasional Windows Electron debug-pipe flake; CI keeps the safety net
       // to avoid PR-blocking transients.

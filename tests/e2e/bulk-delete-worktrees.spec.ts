@@ -78,6 +78,8 @@ test.afterAll(async () => {
 });
 
 test('TASK_BULK_DELETE removes every worktree directory from disk', async () => {
+  // Internal 45s poll for worktree creation exceeds the 30s electron default.
+  test.slow();
   const worktreesDir = path.join(tmpDir, '.kangentic', 'worktrees');
 
   const titles = Array.from({ length: TASK_COUNT }, (_, index) => `BulkDelWT ${runId}-${index}`);

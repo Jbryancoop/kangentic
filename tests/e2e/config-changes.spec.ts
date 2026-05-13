@@ -245,7 +245,17 @@ test.describe('Claude Agent -- Config Changes During Active Sessions', () => {
         await window.electronAPI.sessions.kill(sessionId);
       }, remainingRunning[0]);
 
-      await page.waitForTimeout(2000);
+      // Poll for kill to be reflected: nothing running and nothing queued.
+      // Replaces a fixed 2s sleep that hid the actual settle time.
+      await expect
+        .poll(
+          async () => {
+            const counts = await getSessionCounts(page);
+            return counts.running === 0 && counts.queued === 0;
+          },
+          { timeout: 10_000, intervals: [200, 500] },
+        )
+        .toBe(true);
     }
 
     // Final state: all sessions should be exited (no queued left to promote)

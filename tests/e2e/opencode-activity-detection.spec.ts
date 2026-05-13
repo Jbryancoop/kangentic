@@ -72,6 +72,8 @@ test.describe('OpenCode Agent - Activity Detection', () => {
   });
 
   test('spawned OpenCode session reports activity and settles to idle', async () => {
+    // 15s scrollback wait + 20s idle poll exceed the 30s electron default.
+    test.slow();
     const title = `OpenCode Activity ${runId}`;
     await createTask(page, title, 'Verify pty-only activity detection');
 

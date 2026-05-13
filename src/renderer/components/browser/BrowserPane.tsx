@@ -639,7 +639,10 @@ function BrowserPaneActive({
       </div>
 
       {error && (
-        <div className="px-2 py-1 text-[11px] text-red-400 flex-shrink-0 border-t border-edge">
+        <div
+          className="px-2 py-1 text-[11px] text-red-400 flex-shrink-0 border-t border-edge"
+          data-testid="browser-send-error"
+        >
           {error}
         </div>
       )}

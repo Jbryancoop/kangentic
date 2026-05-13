@@ -174,19 +174,17 @@ test.describe('Claude Agent -- Rapid Task Moves', () => {
     expect(finalTask.swimlane_id).toBe(backlogSwimlane.id);
 
     // --- Verify: no running sessions remain ---
-    // Give PTY onExit handlers time to fire after the rapid kills.
-    await page.waitForTimeout(3000);
-
-    let runningCount = -1;
-    for (let i = 0; i < 20; i++) {
-      runningCount = await page.evaluate(async () => {
-        const sessions = await window.electronAPI.sessions.list();
-        return sessions.filter((s: any) => s.status === 'running').length;
-      });
-      if (runningCount === 0) break;
-      await page.waitForTimeout(500);
-    }
-    expect(runningCount).toBe(0);
+    // PTY onExit handlers fire asynchronously after the rapid kills; poll
+    // sessions.list() until the running count settles to zero.
+    await expect
+      .poll(
+        async () => page.evaluate(async () => {
+          const sessions = await window.electronAPI.sessions.list();
+          return sessions.filter((s: any) => s.status === 'running').length;
+        }),
+        { timeout: 13_000, intervals: [200, 500] },
+      )
+      .toBe(0);
 
     // --- Verify: task has no active session_id ---
     const taskAfterSettle = await page.evaluate(async (tid) => {
