@@ -18,13 +18,15 @@ When a task moves from one column to another, the IPC handler (`task:move`) chec
 
 ### Priority 3: Active Session Handling
 
-Priority 3 has three sub-cases, checked in order:
+Priority 3 has four sub-cases, checked in order:
 
-**a) Agent change (handoff):** If `resolveTargetAgent()` returns a different agent than the current session's agent, the session is suspended and the engine falls through to the `spawnAgent` path. The `agentOverride` parameter is set on the spawn request to prevent the new session from resuming the old agent's session. If the target column has `handoff_context` enabled, prior work context (transcript, git diff, metrics) is packaged and delivered to the new agent. If disabled (the default), the new agent starts fresh with just the task title/description. See [Cross-Agent Handoff](#cross-agent-handoff) below.
+**a) Agent change (handoff):** If `resolveTargetAgent()` returns a different agent than the current session's agent, the session is suspended and the engine falls through to the `spawnAgent` path. The `agentOverride` parameter is set on the spawn request to prevent the new session from resuming the old agent's session. **Side effect:** per-task `model_override` and `effort_override` are cleared on handoff because override values are model-name-specific and don't carry across agents (Claude's `claude-sonnet-4-6` is meaningless to Codex). This clear is skipped when `task.agent_override` is set, since the user locked the agent at creation and the overrides remain valid for that agent. If the target column has `handoff_context` enabled, prior work context (transcript, git diff, metrics) is packaged and delivered to the new agent. If disabled (the default), the new agent starts fresh with just the task title/description. See [Cross-Agent Handoff](#cross-agent-handoff) below.
 
-**b) Same agent + auto_command:** If the target column has an `auto_command` configured, the command is injected directly into the running session via `TerminalSubmitScheduler.scheduleKeystrokes`. No suspend/resume cycle occurs.
+**b) Same agent + live injection plan:** If the destination adapter returns a non-null plan from `prepareInjectionPlan` (model/effort slash commands like `/model X` + optional auto_command), the writes are scheduled directly into the running session via `TerminalSubmitScheduler.scheduleKeystrokes`. No suspend/resume cycle occurs.
 
-**c) Same agent, no auto_command:** The session stays alive with no interruption. Permission mode differences alone do not trigger suspend/resume.
+**c) Same agent + concrete model/effort delta (no live-swap):** If the adapter has no live-swap slash for the target value AND the destination column overrides model or effort to a non-null value, the session is suspended and respawned so the new flags land on the command line. The respawn is skipped when the target value is null (entering a "Default" column) because adapters have no `/model <agent-default>` slash and `--resume <id>` preserves the saved model regardless - the suspend/resume would just churn the PTY without changing anything. Matches the recovery contract in `task-runtime-override.ts`.
+
+**d) Same agent, no delta or no concrete target:** The session stays alive with no interruption. Permission mode differences alone do not trigger suspend/resume.
 
 Transition action chains (priority 4) only fire when a task has no active session.
 
@@ -211,7 +213,7 @@ New projects get:
 
 When a task moves to a column with a different agent (detected by `resolveTargetAgent()` in `src/main/engine/agent-resolver.ts`), a cross-agent handoff occurs:
 
-1. **Agent resolution** detects agent change: `resolveTargetAgent()` checks column `agent_override`, then project `default_agent`, then global fallback (`'claude'`). If the resolved agent differs from the current session's agent, a handoff is triggered.
+1. **Agent resolution** detects agent change: `resolveTargetAgent()` checks `task.agent_override` first (highest priority - the user's create-time lock), then column `agent_override`, then project `default_agent`, then global fallback (`'claude'`). If the resolved agent differs from the current session's agent, a handoff is triggered. Tasks with a non-null `task.agent_override` never trigger a handoff on column moves - the locked agent supersedes column settings.
 2. **Task-move Priority 3** suspends the current session.
 3. **spawnAgent handoff path** - the `agentOverride` parameter is passed to `executeSpawnAgent()`, which prevents resume of the wrong agent's session.
 4. **HandoffOrchestrator** packages context from the previous session: transcript (from `session_transcripts`), git diff, and session metrics.

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useBoardStore } from '../../stores/board-store';
 import { useConfigStore } from '../../stores/config-store';
+import { useKnownModels } from '../../hooks/useKnownModels';
 import { ContextBarPopover } from './ContextBarPopover';
 
 const pill = 'px-2 py-0.5 rounded bg-surface-raised whitespace-nowrap select-none';
@@ -53,6 +54,10 @@ export function ModelEffortPicker({
   const agentCapabilities = useConfigStore(
     (s) => s.agentList.find((a) => a.name === agent)?.capabilities,
   );
+  // Pull the model list from the shared cache so the popover stays in sync
+  // with the New Task Advanced section + column manager, and learns any model
+  // the user invokes live.
+  const modelOptions = useKnownModels(agent);
 
   const [openPopover, setOpenPopover] = useState<'model' | 'effort' | null>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -60,7 +65,6 @@ export function ModelEffortPicker({
 
   if (!task) return null;
 
-  const modelOptions = agentCapabilities?.models ?? [];
   const effortOptions = agentCapabilities?.effortLevels ?? [];
   const supportsModel = !!agentCapabilities?.supportsModelOverride && modelOptions.length > 0;
   const supportsEffort = effortOptions.length > 0;

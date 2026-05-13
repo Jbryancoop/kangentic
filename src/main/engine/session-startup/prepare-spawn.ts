@@ -75,6 +75,7 @@ export async function prepareAgentSpawn(input: {
   const { task, swimlane, cwd, projectId, projectPath, effectiveConfig: config } = input;
 
   const { agent } = resolveTargetAgent({
+    taskAgentOverride: task.agent_override,
     columnAgent: swimlane?.agent_override ?? null,
     taskAgent: task.agent,
     projectDefaultAgent: input.projectDefaultAgent,

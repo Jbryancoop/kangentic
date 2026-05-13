@@ -8,7 +8,6 @@ import { resolveShortcutCommand } from '../../../shared/template-vars';
 import { PriorityBadge } from '../backlog/PriorityBadge';
 import { BaseDialog } from './BaseDialog';
 import { ConfirmDialog } from './ConfirmDialog';
-import { PreSpawnContextBar } from '../terminal/PreSpawnContextBar';
 import {
   TaskDetailHeader,
   TaskDetailEditForm,
@@ -52,6 +51,12 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   const [prUrl, setPrUrl] = useState(task.pr_url ?? '');
   const [labels, setLabels] = useState<string[]>(task.labels ?? []);
   const [priority, setPriority] = useState(task.priority ?? 0);
+  // Per-task agent/model/effort overrides. Empty string represents "use
+  // column default" in the form; converts to null on save. Initialized from
+  // the persisted task row so re-opening edit shows the current state.
+  const [agentOverride, setAgentOverride] = useState(task.agent_override ?? '');
+  const [modelOverride, setModelOverride] = useState(task.model_override ?? '');
+  const [effortOverride, setEffortOverride] = useState(task.effort_override ?? '');
   const [isEditing, setIsEditing] = useState(!!initialEdit);
   const changesOpen = useSessionStore((s) => s.changesOpenTasks.has(task.id));
   const toggleChangesOpen = useSessionStore((s) => s.toggleChangesOpen);
@@ -90,11 +95,17 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
     prUrl,
     labels,
     priority,
+    agentOverride,
+    modelOverride,
+    effortOverride,
     setTitle,
     setDescription,
     setPrUrl,
     setLabels,
     setPriority,
+    setAgentOverride,
+    setModelOverride,
+    setEffortOverride,
     setIsEditing,
     branchConfig,
     session: sessionState.session,
@@ -362,34 +373,30 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
         ) : undefined}
       >
         {isEditing && (
-          <>
-            <TaskDetailEditForm
-              task={task}
-              title={title}
-              setTitle={setTitle}
-              description={description}
-              setDescription={setDescription}
-              prUrl={prUrl}
-              setPrUrl={setPrUrl}
-              labels={labels}
-              setLabels={setLabels}
-              priority={priority}
-              setPriority={setPriority}
-              attachments={attachments}
-              branchConfig={branchConfig}
-              isSessionActive={sessionState.isSessionActive}
-              isArchived={isArchived}
-              isInTodo={isInTodo}
-            />
-            {!hasSessionContext && !isArchived && (
-              // Negative margins counter BaseDialog's content padding so the
-              // bar spans dialog edges (matches the live ContextBar surface).
-              // If BaseDialog padding ever changes, retune these offsets.
-              <div className="-mx-6 -mb-4 mt-4">
-                <PreSpawnContextBar taskId={task.id} />
-              </div>
-            )}
-          </>
+          <TaskDetailEditForm
+            task={task}
+            title={title}
+            setTitle={setTitle}
+            description={description}
+            setDescription={setDescription}
+            prUrl={prUrl}
+            setPrUrl={setPrUrl}
+            labels={labels}
+            setLabels={setLabels}
+            priority={priority}
+            setPriority={setPriority}
+            agentOverride={agentOverride}
+            setAgentOverride={setAgentOverride}
+            modelOverride={modelOverride}
+            setModelOverride={setModelOverride}
+            effortOverride={effortOverride}
+            setEffortOverride={setEffortOverride}
+            attachments={attachments}
+            branchConfig={branchConfig}
+            isSessionActive={sessionState.isSessionActive}
+            isArchived={isArchived}
+            isInTodo={isInTodo}
+          />
         )}
 
         {!isEditing && (

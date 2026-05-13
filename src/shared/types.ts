@@ -135,6 +135,8 @@ export interface Task {
   model_override: string | null;
   /** Per-task effort override set via the ContextBar popover. Takes precedence over the swimlane's `effort_override`; null inherits the swimlane (or agent default). */
   effort_override: string | null;
+  /** Per-task agent override set at task creation. When non-null, wins over the swimlane's `agent_override` and the project default for the task's entire lifetime - column moves cannot change the agent. Set only via the New Task dialog's Advanced section; the ContextBar popover does not edit this. */
+  agent_override: string | null;
   attachment_count: number;
   archived_at: string | null;
   created_at: string;
@@ -1033,6 +1035,14 @@ export interface AppConfig {
   /** Per-project memory of the last user-selected task tab in the terminal panel.
    *  Keyed by project ID, value is the task ID. Restored on project switch. */
   lastActiveTaskByProject: Record<string, string>;
+  /** Persisted union of every model ID we've ever seen for each agent: the
+   *  result of the static/JSONL `discoverCapabilities()` walk, plus any model
+   *  that has appeared on a live session's usage stream (Claude reports model
+   *  IDs like `claude-opus-4-7` on `usage.model.id`), plus any value the user
+   *  has typed/picked in an override. Keyed by agent name. Acts as the cache
+   *  for the model dropdowns so they don't depend on re-walking JSONL every
+   *  launch and they "discover" new models the user invokes in real time. */
+  discoveredModelsByAgent: Record<string, string[]>;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -1124,6 +1134,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   windowMaximized: false,
   statusBarPeriod: 'live',
   lastActiveTaskByProject: {},
+  discoveredModelsByAgent: {},
 };
 
 // === Agent Commands ===
@@ -1348,6 +1359,7 @@ export interface TaskCreateInput {
   customBranchName?: string;
   model_override?: string | null;
   effort_override?: string | null;
+  agent_override?: string | null;
   pendingAttachments?: Array<{
     filename: string;
     data: string; // base64
@@ -1373,6 +1385,7 @@ export interface TaskUpdateInput {
   priority?: number;
   model_override?: string | null;
   effort_override?: string | null;
+  agent_override?: string | null;
 }
 
 /**

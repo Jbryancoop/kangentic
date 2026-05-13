@@ -127,9 +127,10 @@ Omit `sessionId` entirely for agents that use caller-owned IDs (Claude via `--se
 
 When a task moves to a column, `resolveTargetAgent()` determines which agent to spawn:
 
-1. **Column agent_override** (per-column setting) - highest priority
-2. **Project default_agent** (per-project setting)
-3. **Global fallback** (`DEFAULT_AGENT` constant, currently `'claude'`)
+1. **Task agent_override** (`task.agent_override`, set at task creation via the New Task dialog's Advanced section) - highest priority. When set, the agent is locked for the task's entire lifetime; column moves cannot change it.
+2. **Column agent_override** (per-column setting)
+3. **Project default_agent** (per-project setting)
+4. **Global fallback** (`DEFAULT_AGENT` constant, currently `'claude'`)
 
 `task.agent` is intentionally NOT in the resolution chain. It records which agent last ran on the task (for resume and handoff detection), but column and project settings are the authority for which agent should run. Including `task.agent` caused bugs where tasks that previously ran Claude would always resolve to Claude even when moved to a Codex column.
 

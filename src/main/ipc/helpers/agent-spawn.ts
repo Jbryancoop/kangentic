@@ -132,6 +132,7 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
   // --- Resolve target agent ONCE (single source of truth) ---
   const project = options.projectId ? context.projectRepo.getById(options.projectId) : null;
   const { agent: targetAgent, isHandoff } = resolveTargetAgent({
+    taskAgentOverride: task.agent_override,
     columnAgent: toLane.agent_override,
     taskAgent: task.agent,
     projectDefaultAgent: project?.default_agent ?? null,

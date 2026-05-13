@@ -309,6 +309,7 @@ export async function handleTaskMove(
 
         const project = context.projectRepo.getById(resolvedProjectId);
         const { agent: effectiveTargetAgent, isHandoff: isAgentChange } = resolveTargetAgent({
+          taskAgentOverride: task.agent_override,
           columnAgent: toLane?.agent_override ?? null,
           taskAgent: task.agent,
           projectDefaultAgent: project?.default_agent ?? null,
@@ -334,10 +335,35 @@ export async function handleTaskMove(
             markRecordExited(sessionRepo, sessionRecord.id);
           }
           await context.sessionManager.suspend(task.session_id);
-          tasks.update({ id: task.id, session_id: null });
+          // Clear per-task model/effort overrides on cross-agent handoff.
+          // Override values are model-name-specific (e.g. "claude-sonnet-4-6")
+          // and effort tiers are agent-specific (e.g. Claude's "xhigh" is
+          // Opus-only and has no analogue on Codex). Carrying them into a
+          // different agent's spawn would either crash the CLI or be silently
+          // ignored. Cleanest contract: the lock applies for the duration of
+          // a single agent's tenure on the task; an explicit handoff resets it
+          // and the user can re-pick on the new agent if they want.
+          //
+          // Skipped when `task.agent_override` is set: the user locked the
+          // agent at task creation and the model/effort were picked for that
+          // exact agent. Normally `resolveTargetAgent` returns the override
+          // and `isHandoff` is false in that case, so this branch shouldn't
+          // even execute - this guard is defensive against state drift.
+          const handoffUpdates: Parameters<typeof tasks.update>[0] = {
+            id: task.id,
+            session_id: null,
+          };
+          if (!task.agent_override) {
+            handoffUpdates.model_override = null;
+            handoffUpdates.effort_override = null;
+          }
+          tasks.update(handoffUpdates);
           console.log(
             `[TASK_MOVE] Suspending session for task ${task.id.slice(0, 8)}`
             + ` (agent change: ${task.agent} -> ${effectiveTargetAgent}).`
+            + (task.agent_override
+                ? ` Kept model/effort overrides (task has locked agent_override).`
+                : ` Cleared model/effort overrides.`)
             + ` Will handoff to new agent.`,
           );
           // Fall through to Phase 2/3 (handoff spawn) by not returning null.
@@ -382,9 +408,20 @@ export async function handleTaskMove(
 
           const hasModelDelta = targetModel !== sourceModel;
           const hasEffortDelta = targetEffort !== sourceEffort;
-          const hasSettingsDelta = hasModelDelta || hasEffortDelta;
 
-          if (hasSettingsDelta && !interpolatedAuto) {
+          // Only respawn when the destination has a CONCRETE target value to
+          // apply. When the target is null (entering a column whose override
+          // is "Default" / unset) there is nothing to set: adapters have no
+          // `/model <agent-default>` slash, and `--resume <id>` preserves the
+          // saved model regardless of the absent `--model` flag, so the
+          // respawn would just churn the PTY without changing anything.
+          // Matches the same recovery contract in `task-runtime-override.ts`
+          // (see "Empty injection sequence with no concrete target value").
+          const restartNeededForModel = hasModelDelta && targetModel !== null;
+          const restartNeededForEffort = hasEffortDelta && targetEffort !== null;
+          const restartNeeded = restartNeededForModel || restartNeededForEffort;
+
+          if (restartNeeded && !interpolatedAuto) {
             // Settings changed but adapter returned no plan (no live swap).
             // Suspend and respawn to apply settings via command flags.
             const sessionRecord = sessionRepo.getLatestForTask(task.id);
@@ -435,8 +472,48 @@ export async function handleTaskMove(
       // --- Priority 4 (or 3a fall-through): TASK HAS NO ACTIVE SESSION ---
       // Return the plan; Phase 2 creates the worktree (unlocked, serialized
       // per-project by WorktreeManager.projectQueues), Phase 3 spawns.
+
+      // Symmetric clear for cross-agent destinations on the no-session path.
+      // Mirrors the live-handoff clear in Priority 3a (line ~336): model and
+      // effort overrides are model-name-specific and don't carry across
+      // agents. Without this, a task created in a Claude column with overrides
+      // and dragged into a Codex column before its first spawn would pass
+      // `claude-sonnet-4-6` into Codex's command builder. We do this here
+      // (after the early returns above) so non-spawning destinations (Done,
+      // auto_spawn=false) keep the user's overrides intact for when the task
+      // moves back into a spawning column.
+      //
+      // Skipped when `task.agent_override` is set: the user locked the agent
+      // at task creation, so the model/effort were picked for that exact
+      // agent. Column moves cannot trigger an agent change in this case
+      // (resolveTargetAgent returns task.agent_override regardless of column),
+      // so the overrides remain valid.
+      let planTask = task;
+      if (!planTask.agent_override && (planTask.model_override || planTask.effort_override) && toLane) {
+        const project = context.projectRepo.getById(resolvedProjectId);
+        const projectDefault = project?.default_agent ?? null;
+        const sourceAgent = planTask.agent ?? projectDefault;
+        const targetAgent = toLane.agent_override ?? projectDefault;
+        if (sourceAgent && targetAgent && sourceAgent !== targetAgent) {
+          tasks.update({
+            id: planTask.id,
+            model_override: null,
+            effort_override: null,
+          });
+          console.log(
+            `[TASK_MOVE] Cleared model/effort overrides on task ${planTask.id.slice(0, 8)}`
+            + ` (cross-agent move ${sourceAgent} -> ${targetAgent}, no live session).`,
+          );
+          // Refresh the snapshot so the downstream plan reflects the cleared
+          // state (Phase 3 re-reads task from DB anyway, but the plan object
+          // is a captured snapshot consumed by the caller).
+          const refreshed = tasks.getById(planTask.id);
+          if (refreshed) planTask = refreshed;
+        }
+      }
+
       return {
-        task,
+        task: planTask,
         fromSwimlaneId,
         originalPosition,
         toLane,

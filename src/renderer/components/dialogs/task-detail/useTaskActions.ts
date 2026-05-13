@@ -37,11 +37,17 @@ export function useTaskActions(input: {
   prUrl: string;
   labels: string[];
   priority: number;
+  agentOverride: string;
+  modelOverride: string;
+  effortOverride: string;
   setTitle: Dispatch<SetStateAction<string>>;
   setDescription: Dispatch<SetStateAction<string>>;
   setPrUrl: Dispatch<SetStateAction<string>>;
   setLabels: Dispatch<SetStateAction<string[]>>;
   setPriority: Dispatch<SetStateAction<number>>;
+  setAgentOverride: Dispatch<SetStateAction<string>>;
+  setModelOverride: Dispatch<SetStateAction<string>>;
+  setEffortOverride: Dispatch<SetStateAction<string>>;
   setIsEditing: Dispatch<SetStateAction<boolean>>;
 
   // Branch config hook
@@ -213,6 +219,9 @@ export function useTaskActions(input: {
     input.setPrUrl(input.task.pr_url ?? '');
     input.setLabels(input.task.labels ?? []);
     input.setPriority(input.task.priority ?? 0);
+    input.setAgentOverride(input.task.agent_override ?? '');
+    input.setModelOverride(input.task.model_override ?? '');
+    input.setEffortOverride(input.task.effort_override ?? '');
     input.branchConfig.resetToTask();
     input.setIsEditing(false);
   };
@@ -237,6 +246,19 @@ export function useTaskActions(input: {
     const needsSwitchBranch = (input.task.worktree_path && branchChanged) || enablingWorktree;
     const prUrlFields = buildPrUrlFields();
 
+    // Per-task overrides: empty string in the form maps to null in the DB.
+    // Always include them in the payload (even when unchanged) so a user
+    // clearing a previously-set override is persisted. Skipped when the
+    // session is active because the user picks model/effort via the live
+    // ContextBar popover in that flow; agent is never changed while running.
+    const overrideFields = !input.isSessionActive && !input.isArchived
+      ? {
+        agent_override: input.agentOverride || null,
+        model_override: input.modelOverride || null,
+        effort_override: input.effortOverride || null,
+      }
+      : {};
+
     if (needsSwitchBranch) {
       try {
         await window.electronAPI.tasks.switchBranch({
@@ -248,7 +270,10 @@ export function useTaskActions(input: {
           || input.description !== input.task.description
           || prUrlFields.pr_url !== undefined
           || JSON.stringify(input.labels) !== JSON.stringify(input.task.labels ?? [])
-          || input.priority !== (input.task.priority ?? 0)) {
+          || input.priority !== (input.task.priority ?? 0)
+          || (input.agentOverride || null) !== input.task.agent_override
+          || (input.modelOverride || null) !== input.task.model_override
+          || (input.effortOverride || null) !== input.task.effort_override) {
           await input.updateTask({
             id: input.task.id,
             title: input.title,
@@ -256,6 +281,7 @@ export function useTaskActions(input: {
             labels: input.labels,
             priority: input.priority,
             ...prUrlFields,
+            ...overrideFields,
           });
         }
         await useBoardStore.getState().loadBoard();
@@ -275,6 +301,7 @@ export function useTaskActions(input: {
         labels: input.labels,
         priority: input.priority,
         ...prUrlFields,
+        ...overrideFields,
       };
 
       if (!input.isSessionActive && !input.isArchived) {

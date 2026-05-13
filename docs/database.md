@@ -111,6 +111,7 @@ Valid role values: `todo`, `done`, or NULL (custom column).
 | priority | INTEGER | NOT NULL | 0 |
 | model_override | TEXT | | NULL |
 | effort_override | TEXT | | NULL |
+| agent_override | TEXT | | NULL |
 | archived_at | TEXT | | NULL |
 | created_at | TEXT | NOT NULL | |
 | updated_at | TEXT | NOT NULL | |
@@ -352,6 +353,7 @@ Listed in execution order within `runProjectMigrations()`:
 31. **Performance indices on sessions and tasks** -- adds four idempotent hot-path indices: `idx_sessions_task_started` on (task_id, started_at DESC) for per-task session lookups and cost summaries, `idx_sessions_status` on (status) for getResumable/getOrphaned/markRunningAsOrphaned, `idx_sessions_agent_session_id` on (agent_session_id) for the resume-by-agent-id path, and `idx_tasks_session_id` on (session_id) for session-change IPC events. Targets startup reconciliation and live board state lookups under accumulated session history.
 32. **`model_override` and `effort_override` columns on swimlanes and tasks** -- adds per-column model and effort/reasoning level overrides. Both default to NULL (inherit agent default). Read at spawn time by `prepare-spawn.ts` to set `--model` / `--effort` CLI flags. Live-applied to running sessions via adapter-specific slash injection (`getInjectionSequence`) on column transition; falls back to suspend+respawn for adapters without live-swap support. The same migration block also adds `model_override` and `effort_override` columns to the **tasks** table for per-task overrides set via the ContextBar popover. Per-task values take precedence over the swimlane override; NULL falls through to the swimlane and ultimately to the agent default.
 33. **`usage_history` append-only ledger** -- creates the `usage_history` table (in the initial `CREATE TABLE IF NOT EXISTS` block) plus two query indices (`idx_usage_history_session_started_at`, `idx_usage_history_recorded_at`) for StatusBar period bucketing. Adds a one-shot guarded backfill that copies existing `sessions` rows where `total_cost_usd IS NOT NULL` into `usage_history` so installs upgrading to this version retain their lifetime totals. Backfill is wrapped in a single transaction and uses `INSERT OR IGNORE` plus a `COUNT(*) = 0` guard so re-running is safe. Rows in this table have no foreign keys to `tasks` or `sessions`, so totals survive task deletion (the original bug this feature fixes).
+34. **`agent_override` column on tasks** -- adds per-task agent override set at task creation via the New Task dialog's Advanced section. Wins over `swimlane.agent_override` and the project default for the task's entire lifetime; column moves cannot change the agent. NULL means inherit from the swimlane. Resolved at spawn time by `resolveTargetAgent()` (priority 1) in `src/main/engine/agent-resolver.ts`. Companion guard in `task-move.ts` skips the cross-agent clear of `model_override` / `effort_override` when `agent_override` is set, since those values were picked for the locked agent.
 
 ### Key Migrations (Global DB)
 

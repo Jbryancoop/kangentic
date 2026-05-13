@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Plus, X, Info, ChevronRight, ChevronDown } from 'lucide-react';
+import { Plus, X, Info } from 'lucide-react';
 import { useBoardStore } from '../../stores/board-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useProjectStore } from '../../stores/project-store';
@@ -9,11 +9,12 @@ import { NameFromPromptButton } from '../NameFromPromptButton';
 import { BaseDialog } from './BaseDialog';
 import { BranchPicker } from './BranchPicker';
 import { WorktreeChip } from './WorktreeChip';
+import { AdvancedOverridesSection } from './AdvancedOverridesSection';
 import { Select } from '../settings/shared';
 import { LabelInput } from '../LabelInput';
 import { isValidGitBranchName } from '../../../shared/git-utils';
 import { slugify, computeAutoBranchName } from '../../../shared/slugify';
-import { DEFAULT_PRIORITY_CONFIG, DEFAULT_AGENT } from '../../../shared/types';
+import { DEFAULT_PRIORITY_CONFIG } from '../../../shared/types';
 import { DescriptionEditor } from '../DescriptionEditor';
 import { MAX_ATTACHMENT_BYTES, MEDIA_TYPE_EXT, resolveMediaType, isImageMediaType, getFileTypeIcon, getExtension } from './attachment-utils';
 import { compressClipboardImage } from './image-compress';
@@ -98,24 +99,15 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
   const nextIdRef = useRef(0);
   const pendingPasteCount = useRef(0);
 
-  // Per-task model/effort overrides. Empty string means "use column default".
-  // Capability gates below decide whether to render either picker - if the
-  // project's default agent doesn't support model overrides AND has no effort
-  // levels, the entire Advanced section is hidden.
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Per-task agent/model/effort overrides. Empty string means "use column
+  // default" for that field. The Advanced section locks all three for the
+  // task's lifetime once set - column moves cannot change them (see
+  // `resolveTargetAgent` and the cross-agent guards in `task-move.ts`).
+  const [agentOverride, setAgentOverride] = useState('');
   const [modelOverride, setModelOverride] = useState('');
   const [effortOverride, setEffortOverride] = useState('');
-  const defaultAgent = currentProject?.default_agent ?? DEFAULT_AGENT;
-  const advancedCapabilities = useConfigStore(
-    (s) => s.agentList.find((a) => a.name === defaultAgent)?.capabilities,
-  );
-  const advancedModelOptions = advancedCapabilities?.models ?? [];
-  const advancedEffortOptions = advancedCapabilities?.effortLevels ?? [];
-  const showModelPicker = !!advancedCapabilities?.supportsModelOverride && advancedModelOptions.length > 0;
-  const showEffortPicker = advancedEffortOptions.length > 0;
-  const showAdvancedSection = showModelPicker || showEffortPicker;
 
-  const isDirty = title.trim() !== '' || description.trim() !== '' || customBranchName.trim() !== '' || attachments.length > 0 || labels.length > 0 || priority !== 0 || modelOverride !== '' || effortOverride !== '';
+  const isDirty = title.trim() !== '' || description.trim() !== '' || customBranchName.trim() !== '' || attachments.length > 0 || labels.length > 0 || priority !== 0 || agentOverride !== '' || modelOverride !== '' || effortOverride !== '';
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -257,6 +249,7 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
       ...(baseBranch.trim() ? { baseBranch: baseBranch.trim() } : {}),
       ...(useWorktree !== null ? { useWorktree } : {}),
       ...(customBranchName.trim() ? { customBranchName: customBranchName.trim() } : {}),
+      ...(agentOverride ? { agent_override: agentOverride } : {}),
       ...(modelOverride ? { model_override: modelOverride } : {}),
       ...(effortOverride ? { effort_override: effortOverride } : {}),
       ...(attachments.length > 0 ? {
@@ -431,56 +424,15 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
               )}
             </div>
 
-            {showAdvancedSection && (
-              <div>
-                <button
-                  type="button"
-                  onClick={() => setAdvancedOpen((previous) => !previous)}
-                  className="flex items-center gap-1 text-xs text-fg-muted hover:text-fg-secondary transition-colors"
-                  data-testid="task-advanced-toggle"
-                  aria-expanded={advancedOpen}
-                >
-                  {advancedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  Advanced
-                </button>
-                {advancedOpen && (
-                  <div className="flex gap-3 mt-2" data-testid="task-advanced-section">
-                    {showModelPicker && (
-                      <div className="flex-1">
-                        <label className="text-xs text-fg-muted mb-1 block">Model</label>
-                        <Select
-                          value={modelOverride}
-                          onChange={(event) => setModelOverride((event.target as HTMLSelectElement).value)}
-                          className="appearance-none bg-surface border border-edge-input rounded pl-3 pr-10 py-1.5 text-sm text-fg w-full focus:outline-none focus:border-accent"
-                          data-testid="task-model-override"
-                        >
-                          <option value="">Use column default</option>
-                          {advancedModelOptions.map((value) => (
-                            <option key={value} value={value}>{value}</option>
-                          ))}
-                        </Select>
-                      </div>
-                    )}
-                    {showEffortPicker && (
-                      <div className="flex-1">
-                        <label className="text-xs text-fg-muted mb-1 block">Effort</label>
-                        <Select
-                          value={effortOverride}
-                          onChange={(event) => setEffortOverride((event.target as HTMLSelectElement).value)}
-                          className="appearance-none bg-surface border border-edge-input rounded pl-3 pr-10 py-1.5 text-sm text-fg w-full focus:outline-none focus:border-accent"
-                          data-testid="task-effort-override"
-                        >
-                          <option value="">Use column default</option>
-                          {advancedEffortOptions.map((value) => (
-                            <option key={value} value={value}>{value}</option>
-                          ))}
-                        </Select>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
+            <AdvancedOverridesSection
+              swimlaneId={swimlaneId}
+              agentOverride={agentOverride}
+              setAgentOverride={setAgentOverride}
+              modelOverride={modelOverride}
+              setModelOverride={setModelOverride}
+              effortOverride={effortOverride}
+              setEffortOverride={setEffortOverride}
+            />
 
             {/* Drag overlay */}
             {isDragOver && (

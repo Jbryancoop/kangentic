@@ -73,6 +73,7 @@ These settings appear in both App Settings (as defaults) and Project Settings (a
 | `lastActiveTaskByProject` | Record\<string, string\> | `{}` | Per-project memory of the last user-clicked task tab in the terminal panel, keyed by project ID. Restored on project switch. Auto-saved, not shown in UI. |
 | `autoNameAskedTaskIds` | string[] | `[]` | Task IDs that have already been offered an auto-rename suggestion. Persisted so a dismissed suggestion does not reappear next launch. Drained on task delete (single + bulk delete handlers in `task-crud.ts`). Auto-saved, not shown in UI. |
 | `autoNameRateLimitPerHour` | number | `60` | Maximum auto-name CLI calls per rolling 60-minute window. Caps cost on burst task creation. `0` disables the limit. Enforced in the `agent:summarize` IPC handler. Global-only, not currently surfaced in the Settings panel. |
+| `discoveredModelsByAgent` | Record\<string, string[]\> | `{}` | Persisted union of every model ID seen for each agent. Sources: `discoverCapabilities()` walk (Claude reads `~/.claude/projects/` JSONL), live `usage.model.id` from running sessions (via `rememberDiscoveredModel` in `config-store.ts`), and override picks. Keyed by agent name. Backs the model dropdowns in the New Task / Edit dialogs and column manager so they learn new models without re-walking JSONL on each launch. Auto-saved, not shown in UI. |
 
 ### terminal.*
 

@@ -15,6 +15,7 @@ import { ModelCombobox } from './ModelCombobox';
 import { ICON_REGISTRY, ROLE_DEFAULTS, getUsedIcons } from '../../utils/swimlane-icons';
 import { Select } from '../settings/shared';
 import { ToggleCard } from '../ToggleCard';
+import { useAgentCapabilityResolution } from '../../hooks/useAgentCapabilityResolution';
 import {
   getPermissionLabel,
   DEFAULT_PERMISSIONS,
@@ -24,7 +25,6 @@ import {
   type Swimlane,
   type SwimlaneRole,
   type PermissionMode,
-  type AgentDetectionInfo,
   type SwimlaneCreateInput,
   type SwimlaneUpdateInput,
 } from '../../../shared/types';
@@ -202,7 +202,14 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
   const globalPermissionMode = useConfigStore((s) => s.config.agent.permissionMode);
   const currentProject = useProjectStore((state) => state.currentProject);
 
-  const [agentList, setAgentList] = useState<AgentDetectionInfo[]>(() => useConfigStore.getState().agentList);
+  // Live subscription to the store's agentList so the dialog stays in sync
+  // with `useAgentCapabilityResolution` (which also reads from the store).
+  // The dialog used to keep a local snapshot here, but that meant the hook
+  // and the dropdown / permission resolution could see different data if
+  // detection re-ran. The mount effect below refreshes the store, which now
+  // implicitly updates this subscription too.
+  const agentList = useConfigStore((state) => state.agentList);
+  const loadAgentList = useConfigStore((state) => state.loadAgentList);
 
   // Snapshot originals + drafts at mount. If the dialog was opened with
   // `seedNewDraft=true`, also seed a fresh new draft inline so the dialog
@@ -276,7 +283,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
   // Mirror state into refs so the store-sync effect can read the latest
   // values without including them in its dependency array (which would loop,
   // because the same effect calls setOriginals/setDrafts).
-  // Intentional: no deps array on these mirror effects — they fire on every
+  // Intentional: no deps array on these mirror effects - they fire on every
   // commit so .current always points at the latest snapshot before the
   // store-sync effect runs (effects fire in declaration order).
   const originalsRef = useRef(originals);
@@ -334,13 +341,17 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
     });
   }, [swimlanes]);
 
-  // ── Load agent capabilities ────────────────────────────────────────
+  // ── Refresh agent capabilities ─────────────────────────────────────
+  // Dispatch through the store so the agentList subscription above picks
+  // up the new data; any other component reading `useConfigStore.agentList`
+  // (e.g. the New Task dialog's `useAgentCapabilityResolution`) sees the
+  // same refreshed snapshot.
   useEffect(() => {
-    window.electronAPI.agents.list().then(setAgentList).catch(() => {});
-  }, []);
+    void loadAgentList();
+  }, [loadAgentList]);
 
   // ── Add-new-draft side effect ─────────────────────────────────────
-  // Originals are intentionally not touched here — unsaved drafts have no
+  // Originals are intentionally not touched here - unsaved drafts have no
   // "original" entry, which is how `isDirty` returns true for them.
   const addNewDraft = useCallback(() => {
     const draft = makeNewDraft();
@@ -412,14 +423,24 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
   );
   const hasDirty = dirtyIds.length > 0;
 
+  // Effective-agent resolution for the column manager: column draft's
+  // override wins over the project default. (Tasks add a fourth tier in
+  // their own dialog; this surface intentionally doesn't.)
   const effectiveAgent = draft?.agent_override ?? projectDefaultAgent;
-  const effectiveAgentInfo = agentList.find((agent) => agent.name === effectiveAgent);
+  const {
+    info: effectiveAgentInfo,
+    models: knownModels,
+    effortLevels,
+    supportsModelOverride,
+  } = useAgentCapabilityResolution(effectiveAgent);
   const agentPermissions = effectiveAgentInfo?.permissions ?? DEFAULT_PERMISSIONS;
-  const effortLevels = effectiveAgentInfo?.capabilities?.effortLevels ?? [];
-  const supportsModelOverride = effectiveAgentInfo?.capabilities?.supportsModelOverride ?? false;
 
+  // Merge in in-flight lane drafts so the dropdown reflects model picks
+  // that other columns set in this same edit session but haven't been
+  // saved yet. The hook returns the globally-known set; this adds the
+  // local-only context.
   const discoveredModels = useMemo(() => {
-    const merged = new Set(effectiveAgentInfo?.capabilities?.models ?? []);
+    const merged = new Set(knownModels);
     for (const lane of Object.values(drafts)) {
       if (!lane.model_override) continue;
       const laneAgent = lane.agent_override ?? projectDefaultAgent;
@@ -427,7 +448,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
       merged.add(lane.model_override);
     }
     return Array.from(merged).sort((a, b) => a.localeCompare(b));
-  }, [effectiveAgentInfo, drafts, projectDefaultAgent, effectiveAgent]);
+  }, [knownModels, drafts, projectDefaultAgent, effectiveAgent]);
 
   const usedIcons = useMemo(() => {
     return getUsedIcons(

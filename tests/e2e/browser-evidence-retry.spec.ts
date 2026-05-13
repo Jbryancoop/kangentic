@@ -127,6 +127,14 @@ async function openBrowserPaneForNewTask(page: Page, title: string): Promise<str
 }
 
 test.describe('Claude Agent -- Browser Send evidence/retry paths', () => {
+  // Mock-CLI timing variance: the `eats-all-cr` fixture occasionally lets a
+  // CR through under wall-clock pressure, which means the engine succeeds
+  // instead of raising PasteSubmitError and the expected toast never fires.
+  // Isolation runs show ~20% fail rate per attempt; 2 retries push effective
+  // pass rate to ~99%. The cleaner fix (data-testid'd inline error strip +
+  // pollable signal) is tracked in #141.
+  test.describe.configure({ retries: 2 });
+
   test('engine retry succeeds when the agent swallows the first \\r', async () => {
     const ctx = await setupVariant('eats-first-cr');
     try {
@@ -177,9 +185,14 @@ test.describe('Claude Agent -- Browser Send evidence/retry paths', () => {
       // not submit. Press Enter in the terminal to submit." (browser.ts:96-109).
       // Both the inline error strip and a toast surface the message; assert
       // on the first match.
+      //
+      // 10s timeout (was 5s): the button re-enables when the IPC handler
+      // resolves, but the toast surface lands in a slightly later React
+      // commit. Under Windows wall-clock pressure those commits can split
+      // 5+s apart. Tracked for a cleaner data-testid-based fix in #141.
       await expect(
         ctx.page.getByText('Paste landed but Enter did not submit', { exact: false }).first(),
-      ).toBeVisible({ timeout: 5000 });
+      ).toBeVisible({ timeout: 10_000 });
     } finally {
       await ctx.cleanup();
     }

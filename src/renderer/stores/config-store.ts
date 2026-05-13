@@ -34,6 +34,11 @@ interface ConfigStore {
   agentList: AgentDetectionInfo[];
   loadAgentList: () => Promise<void>;
 
+  /** Record a model that's been seen for an agent (live usage event or override
+   *  assignment). Idempotent and cheap: no-op when already known. Persists via
+   *  `updateConfig` so the next launch starts with the merged set. */
+  rememberDiscoveredModel: (agent: string, model: string) => void;
+
   // -- Settings panel UI --
   settingsOpen: boolean;
   setSettingsOpen: (open: boolean) => void;
@@ -118,6 +123,41 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
   loadAgentList: async () => {
     const agentList = await window.electronAPI.agents.list();
     set({ agentList });
+
+    // Seed the discovered-models cache from `capabilities.models` so every
+    // launch starts with at least the JSONL-walk result merged in. Only writes
+    // when there's actually new material - avoids a config round-trip on every
+    // detection refresh.
+    const current = get().config.discoveredModelsByAgent ?? {};
+    const updates: Record<string, string[]> = {};
+    for (const info of agentList) {
+      const fresh = info.capabilities?.models;
+      if (!fresh || fresh.length === 0) continue;
+      const existing = current[info.name] ?? [];
+      const union = new Set<string>([...existing, ...fresh]);
+      if (union.size > existing.length) {
+        updates[info.name] = Array.from(union).sort((a, b) => a.localeCompare(b));
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      get().updateConfig({
+        discoveredModelsByAgent: { ...current, ...updates },
+      });
+    }
+  },
+
+  rememberDiscoveredModel: (agent, model) => {
+    if (!agent || !model) return;
+    const current = get().config.discoveredModelsByAgent ?? {};
+    const existing = current[agent] ?? [];
+    if (existing.includes(model)) return;
+    const next = [...existing, model].sort((a, b) => a.localeCompare(b));
+    // Fire-and-forget: this is a cache write, not a user-driven setting. If the
+    // persist fails the in-memory effective config will still pick up the new
+    // value via deepMergeConfig on the next refresh.
+    get().updateConfig({
+      discoveredModelsByAgent: { ...current, [agent]: next },
+    }).catch(() => undefined);
   },
 
   setSettingsOpen: (open) => {

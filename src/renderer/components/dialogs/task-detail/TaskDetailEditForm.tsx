@@ -6,6 +6,7 @@ import { Select } from '../../settings/shared';
 import { LabelInput } from '../../LabelInput';
 import { DescriptionEditor } from '../../DescriptionEditor';
 import { NameFromPromptButton } from '../../NameFromPromptButton';
+import { AdvancedOverridesSection } from '../AdvancedOverridesSection';
 import { AttachmentThumbnails } from './AttachmentThumbnails';
 import { useConfigStore } from '../../../stores/config-store';
 import { useProjectStore } from '../../../stores/project-store';
@@ -27,6 +28,12 @@ interface TaskDetailEditFormProps {
   setLabels: (labels: string[]) => void;
   priority: number;
   setPriority: (priority: number) => void;
+  agentOverride: string;
+  setAgentOverride: (value: string) => void;
+  modelOverride: string;
+  setModelOverride: (value: string) => void;
+  effortOverride: string;
+  setEffortOverride: (value: string) => void;
   attachments: AttachmentsState;
   branchConfig: BranchConfigState;
   isSessionActive: boolean;
@@ -46,6 +53,12 @@ export function TaskDetailEditForm({
   setLabels,
   priority,
   setPriority,
+  agentOverride,
+  setAgentOverride,
+  modelOverride,
+  setModelOverride,
+  effortOverride,
+  setEffortOverride,
   attachments,
   branchConfig,
   isSessionActive,
@@ -172,6 +185,18 @@ export function TaskDetailEditForm({
             </>
           )}
         </div>
+      )}
+      {!isSessionActive && !isArchived && (
+        <AdvancedOverridesSection
+          swimlaneId={task.swimlane_id}
+          agentOverride={agentOverride}
+          setAgentOverride={setAgentOverride}
+          modelOverride={modelOverride}
+          setModelOverride={setModelOverride}
+          effortOverride={effortOverride}
+          setEffortOverride={setEffortOverride}
+          defaultOpen={!!agentOverride || !!modelOverride || !!effortOverride}
+        />
       )}
       {attachments.isDragOver && (
         <div className="absolute inset-0 bg-accent/10 border-2 border-dashed border-accent rounded-lg flex items-center justify-center z-10 pointer-events-none">

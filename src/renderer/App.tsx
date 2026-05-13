@@ -264,6 +264,18 @@ export function App() {
         if (isTransient || !projectId || !activeProjectId || projectId === activeProjectId) {
           pendingUsage.set(sessionId, data);
           scheduleBatchFlush();
+
+          // Live-capture: feed any newly-reported model ID into the persistent
+          // discovered-models cache so the dropdowns instantly "learn" any
+          // model the user invokes (e.g. `/model haiku` in Claude reports back
+          // as `claude-haiku-4-5-...` on the next usage tick). The action
+          // dedupes before persisting, so this is a cheap no-op once seen.
+          if (data.model?.id) {
+            const task = useBoardStore.getState().tasks.find((entry) => entry.session_id === sessionId);
+            if (task?.agent) {
+              useConfigStore.getState().rememberDiscoveredModel(task.agent, data.model.id);
+            }
+          }
         }
       }));
     }

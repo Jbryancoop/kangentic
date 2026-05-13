@@ -484,6 +484,18 @@ export function runProjectMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE tasks ADD COLUMN effort_override TEXT DEFAULT NULL');
   }
 
+  // Migration: add per-task agent_override column. Set at task creation via
+  // the New Task dialog's Advanced section; takes precedence over the
+  // swimlane's `agent_override` and the project's default agent. When set,
+  // the agent is locked for the task's entire lifetime - column moves cannot
+  // change it, and the model/effort overrides set alongside are valid for
+  // exactly this agent. NULL means "inherit from the swimlane".
+  const hasTaskAgentOverride = (db.pragma('table_info(tasks)') as Array<{ name: string }>)
+    .some((col) => col.name === 'agent_override');
+  if (!hasTaskAgentOverride) {
+    db.exec('ALTER TABLE tasks ADD COLUMN agent_override TEXT DEFAULT NULL');
+  }
+
   // Migration: session_transcripts table for agent-agnostic PTY output capture.
   // No FK on session_id - the transcript row may be created before the sessions
   // row exists (PTY data arrives during spawn, before executeSpawnAgent inserts

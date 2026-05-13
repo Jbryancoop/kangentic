@@ -503,6 +503,7 @@
           priority: input.priority || 0,
           model_override: input.model_override || null,
           effort_override: input.effort_override || null,
+          agent_override: input.agent_override || null,
           attachment_count: 0,
           archived_at: null,
           created_at: now(),
