@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.19.1] - 2026-05-13
+
+### Features
+
+- Board: right-click context menu for archived tasks (52880ddc)
+
+### Fixes
+
+- Board: restore Done-drop FlyingCard and grow-in animations (82f90ffb)
+
+### Other
+
+- Updater: stub process.platform so init-guard tests run on Linux CI (d9f16a04)
+
 ## [v0.19.0] - 2026-05-12
 
 ### Features
