@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PATHS, ensureDirs } from './paths';
-import type { AppConfig, PermissionMode } from '../../shared/types';
+import type { AppConfig, DeepPartial, PermissionMode } from '../../shared/types';
 import { DEFAULT_CONFIG } from '../../shared/types';
 import { deepMerge, deepMergeConfig } from '../../shared/object-utils';
 
@@ -10,6 +10,56 @@ import { deepMerge, deepMergeConfig } from '../../shared/object-utils';
  *  every other typed-struct field gets MERGE semantics. Update this list when
  *  adding a new dictionary-shaped field to AppConfig. */
 const CONFIG_DICTIONARY_PATHS = ['backlog.labelColors', 'agent.cliPaths'] as const;
+
+/** Drop keys whose value is undefined. Returns undefined when nothing is left,
+ *  so callers can skip writing empty nested objects. */
+function pruneUndefined(obj: Record<string, unknown>): Record<string, unknown> | undefined {
+  const entries = Object.entries(obj).filter(([, value]) => value !== undefined);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/**
+ * Pick only the project-overridable keys from a config-like object. This is the
+ * single definition of "what counts as a project setting". Both the global
+ * defaults snapshot (getProjectOverridableDefaults) and new-project seeding
+ * (getLastProjectOverrides) run through it, so non-setting keys that also live in
+ * `.kangentic/config.json` - importSources, browser, backlog.labelColors, etc. -
+ * are never treated as inheritable settings and never get cloned into new projects.
+ *
+ * Tolerates partial input: undefined leaves and empty nested objects are dropped
+ * so a sparsely-configured source project produces a tidy seed.
+ *
+ * KEEP IN SYNC with pickOverridableSubset() in tests/ui/mock-electron-api.js
+ */
+export function pickOverridableSubset(source: DeepPartial<AppConfig>): Partial<AppConfig> {
+  const result: Record<string, unknown> = {};
+
+  if (source.theme !== undefined) result.theme = source.theme;
+
+  const terminal = pruneUndefined({
+    shell: source.terminal?.shell,
+    fontSize: source.terminal?.fontSize,
+    fontFamily: source.terminal?.fontFamily,
+    scrollbackLines: source.terminal?.scrollbackLines,
+    cursorStyle: source.terminal?.cursorStyle,
+  });
+  if (terminal) result.terminal = terminal;
+
+  if (source.agent?.permissionMode !== undefined) {
+    result.agent = { permissionMode: source.agent.permissionMode };
+  }
+
+  const git = pruneUndefined({
+    worktreesEnabled: source.git?.worktreesEnabled,
+    autoCleanup: source.git?.autoCleanup,
+    defaultBaseBranch: source.git?.defaultBaseBranch,
+    copyFiles: source.git?.copyFiles,
+    initScript: source.git?.initScript,
+  });
+  if (git) result.git = git;
+
+  return result as Partial<AppConfig>;
+}
 
 export class ConfigManager {
   private config: AppConfig | null = null;
@@ -114,29 +164,10 @@ export class ConfigManager {
   /** Extract the project-overridable subset of the current global config.
    *  Used to snapshot defaults when a new project is created so that
    *  future global changes don't retroactively alter existing projects.
+   *  Shares its key set with getLastProjectOverrides via pickOverridableSubset.
    *  KEEP IN SYNC with snapshotOverridableDefaults() in tests/ui/mock-electron-api.js */
   getProjectOverridableDefaults(): Partial<AppConfig> {
-    const global = this.load();
-    return {
-      theme: global.theme,
-      terminal: {
-        shell: global.terminal.shell,
-        fontSize: global.terminal.fontSize,
-        fontFamily: global.terminal.fontFamily,
-        scrollbackLines: global.terminal.scrollbackLines,
-        cursorStyle: global.terminal.cursorStyle,
-      },
-      agent: {
-        permissionMode: global.agent.permissionMode,
-      },
-      git: {
-        worktreesEnabled: global.git.worktreesEnabled,
-        autoCleanup: global.git.autoCleanup,
-        defaultBaseBranch: global.git.defaultBaseBranch,
-        copyFiles: global.git.copyFiles,
-        initScript: global.git.initScript,
-      },
-    } as Partial<AppConfig>;
+    return pickOverridableSubset(this.load());
   }
 
   getEffectiveConfig(projectPath?: string): AppConfig {

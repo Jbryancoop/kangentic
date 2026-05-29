@@ -23,6 +23,7 @@ import type { Project, Task, AppConfig, ProjectSearchEntriesInput } from '../../
 import type { IpcContext } from '../ipc-context';
 import type { ProjectRepository } from '../../db/repositories/project-repository';
 import type { ConfigManager } from '../../config/config-manager';
+import { pickOverridableSubset } from '../../config/config-manager';
 
 /**
  * Sync the project-level MCP config file with the current settings.
@@ -268,6 +269,12 @@ export async function pruneStaleWorktreeProjects(context: IpcContext): Promise<v
  * project that has overrides. Used to seed new projects so they inherit
  * settings from the last configured project rather than from global defaults.
  * Falls back to getProjectOverridableDefaults() if no projects have overrides.
+ *
+ * Only the project-overridable subset (theme/terminal/git/permissionMode) is
+ * returned - never project-specific data that also lives in config.json such as
+ * `importSources` or `browser.defaultUrl`. Cloning the raw config.json here is
+ * what previously leaked one project's import sources into every project created
+ * after it.
  */
 function getLastProjectOverrides(
   projectRepo: ProjectRepository,
@@ -279,7 +286,9 @@ function getLastProjectOverrides(
   for (const project of projects) {
     if (project.path === excludePath) continue;
     const overrides = configManager.loadProjectOverrides(project.path);
-    if (overrides && Object.keys(overrides).length > 0) return overrides;
+    if (!overrides) continue;
+    const subset = pickOverridableSubset(overrides);
+    if (Object.keys(subset).length > 0) return subset;
   }
   return configManager.getProjectOverridableDefaults();
 }

@@ -163,29 +163,54 @@
     return result;
   }
 
+  /** Drop keys whose value is undefined; return undefined when nothing remains. */
+  function pruneUndefined(obj) {
+    var out = {};
+    var has = false;
+    for (var key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key) && obj[key] !== undefined) {
+        out[key] = obj[key];
+        has = true;
+      }
+    }
+    return has ? out : undefined;
+  }
+
+  /** Pick only the project-overridable keys from a config-like object. Non-setting
+   *  keys that also live in config.json (importSources, browser, ...) are dropped,
+   *  so they never seed into a new project.
+   *  KEEP IN SYNC with pickOverridableSubset() in src/main/config/config-manager.ts */
+  function pickOverridableSubset(source) {
+    source = source || {};
+    var terminal = source.terminal || {};
+    var agent = source.agent || {};
+    var git = source.git || {};
+    var result = {};
+    if (source.theme !== undefined) result.theme = source.theme;
+    var pickedTerminal = pruneUndefined({
+      shell: terminal.shell,
+      fontSize: terminal.fontSize,
+      fontFamily: terminal.fontFamily,
+      scrollbackLines: terminal.scrollbackLines,
+      cursorStyle: terminal.cursorStyle,
+    });
+    if (pickedTerminal) result.terminal = pickedTerminal;
+    if (agent.permissionMode !== undefined) result.agent = { permissionMode: agent.permissionMode };
+    var pickedGit = pruneUndefined({
+      worktreesEnabled: git.worktreesEnabled,
+      autoCleanup: git.autoCleanup,
+      defaultBaseBranch: git.defaultBaseBranch,
+      copyFiles: git.copyFiles ? git.copyFiles.slice() : undefined,
+      initScript: git.initScript,
+    });
+    if (pickedGit) result.git = pickedGit;
+    return result;
+  }
+
   /** Snapshot the project-overridable subset of global config.
    *  KEEP IN SYNC with ConfigManager.getProjectOverridableDefaults() in src/main/config/config-manager.ts */
   function snapshotOverridableDefaults() {
-    return {
-      theme: config.theme,
-      terminal: {
-        shell: config.terminal.shell,
-        fontSize: config.terminal.fontSize,
-        fontFamily: config.terminal.fontFamily,
-        scrollbackLines: config.terminal.scrollbackLines,
-        cursorStyle: config.terminal.cursorStyle,
-      },
-      agent: {
-        permissionMode: config.agent.permissionMode,
-      },
-      git: {
-        worktreesEnabled: config.git.worktreesEnabled,
-        autoCleanup: config.git.autoCleanup,
-        defaultBaseBranch: config.git.defaultBaseBranch,
-        copyFiles: config.git.copyFiles.slice(),
-        initScript: config.git.initScript,
-      },
-    };
+    return pickOverridableSubset(config);
   }
 
   /** Clone settings from the most recently opened project that has overrides.
@@ -198,7 +223,9 @@
     for (var i = 0; i < sorted.length; i++) {
       if (sorted[i].path === excludePath) continue;
       var overrides = projectConfigs[sorted[i].path];
-      if (overrides && Object.keys(overrides).length > 0) return overrides;
+      if (!overrides) continue;
+      var subset = pickOverridableSubset(overrides);
+      if (Object.keys(subset).length > 0) return subset;
     }
     return snapshotOverridableDefaults();
   }

@@ -20,7 +20,7 @@ The config directory (`<configDir>`) is platform-specific:
 
 Both panels use a VS Code-style layout: a sidebar with tab navigation on the left and the active settings pane on the right. A search bar at the top filters settings by keyword. Search uses multi-token matching (all tokens must appear in the setting name or description). Results are grouped by tab with match count badges on the sidebar; tabs with zero matches are dimmed. Press Ctrl+F (Cmd+F on macOS) to focus the search bar, Escape to clear the filter.
 
-- **Settings Panel** -- opened via the titlebar gear icon or the gear icon on each project row in the sidebar. A project switcher dropdown in the header allows switching between projects. Sidebar tabs: Theme, Terminal, Agent, Git, Browser, Shortcuts, Layout, Behavior, MCP Server, Notifications, Privacy, Developer. The first six tabs (above the separator) are per-project settings. Five of them (Theme, Terminal, Agent, Git, Browser) save to `.kangentic/config.json`, while Shortcuts saves to the board config files (`kangentic.json` and `kangentic.local.json`). The last six (Layout, Behavior, MCP Server, Notifications, Privacy, Developer) are shared settings that apply across all projects, saved to the global config. When no project is open, only the 6 shared tabs appear. Changes save immediately. New projects clone settings from the most recently configured project (falling back to defaults if none exist).
+- **Settings Panel** -- opened via the titlebar gear icon or the gear icon on each project row in the sidebar. A project switcher dropdown in the header allows switching between projects. Sidebar tabs: Theme, Terminal, Agent, Git, Browser, Shortcuts, Layout, Behavior, MCP Server, Notifications, Privacy, Developer. The first six tabs (above the separator) are per-project settings. Five of them (Theme, Terminal, Agent, Git, Browser) save to `.kangentic/config.json`, while Shortcuts saves to the board config files (`kangentic.json` and `kangentic.local.json`). The last six (Layout, Behavior, MCP Server, Notifications, Privacy, Developer) are shared settings that apply across all projects, saved to the global config. When no project is open, only the 6 shared tabs appear. Changes save immediately. New projects inherit only the seeded settings subset (`theme`, `terminal.*`, `agent.permissionMode`, `git.*`) from the most recently configured project, falling back to defaults if none exist. Project-specific data such as `browser.defaultUrl` and `importSources` is stored per-project and is never cloned into a new project.
 
 ### App-Only Settings
 
@@ -46,6 +46,8 @@ These settings appear in both App Settings (as defaults) and Project Settings (a
 - `agent.permissionMode`
 - `git.worktreesEnabled`, `git.autoCleanup`, `git.defaultBaseBranch`, `git.copyFiles`, `git.initScript`
 - `browser.enabled`, `browser.defaultUrl`
+
+> **Seeded vs. stored.** All settings above are stored per-project in `.kangentic/config.json` and editable in Project Settings. When a *new* project is created it is seeded with only `theme`, `terminal.*`, `agent.permissionMode`, and `git.*` (via `pickOverridableSubset` in `config-manager.ts`). `browser.*`, and non-setting project data such as `importSources`, are kept per-project and never cloned, so one project's dev-server URL or import sources cannot leak into another.
 
 ## Full AppConfig Reference
 
@@ -193,8 +195,8 @@ All context bar settings are global-only and cannot be overridden per-project.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `browser.enabled` | boolean | `true` | Show the Browser pill in task detail headers. Disable for security-sensitive projects that should not embed external sites. Per-project overridable. |
-| `browser.defaultUrl` | string \| undefined | `undefined` | Project default URL when a task has no per-task URL override. Auto-saved when the user first navigates the Browser pane. Per-project overridable. |
+| `browser.enabled` | boolean | `true` | Show the Browser pill in task detail headers. Disable for security-sensitive projects that should not embed external sites. Per-project overridable (stored per-project; not seeded into new projects). |
+| `browser.defaultUrl` | string \| undefined | `undefined` | Project default URL when a task has no per-task URL override. Auto-saved when the user first navigates the Browser pane. Per-project overridable (stored per-project; not seeded into new projects). |
 
 **Action (not a config key):** the Browser tab also exposes a destructive **Clear Browser Data** button (registry id `browser.clearStorage`) that wipes cookies, localStorage, IndexedDB, service workers, and HTTP/auth caches for the shared embedded browser partition (`persist:kangentic-browser`). Saved URLs are kept. Backed by the `browser:clearStorage` IPC channel; not persisted in `AppConfig`.
 
