@@ -198,9 +198,16 @@ export async function discoverClaudeStaticCapabilities(cliPath: string): Promise
 
   // The `--effort` line in Claude Code's help output looks like:
   //   --effort <level>     Effort level for the current session (low, medium, high, xhigh, max)
+  // At real terminal widths the description is long enough that the
+  // parenthesized choice list wraps onto an indented continuation line:
+  //   --effort <level>     Effort level for the current session
+  //                        (low, medium, high, xhigh, max)
   // The parenthesized choice list is the source of truth - parse it directly
   // so any future addition (e.g. a new "ultra" level) shows up automatically.
-  const effortMatch = helpText.match(/--effort\s+<[^>]+>\s+[^(\n]*\(([^)]+)\)/);
+  // The gap class is `[^(]` (newlines allowed) rather than `[^(\n]` so the
+  // match spans that wrap; it still stops at the first `(` after `<level>`,
+  // which is the choice list.
+  const effortMatch = helpText.match(/--effort\s+<[^>]+>\s+[^(]*\(([^)]+)\)/);
   if (effortMatch) {
     const levels = effortMatch[1]
       .split(',')

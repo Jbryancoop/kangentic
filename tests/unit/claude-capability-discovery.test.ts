@@ -153,6 +153,21 @@ describe('discoverClaudeCapabilities', () => {
     expect(capabilities.effortLevels).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
   });
 
+  it('extracts effort levels when the choice list wraps onto a continuation line', async () => {
+    // At real terminal widths the description is long enough that Claude's
+    // help wraps the choice list onto an indented continuation line. The
+    // parser must span that wrap - a newline-excluding gap silently drops the
+    // levels, which hides the effort picker in the ContextBar.
+    setHelpOutput(`
+  --effort <level>                      Effort level for the current session
+                                        (low, medium, high, xhigh, max)
+  --fallback-model <model>              Enable automatic fallback (only works with --print)
+`);
+
+    const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+    expect(capabilities.effortLevels).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+  });
+
   it('detects --model flag presence', async () => {
     setHelpOutput(`
   --include-partial-messages                        Include partial message chunks
