@@ -44,6 +44,69 @@ function reconcileCache<T>(
 }
 
 /**
+ * Like reconcileCache, but the LIVE SESSION LIST - not the fetched snapshot -
+ * is the keyset authority for what counts as "still tracked".
+ *
+ * The plain reconcileCache evicts any store entry absent from `cached`. That
+ * is correct for an UNSCOPED cache (it contains every live session), but wrong
+ * for the PROJECT-SCOPED usage/events fetches: a live session in another
+ * project (or one the project filter dropped because its projectId was
+ * undefined mid-spawn) is absent from `cached` yet very much alive, and
+ * dropping its last-known value flashes the card to the 0% baseline until the
+ * next (buffered, throttled) push lands.
+ *
+ * So we additionally preserve any `current[id]` whose id is still in
+ * `liveSessionIds`. Genuinely-gone sessions (absent from cached AND not live)
+ * are still evicted, preserving the anti-'thinking'-leak contract that the
+ * plain reconcileCache was built for.
+ */
+function reconcileLiveCache<T>(
+  cached: Record<string, T>,
+  current: Record<string, T>,
+  liveSessionIds: Set<string>,
+): Record<string, T> {
+  const result = reconcileCache(cached, current);
+  for (const [sessionId, currentValue] of Object.entries(current)) {
+    if (!(sessionId in result) && liveSessionIds.has(sessionId)) {
+      result[sessionId] = currentValue;
+    }
+  }
+  return result;
+}
+
+/**
+ * Reconcile the spawn-progress map against the queryable main-process snapshot.
+ *
+ * The main map (`cached`) is the strict keyset authority - if main reports no
+ * in-flight spawn for a task, the renderer must not show a "Starting agent..."
+ * label for it. This is what clears the HMR-strand bug: a label whose clearing
+ * push was lost in the listener gap (spawn finished, or spawn failed in the
+ * catch path) is dropped on the next sync because main no longer reports it.
+ *
+ * Note the asymmetry vs reconcileLiveCache: a live session is a KEEP signal for
+ * usage (the agent is alive, keep its numbers) but a DELETE signal for spawn
+ * progress (the session exists, so the spawn is over - drop the label).
+ *
+ * We do NOT re-add a store-only label that main does not report, even with no
+ * live session: that case is indistinguishable from a strand, and an actively
+ * spawning task re-establishes its label via its next progress push within
+ * milliseconds. For ids main DOES report, the store value wins (async-gap
+ * preservation: a fresher phase label may have arrived during the fetch).
+ */
+function reconcileSpawnProgress(
+  cached: Record<string, string>,
+  current: Record<string, string>,
+  liveTaskIds: Set<string>,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [taskId, cachedLabel] of Object.entries(cached)) {
+    if (liveTaskIds.has(taskId)) continue; // session arrived -> spawn done
+    result[taskId] = taskId in current ? current[taskId] : cachedLabel;
+  }
+  return result;
+}
+
+/**
  * HMR-resilient IPC fetch.
  *
  * Returns the resolved value on success, or `undefined` when:
@@ -177,24 +240,35 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
     const preAsyncSessions = new Map(get().sessions.map((s) => [s.id, s]));
 
     // Sessions list is always unscoped -- sidebar needs cross-project data.
-    // Usage/events are scoped to current project; activity is unscoped
-    // because sidebar badges need cross-project activity data.
-    // Parallelize all five IPC calls; they're independent.
+    // Usage/events are scoped to current project; activity, first-output and
+    // spawn-progress are unscoped (small maps; keyset reconciled against the
+    // live session list below). Parallelize all IPC calls; they're independent.
     //
     // Each call is wrapped in safeFetch so a missing preload method (HMR
     // skew: renderer ahead of preload) or a transient IPC failure does
     // NOT throw out of Promise.all and leave the store at its post-HMR
     // initial empty state. Successful calls reconcile normally; missing
     // ones preserve the existing store snapshot. The optional-call
-    // operator on getActivityReasons specifically handles the case where
-    // the running preload predates that method.
+    // operator on the newer methods handles a running preload that predates
+    // them.
     const sessionsApi = window.electronAPI.sessions;
-    const [freshSessions, cachedUsage, cachedActivity, cachedReasons, cachedEvents] = await Promise.all([
+    const tasksApi = window.electronAPI.tasks;
+    const [
+      freshSessions,
+      cachedUsage,
+      cachedActivity,
+      cachedReasons,
+      cachedEvents,
+      cachedFirstOutput,
+      cachedSpawnProgress,
+    ] = await Promise.all([
       safeFetch('list', () => sessionsApi.list()),
       safeFetch('getUsage', () => sessionsApi.getUsage(currentProjectId)),
       safeFetch('getActivity', () => sessionsApi.getActivity()),
       safeFetch('getActivityReasons', () => sessionsApi.getActivityReasons?.()),
       safeFetch('getEventsCache', () => sessionsApi.getEventsCache(currentProjectId)),
+      safeFetch('getFirstOutput', () => sessionsApi.getFirstOutput?.()),
+      safeFetch('getSpawnProgress', () => tasksApi.getSpawnProgress?.()),
     ]);
     if (signal.aborted) return false;
 
@@ -225,13 +299,50 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
     const stillExists = currentState.activeSessionId
       && mergedSessions.some((s) => s.id === currentState.activeSessionId);
 
-    // For usage/activity/events: reconcile via reconcileCache (above).
-    // The cache is authoritative for the key set (sessions the main
-    // engine still tracks); store entries win only for ids present in
-    // both, preserving IPC pushes that arrived during the async gap.
-    // Entries the engine has dropped are evicted; this prevents stale
-    // 'thinking' (and matching usage/events) from accumulating across
-    // suspend/respawn/HMR cycles.
+    // Live sets: a session the engine still actively tracks. Using the
+    // established running||queued predicate (cf. task-move.ts) so exited /
+    // suspended rows in the list stay evictable. These - not the
+    // project-scoped fetch - are the keyset authority for the per-session
+    // maps, so a live session never loses its last-known derived state just
+    // because the project filter scoped its usage out.
+    const isLive = (s: Session) => s.status === 'running' || s.status === 'queued';
+    const liveSessionIds = new Set(mergedSessions.filter(isLive).map((s) => s.id));
+    const liveTaskIds = new Set(mergedSessions.filter(isLive).map((s) => s.taskId));
+
+    // spawnProgress: reconcile against the queryable main map. Cleared for any
+    // task that now has a live session (spawn done) and for any label the main
+    // map no longer holds (the clearing push may have been lost in an HMR
+    // listener gap). HMR/preload skew (undefined fetch) -> preserve current
+    // minus tasks that already have a live session.
+    const nextSpawnProgress = cachedSpawnProgress
+      ? reconcileSpawnProgress(cachedSpawnProgress, currentState.spawnProgress, liveTaskIds)
+      : Object.fromEntries(
+          Object.entries(currentState.spawnProgress).filter(([taskId]) => !liveTaskIds.has(taskId)),
+        );
+
+    // pendingCommandLabel (terminal overlay hint, no main-side source): prune
+    // entries orphaned by HMR - a task with neither a live session nor an
+    // in-flight spawn can never show its boot overlay again. Conservative: any
+    // still-booting/live label is kept and cleared on the normal push path.
+    const nextPendingCommandLabel = Object.fromEntries(
+      Object.entries(currentState.pendingCommandLabel).filter(
+        ([taskId]) => liveTaskIds.has(taskId) || taskId in nextSpawnProgress,
+      ),
+    );
+
+    // For usage/events: reconcile via reconcileLiveCache - the live session
+    // list is the keyset authority, so a running session keeps its last-known
+    // value even when the project-scoped fetch omits it (cross-project, or a
+    // mid-spawn undefined projectId). Genuinely-gone sessions are still
+    // evicted, preserving the anti-'thinking'-leak contract.
+    //
+    // For activity/activityReason: keep plain reconcileCache. Those fetches
+    // are UNSCOPED, so the cache already covers every live session; live-keep
+    // would be a no-op and could mask a legitimate activity clear.
+    //
+    // For firstOutput: reconcile against the main tracker (authoritative,
+    // unscoped) so a running session that already produced output is not
+    // flashed back to its boot state after an HMR reset of this map.
     //
     // When a fetch returned undefined (HMR skew or transient failure),
     // we preserve the existing store map instead of treating it as an
@@ -260,7 +371,7 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
       _sessionByTaskId: buildSessionByTaskId(mergedSessions),
       activeSessionId: stillExists ? currentState.activeSessionId : null,
       sessionUsage: cachedUsage
-        ? reconcileCache(cachedUsage, currentState.sessionUsage)
+        ? reconcileLiveCache(cachedUsage, currentState.sessionUsage, liveSessionIds)
         : currentState.sessionUsage,
       latestRateLimits: nextLatestRateLimits,
       sessionActivity: cachedActivity
@@ -270,8 +381,13 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
         ? reconcileCache(cachedReasons, currentState.sessionActivityReason)
         : currentState.sessionActivityReason,
       sessionEvents: cachedEvents
-        ? reconcileCache(cachedEvents, currentState.sessionEvents)
+        ? reconcileLiveCache(cachedEvents, currentState.sessionEvents, liveSessionIds)
         : currentState.sessionEvents,
+      sessionFirstOutput: cachedFirstOutput
+        ? reconcileCache(cachedFirstOutput, currentState.sessionFirstOutput)
+        : currentState.sessionFirstOutput,
+      spawnProgress: nextSpawnProgress,
+      pendingCommandLabel: nextPendingCommandLabel,
     });
 
     // Recover transient session pointers after a full page reload.

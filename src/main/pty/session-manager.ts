@@ -704,6 +704,20 @@ export class SessionManager extends EventEmitter {
     return this.telemetry.getEventsCache();
   }
 
+  /**
+   * Map of sessionId -> true for every session that has emitted first output.
+   * Unscoped (the set is tiny). Lets the renderer rebuild `sessionFirstOutput`
+   * after an HMR reload so a running session that already produced output is
+   * not flashed back to its "Starting agent..." boot state.
+   */
+  getFirstOutputCache(): Record<string, boolean> {
+    const result: Record<string, boolean> = {};
+    for (const sessionId of this.firstOutputTracker.snapshot()) {
+      result[sessionId] = true;
+    }
+    return result;
+  }
+
   /** Return cached usage data filtered to a specific project. */
   getUsageCacheForProject(projectId: string): Record<string, SessionUsage> {
     return filterCacheByProject(

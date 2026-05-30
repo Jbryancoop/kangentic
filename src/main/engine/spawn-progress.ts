@@ -4,9 +4,9 @@ import { IPC } from '../../shared/ipc-channels';
 // ---------------------------------------------------------------------------
 // Spawn progress: typed phases emitted to the renderer during task move
 //
-// Mirrors session-lifecycle.ts pattern: typed phases, centralized labels,
-// pure functions. The main process emits progress at phase boundaries;
-// the renderer stores the latest label per task and displays it.
+// Mirrors session-lifecycle.ts pattern: typed phases, centralized labels.
+// The main process emits progress at phase boundaries; the renderer stores
+// the latest label per task and displays it.
 //
 // Phase flow (contextual per task):
 //   Worktree task:      fetching → creating-worktree → starting-agent
@@ -14,7 +14,72 @@ import { IPC } from '../../shared/ipc-channels';
 //   Base branch task:   starting-agent
 //   Has worktree:       starting-agent
 //   Cross-agent:        packaging-handoff → detecting-agent → starting-agent
+//
+// QUERYABLE STATE (not just fire-once IPC): the latest in-flight label per
+// task is also retained in a module-level map so the renderer can re-derive
+// it at any time via getInFlightSpawnProgress() / IPC.TASK_GET_SPAWN_PROGRESS.
+// This closes the HMR-strand bug where the clearing push fired in the
+// IPC-listener-reattach gap and left a task stuck on "Starting agent...":
+// syncSessions() now reconciles spawnProgress against this map instead of
+// relying on having had a listener attached at emit time. The main process is
+// a single esbuild bundle with no HMR, so this module-level state is a safe
+// singleton.
 // ---------------------------------------------------------------------------
+
+/**
+ * In-flight spawn-progress labels, keyed by taskId. Updated on every
+ * emit/clear and read by IPC.TASK_GET_SPAWN_PROGRESS. `updatedAt` backs a TTL
+ * sweep so a spawn path that dies without calling clearSpawnProgress (process
+ * killed mid-spawn, uncaught throw bypassing the finally) cannot strand a
+ * label here forever.
+ */
+const inFlightSpawnProgress = new Map<string, { label: string; updatedAt: number }>();
+
+/**
+ * TTL safety net. Longer than any realistic worktree-create + fetch + agent
+ * spawn (those are bounded by AbortControllers anyway); this only catches the
+ * pathological "never cleared" case. Normal cleanup is clearSpawnProgress().
+ */
+const SPAWN_PROGRESS_TTL_MS = 120_000;
+
+/**
+ * Update the queryable map and push the change to the renderer. The map is
+ * updated UNCONDITIONALLY (before the destroyed-window guard) so it stays the
+ * authoritative source of truth even when the send is skipped during teardown.
+ * `label === null` removes the entry (spawn done/aborted).
+ */
+function pushSpawnProgress(mainWindow: BrowserWindow, taskId: string, label: string | null): void {
+  if (label === null) {
+    inFlightSpawnProgress.delete(taskId);
+  } else {
+    inFlightSpawnProgress.set(taskId, { label, updatedAt: Date.now() });
+  }
+  if (mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send(IPC.TASK_SPAWN_PROGRESS, taskId, label);
+}
+
+/**
+ * Snapshot of in-flight spawn-progress labels, keyed by taskId. Prunes
+ * TTL-expired entries on read. Returned by IPC.TASK_GET_SPAWN_PROGRESS so
+ * syncSessions() can reconcile its spawnProgress map against live truth.
+ */
+export function getInFlightSpawnProgress(): Record<string, string> {
+  const now = Date.now();
+  const result: Record<string, string> = {};
+  for (const [taskId, entry] of inFlightSpawnProgress) {
+    if (now - entry.updatedAt > SPAWN_PROGRESS_TTL_MS) {
+      inFlightSpawnProgress.delete(taskId);
+      continue;
+    }
+    result[taskId] = entry.label;
+  }
+  return result;
+}
+
+/** Test-only: reset the module-level map between unit test cases. */
+export function __resetSpawnProgressForTest(): void {
+  inFlightSpawnProgress.clear();
+}
 
 /** Valid spawn progress phases. */
 export type SpawnPhase =
@@ -50,23 +115,21 @@ export function emitSpawnProgress(
   taskId: string,
   phase: SpawnPhase,
 ): void {
-  if (mainWindow.isDestroyed()) return;
-  mainWindow.webContents.send(IPC.TASK_SPAWN_PROGRESS, taskId, PHASE_LABELS[phase]);
+  pushSpawnProgress(mainWindow, taskId, PHASE_LABELS[phase]);
 }
 
 /**
  * Create an onProgress callback that emits spawn progress labels.
  * The callback accepts phase strings from the git layer and resolves
- * them to user-facing labels via the PHASE_LABELS map.
+ * them to user-facing labels via the PHASE_LABELS map. Unknown phases
+ * (e.g. raw git progress strings) are passed through verbatim.
  */
 export function createProgressCallback(
   mainWindow: BrowserWindow,
   taskId: string,
 ): (phase: string) => void {
   return (phase: string) => {
-    if (mainWindow.isDestroyed()) return;
-    const label = PHASE_LABELS[phase as SpawnPhase] ?? phase;
-    mainWindow.webContents.send(IPC.TASK_SPAWN_PROGRESS, taskId, label);
+    pushSpawnProgress(mainWindow, taskId, PHASE_LABELS[phase as SpawnPhase] ?? phase);
   };
 }
 
@@ -78,6 +141,5 @@ export function clearSpawnProgress(
   mainWindow: BrowserWindow,
   taskId: string,
 ): void {
-  if (mainWindow.isDestroyed()) return;
-  mainWindow.webContents.send(IPC.TASK_SPAWN_PROGRESS, taskId, null);
+  pushSpawnProgress(mainWindow, taskId, null);
 }

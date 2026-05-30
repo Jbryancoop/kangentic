@@ -68,4 +68,29 @@ describe('FirstOutputTracker', () => {
       expect(tracker.hasEmitted('s2')).toBe(false);
     });
   });
+
+  // snapshot() backs SessionManager.getFirstOutputCache(), which lets the
+  // renderer rebuild sessionFirstOutput after an HMR reload.
+  describe('snapshot', () => {
+    it('reflects sessions that have emitted, and tracks removal/clear', () => {
+      const tracker = new FirstOutputTracker();
+      expect(tracker.snapshot()).toEqual([]);
+
+      tracker.consume('s1', 'hello');
+      tracker.consume('s2', 'world');
+      expect(tracker.snapshot().sort()).toEqual(['s1', 's2']);
+
+      tracker.removeSession('s1');
+      expect(tracker.snapshot()).toEqual(['s2']);
+
+      tracker.clear();
+      expect(tracker.snapshot()).toEqual([]);
+    });
+
+    it('excludes a session whose chunk did not qualify', () => {
+      const tracker = new FirstOutputTracker();
+      tracker.consume('s1', '', () => false);
+      expect(tracker.snapshot()).toEqual([]);
+    });
+  });
 });

@@ -1813,6 +1813,113 @@ describe('attachSession dispatch contract', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 15b. getFirstOutputCache() wrapper
+//
+// Contract:
+//  - Empty object when no session has emitted first output.
+//  - { [sessionId]: true } for every session that has produced first output.
+//  - Reflects remove(): a removed session no longer appears.
+// ---------------------------------------------------------------------------
+
+describe('getFirstOutputCache', () => {
+  let manager: SessionManager;
+  // Track sessions that need cleanup in afterEach.
+  const spawnedIds: string[] = [];
+
+  beforeEach(() => {
+    manager = new SessionManager();
+    spawnedIds.length = 0;
+  });
+
+  afterEach(async () => {
+    // Kill any lingering PTYs created during the test.
+    for (const sessionId of spawnedIds) {
+      manager.kill(sessionId);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+
+  it('returns an empty object when no session has emitted first output', () => {
+    expect(manager.getFirstOutputCache()).toEqual({});
+  });
+
+  it('includes a session ID once the session emits a qualifying PTY chunk', async () => {
+    const mock = createMockPty();
+    vi.mocked(pty.spawn).mockReturnValue(mock.mockPty as unknown as pty.IPty);
+    const session = await manager.spawn({
+      taskId: 'task-first-output-1',
+      command: '',
+      cwd: tmpDir,
+    });
+    spawnedIds.push(session.id);
+
+    // Before any data - not in cache.
+    expect(manager.getFirstOutputCache()[session.id]).toBeUndefined();
+
+    // Feed a qualifying chunk (non-empty, no custom detector).
+    mock.feedData('hello from PTY');
+
+    // Allow the 16ms flush debounce to fire.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const cache = manager.getFirstOutputCache();
+    expect(cache[session.id]).toBe(true);
+    expect(Object.keys(cache)).toEqual([session.id]);
+  });
+
+  it('returns true for each of multiple sessions that have emitted', async () => {
+    const mock1 = createMockPty();
+    vi.mocked(pty.spawn).mockReturnValue(mock1.mockPty as unknown as pty.IPty);
+    const session1 = await manager.spawn({
+      taskId: 'task-first-output-multi-1',
+      command: '',
+      cwd: tmpDir,
+    });
+    spawnedIds.push(session1.id);
+
+    const mock2 = createMockPty();
+    vi.mocked(pty.spawn).mockReturnValue(mock2.mockPty as unknown as pty.IPty);
+    const session2 = await manager.spawn({
+      taskId: 'task-first-output-multi-2',
+      command: '',
+      cwd: tmpDir,
+    });
+    spawnedIds.push(session2.id);
+
+    mock1.feedData('output-from-session-1');
+    mock2.feedData('output-from-session-2');
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const cache = manager.getFirstOutputCache();
+    expect(cache[session1.id]).toBe(true);
+    expect(cache[session2.id]).toBe(true);
+    expect(Object.keys(cache).sort()).toEqual([session1.id, session2.id].sort());
+  });
+
+  it('removes a session from the cache after remove() is called', async () => {
+    const mock = createMockPty();
+    vi.mocked(pty.spawn).mockReturnValue(mock.mockPty as unknown as pty.IPty);
+    const session = await manager.spawn({
+      taskId: 'task-first-output-remove',
+      command: '',
+      cwd: tmpDir,
+    });
+    // Do NOT push to spawnedIds: we call remove() explicitly in the test.
+
+    mock.feedData('data');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(manager.getFirstOutputCache()[session.id]).toBe(true);
+
+    manager.remove(session.id);
+
+    expect(manager.getFirstOutputCache()[session.id]).toBeUndefined();
+    expect(manager.getFirstOutputCache()).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 16. findLiveSessionByTaskId delegate
 // ---------------------------------------------------------------------------
 

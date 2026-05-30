@@ -1955,6 +1955,12 @@ export interface ElectronAPI {
     onUpdatedByAgent: (callback: (taskId: string, taskTitle: string, projectId?: string) => void) => () => void;
     onDeletedByAgent: (callback: (taskId: string, taskTitle: string, projectId?: string) => void) => () => void;
     onSpawnProgress: (callback: (taskId: string, label: string | null) => void) => () => void;
+    /**
+     * Queryable snapshot of in-flight spawn-progress labels (keyed by taskId).
+     * syncSessions reconciles its spawnProgress map against this so an HMR
+     * reload during the "Starting agent..." window cannot strand a card.
+     */
+    getSpawnProgress: () => Promise<Record<string, string>>;
     onBulkDeleteProgress: (callback: (progress: TaskBulkDeleteProgress) => void) => () => void;
   };
 
@@ -2013,6 +2019,12 @@ export interface ElectronAPI {
     resize: (sessionId: string, cols: number, rows: number) => Promise<{ colsChanged: boolean }>;
     list: () => Promise<Session[]>;
     getScrollback: (sessionId: string) => Promise<string>;
+    /**
+     * Unscoped map of sessionId -> true for sessions that have emitted first
+     * output. Lets syncSessions rebuild `sessionFirstOutput` after an HMR
+     * reload so a running session is not flashed back to its boot state.
+     */
+    getFirstOutput: () => Promise<Record<string, boolean>>;
     getUsage: (projectId?: string) => Promise<Record<string, SessionUsage>>;
     onData: (callback: (sessionId: string, data: string, projectId?: string) => void) => () => void;
     onFirstOutput: (callback: (sessionId: string, projectId?: string) => void) => () => void;

@@ -55,6 +55,10 @@ import type { ActivityReason, ActivityState, Session, SessionEvent, SessionUsage
       getActivity: async () => ({}),
       getActivityReasons: async () => ({}),
       getEventsCache: async () => ({}),
+      getFirstOutput: async () => ({}),
+    },
+    tasks: {
+      getSpawnProgress: async () => ({}),
     },
   },
 };
@@ -85,13 +89,18 @@ function makeEvent(detail: string): SessionEvent {
   return { ts: Date.now(), type: 'idle', detail };
 }
 
-type MockableMethod = 'getActivity' | 'getActivityReasons' | 'getUsage' | 'getEventsCache';
+type MockableMethod = 'getActivity' | 'getActivityReasons' | 'getUsage' | 'getEventsCache' | 'getFirstOutput' | 'list';
 
 interface MockResults {
   getActivity?: Record<string, ActivityState>;
   getActivityReasons?: Record<string, ActivityReason>;
   getUsage?: Record<string, SessionUsage>;
   getEventsCache?: Record<string, SessionEvent[]>;
+  getFirstOutput?: Record<string, boolean>;
+  /** Override the (default empty) live session list returned by sessions.list(). */
+  list?: Session[];
+  /** Override the queryable spawn-progress map (tasks.getSpawnProgress). */
+  getSpawnProgress?: Record<string, string>;
 }
 
 /**
@@ -99,15 +108,23 @@ interface MockResults {
  * call, then restore the originals. Keeps cross-test state clean.
  */
 async function syncWithMocks(results: MockResults): Promise<void> {
-  const sessions = (window as Record<string, unknown> & {
-    electronAPI: { sessions: Record<MockableMethod, () => unknown> };
-  }).electronAPI.sessions;
+  const electronAPI = (window as Record<string, unknown> & {
+    electronAPI: {
+      sessions: Record<MockableMethod, () => unknown>;
+      tasks: Record<'getSpawnProgress', () => unknown>;
+    };
+  }).electronAPI;
+  const sessions = electronAPI.sessions;
+  const tasks = electronAPI.tasks;
   const originals: Partial<Record<MockableMethod, unknown>> = {
     getActivity: sessions.getActivity,
     getActivityReasons: sessions.getActivityReasons,
     getUsage: sessions.getUsage,
     getEventsCache: sessions.getEventsCache,
+    getFirstOutput: sessions.getFirstOutput,
+    list: sessions.list,
   };
+  const originalGetSpawnProgress = tasks.getSpawnProgress;
   if (results.getActivity !== undefined) {
     sessions.getActivity = (async () => results.getActivity) as () => unknown;
   }
@@ -120,9 +137,19 @@ async function syncWithMocks(results: MockResults): Promise<void> {
   if (results.getEventsCache !== undefined) {
     sessions.getEventsCache = (async () => results.getEventsCache) as () => unknown;
   }
+  if (results.getFirstOutput !== undefined) {
+    sessions.getFirstOutput = (async () => results.getFirstOutput) as () => unknown;
+  }
+  if (results.list !== undefined) {
+    sessions.list = (async () => results.list) as () => unknown;
+  }
+  if (results.getSpawnProgress !== undefined) {
+    tasks.getSpawnProgress = (async () => results.getSpawnProgress) as () => unknown;
+  }
   try {
     await useSessionStore.getState().syncSessions();
   } finally {
+    tasks.getSpawnProgress = originalGetSpawnProgress as () => unknown;
     if (originals.getActivity !== undefined) {
       sessions.getActivity = originals.getActivity as () => unknown;
     }
@@ -131,6 +158,12 @@ async function syncWithMocks(results: MockResults): Promise<void> {
     }
     if (originals.getUsage !== undefined) {
       sessions.getUsage = originals.getUsage as () => unknown;
+    }
+    if (originals.getFirstOutput !== undefined) {
+      sessions.getFirstOutput = originals.getFirstOutput as () => unknown;
+    }
+    if (originals.list !== undefined) {
+      sessions.list = originals.list as () => unknown;
     }
     if (originals.getEventsCache !== undefined) {
       sessions.getEventsCache = originals.getEventsCache as () => unknown;
@@ -672,5 +705,298 @@ describe('reconcileSession - spawnProgress eviction on heal', () => {
     expect(spawnProgress['task-a']).toBeUndefined();
     // task-b's label is untouched (different task, not reconciled).
     expect(spawnProgress['task-b']).toBe('Starting agent...');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edge case 2: project-switch usage flash.
+//
+// The live session list - NOT the project-scoped usage/events snapshot - is
+// the keyset authority. A running session whose usage was scoped out by the
+// project filter (cross-project, or a mid-spawn undefined projectId) must keep
+// its last-known usage so the card never flashes to the 0% baseline. A session
+// the engine no longer tracks (absent from list, or present but exited) is
+// still evicted, preserving the anti-'thinking'-leak contract.
+// ---------------------------------------------------------------------------
+
+describe('syncSessions - live session keyset authority (no project-switch usage flash)', () => {
+  beforeEach(resetStore);
+
+  it('preserves a live running session\'s usage even when the project-scoped snapshot omits it', async () => {
+    const liveUsage = makeUsage(50);
+    useSessionStore.setState({
+      sessionUsage: { 'sess-live': liveUsage, 'sess-dead': makeUsage(80) },
+    });
+
+    await syncWithMocks({
+      // Live session present in the unscoped list...
+      list: [makeSession({ id: 'sess-live', taskId: 't1', status: 'running' })],
+      // ...but the project-scoped usage snapshot returned nothing for it.
+      getUsage: {},
+    });
+
+    const usage = useSessionStore.getState().sessionUsage;
+    // Live session keeps its last-known usage (no flash).
+    expect(usage['sess-live']).toBe(liveUsage);
+    // Session the engine no longer tracks at all is still evicted.
+    expect(usage['sess-dead']).toBeUndefined();
+  });
+
+  it('preserves a live running session\'s events the same way', async () => {
+    const liveEvents = [makeEvent('keep-me')];
+    useSessionStore.setState({
+      sessionEvents: { 'sess-live': liveEvents, 'sess-dead': [makeEvent('drop-me')] },
+    });
+
+    await syncWithMocks({
+      list: [makeSession({ id: 'sess-live', taskId: 't1', status: 'running' })],
+      getEventsCache: {},
+    });
+
+    const events = useSessionStore.getState().sessionEvents;
+    expect(events['sess-live']).toBe(liveEvents);
+    expect(events['sess-dead']).toBeUndefined();
+  });
+
+  it('still evicts usage for a session present in the list but no longer live (exited)', async () => {
+    useSessionStore.setState({
+      sessionUsage: { 'sess-exited': makeUsage(40) },
+    });
+
+    await syncWithMocks({
+      // The session lingers in the registry list but has exited - not live,
+      // so live-keep must NOT retain its usage.
+      list: [makeSession({ id: 'sess-exited', taskId: 't1', status: 'exited' })],
+      getUsage: {},
+    });
+
+    expect(useSessionStore.getState().sessionUsage['sess-exited']).toBeUndefined();
+  });
+
+  it('keeps usage for a queued session (counts as live)', async () => {
+    const queuedUsage = makeUsage(0);
+    useSessionStore.setState({
+      sessionUsage: { 'sess-queued': queuedUsage },
+    });
+
+    await syncWithMocks({
+      list: [makeSession({ id: 'sess-queued', taskId: 't1', status: 'queued' })],
+      getUsage: {},
+    });
+
+    expect(useSessionStore.getState().sessionUsage['sess-queued']).toBe(queuedUsage);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edge case 1: HMR strand on "Starting agent...".
+//
+// syncSessions reconciles spawnProgress against the queryable main-process
+// snapshot (tasks.getSpawnProgress) plus the live session list, so a clearing
+// push lost in an HMR listener gap can no longer strand a card.
+// ---------------------------------------------------------------------------
+
+describe('syncSessions - spawnProgress reconciliation', () => {
+  beforeEach(resetStore);
+
+  it('preserves an in-flight label that the main map still reports (no live session yet)', async () => {
+    useSessionStore.setState({
+      spawnProgress: { 't-inflight': 'Starting agent...' },
+    });
+
+    await syncWithMocks({
+      getSpawnProgress: { 't-inflight': 'Starting agent...' },
+      list: [], // session not in the registry yet (pre-spawn window)
+    });
+
+    expect(useSessionStore.getState().spawnProgress['t-inflight']).toBe('Starting agent...');
+  });
+
+  it('prunes a stranded label once the task has a live session, even if the main map still holds it', async () => {
+    useSessionStore.setState({
+      spawnProgress: { 't-done': 'Starting agent...' },
+    });
+
+    await syncWithMocks({
+      // Main map may still carry it (clear push raced), but a live session
+      // exists -> the spawn is over, drop the label.
+      getSpawnProgress: { 't-done': 'Starting agent...' },
+      list: [makeSession({ id: 's-done', taskId: 't-done', status: 'running' })],
+    });
+
+    expect(useSessionStore.getState().spawnProgress['t-done']).toBeUndefined();
+  });
+
+  it('clears a stranded label that the main map no longer reports (spawn finished)', async () => {
+    useSessionStore.setState({
+      spawnProgress: { 't-strand': 'Starting agent...' },
+    });
+
+    await syncWithMocks({
+      getSpawnProgress: {}, // main already cleared it; the renderer push was lost
+      list: [], // no live session either
+    });
+
+    expect(useSessionStore.getState().spawnProgress['t-strand']).toBeUndefined();
+  });
+
+  it('keeps the store value for a task the main map still reports (async-gap fresher phase)', async () => {
+    // A later phase label arrived in the store during the async gap; the main
+    // map reports an earlier one. Since the id IS in the main map, the store
+    // value wins (mirrors reconcileCache's async-gap preservation).
+    useSessionStore.setState({
+      spawnProgress: { 't-phase': 'Creating worktree...' },
+    });
+
+    await syncWithMocks({
+      getSpawnProgress: { 't-phase': 'Fetching latest...' },
+      list: [],
+    });
+
+    expect(useSessionStore.getState().spawnProgress['t-phase']).toBe('Creating worktree...');
+  });
+
+  it('on HMR/preload skew (getSpawnProgress unavailable) preserves current minus live-session tasks', async () => {
+    useSessionStore.setState({
+      spawnProgress: { 't-strand': 'Starting agent...', 't-done': 'Starting agent...' },
+    });
+
+    const tasks = (window as Record<string, unknown> & {
+      electronAPI: { tasks: { getSpawnProgress?: unknown } };
+    }).electronAPI.tasks;
+    const original = tasks.getSpawnProgress;
+    tasks.getSpawnProgress = undefined; // simulate older preload
+    try {
+      // t-done now has a live session; t-strand does not.
+      const sessions = (window as Record<string, unknown> & {
+        electronAPI: { sessions: Record<string, () => unknown> };
+      }).electronAPI.sessions;
+      const originalList = sessions.list;
+      sessions.list = (async () => [makeSession({ id: 's-done', taskId: 't-done', status: 'running' })]) as () => unknown;
+      try {
+        await useSessionStore.getState().syncSessions();
+      } finally {
+        sessions.list = originalList;
+      }
+    } finally {
+      tasks.getSpawnProgress = original;
+    }
+
+    const { spawnProgress } = useSessionStore.getState();
+    expect(spawnProgress['t-strand']).toBe('Starting agent...'); // preserved
+    expect(spawnProgress['t-done']).toBeUndefined(); // pruned (live session)
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Siblings: sessionFirstOutput rebuild + pendingCommandLabel orphan prune.
+// ---------------------------------------------------------------------------
+
+describe('syncSessions - sessionFirstOutput rebuild from the main tracker', () => {
+  beforeEach(resetStore);
+
+  it('reconciles sessionFirstOutput against the tracker snapshot (evicts gone, keeps live)', async () => {
+    useSessionStore.setState({
+      sessionFirstOutput: { 'sess-a': true, 'sess-gone': true },
+    });
+
+    await syncWithMocks({
+      getFirstOutput: { 'sess-a': true },
+    });
+
+    const firstOutput = useSessionStore.getState().sessionFirstOutput;
+    expect(firstOutput['sess-a']).toBe(true);
+    expect(firstOutput['sess-gone']).toBeUndefined();
+  });
+
+  it('preserves sessionFirstOutput when getFirstOutput is unavailable (HMR/preload skew)', async () => {
+    useSessionStore.setState({
+      sessionFirstOutput: { 'sess-a': true },
+    });
+
+    const sessions = (window as Record<string, unknown> & {
+      electronAPI: { sessions: { getFirstOutput?: unknown } };
+    }).electronAPI.sessions;
+    const original = sessions.getFirstOutput;
+    sessions.getFirstOutput = undefined;
+    try {
+      await useSessionStore.getState().syncSessions();
+    } finally {
+      sessions.getFirstOutput = original;
+    }
+
+    expect(useSessionStore.getState().sessionFirstOutput['sess-a']).toBe(true);
+  });
+});
+
+describe('syncSessions - live session keyset authority: events for a queued session', () => {
+  beforeEach(resetStore);
+
+  // sessionUsage+queued is already covered; this mirrors that test for sessionEvents.
+  it('keeps events for a queued session (counts as live)', async () => {
+    const queuedEvents = [makeEvent('queued-event')];
+    useSessionStore.setState({
+      sessionEvents: { 'sess-queued-ev': queuedEvents },
+    });
+
+    await syncWithMocks({
+      list: [makeSession({ id: 'sess-queued-ev', taskId: 't-ev', status: 'queued' })],
+      getEventsCache: {},
+    });
+
+    expect(useSessionStore.getState().sessionEvents['sess-queued-ev']).toBe(queuedEvents);
+  });
+});
+
+describe('syncSessions - spawnProgress reconciliation: getSpawnProgress throws', () => {
+  beforeEach(resetStore);
+
+  // Mirrors the existing getActivityReasons-throws resilience test:
+  // when the IPC call rejects, the store must not evict the existing
+  // spawnProgress entries (same contract as the missing-method path).
+  it('preserves existing spawnProgress when getSpawnProgress rejects', async () => {
+    useSessionStore.setState({
+      spawnProgress: { 't-strand': 'Starting agent...' },
+    });
+
+    const tasks = (window as Record<string, unknown> & {
+      electronAPI: { tasks: Record<string, () => unknown> };
+    }).electronAPI.tasks;
+    const original = tasks.getSpawnProgress;
+    tasks.getSpawnProgress = (async () => {
+      throw new Error('IPC: handler not registered');
+    }) as () => unknown;
+    try {
+      await useSessionStore.getState().syncSessions();
+    } finally {
+      tasks.getSpawnProgress = original;
+    }
+
+    // Entry survives - not evicted by a failed IPC call.
+    expect(useSessionStore.getState().spawnProgress['t-strand']).toBe('Starting agent...');
+  });
+});
+
+describe('syncSessions - pendingCommandLabel orphan prune', () => {
+  beforeEach(resetStore);
+
+  it('drops labels for tasks with neither a live session nor an in-flight spawn', async () => {
+    useSessionStore.setState({
+      pendingCommandLabel: {
+        't-orphan': 'orphaned command',
+        't-live': 'live command',
+        't-spawning': 'spawning command',
+      },
+    });
+
+    await syncWithMocks({
+      list: [makeSession({ id: 's-live', taskId: 't-live', status: 'running' })],
+      getSpawnProgress: { 't-spawning': 'Starting agent...' },
+    });
+
+    const labels = useSessionStore.getState().pendingCommandLabel;
+    expect(labels['t-live']).toBe('live command'); // live session -> keep
+    expect(labels['t-spawning']).toBe('spawning command'); // in-flight spawn -> keep
+    expect(labels['t-orphan']).toBeUndefined(); // orphaned by HMR -> drop
   });
 });

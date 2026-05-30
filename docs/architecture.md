@@ -54,7 +54,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `projectGroup:reorder` | invoke | Reorder groups by ID array |
 | `projectGroup:setCollapsed` | invoke | Toggle group collapsed state |
 
-### Tasks (17 channels)
+### Tasks (18 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `task:list` | invoke | Fetch tasks, optionally by swimlane |
@@ -74,6 +74,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `task:updatedByAgent` | on | Event: task was updated by an agent via MCP tool call |
 | `task:deletedByAgent` | on | Event: task was deleted by an agent via MCP tool call |
 | `task:spawnProgress` | on | Event: spawn progress phase label during task move |
+| `task:getSpawnProgress` | invoke | Fetch the queryable in-flight spawn-progress map (taskId -> phase label) so `syncSessions` can reconcile after HMR / project switch |
 
 ### Attachments (5 channels)
 | Channel | Pattern | Purpose |
@@ -152,7 +153,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `transition:set` | invoke | Set action chain for lane A→B |
 | `transition:getFor` | invoke | Get transitions for lane pair (exact match, then wildcard) |
 
-### Sessions (32 channels)
+### Sessions (33 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `session:spawn` | invoke | Spawn PTY session (may queue) |
@@ -165,6 +166,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `session:resize` | invoke | Resize PTY (cols/rows) |
 | `session:list` | invoke | Fetch all sessions |
 | `session:getScrollback` | invoke | Get terminal scrollback buffer |
+| `session:getFirstOutput` | invoke | Fetch the first-output cache (sessionId -> true) so `syncSessions` can rebuild `sessionFirstOutput` after an HMR reload |
 | `session:getUsage` | invoke | Fetch session usage (tokens, cost). Optional `projectId` scopes to one project. |
 | `session:getActivity` | invoke | Fetch activity state (thinking/idle). Optional `projectId` scopes to one project. |
 | `session:getActivityReason` | invoke | Fetch the current `ActivityReason` discriminated-union value for one session |

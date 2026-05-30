@@ -27,7 +27,7 @@ import { isAbortError } from '../../../shared/abort-utils';
 import { abortBacklogPromotion } from './backlog';
 import { withTaskLock } from '../task-lifecycle-lock';
 import { isShuttingDown } from '../../shutdown-state';
-import { emitSpawnProgress, clearSpawnProgress, createProgressCallback } from '../../engine/spawn-progress';
+import { emitSpawnProgress, clearSpawnProgress, createProgressCallback, getInFlightSpawnProgress } from '../../engine/spawn-progress';
 import { resolveTargetAgent } from '../../engine/agent-resolver';
 import { agentRegistry } from '../../agent/agent-registry';
 import { prepareInjectionPlan } from '../../engine/injection-plan';
@@ -706,4 +706,9 @@ export function registerTaskMoveHandlers(context: IpcContext): void {
       throw error;
     }
   });
+
+  // Queryable snapshot of in-flight spawn-progress labels (keyed by taskId).
+  // syncSessions() reconciles its spawnProgress map against this so an HMR
+  // reload during the brief "Starting agent..." window cannot strand a card.
+  ipcMain.handle(IPC.TASK_GET_SPAWN_PROGRESS, () => getInFlightSpawnProgress());
 }

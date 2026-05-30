@@ -40,6 +40,16 @@ export class FirstOutputTracker {
     return this.emitted.has(sessionId);
   }
 
+  /**
+   * Snapshot of the session IDs that have emitted first output. Used to
+   * rebuild the renderer's `sessionFirstOutput` map after an HMR reload (the
+   * renderer state resets to {} on module re-evaluation, which would otherwise
+   * flash a running session back to "Starting agent..." until its next chunk).
+   */
+  snapshot(): string[] {
+    return Array.from(this.emitted);
+  }
+
   /** Drop per-session state. Called from SessionManager.remove(). */
   removeSession(sessionId: string): void {
     this.emitted.delete(sessionId);

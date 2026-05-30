@@ -43,6 +43,8 @@ const SAFE_CHANNELS = new Set<string>([
   'session:getEvents',
   'session:getEventsCache',
   'session:getUsage',
+  'session:getFirstOutput',
+  'task:getSpawnProgress',
   'backlog:list',
   'search:everything',
   'system:getAppVersion',

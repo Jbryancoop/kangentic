@@ -89,6 +89,7 @@ const api: ElectronAPI = {
       ipcRenderer.on(IPC.TASK_SPAWN_PROGRESS, handler);
       return () => ipcRenderer.removeListener(IPC.TASK_SPAWN_PROGRESS, handler);
     },
+    getSpawnProgress: () => ipcRenderer.invoke(IPC.TASK_GET_SPAWN_PROGRESS),
     onBulkDeleteProgress: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, progress: TaskBulkDeleteProgress) =>
         callback(progress);
@@ -143,6 +144,7 @@ const api: ElectronAPI = {
     resize: (id, cols, rows) => ipcRenderer.invoke(IPC.SESSION_RESIZE, id, cols, rows),
     list: () => ipcRenderer.invoke(IPC.SESSION_LIST),
     getScrollback: (id) => ipcRenderer.invoke(IPC.SESSION_GET_SCROLLBACK, id),
+    getFirstOutput: () => ipcRenderer.invoke(IPC.SESSION_GET_FIRST_OUTPUT),
     getUsage: (projectId?) => ipcRenderer.invoke(IPC.SESSION_GET_USAGE, projectId),
     onData: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, sessionId: string, data: string, projectId?: string) => callback(sessionId, data, projectId);

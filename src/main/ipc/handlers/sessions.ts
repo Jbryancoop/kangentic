@@ -63,6 +63,11 @@ export function registerSessionHandlers(context: IpcContext): void {
     return liveSession;
   });
   ipcMain.handle(IPC.SESSION_GET_SCROLLBACK, (_, id) => context.sessionManager.getScrollback(id));
+  // Unscoped map of sessionId -> true for sessions that have emitted first
+  // output. Lets syncSessions rebuild `sessionFirstOutput` after an HMR reload
+  // (renderer state resets to {}) so a running session isn't flashed back to
+  // its "Starting agent..." boot state.
+  ipcMain.handle(IPC.SESSION_GET_FIRST_OUTPUT, () => context.sessionManager.getFirstOutputCache());
   ipcMain.handle(IPC.SESSION_GET_USAGE, (_, projectId?: string) =>
     projectId ? context.sessionManager.getUsageCacheForProject(projectId) : context.sessionManager.getUsageCache());
   ipcMain.handle(IPC.SESSION_GET_ACTIVITY, (_, projectId?: string) =>

@@ -743,6 +743,9 @@
       onSpawnProgress: function () {
         return noop;
       },
+      getSpawnProgress: async function () {
+        return {};
+      },
       onBulkDeleteProgress: function (callback) {
         bulkDeleteProgressCallbacks.push(callback);
         return function () {
@@ -1093,6 +1096,9 @@
       },
       getScrollback: async function () {
         return '';
+      },
+      getFirstOutput: async function () {
+        return {};
       },
       getUsage: async function (/* projectId */) {
         return {};

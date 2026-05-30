@@ -1,0 +1,151 @@
+/**
+ * Unit tests for the queryable spawn-progress map in
+ * src/main/engine/spawn-progress.ts.
+ *
+ * Contract:
+ *  - emit/createProgressCallback set the in-flight map AND push IPC.
+ *  - clear deletes from the map AND pushes a null label.
+ *  - createProgressCallback resolves known phases to labels and passes
+ *    unknown strings (raw git progress) through verbatim.
+ *  - getInFlightSpawnProgress() prunes TTL-expired entries on read.
+ *  - The map is updated even when the window is destroyed (it is the
+ *    authoritative source of truth); only the IPC send is skipped.
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { BrowserWindow } from 'electron';
+import {
+  emitSpawnProgress,
+  createProgressCallback,
+  clearSpawnProgress,
+  getInFlightSpawnProgress,
+  __resetSpawnProgressForTest,
+} from '../../src/main/engine/spawn-progress';
+
+function makeWindow(isDestroyed = false): { window: BrowserWindow; send: ReturnType<typeof vi.fn> } {
+  const send = vi.fn();
+  const window = {
+    isDestroyed: () => isDestroyed,
+    webContents: { send },
+  } as unknown as BrowserWindow;
+  return { window, send };
+}
+
+describe('spawn-progress queryable map', () => {
+  beforeEach(() => {
+    __resetSpawnProgressForTest();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('emitSpawnProgress sets the map with the resolved label and pushes IPC', () => {
+    const { window, send } = makeWindow();
+    emitSpawnProgress(window, 'task-1', 'starting-agent');
+
+    expect(getInFlightSpawnProgress()).toEqual({ 'task-1': 'Starting agent...' });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith('task:spawnProgress', 'task-1', 'Starting agent...');
+  });
+
+  it('createProgressCallback resolves known phases and passes unknown strings verbatim', () => {
+    const { window } = makeWindow();
+    const onProgress = createProgressCallback(window, 'task-1');
+
+    onProgress('fetching');
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Fetching latest...');
+
+    // Raw git progress string (not a known phase) flows through unchanged.
+    onProgress('Resolving deltas: 42%');
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Resolving deltas: 42%');
+  });
+
+  it('clearSpawnProgress deletes the entry and pushes a null label', () => {
+    const { window, send } = makeWindow();
+    emitSpawnProgress(window, 'task-1', 'fetching');
+    send.mockClear();
+
+    clearSpawnProgress(window, 'task-1');
+
+    expect(getInFlightSpawnProgress()['task-1']).toBeUndefined();
+    expect(getInFlightSpawnProgress()).toEqual({});
+    expect(send).toHaveBeenCalledWith('task:spawnProgress', 'task-1', null);
+  });
+
+  it('tracks multiple tasks independently', () => {
+    const { window } = makeWindow();
+    emitSpawnProgress(window, 'task-1', 'fetching');
+    emitSpawnProgress(window, 'task-2', 'starting-agent');
+
+    expect(getInFlightSpawnProgress()).toEqual({
+      'task-1': 'Fetching latest...',
+      'task-2': 'Starting agent...',
+    });
+  });
+
+  it('prunes TTL-expired entries on read', () => {
+    const nowSpy = vi.spyOn(Date, 'now');
+    const { window } = makeWindow();
+
+    nowSpy.mockReturnValue(1_000);
+    emitSpawnProgress(window, 'task-old', 'starting-agent');
+
+    // Within TTL: still present.
+    nowSpy.mockReturnValue(1_000 + 60_000);
+    expect(getInFlightSpawnProgress()['task-old']).toBe('Starting agent...');
+
+    // Past the 120s TTL: pruned on read.
+    nowSpy.mockReturnValue(1_000 + 120_001);
+    expect(getInFlightSpawnProgress()['task-old']).toBeUndefined();
+  });
+
+  it('updates the map even when the window is destroyed, but skips the IPC send', () => {
+    const { window, send } = makeWindow(true);
+    emitSpawnProgress(window, 'task-1', 'starting-agent');
+
+    // Map is the source of truth -> still updated.
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Starting agent...');
+    // Send is guarded.
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('each push resets updatedAt, so a sequence of phases spaced < TTL keeps the entry alive', () => {
+    // Regression guard: if pushSpawnProgress set updatedAt only on the FIRST
+    // push, a spawn that emits multiple phases (fetching -> creating-worktree
+    // -> starting-agent) could be pruned mid-sequence once the wall clock
+    // passes the first push's updatedAt + TTL. Each push MUST refresh
+    // updatedAt so only the LAST push time is compared to the TTL.
+    const nowSpy = vi.spyOn(Date, 'now');
+    const { window } = makeWindow();
+
+    // Phase 1 at T+0.
+    nowSpy.mockReturnValue(0);
+    const onProgress = createProgressCallback(window, 'task-seq');
+    onProgress('fetching');
+    expect(getInFlightSpawnProgress()['task-seq']).toBe('Fetching latest...');
+
+    // Phase 2 at T+90s (before TTL from phase 1, so still alive without the
+    // fix, but this is just the "within TTL" step).
+    nowSpy.mockReturnValue(90_000);
+    onProgress('creating-worktree');
+    expect(getInFlightSpawnProgress()['task-seq']).toBe('Creating worktree...');
+
+    // Phase 3 at T+150s. This is PAST 120s from phase 1's updatedAt (0ms).
+    // If updatedAt were NOT refreshed on each push, the entry would be pruned
+    // at this read. Since phase 2 was at 90s, the TTL from the last push is
+    // 90s+120s=210s -> entry must still be alive at 150s.
+    nowSpy.mockReturnValue(150_000);
+    onProgress('starting-agent');
+    expect(getInFlightSpawnProgress()['task-seq']).toBe('Starting agent...');
+
+    // Verify: only after 120s from the LAST push does the entry expire.
+    // The last push was at 150s, so expiry is at 150s + 120s = 270s.
+    // At 269_999ms: still alive.
+    nowSpy.mockReturnValue(150_000 + 120_000 - 1);
+    expect(getInFlightSpawnProgress()['task-seq']).toBe('Starting agent...');
+
+    // At 270_001ms: pruned (past TTL from the last push at 150s).
+    nowSpy.mockReturnValue(150_000 + 120_001);
+    expect(getInFlightSpawnProgress()['task-seq']).toBeUndefined();
+  });
+});
