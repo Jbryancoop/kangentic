@@ -30,9 +30,14 @@ export interface ResumeCheck {
  *
  * Checks agent_session_id existence, NOT status. Any session with an
  * agent_session_id is potentially resumable - the agent wrote a transcript
- * (e.g. Claude's JSONL) that --resume can continue from. If the transcript
- * doesn't exist, --resume fails silently to a fresh session (no worse than
- * generating a new UUID).
+ * (e.g. Claude's JSONL) that --resume can continue from.
+ *
+ * Note: Claude resolves its transcript by the CURRENT cwd
+ * (~/.claude/projects/<slug-of-cwd>/<id>.jsonl). If the resume runs in a
+ * different cwd than the original session, `claude --resume <id>` prints
+ * "No conversation found" and EXITS - it does NOT silently start a fresh
+ * session. The worktree path must therefore stay stable across Done
+ * round-trips (see WorktreeManager.createWorktree) so --resume finds it.
  */
 export function canResume(taskId: string, sessionRepo: SessionRepository): ResumeCheck {
   const latest = sessionRepo.getLatestForTask(taskId);

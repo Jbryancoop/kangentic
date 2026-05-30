@@ -767,6 +767,83 @@ describe('WorktreeManager -- stale branch recovery', () => {
   });
 });
 
+// ── Folder-name stability across Done round-trip ──────────────────────────
+//
+// Regression guard for the silent session-loss bug: a task taken To Do ->
+// (worked for hours) -> Done -> back onto the board MUST recreate its worktree
+// at the IDENTICAL path. Claude keys its transcript by cwd, so a path change
+// makes `--resume` look under the wrong slug ("No conversation found"). The
+// original bug doubled the `-<shortId>` suffix because move-out re-slugified
+// the preserved auto-generated branch name (which already ends in -<shortId>).
+
+describe('WorktreeManager -- folder-name stability across Done round-trip', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearFetchCache();
+    recordedSpawnCalls.length = 0;
+    spawnOverrides.length = 0;
+    setupCreateWorktreeMocks();
+  });
+
+  it('recreation with the preserved auto-generated branch reproduces the original folder (no doubled suffix)', async () => {
+    const mgr = new WorktreeManager('/project');
+    const taskId = '4e41b16b-8092-423c-a379-4627bc31b1b2';
+    const title = 'DNS Setup';
+
+    // First creation (from To Do): no branch_name yet.
+    const first = await mgr.createWorktree(taskId, title);
+    expect(first.branchName).toBe('dns-setup-4e41b16b');
+    expect(first.worktreePath.endsWith('dns-setup-4e41b16b')).toBe(true);
+
+    // Move to Done deletes the directory but preserves branch_name; move-out
+    // feeds that branch back as customBranchName.
+    const second = await mgr.createWorktree(taskId, title, 'main', [], first.branchName);
+
+    expect(second.worktreePath).toBe(first.worktreePath);
+    expect(second.branchName).toBe(first.branchName);
+    // The exact regression: a doubled -<shortId> suffix must never appear.
+    expect(second.worktreePath).not.toContain('4e41b16b-4e41b16b');
+  });
+
+  it('round-trips remain stable on repeated Done cycles', async () => {
+    const mgr = new WorktreeManager('/project');
+    const taskId = 'abcd1234-0000-0000-0000-000000000000';
+    const title = 'Fix Login Bug';
+
+    const first = await mgr.createWorktree(taskId, title);
+    const second = await mgr.createWorktree(taskId, title, 'main', [], first.branchName);
+    const third = await mgr.createWorktree(taskId, title, 'main', [], second.branchName);
+
+    expect(second.worktreePath).toBe(first.worktreePath);
+    expect(third.worktreePath).toBe(first.worktreePath);
+  });
+
+  it('namespaced auto branch (non-default base) still reproduces the title-derived folder', async () => {
+    const mgr = new WorktreeManager('/project');
+    const taskId = 'deadbeef-0000-0000-0000-000000000000';
+    const title = 'Fix Login';
+    // Auto branch created off a non-default base is namespaced.
+    const branchName = 'bugfix-x/fix-login-deadbeef';
+
+    const result = await mgr.createWorktree(taskId, title, 'main', [], branchName);
+
+    expect(result.worktreePath.endsWith('fix-login-deadbeef')).toBe(true);
+    expect(result.worktreePath).not.toContain('deadbeef-deadbeef');
+  });
+
+  it('genuinely custom branch names stay branch-derived (unchanged behavior)', async () => {
+    const mgr = new WorktreeManager('/project');
+    const taskId = 'abcd1234-0000-0000-0000-000000000000';
+
+    const result = await mgr.createWorktree(taskId, 'Some Title', 'main', [], 'feature/login');
+
+    expect(result.branchName).toBe('feature/login');
+    // Folder derived from the custom branch, not the title. Custom branches do
+    // not embed the shortId, so they are already stable across round-trips.
+    expect(result.worktreePath.endsWith('feature-login-abcd1234')).toBe(true);
+  });
+});
+
 // ── Serial queue tests ────────────────────────────────────────────────────
 
 describe('WorktreeManager -- serial queue', () => {

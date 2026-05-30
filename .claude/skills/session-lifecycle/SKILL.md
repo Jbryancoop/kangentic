@@ -36,23 +36,25 @@ All DB status transitions flow through `src/main/engine/session-lifecycle.ts` us
 - `suspended -> exited` (retired when replaced by new session, via `retireRecord()`)
 - `orphaned -> exited` (recovery dedup or failed recovery, via `retireRecord()`)
 
-**Resume check (`canResume()`):** checks `agent_session_id` existence, NOT status. Any session with an `agent_session_id` is potentially resumable regardless of whether it's `suspended` or `exited`.
+**Resume check (`canResume()`):** a cheap DB-only gate on `agent_session_id` existence, NOT status. Any session with an `agent_session_id` is *potentially* resumable regardless of whether it's `suspended` or `exited`. Note that Claude resolves its transcript by the agent's current cwd, so the worktree path must stay stable across Done round-trips for `--resume` to find it (see "Resume Flow").
 
 **Illegal transitions (bugs if they happen):**
 - `queued -> suspended` (must run first)
 
 ## handleTaskMove Priority Cascade
 
-`src/main/ipc/handlers/tasks.ts` -- the `handleTaskMove` function (lines 22-149) determines what happens to a session when a task moves between columns. The checks execute in strict priority order -- first match wins:
+`src/main/ipc/handlers/task-move.ts` -- the `handleTaskMove` function determines what happens to a session when a task moves between columns. It runs in three phases: Phase 1 (under `withTaskLock`: DB mutations + PTY suspend/kill dispatch), Phase 2 (unlocked: worktree git I/O), Phase 3 (locked: spawn). Phase 1 evaluates priorities in strict order -- first match wins:
 
-1. **Same-column reorder** (line 44) -- No side effects. Return immediately.
-2. **Target is Backlog** (role=`backlog`, lines 50-55) -- Cancel pending commands, kill session (hard stop), preserve worktree. Return.
-3. **Target is Done** (role=`done`, lines 58-83) -- Cancel pending commands, suspend session (resumable), auto-archive task. Accepts both `running` AND `exited` sessions.
-4. **Target has `auto_spawn=false`** (lines 87-100) -- Cancel pending commands, suspend if session exists, do NOT respawn. Return.
-5. **Task has active session** (lines 105-114) -- If target has `auto_command`, suspend and respawn with command as resume prompt. Otherwise keep session alive (permission mode differences alone do not trigger suspend/resume).
-6. **No active session** (lines 117-148) -- Create worktree, execute transitions (which may spawn), attempt resume of suspended session.
+1. **Same-column reorder** -- No side effects. Return.
+2. **Priority 1 - Target is To Do** (role=`todo`) -- Cancel pending commands, kill session, full cleanup (remove worktree + delete branch). Return.
+3. **Priority 2 - Target is Done** (role=`done`) -- Cancel pending commands, suspend session (resumable), auto-archive, delete the worktree directory while preserving `branch_name` + session records. Accepts both `running` AND `exited` sessions. Return.
+4. **Priority 2.5 - Target has `auto_spawn=false`** -- Cancel pending commands, suspend if a session exists, do NOT respawn. Return.
+5. **Priority 3 - Task has active session** -- Agent change → suspend + handoff; same-agent live-swap → inject commands; model/effort delta with no live-swap → suspend + respawn; otherwise keep the session alive.
+6. **Priority 4 - No active session** -- Return a plan; Phase 2 (re)creates the worktree, Phase 3 spawns/resumes.
 
-**Critical invariant:** Steps 2-4 always call `commandInjector.cancel(taskId)` BEFORE any session state change. This prevents a pending auto-command from firing after the session is killed/suspended.
+**Critical invariant:** state-changing branches call `terminalSubmitScheduler.cancel(taskId)` BEFORE the change, so a pending auto-command can't fire after the session is killed/suspended.
+
+**Worktree path stability (session-loss fix):** Priority 2 deletes the worktree directory and nulls `worktree_path` but preserves `branch_name`. On move-out, Phase 2 recreates the worktree -- and `WorktreeManager.createWorktree` derives the folder name from the TITLE for auto-generated branches so the recreated path is identical to the original. This matters because Claude keys its transcript by cwd; a path change (e.g. re-slugifying the branch name and doubling the `-<shortId>` suffix) orphans the transcript. See "Resume Flow".
 
 ## Terminal Ownership Handoff
 
@@ -100,16 +102,20 @@ Each PTY session spawns exactly one Claude Code CLI process. Two UI locations ca
 
 ## Resume Flow
 
-Resume happens in three coordinated layers:
+Claude stores each transcript at `~/.claude/projects/<slug-of-cwd>/<agentSessionId>.jsonl`,
+keyed by the working directory (`slug = cwd.replace(/[/\\:.]/g, '-')`). `--resume <id>` only
+succeeds when run from the cwd the original session ran in. Resume happens in coordinated
+layers:
 
-1. **Lifecycle check** (`src/main/engine/session-lifecycle.ts`, `canResume()`): Checks `agent_session_id` existence (not status) on the latest session record. Any session that started an agent and got an `agent_session_id` has a transcript that `--resume` can use.
-2. **Transition engine** (`src/main/engine/transition-engine.ts`): Calls `canResume()`, retires the old record via `retireRecord()`, spawns a new PTY with `--resume <agent_session_id>`.
-3. **Session manager** (`src/main/pty/session-manager.ts`): Preserves scrollback buffer from previous session to write into new xterm on connect.
-4. **Session store** (`src/renderer/stores/session-store.ts`): `syncSessions()` reconciles main process state, handling IPC updates that arrived during the async fetch gap.
+1. **Lifecycle check** (`src/main/engine/session-lifecycle.ts`, `canResume()` / `isResumeEligible()`): cheap DB-only gate on `agent_session_id` existence (not status).
+2. **Transition engine** (`src/main/engine/transition-engine.ts`): retires the old record via `retireRecord()`, spawns a new PTY with `--resume <agent_session_id>` in the task's worktree cwd.
+3. **Session manager / store**: scrollback preservation + `syncSessions()` reconciliation.
 
-**Stale ID recovery:** If `--resume` fails silently (no JSONL found), the agent creates a fresh session with a different UUID. The `UsageTracker` detects the mismatch from the first `status.json` update and `recoverStaleSessionId()` updates the DB so the next resume uses the correct UUID.
+**Worktree path must stay stable.** Because the transcript is cwd-keyed, the worktree must be recreated at the SAME path across a Done round-trip. `WorktreeManager.createWorktree` derives the folder from the title for auto-generated branches to guarantee this. A regression here (e.g. re-slugifying the preserved branch name, which already ends in `-<shortId>`, and appending the suffix again -> `foo-abcd1234-abcd1234`) changes the cwd and silently orphans the session.
 
-**Key rule:** Resumed sessions get `--resume <id>` ONLY -- no prompt is passed. Fresh sessions get `--session-id <uuid>` WITH prompt.
+**`--resume` failure is loud, not silent.** When Claude can't find the transcript under the current cwd it prints `No conversation found with session ID: <id>` and EXITS -- it does NOT start a fresh session. The wrapping shell PTY stays alive and idle (the "N idle" phantom on the project). `recoverStaleSessionId()` therefore cannot heal this case (no agent ever starts to report a new id); the transcript-presence guard prevents the doomed `--resume` in the first place.
+
+**Key rule:** A genuine resume gets `--resume <id>` ONLY -- no prompt. Fresh sessions (including a guard-triggered downgrade) get `--session-id <uuid>` WITH the task prompt.
 
 ## Subagent Activity Tracking
 
@@ -132,7 +138,7 @@ Resume happens in three coordinated layers:
 - **Rapid task moves during async gaps**: A task moved twice quickly can trigger two `handleTaskMove` calls that interleave. The `commandInjector.cancel()` ordering and generation counters mitigate this but don't fully prevent it.
 - **Timestamp-based ordering nondeterminism**: Sessions sorted by `startedAt` may have identical timestamps if spawned in rapid succession. Use stable secondary sort (session ID) when ordering matters.
 - **Natural agent exit vs kill**: When the agent exits naturally (user types `/exit` or task completes), the PTY fires `onExit`. The `markRecordExited()` function uses atomic `compareAndUpdateStatus` to only transition from `running`/`queued` - it never overwrites `suspended`, which may have been set by `handleTaskMove` before the async `onExit` fires.
-- **Silent `--resume` failure**: When `--resume <uuid>` finds no matching JSONL file, it silently starts a fresh session with a new UUID. The `UsageTracker` detects this from the first `status.json` update and corrects the DB via `recoverStaleSessionId()`.
+- **`--resume` failure is loud, not silent**: When `--resume <uuid>` finds no transcript under the current cwd, Claude prints `No conversation found` and EXITS (no fresh-session fallback), leaving an idle shell PTY. `recoverStaleSessionId()` cannot help because no agent starts to report a new id. The cwd-keyed transcript model plus stable worktree naming (`createWorktree` derives the folder from the title for auto-generated branches) keep the cwd constant across Done round-trips so `--resume` finds the transcript. See "Resume Flow".
 
 ## Key Source Files
 
@@ -140,6 +146,7 @@ Resume happens in three coordinated layers:
 - `src/main/pty/session-manager.ts` -- PTY lifecycle, spawn, suspend, kill, scrollback
 - `src/main/pty/session-queue.ts` -- Concurrency control, max concurrent sessions
 - `src/main/engine/transition-engine.ts` -- Action execution, resume logic
-- `src/main/ipc/handlers/tasks.ts` -- handleTaskMove priority cascade
+- `src/main/ipc/handlers/task-move.ts` -- handleTaskMove priority cascade
+- `src/main/git/worktree-manager.ts` -- `createWorktree` (stable, title-derived folder naming)
 - `src/renderer/stores/session-store.ts` -- Zustand store, sync generation guard
 - `src/renderer/components/terminal/TerminalPanel.tsx` -- Terminal ownership handoff
