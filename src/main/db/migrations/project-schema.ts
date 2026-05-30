@@ -131,6 +131,21 @@ export function runProjectMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE tasks ADD COLUMN use_worktree INTEGER DEFAULT NULL');
   }
 
+  // Migration: carry external origin onto promoted tasks so import dedup survives
+  // promotion. A backlog item imported from GitHub/Asana/etc. loses its backlog row
+  // when promoted; without these columns the board task has no trace of its origin,
+  // so the same issue could be re-imported. The dedup query now scans tasks too.
+  const tasksColumns = (db.pragma('table_info(tasks)') as Array<{ name: string }>).map((col) => col.name);
+  if (!tasksColumns.includes('external_id')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN external_id TEXT DEFAULT NULL');
+  }
+  if (!tasksColumns.includes('external_source')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN external_source TEXT DEFAULT NULL');
+  }
+  if (!tasksColumns.includes('external_url')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN external_url TEXT DEFAULT NULL');
+  }
+
   // Migration: drop FK on from_swimlane_id to allow wildcard '*' source.
   // SQLite requires table recreation to remove a constraint.
   const fkInfo = db.prepare("PRAGMA foreign_key_list('swimlane_transitions')").all() as Array<{ from: string; table: string }>;
@@ -587,6 +602,9 @@ export function runProjectMigrations(db: Database.Database): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_agent_session_id ON sessions(agent_session_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)');
+
+  // Import dedup scans promoted board tasks by external origin (mirrors idx_backlog_external).
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_external ON tasks(external_source, external_id)');
 
   // usage_history query indices (StatusBar period bucketing uses session_started_at).
   db.exec('CREATE INDEX IF NOT EXISTS idx_usage_history_session_started_at ON usage_history(session_started_at)');

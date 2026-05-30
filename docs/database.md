@@ -105,6 +105,9 @@ Valid role values: `todo`, `done`, or NULL (custom column).
 | branch_name | TEXT | | NULL |
 | pr_number | INTEGER | | NULL |
 | pr_url | TEXT | | NULL |
+| external_id | TEXT | | NULL |
+| external_source | TEXT | | NULL |
+| external_url | TEXT | | NULL |
 | base_branch | TEXT | | NULL |
 | use_worktree | INTEGER | | NULL |
 | labels | TEXT | NOT NULL | '[]' |
@@ -116,7 +119,7 @@ Valid role values: `todo`, `done`, or NULL (custom column).
 | created_at | TEXT | NOT NULL | |
 | updated_at | TEXT | NOT NULL | |
 
-Indexes: `idx_tasks_swimlane_position` on (swimlane_id, position), `idx_tasks_display_id` on (display_id) UNIQUE, `idx_tasks_session_id` on (session_id).
+Indexes: `idx_tasks_swimlane_position` on (swimlane_id, position), `idx_tasks_display_id` on (display_id) UNIQUE, `idx_tasks_session_id` on (session_id), `idx_tasks_external` on (external_source, external_id).
 
 ### actions table
 
@@ -354,6 +357,7 @@ Listed in execution order within `runProjectMigrations()`:
 32. **`model_override` and `effort_override` columns on swimlanes and tasks** -- adds per-column model and effort/reasoning level overrides. Both default to NULL (inherit agent default). Read at spawn time by `prepare-spawn.ts` to set `--model` / `--effort` CLI flags. Live-applied to running sessions via adapter-specific slash injection (`getInjectionSequence`) on column transition; falls back to suspend+respawn for adapters without live-swap support. The same migration block also adds `model_override` and `effort_override` columns to the **tasks** table for per-task overrides set via the ContextBar popover. Per-task values take precedence over the swimlane override; NULL falls through to the swimlane and ultimately to the agent default.
 33. **`usage_history` append-only ledger** -- creates the `usage_history` table (in the initial `CREATE TABLE IF NOT EXISTS` block) plus two query indices (`idx_usage_history_session_started_at`, `idx_usage_history_recorded_at`) for StatusBar period bucketing. Adds a one-shot guarded backfill that copies existing `sessions` rows where `total_cost_usd IS NOT NULL` into `usage_history` so installs upgrading to this version retain their lifetime totals. Backfill is wrapped in a single transaction and uses `INSERT OR IGNORE` plus a `COUNT(*) = 0` guard so re-running is safe. Rows in this table have no foreign keys to `tasks` or `sessions`, so totals survive task deletion (the original bug this feature fixes).
 34. **`agent_override` column on tasks** -- adds per-task agent override set at task creation via the New Task dialog's Advanced section. Wins over `swimlane.agent_override` and the project default for the task's entire lifetime; column moves cannot change the agent. NULL means inherit from the swimlane. Resolved at spawn time by `resolveTargetAgent()` (priority 1) in `src/main/engine/agent-resolver.ts`. Companion guard in `task-move.ts` skips the cross-agent clear of `model_override` / `effort_override` when `agent_override` is set, since those values were picked for the locked agent.
+35. **`external_id`, `external_source`, `external_url` columns on tasks** -- carries external origin (GitHub/Asana/etc.) onto board tasks promoted from imported backlog items, plus an `idx_tasks_external` index on (external_source, external_id). Promotion deletes the `backlog_tasks` row, so without these columns the board task loses all trace of its origin and the same issue could be re-imported. The dedup query (`findByExternalIds`) now unions `backlog_tasks` with `tasks` (archived included) so a previously imported-and-promoted issue stays "imported". Carried back through demote via `createFromTask`.
 
 ### Key Migrations (Global DB)
 

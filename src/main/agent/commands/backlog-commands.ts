@@ -293,6 +293,9 @@ export const handlePromoteBacklog: CommandHandler = (
       swimlane_id: targetSwimlane.id,
       labels: item.labels,
       priority: item.priority,
+      externalId: item.external_id ?? undefined,
+      externalSource: item.external_source ?? undefined,
+      externalUrl: item.external_url ?? undefined,
     });
 
     // Copy backlog attachments to task attachments

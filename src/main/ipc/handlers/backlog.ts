@@ -138,13 +138,17 @@ export function registerBacklogHandlers(context: IpcContext): void {
       const item = backlogRepo.getById(backlogTaskId);
       if (!item) continue;
 
-      // Create a task from the backlog task, carrying over labels and priority
+      // Create a task from the backlog task, carrying over labels, priority, and
+      // external origin (so import dedup still sees the issue after promotion).
       const task = tasks.create({
         title: item.title,
         description: item.description,
         swimlane_id: input.targetSwimlaneId,
         labels: item.labels,
         priority: item.priority,
+        externalId: item.external_id ?? undefined,
+        externalSource: item.external_source ?? undefined,
+        externalUrl: item.external_url ?? undefined,
       });
 
       // Copy backlog attachments to task attachments
@@ -255,12 +259,14 @@ export function registerBacklogHandlers(context: IpcContext): void {
       // Clean up session, worktree, and branch
       await cleanupTaskResources(context, task, tasks);
 
-      // Create backlog task from task, preserving labels/priority (input overrides task values)
+      // Create backlog task from task, preserving labels/priority (input overrides
+      // task values) and external origin so a demote->reimport stays deduplicated.
       const backlogTask = backlogRepo.createFromTask(
         task.title,
         task.description,
         input.priority ?? task.priority,
         input.labels ?? task.labels,
+        { externalId: task.external_id, externalSource: task.external_source, externalUrl: task.external_url },
       );
 
       // Copy task attachments to backlog task before deleting

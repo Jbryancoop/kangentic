@@ -53,11 +53,13 @@ vi.mock('../../src/main/db/database', () => ({ getProjectDb: vi.fn(() => ({})) }
 const backlogRepoMock = {
   getById: vi.fn(),
   delete: vi.fn(),
+  createFromTask: vi.fn(),
 };
 const taskRepoMock = {
   create: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
+  delete: vi.fn(),
 };
 const swimlaneRepoMock = {
   getById: vi.fn(),
@@ -85,6 +87,7 @@ vi.mock('../../src/main/db/repositories/backlog-repository', () => ({
   BacklogRepository: class {
     getById = backlogRepoMock.getById;
     delete = backlogRepoMock.delete;
+    createFromTask = backlogRepoMock.createFromTask;
   },
 }));
 vi.mock('../../src/main/db/repositories/task-repository', () => ({
@@ -92,6 +95,7 @@ vi.mock('../../src/main/db/repositories/task-repository', () => ({
     create = taskRepoMock.create;
     getById = taskRepoMock.getById;
     update = taskRepoMock.update;
+    delete = taskRepoMock.delete;
   },
 }));
 vi.mock('../../src/main/db/repositories/swimlane-repository', () => ({
@@ -186,6 +190,9 @@ function createMockContext() {
       listSessions: vi.fn(() => []),
       removeByTaskId: vi.fn(),
     },
+    terminalSubmitScheduler: {
+      cancel: vi.fn(),
+    },
   };
 }
 
@@ -270,5 +277,120 @@ describe('BACKLOG_PROMOTE AbortError cleanup', () => {
     // post-worktree branch checkout never ran.
     expect(mockEnsureTaskBranchCheckout).not.toHaveBeenCalled();
     expect(mockSpawnAgent).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BACKLOG_DEMOTE external-origin carry-back (dedup regression guard).
+//
+// The BACKLOG_DEMOTE handler must pass the task's external_id/source/url into
+// createFromTask so that a demote -> reimport round-trip stays deduplicated.
+// Without this, a promoted-then-demoted issue loses its external origin and
+// can be imported a second time.
+// ---------------------------------------------------------------------------
+
+describe('BACKLOG_DEMOTE external-origin carry-back', () => {
+  let context: ReturnType<typeof createMockContext>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandlers.clear();
+
+    mockEnsureTaskWorktree.mockReset();
+    mockEnsureTaskWorktree.mockImplementation(async () => {});
+    mockEnsureTaskBranchCheckout.mockReset();
+    mockEnsureTaskBranchCheckout.mockImplementation(async () => {});
+    mockSpawnAgent.mockReset();
+    mockSpawnAgent.mockImplementation(async () => {});
+    mockCleanupTaskResources.mockReset();
+    mockCleanupTaskResources.mockImplementation(async () => {});
+
+    // Wire getProjectRepos to return the module-scope repo spies so we can
+    // assert on tasks.delete and attachments.list inside the demote handler.
+    mockGetProjectRepos.mockReturnValue({
+      tasks: {
+        getById: taskRepoMock.getById,
+        delete: taskRepoMock.delete,
+      },
+      attachments: {
+        list: attachmentRepoMock.list,
+        deleteByTaskId: attachmentRepoMock.deleteByTaskId,
+      },
+    });
+
+    // The re-fetch at the end of the handler: backlogRepo.getById(backlogTask.id).
+    // Return undefined so the handler returns the original backlogTask object
+    // rather than a re-fetched one - the exact value is not important here.
+    backlogRepoMock.getById.mockReturnValue(undefined);
+
+    context = createMockContext();
+    registerBacklogHandlers(context as never);
+  });
+
+  it('passes the task external origin to createFromTask so dedup survives a demote', async () => {
+    // Arrange: a promoted board task that carries the GitHub issue origin.
+    taskRepoMock.getById.mockReturnValue({
+      id: 'task-with-origin',
+      title: 'GitHub issue',
+      description: 'Some description',
+      labels: ['bug'],
+      priority: 2,
+      external_id: '77',
+      external_source: 'github_issues',
+      external_url: 'https://github.com/acme/repo/issues/77',
+      session_id: null,
+    });
+    const newBacklogTask = {
+      id: 'backlog-demoted',
+      title: 'GitHub issue',
+      description: 'Some description',
+    };
+    backlogRepoMock.createFromTask.mockReturnValue(newBacklogTask);
+
+    const handler = capturedHandlers.get(IPC.BACKLOG_DEMOTE);
+    if (!handler) throw new Error('BACKLOG_DEMOTE handler not registered');
+
+    await handler(null, { taskId: 'task-with-origin' });
+
+    // The external origin must be forwarded as the 5th arg to createFromTask.
+    expect(backlogRepoMock.createFromTask).toHaveBeenCalledWith(
+      'GitHub issue',
+      'Some description',
+      2,
+      ['bug'],
+      { externalId: '77', externalSource: 'github_issues', externalUrl: 'https://github.com/acme/repo/issues/77' },
+    );
+  });
+
+  it('passes null origin fields when the task has no external origin', async () => {
+    // A hand-written board task has all external_* columns as null.
+    // createFromTask receives that null triple (not undefined) so
+    // BacklogRepository.createFromTask can apply its own ?? undefined coercions.
+    taskRepoMock.getById.mockReturnValue({
+      id: 'task-no-origin',
+      title: 'Manual task',
+      description: 'desc',
+      labels: [],
+      priority: 0,
+      external_id: null,
+      external_source: null,
+      external_url: null,
+      session_id: null,
+    });
+    const newBacklogTask = { id: 'backlog-manual', title: 'Manual task', description: 'desc' };
+    backlogRepoMock.createFromTask.mockReturnValue(newBacklogTask);
+
+    const handler = capturedHandlers.get(IPC.BACKLOG_DEMOTE);
+    if (!handler) throw new Error('BACKLOG_DEMOTE handler not registered');
+
+    await handler(null, { taskId: 'task-no-origin' });
+
+    expect(backlogRepoMock.createFromTask).toHaveBeenCalledWith(
+      'Manual task',
+      'desc',
+      0,
+      [],
+      { externalId: null, externalSource: null, externalUrl: null },
+    );
   });
 });

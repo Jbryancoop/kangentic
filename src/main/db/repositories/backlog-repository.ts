@@ -253,28 +253,47 @@ export class BacklogRepository {
     return modifiedCount;
   }
 
-  /** Find which external IDs from a given source are already imported. */
+  /**
+   * Find which external IDs from a given source are already imported.
+   *
+   * Scans both the backlog (`backlog_tasks`) AND promoted board tasks (`tasks`):
+   * promoting a backlog item deletes its backlog row and carries the external
+   * origin onto the board task, so a board-only match must still count as
+   * "imported" to prevent re-importing the same issue. Archived board tasks are
+   * intentionally included (they are recoverable, not deleted).
+   */
   findByExternalIds(source: string, externalIds: string[]): Set<string> {
     if (externalIds.length === 0) return new Set();
     const placeholders = externalIds.map(() => '?').join(', ');
     const rows = this.db.prepare(
-      `SELECT external_id FROM backlog_tasks WHERE external_source = ? AND external_id IN (${placeholders})`
-    ).all(source, ...externalIds) as Array<{ external_id: string }>;
+      `SELECT external_id FROM backlog_tasks WHERE external_source = ? AND external_id IN (${placeholders})
+       UNION
+       SELECT external_id FROM tasks WHERE external_source = ? AND external_id IN (${placeholders})`
+    ).all(source, ...externalIds, source, ...externalIds) as Array<{ external_id: string }>;
     return new Set(rows.map((row) => row.external_id));
   }
 
-  /** Create a backlog task from an existing task's title/description. */
+  /**
+   * Create a backlog task from an existing task's title/description.
+   *
+   * External origin (when present on a previously-imported task) is carried back
+   * so a demote->reimport round-trip stays deduplicated, mirroring the promote path.
+   */
   createFromTask(
     title: string,
     description: string,
     priority?: number,
     labels?: string[],
+    externalOrigin?: { externalId: string | null; externalSource: string | null; externalUrl: string | null },
   ): BacklogTask {
     return this.create({
       title,
       description,
       priority: priority ?? 0,
       labels: labels ?? [],
+      externalId: externalOrigin?.externalId ?? undefined,
+      externalSource: externalOrigin?.externalSource ?? undefined,
+      externalUrl: externalOrigin?.externalUrl ?? undefined,
     });
   }
 }

@@ -37,6 +37,10 @@ const mockBacklogRepoUpdate = vi.fn();
 const mockBacklogRepoDelete = vi.fn();
 
 const mockBacklogAttachmentRepoDeleteByTaskId = vi.fn();
+const mockBacklogAttachmentRepoList = vi.fn(() => []);
+
+// Used by handlePromoteBacklog to create the promoted board task.
+const mockTaskRepoCreate = vi.fn();
 
 vi.mock('../../src/main/db/repositories/backlog-repository', () => ({
   BacklogRepository: class {
@@ -51,7 +55,7 @@ vi.mock('../../src/main/db/repositories/backlog-repository', () => ({
 vi.mock('../../src/main/db/repositories/backlog-attachment-repository', () => ({
   BacklogAttachmentRepository: class {
     deleteByTaskId = mockBacklogAttachmentRepoDeleteByTaskId;
-    list = vi.fn(() => []);
+    list = mockBacklogAttachmentRepoList;
     add = vi.fn();
   },
 }));
@@ -61,14 +65,20 @@ vi.mock('../../src/main/db/repositories/attachment-utils', () => ({
   readFileAsAttachment: vi.fn(),
 }));
 
-// Silence the task-repository import (used by handlePromoteBacklog, not our handlers)
+// Task repository - used by handlePromoteBacklog to create the promoted board task.
 vi.mock('../../src/main/db/repositories/task-repository', () => ({
-  TaskRepository: class {},
+  TaskRepository: class {
+    create = mockTaskRepoCreate;
+  },
 }));
 
-// Silence the attachment-repository import (used by handlePromoteBacklog attachment copy path)
+// Attachment repository - used by handlePromoteBacklog attachment copy path.
+// list() returning [] prevents any fs.readFileSync calls in these tests.
 vi.mock('../../src/main/db/repositories/attachment-repository', () => ({
-  AttachmentRepository: class {},
+  AttachmentRepository: class {
+    list = vi.fn(() => []);
+    add = vi.fn();
+  },
 }));
 
 // Silence column-resolver (used by handlePromoteBacklog, not our handlers)
@@ -406,5 +416,65 @@ describe('handlePromoteBacklog', () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/^No backlog tasks found for the provided IDs\./);
     expect(result.error).toContain('kangentic_search_tasks');
+  });
+
+  it('carries external_id/source/url from the backlog item into the created board task', () => {
+    // Regression guard: the MCP promote path (handlePromoteBacklog in
+    // backlog-commands.ts) must pass external origin onto taskRepo.create so
+    // that findByExternalIds can match the promoted task on a re-import.
+    mockBacklogRepoGetById.mockReturnValue({
+      id: 'backlog-gh-1',
+      title: 'GitHub issue',
+      description: 'desc',
+      labels: ['bug'],
+      priority: 2,
+      external_id: '42',
+      external_source: 'github_issues',
+      external_url: 'https://github.com/acme/repo/issues/42',
+    });
+    mockTaskRepoCreate.mockReturnValue({
+      id: 'task-promoted',
+      title: 'GitHub issue',
+      swimlane_id: 'lane-todo',
+    });
+
+    const result = handlePromoteBacklog({ itemIds: ['backlog-gh-1'] }, context);
+
+    expect(result.success).toBe(true);
+    expect(mockTaskRepoCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        externalId: '42',
+        externalSource: 'github_issues',
+        externalUrl: 'https://github.com/acme/repo/issues/42',
+      }),
+    );
+  });
+
+  it('leaves external fields undefined when the backlog item has no origin', () => {
+    // Regression guard: a hand-written backlog item (no external_* columns)
+    // must not cause handlePromoteBacklog to pass undefined vs null incorrectly.
+    mockBacklogRepoGetById.mockReturnValue({
+      id: 'backlog-manual-1',
+      title: 'Hand-written item',
+      description: 'desc',
+      labels: [],
+      priority: 0,
+      external_id: null,
+      external_source: null,
+      external_url: null,
+    });
+    mockTaskRepoCreate.mockReturnValue({
+      id: 'task-promoted-2',
+      title: 'Hand-written item',
+      swimlane_id: 'lane-todo',
+    });
+
+    const result = handlePromoteBacklog({ itemIds: ['backlog-manual-1'] }, context);
+
+    expect(result.success).toBe(true);
+    const createInput = mockTaskRepoCreate.mock.calls[0][0] as Record<string, unknown>;
+    expect(createInput.externalId).toBeUndefined();
+    expect(createInput.externalSource).toBeUndefined();
+    expect(createInput.externalUrl).toBeUndefined();
   });
 });

@@ -127,6 +127,10 @@ export interface Task {
   branch_name: string | null;
   pr_number: number | null;
   pr_url: string | null;
+  /** External origin, carried through when this task was promoted from an imported backlog item. Lets import dedup stay aware of promoted (and archived) tasks. null for tasks created directly. */
+  external_id: string | null;
+  external_source: string | null;
+  external_url: string | null;
   base_branch: string | null;
   use_worktree: number | null;
   labels: string[];
@@ -1360,6 +1364,10 @@ export interface TaskCreateInput {
   model_override?: string | null;
   effort_override?: string | null;
   agent_override?: string | null;
+  /** External origin carried through when promoting an imported backlog item, so import dedup survives promotion. */
+  externalId?: string;
+  externalSource?: string;
+  externalUrl?: string;
   pendingAttachments?: Array<{
     filename: string;
     data: string; // base64
