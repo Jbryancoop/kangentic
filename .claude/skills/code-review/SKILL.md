@@ -2,6 +2,7 @@
 description: Review git changes for quality and conventions
 allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git:*), Bash(npm:*), Bash(npx:*)
 argument-hint: [review-only]
+context: fork
 ---
 
 # Code Review

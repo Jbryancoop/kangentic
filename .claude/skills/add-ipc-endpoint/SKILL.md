@@ -1,6 +1,6 @@
 ---
 description: Scaffold a new IPC endpoint across all 7 layers
-allowed-tools: Read, Glob, Grep, Edit, Bash(npm:*)
+allowed-tools: Read, Glob, Grep, Edit, Bash(npm:*), Agent
 argument-hint: <channel-name> <description>
 ---
 
@@ -59,8 +59,14 @@ Example: `/add-ipc-endpoint TASK_DUPLICATE Duplicate an existing task with a new
    - `npm run typecheck`
    - Fix any type errors before proceeding
 
-9. **Report what was created:**
+9. **Verify with the `ipc-auditor` agent (fresh context):**
+   - Spawn the `ipc-auditor` agent (read-only: `Read`, `Glob`, `Grep`) to mechanically confirm the new channel exists and is consistent across all 7 layers (channel constants, types, preload, handlers, services, stores, mocks).
+   - This is delegation, not forking - the skill stays in the main loop and hands only the verification pass to the auditor for an unbiased check.
+   - Fold any gaps the auditor reports back into the affected layer before finishing.
+
+10. **Report what was created:**
    - List all files modified with the changes made
+   - Include the `ipc-auditor` verdict (clean, or the gaps that were fixed)
    - Suggest next steps:
      - Add Zustand store method in `src/renderer/stores/<domain>-store.ts`
      - Add component usage
@@ -68,6 +74,6 @@ Example: `/add-ipc-endpoint TASK_DUPLICATE Duplicate an existing task with a new
 
 ## Allowed Tools
 
-Use `Read`, `Glob`, `Grep`, `Edit`, `Bash` (for `npm run typecheck`).
+Use `Read`, `Glob`, `Grep`, `Edit`, `Bash` (for `npm run typecheck`), and `Agent` (to spawn the `ipc-auditor` verification agent at the end).
 
 **CRITICAL: No chained commands.** Every Bash call must contain exactly ONE command. Never use `&&`, `||`, `|`, or `;`.

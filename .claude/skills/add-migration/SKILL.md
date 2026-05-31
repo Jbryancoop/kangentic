@@ -1,6 +1,6 @@
 ---
 description: Add a new database migration
-allowed-tools: Read, Glob, Grep, Edit, Bash(npm:*)
+allowed-tools: Read, Glob, Grep, Edit, Bash(npm:*), Agent
 argument-hint: <description>
 ---
 
@@ -95,7 +95,12 @@ for (const row of rows) {
    - `npm run typecheck`
    - Fix any type errors
 
-8. **Remind about docs:**
+8. **Verify with the `migration-safety` agent (fresh context):**
+   - Spawn the `migration-safety` agent (read-only: `Read`, `Glob`, `Grep`) to confirm the migration is idempotent (guarded by `pragma table_info` / `sqlite_master`), that DEFAULT values align with the TypeScript types, and that repository queries cover the new column.
+   - This is delegation, not forking - the skill stays in the main loop and hands only the verification pass to the auditor for an unbiased check.
+   - Fix any issues the auditor reports before finishing.
+
+9. **Remind about docs:**
    - Suggest running `/sync-docs` to update `docs/database.md`
 
 ## Checklist
@@ -110,6 +115,6 @@ Before finalizing, verify:
 
 ## Allowed Tools
 
-Use `Read`, `Glob`, `Grep`, `Edit`, `Bash` (for `npm run typecheck`).
+Use `Read`, `Glob`, `Grep`, `Edit`, `Bash` (for `npm run typecheck`), and `Agent` (to spawn the `migration-safety` verification agent at the end).
 
 **CRITICAL: No chained commands.** Every Bash call must contain exactly ONE command. Never use `&&`, `||`, `|`, or `;`.
