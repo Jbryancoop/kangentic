@@ -1,7 +1,7 @@
-## What's New
-
-- Right-click context menu for archived tasks on the board lets you act on archived items without dragging them out of the archive.
-
 ## Bug Fixes
 
-- Restored the FlyingCard and grow-in animations when dropping a task into Done.
+- Live session state now stays visible across hot reloads and when switching between projects.
+- Resuming a Claude session now survives moving a task to Done and back, thanks to stable worktree folder naming.
+- Backlog imports no longer re-add tasks that were already promoted to the board.
+- Creating a new project no longer inherits board import sources from other projects.
+- Claude agent capability detection is more robust and tolerates wrapped command output.

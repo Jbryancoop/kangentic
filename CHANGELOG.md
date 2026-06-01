@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.20.0] - 2026-06-01
+
+### Fixes
+
+- Sessions: keep live session state visible across HMR and project switch (301b6bc3)
+- Worktree: stable folder naming so Claude --resume survives Done round-trips (04e2888a)
+- Backlog: keep import dedup aware of promoted tasks (1cff5933)
+- Boards: stop import sources leaking into newly created projects (72d852a6)
+- Agent: tolerate wrapped --effort line in Claude capability discovery (fffaf610)
+
+### Other
+
+- Skills: fork code-review for fresh context, auto-spawn IPC/migration auditors (9db388ed)
+
 ## [v0.19.1] - 2026-05-13
 
 ### Features
