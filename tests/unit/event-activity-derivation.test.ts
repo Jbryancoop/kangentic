@@ -14,6 +14,7 @@
  *   idle            → idle
  *   interrupted     → idle
  *   notification    → no change (informational, fires unpredictably)
+ *   idle_hint       → idle only when no other holder remains (else no change)
  *   subagent_stop   → no change (subagent finishing ≠ main agent active)
  *   tool_end        → no change
  *   session_start   → no change
@@ -533,6 +534,42 @@ describe('Event-derived activity state', () => {
 
     // Notification is informational -- should NOT change activity
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.Notification, detail: 'Context getting full' });
+    await waitForWatcher();
+
+    expect(manager.getActivityCache()[session.id]).toBe('thinking');
+    expect(statesAfter).toHaveLength(0);
+  });
+
+  it('idle_hint settles a subagent-delegated turn to idle', async () => {
+    const { session, eventsPath } = await spawnWithEvents();
+    const states = collectActivity(manager, session.id);
+
+    // Turn delegated to a subagent; when it stops, turnActive is still true.
+    appendEvent(eventsPath, { ts: Date.now(), type: EventType.Prompt });
+    appendEvent(eventsPath, { ts: Date.now() + 1, type: EventType.SubagentStart, detail: 'test-builder' });
+    appendEvent(eventsPath, { ts: Date.now() + 2, type: EventType.SubagentStop, detail: 'test-builder' });
+    await waitForWatcher();
+    expect(manager.getActivityCache()[session.id]).toBe('thinking');
+
+    // "Claude is waiting for your input" -> classified to idle_hint at the
+    // source -> engine settles to idle through the stability window.
+    appendEvent(eventsPath, { ts: Date.now() + 3, type: EventType.IdleHint, detail: 'Claude is waiting for your input' });
+    await waitForWatcher();
+    expect(manager.getActivityCache()[session.id]).toBe('idle');
+
+    expect(states).toEqual(['thinking', 'idle']);
+  });
+
+  it('idle_hint does not force idle while a tool is pending', async () => {
+    const { session, eventsPath } = await spawnWithEvents();
+
+    appendEvent(eventsPath, { ts: Date.now(), type: EventType.ToolStart, tool: 'Bash' });
+    await waitForWatcher();
+    expect(manager.getActivityCache()[session.id]).toBe('thinking');
+
+    const statesAfter = collectActivity(manager, session.id);
+
+    appendEvent(eventsPath, { ts: Date.now(), type: EventType.IdleHint, detail: 'Claude is waiting for your input' });
     await waitForWatcher();
 
     expect(manager.getActivityCache()[session.id]).toBe('thinking');

@@ -113,7 +113,7 @@ Priority ladder: `permission > tool > subagent > background-shell > turn-active 
 
 ## EventType reference
 
-The 21 `EventType` values written to `events.jsonl` by `event-bridge.js`, defined in `src/shared/types.ts`. The activity column shows how each event maps to `ActivityState` via the `EventTypeActivity` table, also in `src/shared/types.ts`.
+The 22 `EventType` values written to `events.jsonl` by `event-bridge.js`, defined in `src/shared/types.ts`. The activity column shows how each event maps to `ActivityState` via the `EventTypeActivity` table, also in `src/shared/types.ts`.
 
 | EventType key | JSONL value | Activity mapping | Notes |
 |---------------|-------------|------------------|-------|
@@ -127,6 +127,7 @@ The 21 `EventType` values written to `events.jsonl` by `event-bridge.js`, define
 | `SubagentStart` | `subagent_start` | `thinking` | Main agent spawned a child agent |
 | `SubagentStop` | `subagent_stop` | log-only | Subagent returned; depth counter decrements |
 | `Notification` | `notification` | log-only | Informational notification from the agent |
+| `IdleHint` | `idle_hint` | conditional idle | "Waiting for your input" notification, classified at the source. Ends the turn only when no other holder remains; otherwise log-only (see "Idle hints" below) |
 | `Compact` | `compact` | `thinking` | Context-window compaction in progress |
 | `TeammateIdle` | `teammate_idle` | log-only | Cross-agent teammate signaled idle |
 | `TaskCompleted` | `task_completed` | log-only | Agent declared the task finished |
@@ -140,6 +141,24 @@ The 21 `EventType` values written to `events.jsonl` by `event-bridge.js`, define
 | `ToolSelectionStart` | `tool_selection_start` | log-only | Agent is choosing the next tool |
 
 "log-only" means the event is recorded for the activity feed and may update internal counters, but does not on its own change `ActivityState`. State changes only occur through the predicate (see below) or via direct `Idle` / `Interrupted` events.
+
+### Idle hints (waiting-for-input notifications)
+
+Some turns end without a `Stop`/`Idle` hook ever reaching the main agent - most commonly when the whole turn was delegated to a subagent. When the subagent stops, `subagentDepth → 0` but `turnActive` is still `true`, and the only thing that arrives is a `Notification` ("Claude is waiting for your input"). Because `Notification` is log-only, nothing clears `turnActive`, and the session stays `thinking` until the 180s stale-thinking watchdog fires - the user sees the spinner spin ~3 minutes after the agent is actually done.
+
+`idle_hint` closes that gap. The classification happens **at the source, not in the engine**: the Claude adapter's `Notification` hook carries a generic `remap-detail-includes:waiting for your input:idle_hint` directive (the only Claude-specific string), so `event-bridge.js` rewrites the matching notification's `type` to `idle_hint`. The match runs on the already-extracted `detail` text (empirically "Claude is waiting for your input"), so it does not depend on which payload field carried the message. The engine never string-matches notification text and never branches on agent name.
+
+The engine treats `idle_hint` as **conditionally** turn-ending (`idleHintEndsTurn` in `predicate.ts`): it clears `turnActive` only when `turnActive && pendingToolCount === 0 && subagentDepth === 0 && bgShellCount === 0 && !permissionPending`. When the guard passes, the predicate flips to idle through the normal 400ms stability window (near-instant for the user). When it fails - tools, subagents, or background shells still outstanding, or a permission pending - `idle_hint` is a pure no-op, so a notification that fires mid-turn never short-circuits genuine work, and the 180s stale-thinking watchdog remains the ultimate backstop. `idle_hint` is in `LOG_ONLY_EVENTS`, so it never resets `lastSignalAt` (a failed guard leaves the genuine work's watchdog anchor untouched).
+
+**Why the substring is deliberately narrow.** A scan of 221 real Claude sessions surfaced exactly four distinct notification texts: "Claude is waiting for your input" (794x), "Claude Code needs your approval for the plan" (109x), "Claude Code needs your attention" (43x), and "Claude needs your permission[ to use X]" (51x). Only the first fires for a pure turn-end whose `Stop` hook can be dropped. The other three each fire ~6s AFTER a `PermissionRequest` (tool permission, ExitPlanMode plan approval, or AskUserQuestion) has already driven the engine to the `permission` state, so they are correctly left log-only - reclassifying any of them would conflate `permission` with `idle`. The negative cases are pinned with the real strings in `tests/unit/event-bridge-remap.test.ts`.
+
+Only the Claude adapter wires this today, because Claude is the only agent for which we have captured evidence (a real session) of both the notification text and the dropped-Stop failure mode (a turn fully delegated to a subagent). The engine path is generic: any adapter that classifies a notification into `idle_hint` gets the same behavior.
+
+To extend it to another hook-based agent, capture a real session that exhibits the stall, read the notification's extracted `detail`, then add a `remap-detail-includes:<observed substring>:idle_hint` directive to that adapter's Notification hook. Do not guess the string. Current status of the other agents:
+
+- **Gemini / Qwen Code** share the same hook shape (`AfterAgent` -> `idle` stop-equivalent, `Notification` -> `notification`), so they could be susceptible. But they wire no `SubagentStart`/`SubagentStop` hooks, so the subagent-delegation failure mode is not modeled, and we have no captured session to confirm their notification text. Wire only after capturing evidence.
+- **Kimi** does not need this: its wire protocol emits an explicit `TurnEnd -> Idle`, and none of its `Notification`-mapped messages mean "waiting for input."
+- **Codex / Copilot / OpenCode** wire no Notification hook, so the pattern cannot apply.
 
 ## ActivityDetectionStrategy variants
 

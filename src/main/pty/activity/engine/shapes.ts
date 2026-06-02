@@ -329,6 +329,11 @@ export const LOG_ONLY_EVENTS = new Set<EventType>([
   EventType.SessionStart,
   EventType.SessionEnd,
   EventType.Notification,
+  // idle_hint never resets lastSignalAt. Its only effect is a CONDITIONAL
+  // turn-end handled explicitly in ActivityEngine.processEvent (clear
+  // turnActive when no other holder remains). When the guard fails it is a
+  // pure no-op, so the genuine work's stale-thinking anchor stays put.
+  EventType.IdleHint,
   EventType.TeammateIdle,
   EventType.TaskCompleted,
   EventType.ConfigChange,

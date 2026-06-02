@@ -1142,6 +1142,88 @@ describe('ActivityEngine', () => {
     });
   });
 
+  describe('idle hint (waiting-for-input notification)', () => {
+    beforeEach(() => {
+      engine.initSession(SESSION_ID);
+      transitions.length = 0;
+    });
+
+    it('settles a delegated turn to idle via the stability window, NOT the stale watchdog', () => {
+      // Reproduces the bug: the whole turn was delegated to a subagent. When it
+      // stops, turnActive is still true with no other holders. Pre-fix, only the
+      // 1000ms (prod 180s) stale watchdog could drive idle.
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStart));
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStop));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.turnActive).toBe(true);
+      transitions.length = 0;
+      syntheticEvents.length = 0;
+
+      engine.processEvent(SESSION_ID, event(EventType.IdleHint, { detail: 'Claude is waiting for your input' }));
+      // turnActive cleared; idle deferred by the stability window (not committed yet).
+      expect(engine.getState(SESSION_ID)?.turnActive).toBe(false);
+      expect(transitions).toHaveLength(0);
+
+      // Idle commits well before the stale-thinking timeout.
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      expect(transitions).toHaveLength(1);
+      expect(transitions[0].activity).toBe('idle');
+      // It was NOT the watchdog: no synthetic Idle event, no stale compensation.
+      expect(syntheticEvents).toHaveLength(0);
+      expect(engine.getState(SESSION_ID)?.compensationCounters.staleThinking).toBe(0);
+    });
+
+    it('does NOT force idle while a tool is pending', () => {
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash' }));
+      transitions.length = 0;
+      engine.processEvent(SESSION_ID, event(EventType.IdleHint, { detail: 'Claude is waiting for your input' }));
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      expect(transitions).toHaveLength(0);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.turnActive).toBe(true);
+    });
+
+    it('does NOT force idle while a subagent is active', () => {
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStart));
+      transitions.length = 0;
+      engine.processEvent(SESSION_ID, event(EventType.IdleHint, { detail: 'Claude is waiting for your input' }));
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      expect(transitions).toHaveLength(0);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+    });
+
+    it('does NOT force idle while a bg shell is active', () => {
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { detail: 'bash_1' }));
+      transitions.length = 0;
+      engine.processEvent(SESSION_ID, event(EventType.IdleHint, { detail: 'Claude is waiting for your input' }));
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      expect(transitions).toHaveLength(0);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+    });
+
+    it('does NOT force idle while a permission is pending', () => {
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle, { detail: IdleReason.Permission }));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('permission');
+      transitions.length = 0;
+      engine.processEvent(SESSION_ID, event(EventType.IdleHint, { detail: 'Claude is waiting for your input' }));
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      expect(transitions).toHaveLength(0);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('permission');
+    });
+
+    it('is a no-op when the session is already idle (turnActive false)', () => {
+      engine.processEvent(SESSION_ID, event(EventType.IdleHint, { detail: 'Claude is waiting for your input' }));
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      expect(transitions).toHaveLength(0);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+    });
+  });
+
   describe('SessionEnd is log-only', () => {
     it('does not change activity, turnActive, or counters', () => {
       engine.initSession(SESSION_ID);

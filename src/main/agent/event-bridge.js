@@ -20,6 +20,13 @@
  *   remap:<field>:<value>:<type>   If ctx[field]==value, change event.type to type
  *   remap-nested:<p>:<field>:<value>:<type>
  *                                  If ctx[p][field]==value, change event.type to type
+ *   remap-detail-includes:<value>:<type>
+ *                                  If the ALREADY-EXTRACTED event.detail CONTAINS
+ *                                  value (case-insensitive substring), change
+ *                                  event.type to type. Must run AFTER a detail
+ *                                  directive. Classifies on the resolved detail text
+ *                                  (not a guessed source field), so it is robust to
+ *                                  which ctx field actually held the text.
  *   arg-detail                     Use argv[next] as event.detail (for inline values)
  *
  * Stdin: Agent CLIs pipe hook context as JSON. Directives control which
@@ -147,6 +154,24 @@ process.stdin.on('end', () => {
         const newType = rest.slice(thirdColon + 1);
         const container = ctx[parent];
         if (container && typeof container === 'object' && String(container[field]) === value) {
+          event.type = newType;
+        }
+      }
+
+    } else if (directive.startsWith('remap-detail-includes:')) {
+      // remap-detail-includes:<value>:<new-type> - change event.type when the
+      // ALREADY-EXTRACTED event.detail CONTAINS value (case-insensitive
+      // substring). Must run AFTER a detail directive. Classifying on the
+      // resolved detail (rather than a guessed source field) means it works
+      // regardless of which ctx field held the text. The new-type is the last
+      // colon-delimited segment; value may itself contain ':'.
+      const rest = directive.slice(22);
+      const lastColon = rest.lastIndexOf(':');
+      if (lastColon > 0) {
+        const value = rest.slice(0, lastColon);
+        const newType = rest.slice(lastColon + 1);
+        if (newType && typeof event.detail === 'string'
+            && event.detail.toLowerCase().includes(value.toLowerCase())) {
           event.type = newType;
         }
       }

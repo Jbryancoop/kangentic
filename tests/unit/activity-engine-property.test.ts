@@ -32,6 +32,7 @@ const EVENT_TYPES: EventType[] = [
   EventType.SessionStart,
   EventType.SessionEnd,
   EventType.Notification,
+  EventType.IdleHint,
   EventType.Compact,
   EventType.WorktreeCreate,
   EventType.WorktreeRemove,
@@ -338,6 +339,11 @@ function isLegalThinkingToIdleTrigger(trigger: string): boolean {
   if (LEGAL_THINKING_TO_IDLE_EXACT.has(trigger)) return true;
   if (trigger === 'event:idle' || trigger.startsWith('event:idle:')) return true;
   if (trigger.startsWith('event:bg-shell-ended:')) return true;
+  // An idle_hint (waiting-for-input notification) legitimately ends the turn
+  // when no other holder remains. With a zero stability window it commits
+  // immediately under this trigger; with a non-zero window it commits via
+  // 'timer:stability' (already covered above).
+  if (trigger === 'event:idle_hint' || trigger.startsWith('event:idle_hint:')) return true;
   return false;
 }
 
@@ -561,6 +567,23 @@ class IdleCommand implements FuzzCommand {
   toString = (): string => `Idle(${this.detail ?? '-'})`;
 }
 
+class IdleHintCommand implements FuzzCommand {
+  check = () => true;
+  run(_model: FuzzModel, real: FuzzReal): void {
+    // idle_hint conditionally ends the turn (only when no other holder
+    // remains). It never mutates tool/subagent/shell counts, so the model's
+    // open-* tracking is unaffected; checkInvariants derives the expected
+    // activity from the real engine state, not the model.
+    real.engine.processEvent(real.sessionId, {
+      ts: Date.now(),
+      type: EventType.IdleHint,
+      detail: 'Claude is waiting for your input',
+    });
+    checkInvariants(real);
+  }
+  toString = (): string => 'IdleHint';
+}
+
 class InterruptedCommand implements FuzzCommand {
   check = () => true;
   run(model: FuzzModel, real: FuzzReal): void {
@@ -633,6 +656,7 @@ const fuzzCommandArbs: fc.Arbitrary<FuzzCommand>[] = [
     fc.constant(new IdleCommand(IdleReason.Permission)),
     fc.constant(new IdleCommand(IdleReason.NaturalExit)),
   ),
+  fc.constant(new IdleHintCommand()),
   fc.constant(new InterruptedCommand()),
   fc.constant(new ForceThinkingCommand()),
   fc.constant(new ForceIdleCommand()),

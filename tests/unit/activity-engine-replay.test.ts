@@ -36,6 +36,9 @@ interface ReplayResult {
     turnActive: boolean;
     permissionPending: boolean;
   };
+  staleThinkingCompensations: number;
+  /** Trigger of the last committed thinking->idle transition, or null. */
+  lastThinkingToIdleTrigger: string | null;
 }
 
 function loadFixture(name: string): SessionEvent[] {
@@ -64,6 +67,10 @@ function replay(events: SessionEvent[]): ReplayResult {
     engine.processEvent(SESSION_ID, event);
   }
   const state = engine.getState(SESSION_ID)!;
+  const snapshot = engine.getStatsSnapshot(SESSION_ID)!;
+  const lastThinkingToIdle = [...snapshot.recentTransitions]
+    .reverse()
+    .find((record) => record.from === 'thinking' && record.to === 'idle');
   const result: ReplayResult = {
     finalActivity: state.activity,
     totalTransitions: transitions.length,
@@ -75,6 +82,8 @@ function replay(events: SessionEvent[]): ReplayResult {
       turnActive: state.turnActive,
       permissionPending: state.permissionPending,
     },
+    staleThinkingCompensations: snapshot.compensationCounters.staleThinking,
+    lastThinkingToIdleTrigger: lastThinkingToIdle?.trigger ?? null,
   };
   engine.dispose();
   return result;
@@ -200,6 +209,46 @@ describe('ActivityEngine replay tests', () => {
 
     it('processes all events without throwing', () => {
       expect(result.totalTransitions).toBeGreaterThan(0);
+    });
+  });
+
+  describe('session-005-waiting-for-input-idle-hint', () => {
+    // Derived from the trace of task #156's session
+    // 2d75b9e3-4ebb-420c-9d63-7ec48ba46c4b (sanitized). The whole turn was
+    // delegated to a subagent; when the subagent stopped, turnActive was still
+    // true and the only signal that arrived was a "Claude is waiting for your
+    // input" notification (classified at the source into idle_hint). With no
+    // pending tools/subagents/bg-shells, the pre-fix engine had nothing to drive
+    // idle except the 180s stale-thinking watchdog. The idle_hint now settles it.
+    let result: ReplayResult;
+    beforeEach(() => {
+      const events = loadFixture('session-005-waiting-for-input-idle-hint.jsonl');
+      result = replay(events);
+    });
+
+    it('reaches idle (not stuck thinking) after the waiting-for-input hint', () => {
+      expect(result.finalActivity).toBe('idle');
+      expect(result.finalState.turnActive).toBe(false);
+    });
+
+    it('settles via the idle_hint, NOT the 180s stale-thinking watchdog', () => {
+      expect(result.lastThinkingToIdleTrigger).not.toBeNull();
+      expect(result.lastThinkingToIdleTrigger).toMatch(/^event:idle_hint/);
+      expect(result.lastThinkingToIdleTrigger).not.toBe('timer:stale-thinking');
+    });
+
+    it('never fires the stale-thinking compensation', () => {
+      expect(result.staleThinkingCompensations).toBe(0);
+    });
+
+    it('all holders are clear at the end (no orphaned counters)', () => {
+      expect(result.finalState.pendingToolCount).toBe(0);
+      expect(result.finalState.subagentDepth).toBe(0);
+      expect(
+        result.finalState.activeBackgroundShellIds.length
+        + result.finalState.anonymousBackgroundShellCount,
+      ).toBe(0);
+      expect(result.finalState.permissionPending).toBe(false);
     });
   });
 

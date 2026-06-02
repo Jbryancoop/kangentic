@@ -174,8 +174,19 @@ export function buildHooks(
     ],
     [H.Notification]: [
       ...(existingHooks[H.Notification] || []),
+      // Default `notification` is log-only. But Claude's "waiting for your
+      // input" notification means the turn is genuinely done and waiting on the
+      // user - classify it into the generic `idle_hint` event so the activity
+      // engine can settle to idle through the stability window instead of
+      // stalling on the 180s stale-thinking watchdog when the Stop hook was
+      // dropped (e.g. a turn fully delegated to a subagent). The match runs on
+      // the already-extracted detail (empirically "Claude is waiting for your
+      // input" - see tests/fixtures/replay/session-005-*), so it does not
+      // depend on which payload field carried the text. The match string is the
+      // only Claude-specific knowledge here; the engine stays generic.
       { matcher: '', hooks: [{ type: 'command', command: buildBridgeCommand(eventBridge, eventsPath, E.Notification,
-        'detail:message,notification') }] },
+        'detail:message,notification',
+        'remap-detail-includes:waiting for your input:idle_hint') }] },
     ],
     [H.PreCompact]: [
       ...(existingHooks[H.PreCompact] || []),

@@ -483,6 +483,18 @@ export const EventType = {
   SubagentStart: 'subagent_start',
   SubagentStop: 'subagent_stop',
   Notification: 'notification',
+  /**
+   * The agent signaled (out of band) that it is waiting for user input - e.g.
+   * a Claude "Claude is waiting for your input" notification, classified at the
+   * source by the adapter's hook directive (NOT by string-matching in the
+   * engine). Unlike `Notification` (always log-only), the activity engine treats
+   * `idle_hint` as turn-ending ONLY when nothing else is keeping the session
+   * thinking (no pending tools, no subagents, no background shells, no pending
+   * permission). Otherwise it is log-only. This lets a finished turn whose
+   * `Stop`/`Idle` hook was dropped settle to idle through the normal stability
+   * window instead of waiting out the 180s stale-thinking watchdog.
+   */
+  IdleHint: 'idle_hint',
   Compact: 'compact',
   TeammateIdle: 'teammate_idle',
   TaskCompleted: 'task_completed',
@@ -548,6 +560,10 @@ export const EventTypeActivity: Record<EventType, ActivityState | null> = {
   [EventType.Interrupted]: 'idle',
   // → null (no state change, log-only)
   [EventType.Notification]: null,
+  // idle_hint is conditional: the engine ends the turn only when no other
+  // signal is holding it thinking, otherwise it is log-only. There is no
+  // single static activity for it, so it maps to null here.
+  [EventType.IdleHint]: null,
   [EventType.SubagentStop]: null,
   [EventType.ToolEnd]: null,
   [EventType.SessionStart]: null,
@@ -626,6 +642,8 @@ export interface SessionEvent {
    * - For `prompt`: a `PromptReason` constant (synthetic PTY path only)
    * - For `subagent_start`/`subagent_stop`: subagent type
    * - For `notification`: notification text
+   * - For `idle_hint`: the source notification text that was classified as a
+   *   waiting-for-input hint (e.g. "Claude is waiting for your input")
    */
   detail?: string;
   /**

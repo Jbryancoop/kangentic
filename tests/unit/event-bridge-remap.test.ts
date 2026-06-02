@@ -245,3 +245,70 @@ describe('event-bridge tool-id directives (correlation IDs)', () => {
     expect(emitted.toolId).toBeUndefined();
   });
 });
+
+describe('event-bridge remap-detail-includes (substring classification on extracted detail)', () => {
+  // The exact directive set the Claude adapter wires for the Notification
+  // hook. The Claude-specific substring lives here / in the adapter, never in
+  // the engine. The match runs on the already-extracted detail, so it is
+  // robust to which payload field carried the text.
+  const NOTIFICATION_DIRECTIVES = [
+    'detail:message,notification',
+    'remap-detail-includes:waiting for your input:idle_hint',
+  ];
+
+  it('retypes a "waiting for your input" notification to idle_hint and keeps the text', () => {
+    // Empirical shape from session 2d75b9e3-4ebb-420c-9d63-7ec48ba46c4b.
+    const stdinContent = JSON.stringify({ message: 'Claude is waiting for your input' });
+    runBridge(stdinContent, [outputFile, 'notification', ...NOTIFICATION_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('idle_hint');
+    expect(emitted.detail).toBe('Claude is waiting for your input');
+  });
+
+  it('classifies regardless of which source field carried the text (message vs notification)', () => {
+    // The whole point of matching on the extracted detail: we do NOT assume
+    // the payload field name. Same text under `notification` must also classify.
+    const stdinContent = JSON.stringify({ notification: 'Claude is waiting for your input' });
+    runBridge(stdinContent, [outputFile, 'notification', ...NOTIFICATION_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('idle_hint');
+    expect(emitted.detail).toBe('Claude is waiting for your input');
+  });
+
+  it('matches case-insensitively', () => {
+    const stdinContent = JSON.stringify({ message: 'CLAUDE IS WAITING FOR YOUR INPUT' });
+    runBridge(stdinContent, [outputFile, 'notification', ...NOTIFICATION_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('idle_hint');
+  });
+
+  // Every distinct non-waiting notification text observed across 221 real
+  // Claude sessions on this machine. Empirically, each of these fires ~6s
+  // AFTER a PermissionRequest already drove the engine to 'permission'
+  // (tool permission, ExitPlanMode plan approval, or AskUserQuestion). They
+  // must stay log-only `notification` - reclassifying any of them as
+  // idle_hint would conflate the distinct 'permission' state with 'idle'.
+  const NOT_IDLE_HINT_NOTIFICATIONS = [
+    'Claude needs your permission',
+    'Claude needs your permission to use PowerShell',
+    'Claude needs your permission to use Bash',
+    'Claude needs your permission to use Fetch',
+    'Claude Code needs your approval for the plan',
+    'Claude Code needs your attention',
+  ];
+
+  it.each(NOT_IDLE_HINT_NOTIFICATIONS)('leaves %j as a log-only notification (permission/attention family)', (message) => {
+    runBridge(JSON.stringify({ message }), [outputFile, 'notification', ...NOTIFICATION_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('notification');
+    expect(emitted.detail).toBe(message);
+  });
+
+  it('is a no-op when no detail was extracted', () => {
+    const stdinContent = JSON.stringify({ some_other_field: 'irrelevant' });
+    runBridge(stdinContent, [outputFile, 'notification', ...NOTIFICATION_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('notification');
+    expect(emitted.detail).toBeUndefined();
+  });
+});

@@ -29,6 +29,25 @@ export function derivePredicate(state: SessionEngineState): ActivityState {
 }
 
 /**
+ * Whether an `idle_hint` event (e.g. a "waiting for your input" notification)
+ * should end the turn. Conservative by design: the hint clears `turnActive`
+ * ONLY when nothing else is keeping the session thinking, so a hint that fires
+ * mid-turn (tools, subagents, or background shells still outstanding, or a
+ * permission pending) never short-circuits genuine work. When this returns
+ * false the hint is a pure no-op and the 180s stale-thinking watchdog remains
+ * the backstop.
+ */
+export function idleHintEndsTurn(state: SessionEngineState): boolean {
+  const bgShellCount =
+    state.activeBackgroundShellIds.size + state.anonymousBackgroundShellCount;
+  return state.turnActive
+    && state.pendingToolCount === 0
+    && state.subagentDepth === 0
+    && bgShellCount === 0
+    && !state.permissionPending;
+}
+
+/**
  * Pure derivation of an `ActivityReason` for the given activity.
  * Anchors to the activity argument (not `state.activity`) so callers
  * can compute reasons for both the current and would-be states

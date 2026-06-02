@@ -417,6 +417,7 @@ export const EVENT_RENDERERS: Partial<Record<EventType, EventRenderer>> = {
   [EventType.SubagentStart]: (common, event) => <BadgeLine {...common} badge="Subagent" detail={event.detail} />,
   [EventType.SubagentStop]: (common, event) => <BadgeLine {...common} badge="Subagent done" detail={event.detail} />,
   [EventType.Notification]: (common, event) => <BadgeLine {...common} badge="Notice" detail={event.detail} variant="warn" />,
+  [EventType.IdleHint]: (common, event) => <BadgeLine {...common} badge="Waiting for input" detail={event.detail} />,
   [EventType.Compact]: (common) => <DimLine {...common} text="Compacting context..." />,
   [EventType.TeammateIdle]: (common, event) => <DimDetailLine {...common} text="Teammate idle" detail={event.detail} />,
   [EventType.TaskCompleted]: (common, event) => <BadgeLine {...common} badge="Task done" detail={event.detail} />,

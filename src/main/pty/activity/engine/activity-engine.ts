@@ -21,7 +21,7 @@ import type {
 } from './shapes';
 import { snapshotCounters, formatCounterDelta } from './counter-snapshot';
 import { createSessionEngineState } from './state-factory';
-import { derivePredicate, deriveReason, deriveActivityAndReason } from './predicate';
+import { derivePredicate, deriveReason, deriveActivityAndReason, idleHintEndsTurn } from './predicate';
 import { updateCounters, updatePermissionFlag } from './event-handlers';
 import { buildWatchdogHolds, findActiveWatchdogHold } from './watchdog';
 import type { WatchdogHold } from './watchdog';
@@ -185,6 +185,13 @@ export class ActivityEngine {
       // A fresh thinking signal cancels any pending stability-window idle.
       state.pendingIdleAt = null;
     } else if (TURN_ENDING_EVENTS.has(event.type)) {
+      state.turnActive = false;
+    } else if (event.type === EventType.IdleHint && idleHintEndsTurn(state)) {
+      // The agent signaled it is waiting for input and nothing else is
+      // holding the turn (no pending tools, subagents, bg shells, or
+      // permission). Clear turnActive so the predicate flips to idle through
+      // the normal stability window - instead of waiting out the 180s
+      // stale-thinking watchdog because the Stop/Idle hook was dropped.
       state.turnActive = false;
     }
 

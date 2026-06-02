@@ -78,9 +78,11 @@ describe('hook-manager', () => {
       expect(hooks.SubagentStop).toHaveLength(1);
       expect(hooks.SubagentStop[0].hooks[0].command).toContain('subagent_stop');
 
-      // Notification: notification
+      // Notification: notification, with a "waiting for your input" -> idle_hint
+      // classification directive (Claude-specific string lives here, not the engine)
       expect(hooks.Notification).toHaveLength(1);
       expect(hooks.Notification[0].hooks[0].command).toContain('notification');
+      expect(hooks.Notification[0].hooks[0].command).toContain('remap-detail-includes:waiting for your input:idle_hint');
 
       // PreCompact: compact
       expect(hooks.PreCompact).toHaveLength(1);
