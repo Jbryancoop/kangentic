@@ -1,5 +1,4 @@
 const path = require('path');
-const { notarize } = require('@electron/notarize');
 
 module.exports = async function afterSign(context) {
   if (context.electronPlatformName !== 'darwin') return;
@@ -18,6 +17,9 @@ module.exports = async function afterSign(context) {
 
   console.log(`[afterSign] Notarizing ${appPath} with notarytool...`);
   const start = Date.now();
+  // @electron/notarize v3 is ESM-only; load it dynamically so this CommonJS
+  // electron-builder hook can consume it on Node 22.12+ regardless of host.
+  const { notarize } = await import('@electron/notarize');
   await notarize({
     tool: 'notarytool',
     appPath,
