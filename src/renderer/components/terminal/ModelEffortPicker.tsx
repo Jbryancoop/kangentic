@@ -7,8 +7,24 @@ import { ContextBarPopover } from './ContextBarPopover';
 
 const pill = 'px-2 py-0.5 rounded bg-surface-raised whitespace-nowrap select-none';
 
+/**
+ * Where a model/effort selection is applied:
+ * - `task`: persisted per-task override via `setTaskRuntimeOverride` (board
+ *   tasks - live, prespawn, and default-agent tasks).
+ * - `session`: best-effort live inject into a transient (command-terminal)
+ *   session via `onInject`. No task row, no DB persistence, no swimlane
+ *   fallback.
+ */
+export type ModelEffortTarget =
+  | { kind: 'task'; taskId: string }
+  | {
+      kind: 'session';
+      sessionId: string;
+      onInject: (patch: { model?: string | null; effort?: string | null }) => void;
+    };
+
 interface ModelEffortPickerProps {
-  taskId: string;
+  target: ModelEffortTarget;
   /** Agent name used to resolve `AgentCapabilities` (models / effortLevels / supportsModelOverride). */
   agent: string | null;
   /** Live model display name when the agent is running. Pre-spawn callers pass null. */
@@ -27,23 +43,27 @@ interface ModelEffortPickerProps {
 }
 
 /**
- * Capability-gated model + effort pill row used by the ContextBar (live) and
- * PreSpawnContextBar (pre-spawn). All gating is via `AgentCapabilities` flags
- * exposed by the adapter - no agent-name branching in the renderer.
+ * Capability-gated model + effort pill row used by the ContextBar (live,
+ * task + transient session) and PreSpawnContextBar (pre-spawn). All gating is
+ * via `AgentCapabilities` flags exposed by the adapter - no agent-name
+ * branching in the renderer.
  *
- * Selecting a value calls the existing `setTaskRuntimeOverride` store action.
- * The IPC handler short-circuits to `mode: 'persisted'` when there's no live
- * session, so the same code path works for both live and pre-spawn writes.
+ * Task targets call the existing `setTaskRuntimeOverride` store action (the
+ * IPC handler short-circuits to `mode: 'persisted'` when there's no live
+ * session, so the same path works for live and pre-spawn writes). Session
+ * targets call `onInject`, which best-effort injects the slash command into a
+ * transient PTY with no persistence.
  */
 export function ModelEffortPicker({
-  taskId,
+  target,
   agent,
   liveModelName = null,
   liveModelId = null,
   liveEffort = null,
   mode,
 }: ModelEffortPickerProps) {
-  const task = useBoardStore((s) => s.tasks.find((t) => t.id === taskId));
+  const taskId = target.kind === 'task' ? target.taskId : null;
+  const task = useBoardStore((s) => (taskId ? s.tasks.find((t) => t.id === taskId) ?? null : null));
   const swimlaneModelOverride = useBoardStore((s) =>
     task ? s.swimlanes.find((lane) => lane.id === task.swimlane_id)?.model_override ?? null : null,
   );
@@ -63,14 +83,34 @@ export function ModelEffortPicker({
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const effortTriggerRef = useRef<HTMLButtonElement>(null);
 
-  if (!task) return null;
+  // Task targets need a resolved task row; session targets never have one.
+  if (target.kind === 'task' && !task) return null;
+
+  // Apply a selection to whichever target this picker is bound to. Task targets
+  // persist via the runtime-override store action; session targets inject live.
+  const applyModel = (value: string | null) => {
+    setOpenPopover(null);
+    if (target.kind === 'task') {
+      setTaskRuntimeOverride(target.taskId, { model: value });
+    } else {
+      target.onInject({ model: value });
+    }
+  };
+  const applyEffort = (value: string | null) => {
+    setOpenPopover(null);
+    if (target.kind === 'task') {
+      setTaskRuntimeOverride(target.taskId, { effort: value });
+    } else {
+      target.onInject({ effort: value });
+    }
+  };
 
   const effortOptions = agentCapabilities?.effortLevels ?? [];
   const supportsModel = !!agentCapabilities?.supportsModelOverride && modelOptions.length > 0;
   const supportsEffort = effortOptions.length > 0;
 
-  const taskModelOverride = task.model_override ?? null;
-  const taskEffortOverride = task.effort_override ?? null;
+  const taskModelOverride = task?.model_override ?? null;
+  const taskEffortOverride = task?.effort_override ?? null;
   // Effort fallback chain: live status (truth) -> task override -> swimlane
   // override. Some Claude models (Haiku 4.5) accept --effort but never echo
   // it back in status updates, so without this chain the pill stays blank
@@ -116,17 +156,21 @@ export function ModelEffortPicker({
               options={modelOptions.map((value) => ({ value, label: value }))}
               currentValue={currentModelValue}
               swimlaneDefault={swimlaneModelOverride}
-              onSelect={(value) => {
-                setOpenPopover(null);
-                setTaskRuntimeOverride(task.id, { model: value });
-              }}
+              onSelect={applyModel}
               onClose={() => setOpenPopover(null)}
               testId="context-bar-model-popover"
             />
           )}
         </span>
       ) : (
-        liveModelName && <span className={`${pill} text-fg-muted`}>{liveModelName}</span>
+        liveModelName && (
+          <span
+            className={`${pill} text-fg-muted`}
+            title="This agent does not support changing the model from Kangentic"
+          >
+            {liveModelName}
+          </span>
+        )
       )}
       {showEffortTrigger ? (
         <span className="relative inline-flex">
@@ -148,10 +192,7 @@ export function ModelEffortPicker({
               options={effortOptions.map((value) => ({ value, label: value }))}
               currentValue={currentEffortValue}
               swimlaneDefault={swimlaneEffortOverride}
-              onSelect={(value) => {
-                setOpenPopover(null);
-                setTaskRuntimeOverride(task.id, { effort: value });
-              }}
+              onSelect={applyEffort}
               onClose={() => setOpenPopover(null)}
               testId="context-bar-effort-popover"
             />
@@ -159,7 +200,12 @@ export function ModelEffortPicker({
         </span>
       ) : (
         effectiveEffort && (
-          <span className={`${pill} text-fg-faint`}>{effectiveEffort}</span>
+          <span
+            className={`${pill} text-fg-faint`}
+            title="This agent does not support changing the effort level from Kangentic"
+          >
+            {effectiveEffort}
+          </span>
         )
       )}
     </>

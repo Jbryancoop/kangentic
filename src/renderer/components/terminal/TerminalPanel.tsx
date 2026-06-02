@@ -21,6 +21,10 @@ interface TerminalPanelProps {
 export function TerminalPanel({ collapsed = false, showContent = true, onToggleCollapse }: TerminalPanelProps) {
   const allSessions = useSessionStore((s) => s.sessions);
   const currentProjectId = useProjectStore((s) => s.currentProject?.id ?? null);
+  // Fallback agent for default-agent tasks (task.agent null) so the ContextBar
+  // picker resolves capabilities. Bottom panel never shows transient sessions
+  // (filtered below), so this only ever serves task-bound sessions.
+  const projectDefaultAgent = useProjectStore((s) => s.currentProject?.default_agent ?? null);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
   const selectActiveSession = useSessionStore((s) => s.selectActiveSession);
@@ -240,7 +244,7 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
 
           {/* Context bar for individual session tabs (hidden when dialog owns the session) */}
           {effectiveActiveId && effectiveActiveId !== ACTIVITY_TAB && effectiveActiveId !== dialogSessionId && (
-            <ContextBar sessionId={effectiveActiveId} />
+            <ContextBar sessionId={effectiveActiveId} agentFallback={projectDefaultAgent} />
           )}
         </>
       )}

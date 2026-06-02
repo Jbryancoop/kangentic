@@ -14,6 +14,16 @@ interface PopoverOptions {
    * - `false`: always prefer left-alignment (overflow flips to right).
    */
   preferRight?: boolean | 'auto';
+  /**
+   * Vertical placement preference for dropdown mode.
+   * - `'below'` (default): open downward, flipping above only when the popover
+   *   would overflow the viewport bottom (legacy behaviour).
+   * - `'above'`: open upward, flipping below only when it does not fit above.
+   *   Use for triggers pinned to the bottom of their container (e.g. the
+   *   ContextBar), where opening downward can render past the container edge
+   *   (clipped inside a floating overlay) even though there is viewport room.
+   */
+  preferVertical?: 'below' | 'above';
 }
 
 export interface PopoverPlacement {
@@ -35,7 +45,7 @@ export function usePopoverPosition(
   isOpen: boolean,
   options: PopoverOptions,
 ): PopoverPosition {
-  const { mode, viewportPadding = 8, preferRight = 'auto' } = options;
+  const { mode, viewportPadding = 8, preferRight = 'auto', preferVertical = 'below' } = options;
   const [placement, setPlacement] = useState<PopoverPlacement>({ vertical: 'below', horizontal: 'right' });
 
   useLayoutEffect(() => {
@@ -60,19 +70,24 @@ export function usePopoverPosition(
 
       resolvedHorizontal = effectivePreferRight ? 'right' : 'left';
 
-      // Vertical: below or above
+      // Vertical: below or above. `preferVertical` picks the default side and
+      // each side flips to the other only when the preferred side overflows.
+      // 'above' is for bottom-anchored triggers (ContextBar) where downward can
+      // render past a floating container's edge even with viewport room below.
       const fitsBelow = triggerRect.bottom + popoverRect.height + viewportPadding <= viewportHeight;
-      if (fitsBelow) {
-        popover.style.top = '100%';
-        popover.style.bottom = '';
-        popover.style.marginTop = '4px';
-        popover.style.marginBottom = '';
-      } else {
+      const fitsAbove = triggerRect.top - popoverRect.height - viewportPadding >= 0;
+      const openAbove = preferVertical === 'above' ? (fitsAbove || !fitsBelow) : !fitsBelow;
+      if (openAbove) {
         resolvedVertical = 'above';
         popover.style.bottom = '100%';
         popover.style.top = '';
-        popover.style.marginBottom = '4px';
+        popover.style.marginBottom = '8px';
         popover.style.marginTop = '';
+      } else {
+        popover.style.top = '100%';
+        popover.style.bottom = '';
+        popover.style.marginTop = '8px';
+        popover.style.marginBottom = '';
       }
 
       // Horizontal: align left or right edge, with overflow flip
@@ -141,7 +156,7 @@ export function usePopoverPosition(
 
     popover.style.visibility = 'visible';
     setPlacement({ vertical: resolvedVertical, horizontal: resolvedHorizontal });
-  }, [isOpen, mode, viewportPadding, preferRight, triggerRef, popoverRef]);
+  }, [isOpen, mode, viewportPadding, preferRight, preferVertical, triggerRef, popoverRef]);
 
   return {
     style: isOpen ? EMPTY : HIDDEN,

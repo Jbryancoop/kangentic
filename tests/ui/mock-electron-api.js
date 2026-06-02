@@ -1194,6 +1194,11 @@
       notifyUserInterrupt: async function (sessionId) {
         window.electronAPI.sessions.__notifyUserInterruptCalls.push(sessionId);
       },
+      __injectSettingsCalls: [],
+      injectSettings: async function (input) {
+        window.electronAPI.sessions.__injectSettingsCalls.push(input);
+        return { ok: true, injected: true };
+      },
     },
 
     config: {

@@ -9,6 +9,7 @@ import { BrowserPane } from '../../browser/BrowserPane';
 import { PriorityBadge } from '../../backlog/PriorityBadge';
 import { LabelPills } from '../../Pill';
 import { useConfigStore } from '../../../stores/config-store';
+import { useProjectStore } from '../../../stores/project-store';
 import { QueuedPlaceholder } from './QueuedPlaceholder';
 import { AttachmentThumbnails } from './AttachmentThumbnails';
 import type { AttachmentWithPreview } from './useAttachments';
@@ -67,6 +68,10 @@ export function TaskDetailBody({
 }: TaskDetailBodyProps) {
   const labelColors = useConfigStore((state) => state.config.backlog?.labelColors) ?? {};
   const defaultBaseBranch = useConfigStore((state) => state.config.git.defaultBaseBranch);
+  // Default-agent tasks leave `task.agent` null; fall back to the project's
+  // default agent so the ContextBar picker can resolve capabilities (mirrors
+  // CommandBarOverlay). Non-null `task.agent` wins inside ContextBar.
+  const projectDefaultAgent = useProjectStore((state) => state.currentProject?.default_agent ?? null);
   const changesViewMode = useSessionStore((state) => state.changesViewMode[task.id] ?? 'split');
   const setChangesViewMode = useSessionStore((state) => state.setChangesViewMode);
   const toggleChangesOpen = useSessionStore((state) => state.toggleChangesOpen);
@@ -188,7 +193,7 @@ export function TaskDetailBody({
           )}
           {browserOpen ? browserPaneElement : changesPanelElement}
         </div>
-        <ContextBar sessionId={sessionId} />
+        <ContextBar sessionId={sessionId} agentFallback={projectDefaultAgent} />
       </>
     );
   }

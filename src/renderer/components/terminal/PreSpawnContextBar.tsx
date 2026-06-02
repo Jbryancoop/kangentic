@@ -39,7 +39,7 @@ export function PreSpawnContextBar({ taskId }: PreSpawnContextBarProps) {
     <div className={containerClass} data-testid="prespawn-context-bar">
       <span className={`${pill} text-fg-muted`}>{agentDisplayName(resolvedAgent)}</span>
       <ModelEffortPicker
-        taskId={task.id}
+        target={{ kind: 'task', taskId: task.id }}
         agent={resolvedAgent}
         mode="prespawn"
       />

@@ -1,6 +1,7 @@
 import { type StateCreator } from 'zustand';
-import type { Session } from '../../../shared/types';
+import type { Session, SessionInjectSettingsInput } from '../../../shared/types';
 import { useProjectStore } from '../project-store';
+import { useToastStore } from '../toast-store';
 import type { SessionStore } from './types';
 import { buildSessionByTaskId } from './session-index';
 
@@ -30,6 +31,9 @@ export interface TransientSessionSlice {
   killTransientSessionForProject: (projectId: string) => Promise<void>;
   /** Set the derived label on a transient session entry (for the active project). */
   setTransientSessionLabel: (sessionId: string, label: string) => void;
+  /** Inject a live model/effort change into a transient session's PTY (no DB persistence).
+   *  Surfaces a toast on failure; the live pill updates when the CLI echoes the new value. */
+  injectTransientSettings: (input: SessionInjectSettingsInput) => Promise<void>;
 }
 
 /**
@@ -178,6 +182,27 @@ export function createTransientSessionSlice(preserved: {
         if (!changed) return state;
         return { transientSessions: next };
       });
+    },
+
+    injectTransientSettings: async (input) => {
+      // Best-effort live inject. There is no override row to roll back and no
+      // optimistic UI to revert; the model/effort pill reflects the live CLI
+      // value, which updates when the agent echoes the change via the usage
+      // pipeline. We only surface a toast if the inject could not be applied.
+      try {
+        const result = await window.electronAPI.sessions.injectSettings(input);
+        if (!result.ok) {
+          useToastStore.getState().addToast({
+            message: `Could not apply model/effort: ${result.reason}`,
+            variant: 'error',
+          });
+        }
+      } catch (error) {
+        useToastStore.getState().addToast({
+          message: `Could not apply model/effort: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          variant: 'error',
+        });
+      }
     },
 
     killTransientSessionForProject: async (projectId) => {

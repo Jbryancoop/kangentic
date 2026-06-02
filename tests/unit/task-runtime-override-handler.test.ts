@@ -91,7 +91,7 @@ interface MockTask {
 interface MockContext {
   currentProjectId: string | null;
   currentProjectPath: string | null;
-  sessionManager: { suspend: ReturnType<typeof vi.fn> };
+  sessionManager: { suspend: ReturnType<typeof vi.fn>; getSessionAgentName: ReturnType<typeof vi.fn> };
   terminalSubmitScheduler: { scheduleKeystrokes: ReturnType<typeof vi.fn> };
 }
 
@@ -111,7 +111,7 @@ function createMockContext(overrides: Partial<MockContext> = {}): MockContext {
   return {
     currentProjectId: 'proj-1',
     currentProjectPath: '/mock/project',
-    sessionManager: { suspend: vi.fn(async () => {}) },
+    sessionManager: { suspend: vi.fn(async () => {}), getSessionAgentName: vi.fn(() => undefined) },
     terminalSubmitScheduler: { scheduleKeystrokes: vi.fn() },
     ...overrides,
   };
@@ -191,6 +191,42 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
     const result = await callHandler({ taskId: 'task-1', model: 'sonnet' });
     expect(result).toEqual({ ok: false, reason: 'unknown agent "made-up-agent"' });
     expect(taskRepo.updateOverrides).not.toHaveBeenCalled(); // pre-persist failure
+  });
+
+  it('resolves the adapter from the live session when task.agent is null (default-agent task)', async () => {
+    // Default-agent tasks never write the project default into `task.agent`.
+    // The handler must fall back to the live session's registry agent name so
+    // the override applies instead of being rejected with "unknown agent".
+    task = createMockTask({ agent: null });
+    taskRepo.getById.mockReturnValue(task);
+    context.sessionManager.getSessionAgentName.mockReturnValue('claude');
+    const getInjectionSequence = vi.fn(() => ['/model sonnet']);
+    mockAgentRegistryGet.mockReturnValue({ getInjectionSequence });
+
+    const result = await callHandler({ taskId: 'task-1', model: 'sonnet' });
+
+    expect(result).toEqual({ ok: true, mode: 'live' });
+    expect(context.sessionManager.getSessionAgentName).toHaveBeenCalledWith('session-1');
+    expect(mockAgentRegistryGet).toHaveBeenCalledWith('claude');
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
+      'task-1',
+      'session-1',
+      ['/model sonnet'],
+      expect.objectContaining({ verifiedPrefixLength: 1 }),
+    );
+  });
+
+  it('returns unknown agent when task.agent is null and the live session has no tracked agent', async () => {
+    // The guard is preserved: if neither the task row nor the live session can
+    // name an agent, we still reject before persisting so the renderer rolls
+    // back its optimistic update.
+    task = createMockTask({ agent: null });
+    taskRepo.getById.mockReturnValue(task);
+    context.sessionManager.getSessionAgentName.mockReturnValue(undefined);
+
+    const result = await callHandler({ taskId: 'task-1', model: 'sonnet' });
+    expect(result).toEqual({ ok: false, reason: 'unknown agent "(none)"' });
+    expect(taskRepo.updateOverrides).not.toHaveBeenCalled();
   });
 
   // =========================================================================

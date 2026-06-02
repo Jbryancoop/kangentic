@@ -483,6 +483,41 @@ test.describe('ContextBar model/effort popover', () => {
   });
 });
 
+// Default-agent task: `task.agent` is null (the project default was never
+// written to the task row). The picker must still be interactive because the
+// ContextBar caller passes agentFallback = project default_agent. Regression
+// guard for the reported "can't change model/effort on default-agent tasks".
+const NULL_AGENT_PRECONFIG = CLAUDE_RUNNING_PRECONFIG.replace(
+  "agent: 'claude',\n      session_id:",
+  "agent: null,\n      session_id:",
+);
+
+test.describe('ContextBar model/effort popover - default-agent task', () => {
+  test('picker is interactive for a task whose agent is null (resolves via agentFallback)', async () => {
+    const { browser, page } = await launchWithState(NULL_AGENT_PRECONFIG);
+    try {
+      await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
+      await applyClaudeUsage(page, SESSION_ID, 'opus', 'Opus 4.8 (1M context)', 'xhigh');
+
+      // Both triggers must mount as interactive buttons even though the task's
+      // own agent column is null - the project default agent ('claude') backs
+      // the capability lookup.
+      const modelTrigger = page.locator('[data-testid="context-bar-model-trigger"]');
+      const effortTrigger = page.locator('[data-testid="context-bar-effort-trigger"]');
+      await expect(modelTrigger).toBeVisible({ timeout: 5000 });
+      await expect(effortTrigger).toBeVisible({ timeout: 5000 });
+
+      // Picking a model still routes through the task-keyed override path.
+      await modelTrigger.click();
+      await page.locator('[data-testid="context-bar-model-popover-option-sonnet"]').click();
+      const calls = await page.evaluate(() => (window as unknown as { __mockSetRuntimeOverrideCalls?: unknown[] }).__mockSetRuntimeOverrideCalls);
+      expect(calls).toEqual([{ taskId: TASK_ID, model: 'sonnet' }]);
+    } finally {
+      await browser.close();
+    }
+  });
+});
+
 // The capabilities-empty test injects `__mockAgentListOverrides` BEFORE the
 // app boots so the renderer's initial agents.list IPC call sees the cleared
 // arrays. That requires its own page setup; sharing the post-mount page from

@@ -101,6 +101,7 @@ export const IPC = {
   SESSION_GET_PERIOD_STATS: 'session:getPeriodStats',
   SESSION_SET_FOCUSED: 'session:setFocused',
   SESSION_NOTIFY_USER_INTERRUPT: 'session:notifyUserInterrupt',
+  SESSION_INJECT_SETTINGS: 'session:injectSettings',
 
   // Config
   CONFIG_GET: 'config:get',

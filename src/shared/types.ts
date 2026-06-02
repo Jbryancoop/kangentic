@@ -1418,6 +1418,32 @@ export type TaskSetRuntimeOverrideResult =
   | { ok: true; mode: 'live' | 'restart' | 'persisted' }
   | { ok: false; reason: string };
 
+/**
+ * Input for `IPC.SESSION_INJECT_SETTINGS`. The session-keyed counterpart to
+ * `TaskSetRuntimeOverrideInput`, used for transient (command-terminal)
+ * sessions that have no task row and no DB persistence. The change is injected
+ * live into the running PTY only; there is nothing to persist. `currentModel`/
+ * `currentEffort` are the live values so the handler can compute whether each
+ * field actually changed before asking the adapter for a slash sequence.
+ */
+export interface SessionInjectSettingsInput {
+  sessionId: string;
+  agent: string;
+  model?: string | null;
+  effort?: string | null;
+  currentModel?: string | null;
+  currentEffort?: string | null;
+}
+
+/**
+ * Result of `IPC.SESSION_INJECT_SETTINGS`. `injected` is false when the
+ * adapter produced no slash sequence for the requested change (e.g. a no-op
+ * delta or an agent with no live-switch slash command).
+ */
+export type SessionInjectSettingsResult =
+  | { ok: true; injected: boolean }
+  | { ok: false; reason: string };
+
 export interface TaskSwitchBranchInput {
   taskId: string;
   newBaseBranch: string;
@@ -2061,6 +2087,13 @@ export interface ElectronAPI {
      * synthetic is a no-op.
      */
     notifyUserInterrupt: (sessionId: string) => Promise<void>;
+    /**
+     * Inject a model/effort change into a transient (command-terminal)
+     * session's live PTY. The session-keyed counterpart to
+     * `tasks.setRuntimeOverride` for sessions that have no task row; no DB
+     * persistence, best-effort live slash injection only.
+     */
+    injectSettings: (input: SessionInjectSettingsInput) => Promise<SessionInjectSettingsResult>;
   };
 
   // Config

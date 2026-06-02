@@ -199,6 +199,7 @@ const api: ElectronAPI = {
     getPeriodStats: (period: UsageTimePeriod) => ipcRenderer.invoke(IPC.SESSION_GET_PERIOD_STATS, period),
     setFocused: (sessionIds: string[]) => ipcRenderer.invoke(IPC.SESSION_SET_FOCUSED, sessionIds),
     notifyUserInterrupt: (sessionId: string) => ipcRenderer.invoke(IPC.SESSION_NOTIFY_USER_INTERRUPT, sessionId),
+    injectSettings: (input) => ipcRenderer.invoke(IPC.SESSION_INJECT_SETTINGS, input),
   },
 
   config: {

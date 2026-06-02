@@ -52,6 +52,7 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
   const session = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId));
   const sessionShell = session?.shell;
   const isResuming = session?.resuming ?? false;
+  const injectTransientSettings = useSessionStore((s) => s.injectTransientSettings);
   const task = useBoardStore((s) => s.tasks.find((t) => t.session_id === sessionId));
   const taskAgent = task?.agent ?? agentFallback;
   // Resolve the agent that contributed the latest rate-limit snapshot so the
@@ -127,6 +128,28 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
 
   const modelName = resolvedModelName;
 
+  // Transient (command-terminal) sessions have no task row, so the task-keyed
+  // picker branch below never fires for them. When the project agent is known
+  // we render the picker in session-inject mode instead: selecting a value
+  // best-effort injects the adapter's `/model` / `/effort` slash command into
+  // the live PTY (no DB persistence - transient sessions are not resumable).
+  // Capture the live values here (where `usage` is narrowed non-undefined) so
+  // the inject closure does not depend on closure narrowing of `usage`.
+  const liveModelId = usage.model.id;
+  const liveEffort = usage.model.effort || null;
+  const isTransientSession = session?.transient === true;
+  const transientAgent = !task && isTransientSession ? taskAgent : null;
+  const handleTransientInject = (patch: { model?: string | null; effort?: string | null }) => {
+    if (transientAgent == null) return;
+    injectTransientSettings({
+      sessionId,
+      agent: transientAgent,
+      ...patch,
+      currentModel: liveModelId,
+      currentEffort: liveEffort,
+    });
+  };
+
   // Fallback to 0 for fields that may be absent from older main-process sessions
   const usedTokens = usage.contextWindow.usedTokens ?? 0;
   const cacheTokens = usage.contextWindow.cacheTokens ?? 0;
@@ -180,14 +203,23 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
       )}
       {task ? (
         <ModelEffortPicker
-          taskId={task.id}
+          target={{ kind: 'task', taskId: task.id }}
           agent={taskAgent}
           liveModelName={modelName}
-          liveModelId={usage.model.id}
+          liveModelId={liveModelId}
           /* `||` (not `??`) so an empty-string effort coerces to null and the
              picker falls through to task/swimlane overrides. The CLI never
              emits "" today, but matches the original ContextBar semantics. */
-          liveEffort={usage.model.effort || null}
+          liveEffort={liveEffort}
+          mode="live"
+        />
+      ) : transientAgent ? (
+        <ModelEffortPicker
+          target={{ kind: 'session', sessionId, onInject: handleTransientInject }}
+          agent={transientAgent}
+          liveModelName={modelName}
+          liveModelId={liveModelId}
+          liveEffort={liveEffort}
           mode="live"
         />
       ) : (

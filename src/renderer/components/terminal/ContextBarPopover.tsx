@@ -48,7 +48,11 @@ export function ContextBarPopover({
   testId?: string;
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
-  const { style: popoverStyle } = usePopoverPosition(triggerRef, popoverRef, true, { mode: 'dropdown' });
+  // The ContextBar is always pinned to the bottom of its container (task-detail
+  // dialog, bottom panel, or the floating command-terminal overlay). Prefer
+  // opening upward so the menu never renders past a floating container's bottom
+  // edge (which clips it) even when there is viewport room below the trigger.
+  const { style: popoverStyle } = usePopoverPosition(triggerRef, popoverRef, true, { mode: 'dropdown', preferVertical: 'above' });
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {

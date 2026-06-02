@@ -728,6 +728,90 @@ test.describe('Command Terminal', () => {
         await browser.close();
       }
     });
+
+    test('transient ContextBar picker injects model/effort via session-keyed IPC (no task override)', async () => {
+      // Command Terminal sessions are transient (no task row). The ContextBar
+      // renders the picker in session-inject mode: selecting a value calls
+      // sessions.injectSettings (session-keyed, no DB persistence) rather than
+      // the task-keyed tasks.setRuntimeOverride. This is the fix for the
+      // reported "can't change model/effort from the Command Terminal".
+      const TRANSIENT_ID = 'transient-overlay-picker-1';
+      const preConfig = twoProjectPreConfig() + `
+        window.__mockPreConfigure(function (state) {
+          var project = state.projects.find(function (p) { return p.id === '${PROJECT_A_ID}'; });
+          if (project) project.default_agent = 'claude';
+        });
+
+        window.electronAPI.sessions.spawnTransient = async function (input) {
+          var session = {
+            id: '${TRANSIENT_ID}',
+            taskId: '${TRANSIENT_ID}',
+            projectId: input.projectId,
+            pid: null,
+            status: 'running',
+            shell: '/bin/bash',
+            cwd: '/mock/project',
+            startedAt: new Date().toISOString(),
+            exitCode: null,
+            resuming: false,
+            transient: true,
+          };
+          return { session: session, branch: 'main' };
+        };
+      `;
+
+      const { browser, page } = await launchWithState(preConfig);
+      try {
+        await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
+
+        await page.keyboard.press('Control+Shift+P');
+        await expect(page.getByTestId('command-bar-overlay')).toBeVisible();
+
+        const overlay = page.getByTestId('command-bar-overlay');
+        await expect(overlay.locator('[data-testid="usage-bar"]')).toBeVisible({ timeout: 5000 });
+
+        // Push usage with a model + effort so both pills resolve to interactive triggers.
+        await page.evaluate((sessionId) => {
+          const stores = (window as unknown as { __zustandStores?: { session?: { getState: () => { updateUsage: (id: string, data: object) => void } } } }).__zustandStores;
+          stores?.session?.getState().updateUsage(sessionId, {
+            model: { id: 'claude-opus-4-8', displayName: 'Opus 4.8 (1M context)', effort: 'xhigh' },
+            contextWindow: {
+              usedPercentage: 5,
+              usedTokens: 200,
+              cacheTokens: 0,
+              totalInputTokens: 150,
+              totalOutputTokens: 50,
+              contextWindowSize: 200000,
+            },
+            cost: { totalCostUsd: 0.001, totalDurationMs: 500 },
+          });
+        }, TRANSIENT_ID);
+
+        // Both triggers render as interactive buttons inside the overlay.
+        const modelTrigger = overlay.locator('[data-testid="context-bar-model-trigger"]');
+        const effortTrigger = overlay.locator('[data-testid="context-bar-effort-trigger"]');
+        await expect(modelTrigger).toBeVisible({ timeout: 5000 });
+        await expect(effortTrigger).toBeVisible({ timeout: 5000 });
+
+        // Pick a model -> session-keyed inject, not the task override path.
+        await modelTrigger.click();
+        await overlay.locator('[data-testid="context-bar-model-popover-option-sonnet"]').click();
+
+        const injectCalls = await page.evaluate(() =>
+          (window as unknown as { electronAPI: { sessions: { __injectSettingsCalls?: Array<Record<string, unknown>> } } }).electronAPI.sessions.__injectSettingsCalls,
+        );
+        expect(injectCalls?.length).toBe(1);
+        expect(injectCalls?.[0]).toMatchObject({ sessionId: TRANSIENT_ID, agent: 'claude', model: 'sonnet' });
+
+        // The task-keyed override path must NOT have been used for a transient session.
+        const overrideCalls = await page.evaluate(() =>
+          (window as unknown as { __mockSetRuntimeOverrideCalls?: unknown[] }).__mockSetRuntimeOverrideCalls,
+        );
+        expect(overrideCalls ?? []).toEqual([]);
+      } finally {
+        await browser.close();
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------

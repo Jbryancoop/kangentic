@@ -9,7 +9,13 @@ import { fetchIfStale } from '../../git/fetch-throttle';
 import { trackEvent } from '../../analytics/analytics';
 import { agentRegistry } from '../../agent/agent-registry';
 import { DEFAULT_AGENT } from '../../../shared/types';
-import type { SpawnTransientSessionInput, PermissionMode } from '../../../shared/types';
+import type {
+  SpawnTransientSessionInput,
+  PermissionMode,
+  SessionInjectSettingsInput,
+  SessionInjectSettingsResult,
+} from '../../../shared/types';
+import type { SettingsChangeSpec } from '../../agent/agent-adapter';
 import type { IpcContext } from '../ipc-context';
 
 /**
@@ -128,4 +134,53 @@ export function registerTransientSessionHandlers(context: IpcContext): void {
       }
     }
   });
+
+  // Session-keyed model/effort injection for transient (command-terminal)
+  // sessions. These have no task row, so the task-keyed
+  // TASK_SET_RUNTIME_OVERRIDE handler cannot serve them. There is nothing to
+  // persist (transient sessions are not resumable), so this is a best-effort
+  // live slash-command inject only. Mutates no per-task state, so it does not
+  // take a task lock.
+  ipcMain.handle(
+    IPC.SESSION_INJECT_SETTINGS,
+    async (_, input: SessionInjectSettingsInput): Promise<SessionInjectSettingsResult> => {
+      // Prefer the live session's actual agent (recorded at spawn); fall back
+      // to the agent the renderer resolved (the project default) if the
+      // registry has no record for this session.
+      const resolvedAgentName = context.sessionManager.getSessionAgentName(input.sessionId) ?? input.agent;
+      const adapter = agentRegistry.get(resolvedAgentName);
+      if (!adapter) {
+        return { ok: false, reason: `unknown agent "${resolvedAgentName}"` };
+      }
+
+      // The PTY must be live for an inject to land. Transient sessions live in
+      // the session manager but carry no DB row, so look them up directly.
+      const session = context.sessionManager.getSession(input.sessionId);
+      if (!session) {
+        return { ok: false, reason: 'session not found' };
+      }
+
+      const currentModel = input.currentModel ?? null;
+      const currentEffort = input.currentEffort ?? null;
+      const nextModel = input.model !== undefined ? input.model : currentModel;
+      const nextEffort = input.effort !== undefined ? input.effort : currentEffort;
+      const spec: SettingsChangeSpec = {
+        model: nextModel,
+        modelChanged: input.model !== undefined && input.model !== currentModel,
+        effort: nextEffort,
+        effortChanged: input.effort !== undefined && input.effort !== currentEffort,
+      };
+
+      const sequence = adapter.getInjectionSequence?.(spec) ?? [];
+      if (sequence.length === 0) return { ok: true, injected: false };
+
+      // Best-effort live injection. Transient sessions have no DB row, so the
+      // command-injection verifier (which needs a SessionRepository + task id)
+      // cannot be used; schedule without one, mirroring the auto_command path.
+      // The scheduler keys its coalesce/cancel map by the first argument, so
+      // we pass the sessionId there as well as the PTY target.
+      context.terminalSubmitScheduler.scheduleKeystrokes(input.sessionId, input.sessionId, sequence, {});
+      return { ok: true, injected: true };
+    },
+  );
 }

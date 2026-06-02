@@ -59,9 +59,19 @@ export function registerTaskRuntimeOverrideHandlers(context: IpcContext): void {
         // by any code path - persisting would just leave a stale value in the
         // DB. Pure read; no DB mutation has happened yet so the renderer's
         // optimistic UI update can roll back cleanly.
-        const adapter = task.agent ? agentRegistry.get(task.agent) : null;
+        //
+        // Default-agent tasks never write the project default into `task.agent`
+        // (it stays null), but their live session WAS spawned with a concrete
+        // agent. Fall back to the live session's registry agent name so the
+        // override applies instead of being rejected with "unknown agent
+        // (none)". `getSessionAgentName` returns the registry key (e.g.
+        // "claude"), not the adapter's `sessionType` ("claude_agent"), so it
+        // can be passed straight to `agentRegistry.get`.
+        const resolvedAgentName = task.agent
+          ?? (task.session_id ? context.sessionManager.getSessionAgentName(task.session_id) ?? null : null);
+        const adapter = resolvedAgentName ? agentRegistry.get(resolvedAgentName) : null;
         if (!adapter && task.session_id) {
-          return { ok: false, reason: `unknown agent "${task.agent ?? '(none)'}"` };
+          return { ok: false, reason: `unknown agent "${resolvedAgentName ?? '(none)'}"` };
         }
 
         // Resolve effective values for the SettingsChangeSpec. The user's
