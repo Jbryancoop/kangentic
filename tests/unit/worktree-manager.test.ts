@@ -25,6 +25,14 @@ vi.mock('node:fs', () => ({
     mkdirSync: vi.fn(),
     rmSync: vi.fn(),
     copyFileSync: vi.fn(),
+    // Async fs used by createWorktree's non-blocking worktrees-dir creation
+    // and copyFiles loop. access() resolves by default (treat source as
+    // present); mkdir/copyFile resolve to undefined.
+    promises: {
+      mkdir: vi.fn(),
+      access: vi.fn(),
+      copyFile: vi.fn(),
+    },
   },
 }));
 
@@ -145,8 +153,8 @@ describe('WorktreeManager -- sparse-checkout', () => {
     expect(sparseInitIdx).toBeGreaterThanOrEqual(0);
     expect(sparseSetIdx).toBeGreaterThan(sparseInitIdx);
 
-    // copyFileSync should have been called (for README.md)
-    expect(fs.copyFileSync).toHaveBeenCalled();
+    // copyFile (async) should have been called (for README.md)
+    expect(fs.promises.copyFile).toHaveBeenCalled();
   });
 
   it('skips .claude/ entries in copyFiles', async () => {
@@ -160,8 +168,8 @@ describe('WorktreeManager -- sparse-checkout', () => {
     ]);
 
     // Only README.md should be copied (2 .claude/ entries skipped)
-    expect(fs.copyFileSync).toHaveBeenCalledTimes(1);
-    expect(fs.copyFileSync).toHaveBeenCalledWith(
+    expect(fs.promises.copyFile).toHaveBeenCalledTimes(1);
+    expect(fs.promises.copyFile).toHaveBeenCalledWith(
       expect.stringContaining('README.md'),
       expect.stringContaining('README.md'),
     );

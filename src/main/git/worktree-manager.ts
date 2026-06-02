@@ -175,7 +175,7 @@ export class WorktreeManager {
     // Ensure worktrees dir exists
     const worktreesDir = path.join(this.projectPath, '.kangentic', 'worktrees');
     try {
-      fs.mkdirSync(worktreesDir, { recursive: true });
+      await fs.promises.mkdir(worktreesDir, { recursive: true });
     } catch (err) {
       console.error(`[WORKTREE] Failed to create worktrees directory: ${worktreesDir}`, err);
       throw new Error(`Cannot create worktrees directory at ${worktreesDir}: ${(err as Error).message}`);
@@ -265,15 +265,21 @@ export class WorktreeManager {
 
     // Copy specified files into the worktree (skip .claude/ entries --
     // sparse-checkout keeps .claude/ but excludes commands/,
-    // and hooks are delivered via --settings flag pointing to session directory)
+    // and hooks are delivered via --settings flag pointing to session directory).
+    // Async fs so the per-file copy loop yields the event loop between files
+    // instead of blocking it: a busy main process otherwise bunches the spawn
+    // progress IPC pushes, which then land as one burst on the renderer.
     for (const file of copyFiles) {
       if (file.startsWith('.claude/') || file.startsWith('.claude\\')) continue;
       const src = path.join(this.projectPath, file);
       const dest = path.join(worktreePath, file);
-      if (fs.existsSync(src)) {
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        fs.copyFileSync(src, dest);
+      try {
+        await fs.promises.access(src);
+      } catch {
+        continue; // Source does not exist -- nothing to copy.
       }
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.copyFile(src, dest);
     }
 
     // Link node_modules from root so worktree agents can run typecheck/test

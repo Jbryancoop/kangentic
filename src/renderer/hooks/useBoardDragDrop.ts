@@ -20,6 +20,7 @@ import {
 import { useBoardStore } from '../stores/board-store';
 import { useConfigStore } from '../stores/config-store';
 import { useToastStore } from '../stores/toast-store';
+import { beginBoardDrag, endBoardDrag } from '../lib/session-update-coalescer';
 import type { Task, Swimlane as SwimlaneType } from '../../shared/types';
 
 interface UseBoardDragDropParams {
@@ -246,6 +247,10 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
   }, [updateDropHighlight]);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
+    // Gate non-positional session-store updates for the duration of the drag so
+    // an in-flight spawn can't re-render a sortable card and force dnd-kit to
+    // re-measure on the pointer-move thread. Flushed in handleDragEnd/Cancel.
+    beginBoardDrag();
     const id = event.active.id as string;
     if (!id.startsWith('column:')) {
       const swimlaneId = taskToSwimlane.get(id);
@@ -288,6 +293,10 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
     dragStartRectRef.current = null;
     setActiveTask(null);
     updateDropHighlight(null);
+    // Flush deferred session updates now (synchronously, before any await) so
+    // the held spawn/activity pushes apply immediately and the buffer stops
+    // growing while the async drop resolves.
+    endBoardDrag();
 
     if (!over) {
       // Cancelled - reload from DB to restore original positions
@@ -450,6 +459,8 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
   }, [moveTask, setCompletingTask, requestDoneConfirmAnimated, requestDoneConfirmDirect, findSwimlane, swimlanes, swimlaneIds, reorderSwimlanes, reorderTaskInColumn, updateDropHighlight]);
 
   const handleDragCancel = useCallback(() => {
+    // Flush any updates that were held while the drag was active.
+    endBoardDrag();
     setActiveTask(null);
     updateDropHighlight(null);
     dragOriginRef.current = null;

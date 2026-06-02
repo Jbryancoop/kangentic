@@ -741,8 +741,21 @@
           if (idx >= 0) listeners.splice(idx, 1);
         };
       },
-      onSpawnProgress: function () {
-        return noop;
+      onSpawnProgress: function (callback) {
+        // Tests can fire this via window.__mockFireSpawnProgress(taskId, label).
+        if (!window.__mockSpawnProgressListeners) window.__mockSpawnProgressListeners = [];
+        window.__mockSpawnProgressListeners.push(callback);
+        if (!window.__mockFireSpawnProgress) {
+          window.__mockFireSpawnProgress = function (taskId, label) {
+            var listeners = (window.__mockSpawnProgressListeners || []).slice();
+            for (var i = 0; i < listeners.length; i++) { listeners[i](taskId, label); }
+          };
+        }
+        return function () {
+          var listeners = window.__mockSpawnProgressListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
       getSpawnProgress: async function () {
         return {};
@@ -1122,14 +1135,40 @@
       onData: function () {
         return noop;
       },
-      onFirstOutput: function () {
-        return noop;
+      onFirstOutput: function (callback) {
+        // Tests can fire this via window.__mockFireFirstOutput(sessionId).
+        if (!window.__mockFirstOutputListeners) window.__mockFirstOutputListeners = [];
+        window.__mockFirstOutputListeners.push(callback);
+        if (!window.__mockFireFirstOutput) {
+          window.__mockFireFirstOutput = function (sessionId) {
+            var listeners = (window.__mockFirstOutputListeners || []).slice();
+            for (var i = 0; i < listeners.length; i++) { listeners[i](sessionId); }
+          };
+        }
+        return function () {
+          var listeners = window.__mockFirstOutputListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
       onExit: function () {
         return noop;
       },
-      onStatus: function () {
-        return noop;
+      onStatus: function (callback) {
+        // Tests can fire this via window.__mockFireStatus(sessionId, session).
+        if (!window.__mockStatusListeners) window.__mockStatusListeners = [];
+        window.__mockStatusListeners.push(callback);
+        if (!window.__mockFireStatus) {
+          window.__mockFireStatus = function (sessionId, session) {
+            var listeners = (window.__mockStatusListeners || []).slice();
+            for (var i = 0; i < listeners.length; i++) { listeners[i](sessionId, session); }
+          };
+        }
+        return function () {
+          var listeners = window.__mockStatusListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
       onUsage: function () {
         return noop;
@@ -1153,8 +1192,22 @@
         // to mirror "session unknown" path.
         return null;
       },
-      onActivity: function () {
-        return noop;
+      onActivity: function (callback) {
+        // Tests can fire this via
+        // window.__mockFireActivity(sessionId, state, reason, projectId, taskId, taskTitle).
+        if (!window.__mockActivityListeners) window.__mockActivityListeners = [];
+        window.__mockActivityListeners.push(callback);
+        if (!window.__mockFireActivity) {
+          window.__mockFireActivity = function (sessionId, state, reason, projectId, taskId, taskTitle) {
+            var listeners = (window.__mockActivityListeners || []).slice();
+            for (var i = 0; i < listeners.length; i++) { listeners[i](sessionId, state, reason, projectId, taskId, taskTitle); }
+          };
+        }
+        return function () {
+          var listeners = window.__mockActivityListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
       getEvents: async function (sessionId) {
         return eventCache[sessionId] || [];

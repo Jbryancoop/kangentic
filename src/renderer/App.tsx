@@ -18,42 +18,17 @@ import {
   scheduleAutoNameSuggestion,
   maybeLabelTransientSession,
 } from './lib/auto-name-scheduler';
-import type { SessionEvent, SessionUsage } from '../shared/types';
+import {
+  enqueueUsage,
+  enqueueEvent,
+  enqueueSessionUpdate,
+  resetCoalescerForHmr,
+} from './lib/session-update-coalescer';
 
-/**
- * Microtask batcher for Zustand store updates. Accumulates usage and event
- * updates during the current microtask and applies them in a single set() call.
- * This prevents N background IPC callbacks from triggering N separate React renders.
- */
 /** Sentinel taskId used in notification round-trips for transient (Command Terminal)
  *  sessions, which have no associated task. The click handler routes this value
  *  through `setPendingOpenCommandTerminal` instead of opening a task detail dialog. */
 const COMMAND_TERMINAL_NOTIFICATION_TASK_ID = '__command_terminal__';
-
-const pendingUsage = new Map<string, SessionUsage>();
-const pendingEvents: Array<{ sessionId: string; event: SessionEvent }> = [];
-let batchScheduled = false;
-
-function scheduleBatchFlush(): void {
-  if (batchScheduled) return;
-  batchScheduled = true;
-  queueMicrotask(() => {
-    batchScheduled = false;
-    const store = useSessionStore.getState();
-
-    if (pendingUsage.size > 0) {
-      const usageCopy = new Map(pendingUsage);
-      pendingUsage.clear();
-      store.batchUpdateUsage(usageCopy);
-    }
-
-    if (pendingEvents.length > 0) {
-      const eventsCopy = [...pendingEvents];
-      pendingEvents.length = 0;
-      store.batchAddEvents(eventsCopy);
-    }
-  });
-}
 
 export function App() {
   const loadProjects = useProjectStore((s) => s.loadProjects);
@@ -141,8 +116,14 @@ export function App() {
     // Session changed (queued, running, suspended) - push full Session object
     if (sessions.onStatus) {
       cleanups.push(sessions.onStatus((sessionId, session) => {
-        upsertSession(session);
-        scheduleAutoNameSuggestion(session);
+        // Deferred through the coalescer: held during an active board drag so
+        // a spawning session's status flip doesn't re-render a sortable card
+        // mid-drag. Wrapped whole so the (currently side-effect-free) write and
+        // auto-name scheduling stay in arrival order with the other handlers.
+        enqueueSessionUpdate(() => {
+          upsertSession(session);
+          scheduleAutoNameSuggestion(session);
+        });
       }));
     }
 
@@ -248,7 +229,9 @@ export function App() {
     // Session first output (alternate screen buffer detected) -- lifts shimmer early
     if (sessions.onFirstOutput) {
       cleanups.push(sessions.onFirstOutput((sessionId) => {
-        useSessionStore.getState().markFirstOutput(sessionId);
+        enqueueSessionUpdate(() => {
+          useSessionStore.getState().markFirstOutput(sessionId);
+        });
       }));
     }
 
@@ -263,8 +246,7 @@ export function App() {
         const isTransient = sessionId === sessionState.transientSessionId
           || Object.values(sessionState.transientSessions).some((entry) => entry.sessionId === sessionId);
         if (isTransient || !projectId || !activeProjectId || projectId === activeProjectId) {
-          pendingUsage.set(sessionId, data);
-          scheduleBatchFlush();
+          enqueueUsage(sessionId, data);
 
           // Live-capture: feed any newly-reported model ID into the persistent
           // discovered-models cache so the dropdowns instantly "learn" any
@@ -286,50 +268,56 @@ export function App() {
     // but only run auto-focus for current project.
     if (sessions.onActivity) {
       cleanups.push(sessions.onActivity((sessionId, state, reason, projectId, taskId, taskTitle) => {
-        updateActivity(sessionId, state, reason);
+        // Deferred whole through the coalescer (held during an active board
+        // drag). The auto-focus and notification side effects read getState()
+        // AFTER updateActivity, so the write and its reads must stay atomic -
+        // deferring the body as one thunk preserves that read-after-write.
+        enqueueSessionUpdate(() => {
+          updateActivity(sessionId, state, reason);
 
-        const activeProjectId = useProjectStore.getState().currentProject?.id;
-        const isCurrentProject = !projectId || !activeProjectId || projectId === activeProjectId;
+          const activeProjectId = useProjectStore.getState().currentProject?.id;
+          const isCurrentProject = !projectId || !activeProjectId || projectId === activeProjectId;
 
-        const config = useConfigStore.getState().config;
-        const sessionStore = useSessionStore.getState();
+          const config = useConfigStore.getState().config;
+          const sessionStore = useSessionStore.getState();
 
-        // Auto-focus: switch the bottom panel to the most recently idle session
-        // (only for current project sessions). Treat 'permission' like 'idle'
-        // for focus rules - the agent is paused, the user should see it.
-        if (isCurrentProject && config.autoFocusIdleSession) {
-          const projectSessions = sessionStore.sessions.filter((s) => s.projectId === activeProjectId);
-          const target = resolveAutoFocusTarget({
-            sessionId,
-            newState: state,
-            currentActiveSessionId: sessionStore.activeSessionId,
-            dialogSessionId: sessionStore.dialogSessionId,
-            sessionActivity: sessionStore.sessionActivity,
-            sessions: projectSessions,
-          });
-          if (target !== null) {
-            sessionStore.setActiveSession(target);
-          }
-        }
-
-        // OS notification + taskbar flash for idle/permission sessions not visible to the user
-        if (state === 'idle' || state === 'permission') {
-          const notifyConfig = useConfigStore.getState().config.notifications;
-          if (notifyConfig.desktop.onAgentIdle) {
-            const session = sessionStore.sessions.find((s) => s.id === sessionId);
-            if (session) {
-              shouldNotify(sessionId, session.projectId).then((notify) => {
-                if (!notify) return;
-                const project = useProjectStore.getState().projects.find((p) => p.id === session.projectId);
-                const projectName = project?.name ?? 'A project';
-                const label = session.transient ? 'Command Terminal' : (taskTitle ?? 'A task');
-                const body = state === 'permission' ? `Needs permission: ${projectName}` : projectName;
-                const clickTaskId = session.transient ? COMMAND_TERMINAL_NOTIFICATION_TASK_ID : (taskId ?? '');
-                sendNotification(sessionId, label, body, session.projectId, clickTaskId);
-              });
+          // Auto-focus: switch the bottom panel to the most recently idle session
+          // (only for current project sessions). Treat 'permission' like 'idle'
+          // for focus rules - the agent is paused, the user should see it.
+          if (isCurrentProject && config.autoFocusIdleSession) {
+            const projectSessions = sessionStore.sessions.filter((s) => s.projectId === activeProjectId);
+            const target = resolveAutoFocusTarget({
+              sessionId,
+              newState: state,
+              currentActiveSessionId: sessionStore.activeSessionId,
+              dialogSessionId: sessionStore.dialogSessionId,
+              sessionActivity: sessionStore.sessionActivity,
+              sessions: projectSessions,
+            });
+            if (target !== null) {
+              sessionStore.setActiveSession(target);
             }
           }
-        }
+
+          // OS notification + taskbar flash for idle/permission sessions not visible to the user
+          if (state === 'idle' || state === 'permission') {
+            const notifyConfig = useConfigStore.getState().config.notifications;
+            if (notifyConfig.desktop.onAgentIdle) {
+              const session = sessionStore.sessions.find((s) => s.id === sessionId);
+              if (session) {
+                shouldNotify(sessionId, session.projectId).then((notify) => {
+                  if (!notify) return;
+                  const project = useProjectStore.getState().projects.find((p) => p.id === session.projectId);
+                  const projectName = project?.name ?? 'A project';
+                  const label = session.transient ? 'Command Terminal' : (taskTitle ?? 'A task');
+                  const body = state === 'permission' ? `Needs permission: ${projectName}` : projectName;
+                  const clickTaskId = session.transient ? COMMAND_TERMINAL_NOTIFICATION_TASK_ID : (taskId ?? '');
+                  sendNotification(sessionId, label, body, session.projectId, clickTaskId);
+                });
+              }
+            }
+          }
+        });
       }));
     }
 
@@ -356,8 +344,7 @@ export function App() {
       cleanups.push(sessions.onEvent((sessionId, event, projectId) => {
         const activeProjectId = useProjectStore.getState().currentProject?.id;
         if (!projectId || !activeProjectId || projectId === activeProjectId) {
-          pendingEvents.push({ sessionId, event });
-          scheduleBatchFlush();
+          enqueueEvent(sessionId, event);
         }
         maybeLabelTransientSession(sessionId, event);
       }));
@@ -416,7 +403,9 @@ export function App() {
     // Spawn progress (worktree creation, branch checkout phases)
     if (tasks?.onSpawnProgress) {
       cleanups.push(tasks.onSpawnProgress((taskId, label) => {
-        useSessionStore.getState().setSpawnProgress(taskId, label);
+        enqueueSessionUpdate(() => {
+          useSessionStore.getState().setSpawnProgress(taskId, label);
+        });
       }));
     }
 
@@ -494,6 +483,12 @@ if (import.meta.hot) {
     // never fire. Bumping the generation re-keys every DndContext consumer
     // and re-establishes a clean dnd-kit tree identical to a fresh boot.
     bumpHmrGeneration();
+
+    // Discard any buffered session pushes and clear the drag gate. The resync
+    // below re-fetches authoritative state from the main process, so buffered
+    // renderer-side pushes are stale; an HMR also tears down the DndContext
+    // without firing dragEnd, so the gate must be force-cleared here.
+    resetCoalescerForHmr();
 
     // Cancel stale drop highlights (HMR unmounts DndContext without firing dragEnd)
     document.querySelectorAll('.drop-highlight').forEach(element => element.classList.remove('drop-highlight'));

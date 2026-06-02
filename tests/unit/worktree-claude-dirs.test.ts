@@ -51,6 +51,13 @@ beforeEach(() => {
   git('init -b main');
   git('config user.email "test@test.com"');
   git('config user.name "Test"');
+  // Hermetic: neutralize the host's global/XDG git ignore (e.g.
+  // ~/.config/git/ignore, which on Claude Code machines contains
+  // `**/.claude/settings.local.json`). Without this, `git add -A` below would
+  // silently skip globally-ignored fixtures, leaving them untracked so the
+  // worktree could never materialize them. Pointing core.excludesFile at a
+  // nonexistent path makes git use an empty global-excludes set.
+  git(`config core.excludesFile "${path.join(tmpDir, 'no-global-excludes')}"`);
 
   writeFile('.claude/commands/review.md', '# Review command');
   writeFile('.claude/commands/merge-back.md', '# Merge-back command');

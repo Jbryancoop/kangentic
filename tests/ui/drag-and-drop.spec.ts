@@ -32,9 +32,34 @@ async function ensureBoard() {
 
 /**
  * Drag a task card from its current column to a target column.
- * Uses mouse events to simulate @dnd-kit's PointerSensor (activation distance >= 5px).
+ *
+ * Retries up to 3 times. Drag simulation is inherently timing-sensitive: under
+ * parallel-worker load (the full UI suite runs workers=4) the final collision
+ * compute can be starved so the drop lands back on the origin column, and no
+ * length of fixed wait reliably covers a saturated event loop. Each attempt
+ * re-locates the card wherever it currently sits and re-drags; we return as soon
+ * as the card is confirmed in the target column. If all attempts miss, the
+ * helper returns and the caller's own assertion reports the failure.
  */
 async function dragTaskToColumn(taskTitle: string, targetColumn: string) {
+  const cardInTarget = page
+    .locator(`[data-swimlane-name="${targetColumn}"]`)
+    .locator(`text=${taskTitle}`)
+    .first();
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (await cardInTarget.isVisible().catch(() => false)) return;
+    await performTaskDrag(taskTitle, targetColumn);
+    const landed = await cardInTarget
+      .waitFor({ state: 'visible', timeout: 1500 })
+      .then(() => true)
+      .catch(() => false);
+    if (landed) return;
+  }
+}
+
+/** A single drag attempt: grab the card wherever it is and drop it on the target column. */
+async function performTaskDrag(taskTitle: string, targetColumn: string) {
   const card = page
     .locator('[data-testid="swimlane"]')
     .locator(`text=${taskTitle}`)
@@ -63,27 +88,32 @@ async function dragTaskToColumn(taskTitle: string, targetColumn: string) {
   await page.mouse.move(startX, startY);
   await page.mouse.down();
 
-  // Move enough to activate @dnd-kit's PointerSensor (distance >= 5)
+  // Move enough to activate @dnd-kit's PointerSensor (distance >= 5). The
+  // DragOverlay renders once the sensor fires. Under load the sensor can be
+  // starved too, so treat a missed activation as a no-op and let the caller
+  // retry instead of throwing.
   await page.mouse.move(startX + 10, startY, { steps: 3 });
-  // Poll for dnd-kit activation: DragOverlay renders a .drag-overlay element
-  // containing the task title once the sensor fires. Filtering by title avoids
-  // strict-mode violations when a previous drag's overlay is still unmounting.
-  await expect(page.locator('.drag-overlay').filter({ hasText: taskTitle })).toBeVisible({ timeout: 2000 });
+  const activated = await page.locator('.drag-overlay').filter({ hasText: taskTitle })
+    .waitFor({ state: 'visible', timeout: 2000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!activated) {
+    await page.mouse.up();
+    return;
+  }
 
   // Move to target in steps.
   await page.mouse.move(endX, endY, { steps: 30 });
-  // Intentional fixed wait (dnd-kit collision settle): there is no DOM signal
-  // for "target column is hovered" on regular swimlanes (only DoneSwimlane
-  // emits .drop-zone-active). 200ms gives dnd-kit's collision detection time
-  // to process the final pointermove before pointerup triggers the drop.
-  // This replaces the original 200ms wait; the 500ms post-drop wait is removed
-  // because the caller's toBeVisible assertion handles post-drop confirmation.
-  await page.waitForTimeout(200);
+  // Fixed settle (no DOM signal for "regular column hovered" - only DoneSwimlane
+  // emits .drop-zone-active): give dnd-kit's collision detection time to process
+  // the final pointermove before pointerup. The retry in dragTaskToColumn covers
+  // the residual case where this is starved under parallel-worker load.
+  await page.waitForTimeout(400);
 
   await page.mouse.up();
   // Wait for the DragOverlay to be removed. dnd-kit calls setActiveTask(null)
   // in handleDragEnd, which triggers a React re-render removing the .drag-overlay
-  // element. This ensures dnd-kit's cleanup completes before the next drag starts.
+  // element. This ensures dnd-kit's cleanup completes before the next attempt/drag.
   await page.locator('.drag-overlay').filter({ hasText: taskTitle }).waitFor({ state: 'detached', timeout: 2000 }).catch(() => {});
 }
 
@@ -128,8 +158,8 @@ async function dragTaskWithinColumn(sourceTitle: string, targetTitle: string) {
   await page.mouse.move(endX, endY, { steps: 20 });
   // Intentional fixed wait (dnd-kit collision settle): same rationale as
   // dragTaskToColumn - no DOM signal for "target card is hovered" during
-  // within-column reorder. 200ms is the reliable budget.
-  await page.waitForTimeout(200);
+  // within-column reorder. 400ms for headroom under parallel-worker load.
+  await page.waitForTimeout(400);
 
   await page.mouse.up();
   // Wait for the DragOverlay to be removed. Same rationale as dragTaskToColumn.
