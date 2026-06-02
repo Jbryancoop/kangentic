@@ -28,6 +28,8 @@ const SESSION_ID = 'replay-session';
 interface ReplayResult {
   finalActivity: ActivityState;
   totalTransitions: number;
+  /** Every committed activity value, in order (one entry per onActivityChange). */
+  transitions: ActivityState[];
   finalState: {
     pendingToolCount: number;
     subagentDepth: number;
@@ -37,6 +39,8 @@ interface ReplayResult {
     permissionPending: boolean;
   };
   staleThinkingCompensations: number;
+  /** PTY-tracker / heartbeat forced-thinking transitions (the safety net). */
+  forceThinkingCompensations: number;
   /** Trigger of the last committed thinking->idle transition, or null. */
   lastThinkingToIdleTrigger: string | null;
 }
@@ -74,6 +78,7 @@ function replay(events: SessionEvent[]): ReplayResult {
   const result: ReplayResult = {
     finalActivity: state.activity,
     totalTransitions: transitions.length,
+    transitions: transitions.slice(),
     finalState: {
       pendingToolCount: state.pendingToolCount,
       subagentDepth: state.subagentDepth,
@@ -83,6 +88,7 @@ function replay(events: SessionEvent[]): ReplayResult {
       permissionPending: state.permissionPending,
     },
     staleThinkingCompensations: snapshot.compensationCounters.staleThinking,
+    forceThinkingCompensations: snapshot.compensationCounters.forceThinking,
     lastThinkingToIdleTrigger: lastThinkingToIdle?.trigger ?? null,
   };
   engine.dispose();
@@ -252,6 +258,97 @@ describe('ActivityEngine replay tests', () => {
     });
   });
 
+  describe('session-006-ask-user-question-resume', () => {
+    // Real capture from task #(fix-pr-linking) session
+    // 037d97e9-ae42-49e7-ae69-b22b5016b848 (sanitized). The agent called
+    // AskUserQuestion, which fired idle:permission (turnActive cleared). When
+    // the user answered, the only signal was the AskUserQuestion tool_end at
+    // depth 0 - a LOG_ONLY event that clears permissionPending but does not
+    // re-arm turnActive. Pre-fix, the predicate dropped to idle and the card
+    // sat idle (~65s observed) until the PTY force-thinking net caught up. The
+    // resumed turn must show as thinking the instant the pause resolves.
+    let result: ReplayResult;
+    beforeEach(() => {
+      const events = loadFixture('session-006-ask-user-question-resume.jsonl');
+      result = replay(events);
+    });
+
+    it('resumes to thinking immediately when the permission pause resolves (NOT idle)', () => {
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.turnActive).toBe(true);
+      expect(result.finalState.permissionPending).toBe(false);
+    });
+
+    it('never dips to idle between the permission pause and the resumed turn', () => {
+      // Once the turn goes active, the pause resolves permission -> thinking
+      // directly. A pre-fix run records a permission -> idle dip here. The
+      // leading entry is the pre-turn initial idle from initSession (expected).
+      const firstActive = result.transitions.findIndex((activity) => activity !== 'idle');
+      expect(firstActive).toBeGreaterThanOrEqual(0);
+      expect(result.transitions.slice(firstActive)).not.toContain('idle');
+      expect(result.transitions[result.transitions.length - 1]).toBe('thinking');
+    });
+
+    it('recovers via the tool_end hook, NOT the PTY force-thinking net', () => {
+      // The whole point of the fix: the hook event restores the turn, so the
+      // safety net never has to fire for the resume.
+      expect(result.forceThinkingCompensations).toBe(0);
+      expect(result.staleThinkingCompensations).toBe(0);
+    });
+
+    it('leaves no orphaned holders (clean counters at the resume)', () => {
+      expect(result.finalState.pendingToolCount).toBe(0);
+      expect(result.finalState.subagentDepth).toBe(0);
+      expect(
+        result.finalState.activeBackgroundShellIds.length
+        + result.finalState.anonymousBackgroundShellCount,
+      ).toBe(0);
+    });
+  });
+
+  describe('session-007-exit-plan-mode-resume', () => {
+    // Real capture from task #(fix-board) session
+    // 83f6b918-0942-466f-b116-5c5bf51940d9 (sanitized). This session paused
+    // TWICE: first an AskUserQuestion, then an ExitPlanMode plan-approval. Both
+    // resolved via a depth-0 tool_end with no fresh prompt/tool_start hook;
+    // pre-fix the ExitPlanMode resume sat idle ~83s until the PTY net fired.
+    // Proves the fix is generic across permission-class pauses, not just
+    // AskUserQuestion.
+    let result: ReplayResult;
+    beforeEach(() => {
+      const events = loadFixture('session-007-exit-plan-mode-resume.jsonl');
+      result = replay(events);
+    });
+
+    it('resumes to thinking after the ExitPlanMode plan-approval resolves', () => {
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.turnActive).toBe(true);
+      expect(result.finalState.permissionPending).toBe(false);
+    });
+
+    it('never dips to idle across EITHER permission pause (both cycles recover)', () => {
+      // A pre-fix run records a permission -> idle dip twice (once per resolved
+      // pause). The leading entry is the pre-turn initial idle (expected).
+      const firstActive = result.transitions.findIndex((activity) => activity !== 'idle');
+      expect(firstActive).toBeGreaterThanOrEqual(0);
+      expect(result.transitions.slice(firstActive)).not.toContain('idle');
+    });
+
+    it('recovers via hooks, NOT the PTY force-thinking net (no compensation)', () => {
+      expect(result.forceThinkingCompensations).toBe(0);
+      expect(result.staleThinkingCompensations).toBe(0);
+    });
+
+    it('leaves no orphaned holders at the end', () => {
+      expect(result.finalState.pendingToolCount).toBe(0);
+      expect(result.finalState.subagentDepth).toBe(0);
+      expect(
+        result.finalState.activeBackgroundShellIds.length
+        + result.finalState.anonymousBackgroundShellCount,
+      ).toBe(0);
+    });
+  });
+
   describe('cross-fixture invariants', () => {
     it('all fixtures produce a deterministic outcome (no flakiness)', () => {
       const fixtures = [
@@ -259,6 +356,8 @@ describe('ActivityEngine replay tests', () => {
         'session-002-many-bg-shells.jsonl',
         'session-003-with-killbash.jsonl',
         'session-004-large-22-bg-shells.jsonl',
+        'session-006-ask-user-question-resume.jsonl',
+        'session-007-exit-plan-mode-resume.jsonl',
       ];
       for (const name of fixtures) {
         const events = loadFixture(name);

@@ -457,6 +457,60 @@ describe('ActivityEngine', () => {
       expect(engine.getState(SESSION_ID)?.permissionPending).toBe(false);
       expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
     });
+
+    it('permission-resolving tool_end restores thinking immediately (AskUserQuestion / ExitPlanMode resume)', () => {
+      // A permission-class pause (AskUserQuestion, ExitPlanMode plan-approval,
+      // tool prompt) begins with idle:permission, which clears turnActive. When
+      // it resolves, the only signal is a depth-0 tool_end - a LOG_ONLY event
+      // that clears permissionPending but never re-arms turnActive. Without the
+      // fix the predicate drops to idle and the card sits idle until the PTY
+      // force-thinking net catches up seconds later. The resumed turn must show
+      // as thinking the instant the pause resolves.
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'AskUserQuestion' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle, { detail: IdleReason.Permission }));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('permission');
+      transitions.length = 0;
+
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { tool: 'AskUserQuestion' }));
+
+      // No timer advance: recovery is immediate via the hook, not the stability
+      // window or the PTY net.
+      expect(transitions).toHaveLength(1);
+      expect(transitions[0].activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.turnActive).toBe(true);
+      expect(engine.getState(SESSION_ID)?.permissionPending).toBe(false);
+    });
+
+    it('a normal tool_end with no permission pending does NOT force turnActive (guard is load-bearing)', () => {
+      // Drive to a clean idle: a full tool cycle then an explicit Idle.
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Read' }));
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { tool: 'Read' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(engine.getState(SESSION_ID)?.turnActive).toBe(false);
+      transitions.length = 0;
+
+      // A stray depth-0 tool_end arriving while idle (permissionPending=false)
+      // must NOT resurrect turnActive via the permission-resume branch.
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { tool: 'Read' }));
+      expect(engine.getState(SESSION_ID)?.turnActive).toBe(false);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(transitions).toHaveLength(0);
+    });
+
+    it('subagent ToolEnd at depth>0 does NOT clear permissionPending or wake the turn', () => {
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStart));
+      engine.processEvent(SESSION_ID, event(EventType.Idle, { detail: IdleReason.Permission }));
+      transitions.length = 0;
+
+      // The tool belongs to the still-running subagent, not the paused main
+      // agent - it must not clear permission or re-arm the turn.
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { tool: 'Read' }));
+      expect(engine.getState(SESSION_ID)?.permissionPending).toBe(true);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('permission');
+    });
   });
 
   describe('force paths', () => {

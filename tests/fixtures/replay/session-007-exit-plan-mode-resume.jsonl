@@ -1,0 +1,12 @@
+{"ts":1780423099000,"type":"session_start","hookContext":"{}"}
+{"ts":1780423099994,"type":"tool_start","tool":"AskUserQuestion"}
+{"ts":1780423100166,"type":"idle","detail":"permission"}
+{"ts":1780423106202,"type":"notification","detail":"Claude needs your permission"}
+{"ts":1780423129664,"type":"tool_end","tool":"AskUserQuestion"}
+{"ts":1780423174367,"type":"tool_start","tool":"Write","detail":"C:\\Users\\dev\\.claude\\plans\\task-title-fix-board-smooth-out-floating-eagle.md"}
+{"ts":1780423174558,"type":"tool_end","tool":"Write"}
+{"ts":1780423178951,"type":"tool_start","tool":"ToolSearch","detail":"select:ExitPlanMode"}
+{"ts":1780423179115,"type":"tool_end","tool":"ToolSearch"}
+{"ts":1780423182297,"type":"tool_start","tool":"ExitPlanMode"}
+{"ts":1780423182476,"type":"idle","detail":"permission"}
+{"ts":1780423186752,"type":"tool_end","tool":"ExitPlanMode"}

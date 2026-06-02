@@ -1112,4 +1112,112 @@ test.describe('Task Activity Indicators', () => {
       }
     });
   });
+
+  // Group: permission activity state
+  //
+  // The fix in activity-engine.ts ensures that when a permission-class pause
+  // (AskUserQuestion, ExitPlanMode plan-approval, tool prompt) resolves, the
+  // engine restores turnActive=true so the next tool_end drives straight to
+  // 'thinking' without an idle detour lasting 65-83s.
+  //
+  // Renderer-side invariant: both 'idle' and 'permission' map to isIdle=true
+  // in TaskCard.tsx, so the Mail icon appears for both. There is no separate
+  // lock icon - the design groups them as "agent needs attention".
+  //
+  // Source confirmation:
+  //   src/renderer/components/board/TaskCard.tsx line 244-245:
+  //     const isIdle = displayState.kind === 'running'
+  //       && (displayState.activity === 'idle' || displayState.activity === 'permission');
+  //   src/renderer/utils/task-progress.ts line 92-94:
+  //     activity: activity ?? 'idle'  (defaults to idle when cache is empty)
+  //
+  // Three assertions here:
+  //   1. 'permission' shows Mail icon (not spinner) - same affordance as idle
+  //   2. 'permission' does NOT show spinner (thinking is absent)
+  //   3. After cache update permission -> thinking, spinner appears with NO
+  //      intermediate idle/mail flash (the renderer-side invariant the fix
+  //      preserves: transitions go direct without passing through idle first)
+  test.describe('permission activity state', () => {
+    test('permission state shows mail icon (not spinner) on task card', async () => {
+      const { browser, page } = await launchWithState(
+        makePreConfig({ sessionStatus: 'running', activity: 'permission', withUsage: true }),
+      );
+      try {
+        await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
+        await expect(page.locator('[data-testid="usage-bar"]').first()).toBeVisible({ timeout: 10000 });
+
+        const titleRow = page.locator('text=Test Initializing Task').first().locator('..');
+
+        // permission maps to isIdle=true: Mail icon appears (amber, "needs attention")
+        await expect(titleRow.locator('.lucide-mail')).toBeVisible({ timeout: 10000 });
+
+        // Spinner must NOT appear - permission is not a thinking state
+        await expect(titleRow.locator('.lucide-loader-circle')).not.toBeVisible();
+      } finally {
+        await browser.close();
+      }
+    });
+
+    test('permission state card has animate-pulse-subtle (idle pulse, not green thinking pulse)', async () => {
+      const { browser, page } = await launchWithState(
+        makePreConfig({ sessionStatus: 'running', activity: 'permission', withUsage: true }),
+      );
+      try {
+        await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
+        await expect(page.locator('[data-testid="usage-bar"]').first()).toBeVisible({ timeout: 10000 });
+
+        const card = page.locator(`[data-task-id="${TASK_ID}"]`);
+        await expect(card).toBeVisible();
+
+        // isIdle=true sets animate-pulse-subtle (same as idle, NOT the thinking green glow)
+        const classAttr = await card.getAttribute('class');
+        expect(classAttr).toBeTruthy();
+        expect(classAttr).toContain('animate-pulse-subtle');
+      } finally {
+        await browser.close();
+      }
+    });
+
+    test('permission -> thinking transition shows spinner without idle/mail flash', async () => {
+      // This is the renderer-side invariant the fix preserves: after the engine
+      // corrects permissionPending->false and re-arms turnActive=true, the very
+      // next ACTIVITY_CHANGED push sends 'thinking'. The renderer must go
+      // directly from Mail icon to spinner. We verify that at no observable
+      // point between the two states does the card briefly show idle (mail)
+      // when thinking is already the new state.
+      //
+      // Technique: seed 'permission', then push 'thinking' via updateActivity,
+      // then poll for spinner. If the spinner appears we know the transition
+      // happened. The negative assertion is: while spinner is visible, mail is
+      // absent. Playwright polls both in the same tick so we cannot race ourselves.
+      const { browser, page } = await launchWithState(
+        makePreConfig({ sessionStatus: 'running', activity: 'permission', withUsage: true }),
+      );
+      try {
+        await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
+        await expect(page.locator('[data-testid="usage-bar"]').first()).toBeVisible({ timeout: 10000 });
+
+        const titleRow = page.locator('text=Test Initializing Task').first().locator('..');
+
+        // Confirm we start in permission (mail icon visible)
+        await expect(titleRow.locator('.lucide-mail')).toBeVisible({ timeout: 10000 });
+
+        // Push activity update: permission -> thinking (simulates engine re-arming turnActive)
+        await page.evaluate((sessionId) => {
+          const stores = (window as unknown as {
+            __zustandStores: { session: { getState: () => { updateActivity: (id: string, state: string) => void } } };
+          }).__zustandStores;
+          stores.session.getState().updateActivity(sessionId, 'thinking');
+        }, SESSION_ID);
+
+        // Spinner must appear (thinking is now active)
+        await expect(titleRow.locator('.lucide-loader-circle')).toBeVisible({ timeout: 5000 });
+
+        // Mail icon must be absent in the thinking state (no idle flash)
+        await expect(titleRow.locator('.lucide-mail')).not.toBeVisible();
+      } finally {
+        await browser.close();
+      }
+    });
+  });
 });

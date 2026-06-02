@@ -195,6 +195,22 @@ export class ActivityEngine {
       state.turnActive = false;
     }
 
+    // A permission pause just resolved: its depth-0 wake signal cleared
+    // permissionPending and the agent is resuming its turn. The resolving
+    // event (e.g. an AskUserQuestion / ExitPlanMode tool_end) emits no fresh
+    // prompt/tool_start hook, so restore turnActive here. Otherwise the
+    // predicate sees no holder and drops to idle until the PTY force-thinking
+    // net catches up seconds later. Genuine turn-enders (Idle/Interrupted)
+    // are excluded - they legitimately end the turn.
+    if (
+      before.permissionPending
+      && !state.permissionPending
+      && !TURN_ENDING_EVENTS.has(event.type)
+    ) {
+      state.turnActive = true;
+      state.pendingIdleAt = null;
+    }
+
     if (event.type === EventType.Interrupted) {
       this.applyInterruptedBypass(sessionId, state, before);
       return;

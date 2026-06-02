@@ -188,7 +188,7 @@ Notably absent: `pendingToolCount` is NOT in the predicate. An explicit `Idle` e
 
 ### turnActive
 
-Set on any "thinking-initiating" event (`ToolStart`, `Prompt`, `SubagentStart`, `Compact`, `WorktreeCreate`, `BackgroundShellStart`). Cleared by `Idle`, `Interrupted`. Persists across the silent gaps between tool calls so the spinner doesn't flicker.
+Set on any "thinking-initiating" event (`ToolStart`, `Prompt`, `SubagentStart`, `Compact`, `WorktreeCreate`, `BackgroundShellStart`). Cleared by `Idle`, `Interrupted`. Also re-armed when a permission pause resolves (see [Permission flag](#permission-flag)). Persists across the silent gaps between tool calls so the spinner doesn't flicker.
 
 ### Subagent depth
 
@@ -213,6 +213,8 @@ Set when an `Idle` event fires with `detail: 'permission'`. Cleared by:
 - `ToolStart`/`ToolEnd` at `subagentDepth === 0` (main agent activity)
 
 Subagent-tool events at depth>0 do NOT clear permission (the permission belonged to the main agent which is still paused).
+
+**Resume restores `turnActive`.** A permission pause begins with `Idle{detail:'permission'}`, which clears `turnActive` (Idle is a turn-ending event). When the pause resolves, the wake is typically a depth-0 `ToolEnd` (e.g. the `AskUserQuestion` / `ExitPlanMode` tool ending after the user answers/approves) - a LOG_ONLY event that clears `permissionPending` but does not re-arm `turnActive`. The resumed turn emits no fresh `Prompt`/`ToolStart` hook, so without intervention the predicate would see no holder and drop to **idle** until the PTY force-thinking net catches up seconds later. To avoid that, `processEvent` restores `turnActive = true` whenever `permissionPending` transitions `true -> false` on a non-turn-ending event (i.e. not `Idle`/`Interrupted`, which are genuine end-of-turn). This is classified by the generic permission-clear shape, not by tool or agent name, so it covers every permission-class pause. Pinned by the `session-006`/`session-007` replay fixtures.
 
 ### Tool tracking (stack with correlation IDs + LIFO-by-name fallback)
 

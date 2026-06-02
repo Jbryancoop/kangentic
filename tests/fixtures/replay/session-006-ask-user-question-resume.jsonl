@@ -1,0 +1,9 @@
+{"ts":1780420144000,"type":"session_start","hookContext":"{}"}
+{"ts":1780420144184,"type":"tool_start","tool":"Grep","detail":"NOTIFY|TOAST|toast|notification"}
+{"ts":1780420144419,"type":"tool_end","tool":"Grep"}
+{"ts":1780420152681,"type":"tool_start","tool":"Grep","detail":"NOTIFICATION_SHOW"}
+{"ts":1780420152922,"type":"tool_end","tool":"Grep"}
+{"ts":1780420180923,"type":"tool_start","tool":"AskUserQuestion"}
+{"ts":1780420181088,"type":"idle","detail":"permission"}
+{"ts":1780420187137,"type":"notification","detail":"Claude needs your permission"}
+{"ts":1780420208109,"type":"tool_end","tool":"AskUserQuestion"}
