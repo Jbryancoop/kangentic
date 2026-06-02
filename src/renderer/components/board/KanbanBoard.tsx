@@ -72,6 +72,13 @@ const SortableSwimlane = React.memo(function SortableSwimlane({ swimlane, tasks 
 });
 
 /** Fixed-position card that flies from the drop position into the Done drop zone.
+ *  Animates compositor-friendly transform + opacity only (never left/top/all),
+ *  so the motion stays on the GPU and does not fight the board reflow that fires
+ *  when setCompletingTask removes the task from its source column. The
+ *  DragOverlay's default drop animation is disabled (dropAnimation={null}), so
+ *  this is the only element in motion on release - there is no snap-back-to-
+ *  origin overlay clone competing with it.
+ *
  *  Fallback timer guarantees finalizeCompletion() fires even when
  *  onTransitionEnd never does (drop zone not in DOM, propertyName mismatch,
  *  element scrolled offscreen). Without this, a missed transitionend leaves
@@ -81,6 +88,10 @@ function FlyingCard() {
   const finalizeCompletion = useBoardStore((s) => s.finalizeCompletion);
   const [flying, setFlying] = React.useState(false);
   const fallbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Translate vector from the start rect to the Done drop-zone center, measured
+  // once per completion in a layout effect (pre-paint) so layout is never read
+  // during render. null when the drop zone is not in the DOM.
+  const targetDeltaRef = React.useRef<{ dx: number; dy: number } | null>(null);
 
   const clearFallback = React.useCallback(() => {
     if (fallbackTimerRef.current !== null) {
@@ -88,6 +99,30 @@ function FlyingCard() {
       fallbackTimerRef.current = null;
     }
   }, []);
+
+  // Measure the drop-zone target before the browser paints the start frame, so
+  // the 2-rAF flip below animates toward an already-computed delta. Recomputed
+  // unconditionally on every completingTask change so back-to-back completions
+  // never reuse a stale delta. The delta is computed from the start top-left
+  // (translate is evaluated in untransformed pixels, before scale), preserving
+  // the original -20 landing offset above the drop-zone center.
+  React.useLayoutEffect(() => {
+    if (!completingTask) {
+      targetDeltaRef.current = null;
+      return;
+    }
+    const dropZone = document.querySelector('[data-done-drop-zone]');
+    const targetRect = dropZone?.getBoundingClientRect();
+    if (!targetRect) {
+      targetDeltaRef.current = null;
+      return;
+    }
+    const { startRect } = completingTask;
+    targetDeltaRef.current = {
+      dx: targetRect.left + targetRect.width / 2 - startRect.width / 2 - startRect.left,
+      dy: targetRect.top + targetRect.height / 2 - 20 - startRect.top,
+    };
+  }, [completingTask]);
 
   React.useEffect(() => {
     if (!completingTask) {
@@ -123,40 +158,48 @@ function FlyingCard() {
   if (!completingTask) return null;
 
   const { task, startRect } = completingTask;
-  const dropZone = document.querySelector('[data-done-drop-zone]');
-  const targetRect = dropZone?.getBoundingClientRect();
+  // Reduced motion (OS preference or the in-app Appearance toggle, which adds
+  // .no-motion to the root) collapses the fly to a short opacity fade. The
+  // .no-motion class only zeroes CSS keyframe durations, not inline
+  // transitions, so it must be checked here in JS rather than relied on via CSS.
+  const reduceMotion =
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    || document.documentElement.classList.contains('no-motion');
+  const delta = targetDeltaRef.current ?? { dx: 0, dy: 0 };
 
-  // The transition property is set on BOTH styles so the browser sees it
-  // on the element from first paint. Chromium does not reliably trigger a
-  // CSS transition when `transition` is defined on the same render as the
-  // property change - the start style must already carry the transition
-  // declaration for the 2-rAF mitigation below to actually animate.
-  const style: React.CSSProperties = flying && targetRect ? {
-    position: 'fixed',
-    left: targetRect.left + targetRect.width / 2 - startRect.width / 2,
-    top: targetRect.top + targetRect.height / 2 - 20,
-    width: startRect.width,
-    transform: 'scale(0.01)',
-    opacity: 0,
-    transition: 'all 500ms ease-in',
-    zIndex: 9999,
-    pointerEvents: 'none',
-  } : {
+  // Static box: position/size never change. Only transform + opacity animate, so
+  // the motion is GPU-composited. The transition string is identical across both
+  // flying states because Chromium will not start a transition declared on the
+  // same render as the property change - the start frame must already carry it.
+  const style: React.CSSProperties = {
     position: 'fixed',
     left: startRect.left,
     top: startRect.top,
     width: startRect.width,
-    opacity: 0.85,
-    transition: 'all 500ms ease-in',
     zIndex: 9999,
     pointerEvents: 'none',
+    willChange: 'transform, opacity',
+    opacity: flying ? 0 : 0.85,
+    transition: reduceMotion
+      ? 'opacity 150ms ease-out'
+      : 'transform 500ms cubic-bezier(0.4, 0, 0.2, 1), opacity 500ms ease-in',
+    transform: reduceMotion
+      ? undefined
+      : flying
+        ? `translate3d(${delta.dx}px, ${delta.dy}px, 0) scale(0.6)`
+        : 'translate3d(0, 0, 0) scale(1)',
   };
 
   return (
     <div
+      className="flying-card"
       style={style}
       onTransitionEnd={(e) => {
-        if (e.propertyName === 'transform') {
+        // Transform and opacity share a duration and finish together in the
+        // full-motion path; the reduced-motion path animates opacity only.
+        // finalizeCompletion is idempotent (clears completingTask at entry and
+        // returns early on re-entry), so a double fire is harmless.
+        if (e.propertyName === 'transform' || e.propertyName === 'opacity') {
           clearFallback();
           finalizeCompletion();
         }
@@ -198,6 +241,12 @@ export function KanbanBoard() {
   const swimlanes = useBoardStore((s) => s.swimlanes);
   const tasks = useBoardStore((s) => s.tasks);
   const archivedTasks = useBoardStore((s) => s.archivedTasks);
+  // Remount FlyingCard per completion so its `flying`/delta/timer state never
+  // leaks across drops. Without a fresh instance, the second card mounts at the
+  // prior fly's end frame (opacity:0) and flies invisibly. Keying on the task id
+  // also covers dropping a new task on Done while the previous one is still
+  // flying (the id changes task1 -> task2 without settling at idle).
+  const completingTaskId = useBoardStore((s) => s.completingTask?.taskId);
   const priorities = useConfigStore((s) => s.config.backlog.priorities);
   const labelColors = useConfigStore((s) => s.config.backlog.labelColors);
 
@@ -342,7 +391,7 @@ export function KanbanBoard() {
           </div>
         </SortableContext>
 
-        <DragOverlay style={{ pointerEvents: 'none', willChange: 'transform' }}>
+        <DragOverlay dropAnimation={null} style={{ pointerEvents: 'none', willChange: 'transform' }}>
           {activeTask ? (
             <div className="drag-overlay" style={{ opacity: 0.9 }}>
               <TaskCard task={activeTask} isDragOverlay />
@@ -350,7 +399,7 @@ export function KanbanBoard() {
           ) : null}
         </DragOverlay>
       </DndContext>
-      <FlyingCard />
+      <FlyingCard key={completingTaskId ?? 'idle'} />
       </div>
 
       <BoardDialogs />

@@ -346,15 +346,29 @@
   animation: grow-in 250ms ease-out forwards;
 }
 
-/* Radiating pulse for idle task cards -- shadow expands outward and fades */
-@keyframes pulse-subtle {
-  0% { box-shadow: 0 0 0 0px rgba(161, 161, 170, 0.2); }
-  40% { box-shadow: 0 0 0 5px rgba(161, 161, 170, 0); }
-  100% { box-shadow: 0 0 0 5px rgba(161, 161, 170, 0); }
+/* Radiating attention pulse for idle / awaiting-permission cards.
+   Compositor-only: the box-shadow ring is static on the ::before, and only
+   transform + opacity animate. Animating box-shadow directly (the previous
+   approach) repaints the whole card every frame for as long as the agent stays
+   paused. Mirrors the .terminal-overlay-glow pattern below. */
+.animate-pulse-subtle {
+  position: relative;
 }
 
-.animate-pulse-subtle {
+.animate-pulse-subtle::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 0 4px rgba(161, 161, 170, 0.2);
+  pointer-events: none;
   animation: pulse-subtle 4s ease-out infinite;
+}
+
+@keyframes pulse-subtle {
+  0%   { opacity: 0.7; transform: scale(1); }
+  40%  { opacity: 0; transform: scale(1.04); }
+  100% { opacity: 0; transform: scale(1.04); }
 }
 
 
@@ -412,6 +426,26 @@
 .no-motion *::before,
 .no-motion *::after {
   animation-duration: 0s !important;
+}
+
+/* Honor the OS-level reduced-motion preference (distinct from the in-app
+   Appearance toggle above). Stop the infinite Done-hover spin and the idle
+   pulse, and collapse the completed-card grow-in to a near-instant fade.
+   grow-in keeps a 1ms duration (not `animation: none`) so its `animationend`
+   still fires and DoneSwimlane clears recentlyArchivedId. The drag-to-Done fly
+   is inline-styled, so it reads this preference in JS (see FlyingCard). */
+@media (prefers-reduced-motion: reduce) {
+  .drop-zone-active::before {
+    animation: none;
+  }
+
+  .animate-pulse-subtle::before {
+    animation: none;
+  }
+
+  .grow-in {
+    animation-duration: 1ms;
+  }
 }
 
 /* Drop-target highlight applied via direct DOM class toggle (no React re-render).
