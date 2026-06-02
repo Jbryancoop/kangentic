@@ -1,6 +1,6 @@
 ---
 description: Run tests, audit coverage, or write missing tests
-allowed-tools: Read, Glob, Grep, Task, Bash(npm:*), Bash(npx:*), Bash(git:*)
+allowed-tools: Read, Glob, Grep, Task, Workflow, Bash(npm:*), Bash(npx:*), Bash(git:*)
 argument-hint: [all|broad|audit|write|unit|ui|e2e|verify-map]
 ---
 
@@ -140,7 +140,9 @@ Proceed immediately - no need to wait for confirmation.
 
 ### Step 5 - Coverage gap analysis (delegate to agent)
 
-After all tests complete and results are reported, **launch the `test-builder` agent** to analyze changed files for coverage gaps. Do not attempt to classify or recommend tests independently - that is the agent's job.
+After all tests complete and results are reported, analyze changed files for coverage gaps. Do not attempt to classify or recommend tests independently - that is `test-builder`'s job.
+
+**Size gate first.** If this change is **sprawling** - the Layer 4 mixed-domain signal tripped (`distinctOverrides >= 3` OR `totalSourceFiles >= 5`) - run the **Heavy Path** audit fan-out (see "## Heavy Path", phases 1-2: parallel per-tier auditors -> dedup + adversarial gap verification) and relay its consolidated, verified Coverage Gaps report. Otherwise (the common case), **launch a single `test-builder` agent** exactly as below.
 
 Launch the agent with:
 
@@ -203,33 +205,117 @@ Then typecheck → build → run selected tiers in full (no `--only-changed`, no
 
 ## Mode: Coverage Audit (`/test audit`)
 
-**Launch the `test-builder` agent in audit-only mode.** Do not run any tests, and do not attempt any classification or recommendation yourself.
+Audit coverage without running tests. Do not attempt any classification or recommendation yourself - that is `test-builder`'s job.
 
 1. Gather context locally:
    - `git diff --staged`
    - `git diff`
    - `git status`
-2. Launch the agent with:
+2. **Size gate.** Count changed source files (`src/**`, excluding `tests/`, `docs/`, `.claude/`, config). If the change is **sprawling** (`changedSourceFiles >= 5`, the same mixed-domain signal), run the **Heavy Path** audit fan-out (see "## Heavy Path", phases 1-2) and relay its consolidated, verified Coverage Gaps report. Otherwise **launch a single `test-builder` agent in audit-only mode** with:
    - `subagent_type: "test-builder"`
    - `description: "Coverage audit for current changes"`
    - `prompt`: include the full git diff output and an explicit instruction: **"Audit-only mode. Read each changed file, apply your tier decision tree, and return the standard Coverage Gaps report. Do NOT write, modify, or validate any tests."**
-3. Relay the agent's report verbatim.
+3. Relay the report verbatim.
 
 ---
 
 ## Mode: Write Tests (`/test write`)
 
-**Launch the `test-builder` agent to audit AND implement the missing tests.** This skill does not write tests inline.
+**Audit AND implement the missing tests via the `test-builder` agent.** This skill does not write tests inline.
 
 1. Gather context locally:
    - `git diff --staged`
    - `git diff`
    - `git status`
-2. Launch the agent with:
+2. **Size gate.** Count changed source files (`src/**`, excluding `tests/`, `docs/`, `.claude/`, config). If the change is **sprawling** (`changedSourceFiles >= 5`), run the **Heavy Path** (see "## Heavy Path", phases 1-3: parallel per-tier auditors -> dedup + adversarial gap verification -> serial `test-builder` write, with red-green enforced inside the write phase). Otherwise **launch a single `test-builder` agent** with:
    - `subagent_type: "test-builder"`
    - `description: "Write missing tests for current changes"`
-   - `prompt`: include the full git diff output, any extra arguments the user passed to `/test write`, and an explicit instruction: **"Write mode. Audit coverage, then implement the missing tests following your tier rules, anti-flake patterns, and the 10-second E2E gate. Validate with multi-run stability checks. Report back with: tier chosen per file, files modified, helpers reused vs added, stability run count, and any anti-patterns you noticed in neighboring tests."**
-3. When the agent returns, relay its summary. If any gaps remain (e.g. the agent could not write a test due to missing mock support or ambiguous requirements), flag them clearly so the user can resolve and retry.
+   - `prompt`: include the full git diff output, any extra arguments the user passed to `/test write`, and an explicit instruction: **"Write mode. Audit coverage, then implement the missing tests following your tier rules, anti-flake patterns, and the 10-second E2E gate. Derive expected behavior from the task/PR intent, not the implementation, and red-green verify each new test (it must fail for the right reason), then validate with multi-run stability checks. Report back with: tier chosen per file, files modified, helpers reused vs added, red-green result and stability run count, and any anti-patterns you noticed in neighboring tests."**
+3. When the agent (or Heavy Path) returns, relay its summary. If any gaps remain (e.g. a test could not be written due to missing mock support or ambiguous requirements), flag them clearly so the user can resolve and retry.
+
+---
+
+## Heavy Path (sprawling changes)
+
+The coverage **audit** and **write** operations normally run as a single `test-builder` pass. On a **sprawling change** they auto-scale to an in-session `Workflow` fan-out, so no single context has to audit every changed surface at once (the same "lost in the middle" failure a single-pass review hits on a large diff). Test **execution** never fans out - running tests is deterministic, so the run modes above are unchanged.
+
+**Size gate:** reuse `/test`'s own mixed-domain signal. A change is sprawling when `distinctOverrides >= 3` OR the changed source-file count hits the mixed-domain threshold (`>= 5`, Layer 4's `mixedDomainThreshold`). Smart Run knows this from Step 2; `/test audit` and `/test write` evaluate it from their own `git diff` (count `src/**` files, excluding tests/docs/config). Below the gate: the single `test-builder` pass, exactly as today. At or above it: the Heavy Path.
+
+**Hard rule:** orchestrate only in-session via the `Workflow` tool and `test-builder` subagents. **Never** use `claude -p` or any headless `claude` shell invocation.
+
+### Phases
+
+1. **Audit fan-out (read-only, parallel) - phase `audit`.** Instead of one `test-builder` audit pass, spawn parallel coverage auditors grouped by tier (Unit / UI / E2E), each in `agentType: "test-builder"` audit-only mode (so the tier decision tree and anti-flake catalogue are not duplicated here) against its slice, applying explicit, **falsifiable** gap criteria:
+   - a changed exported function or new branch / early-return with no covering assertion = gap;
+   - a new IPC channel with no `tests/ui/mock-electron-api.js` entry exercised by a UI test = gap;
+   - an external-input parser (`JSON.parse` of file/IPC/stdout that dispatches on string-literal fields) with no real-shape fixture = gap (the `codex-rollout` pattern);
+   - a new user-facing flow with no UI-tier assertion = gap.
+   Each returns the standard Coverage Gaps rows (`{file, whatToTest, tier, existingCoverage}`).
+2. **Dedup + adversarial gap verification - phase `verify`.** Dedup gaps across auditors (plain code, needs all audits -> barrier). A skeptic per gap confirms the gap is **real** (genuinely unexercised, not already covered by a sibling or unit test) and **worth a test** under the 10-second-E2E rule and the "wasteful E2E tests are not the goal" philosophy. The skeptic **defaults to "already covered / not worth it" when uncertain** - conservative on purpose, matching test-builder's delete-aggressively, never-double-cover stance.
+3. **Write (write mode only, serial) - phase `write`.** Hand the verified gap list to `test-builder` in write mode. **Writing stays serial through one `test-builder`** - it owns the tier rules, anti-flake patterns, shared-file edits (`tests/ui/mock-electron-api.js`, `tests/e2e/helpers.ts`), and suite-wide validation; parallel writers would conflict on those shared files. The fan-out is for the read-only audit + verification, not the mutation. The **red-green guard** (each new test must fail for the right reason, with expected behavior derived from the task/PR intent rather than the implementation) is enforced by `test-builder` inside this phase - see its red-green + spec-derived-expectation rules. Today's stability runs catch flake; red-green catches self-review bias.
+
+`/test audit` and Smart Run Step 5 run phases 1-2 (return the consolidated, verified Coverage Gaps report). `/test write` runs phases 1-3.
+
+### Workflow script
+
+The driver passes this script to the `Workflow` tool. `auditPromptForTier`, `gapSkepticPrompt`, and `writePrompt` embed the criteria above; `dedupeGaps` is plain JS.
+
+```javascript
+export const meta = {
+  name: "test-coverage-heavy",
+  description: "Parallel coverage audit for sprawling changes: per-tier auditors -> dedup + adversarial gap verification (-> serial write + red-green)",
+  phases: ["audit", "verify", "write"],
+};
+
+const gapSchema = {
+  type: "object",
+  required: ["file", "whatToTest", "tier"],
+  properties: {
+    file: { type: "string" },
+    whatToTest: { type: "string" },
+    tier: { enum: ["Unit", "UI", "E2E"] },
+    existingCoverage: { type: "string" },
+  },
+};
+const gapsSchema = { type: "object", required: ["gaps"],
+  properties: { gaps: { type: "array", items: gapSchema } } };
+const gapVerdictSchema = { type: "object", required: ["worthTesting", "confidence", "reason"],
+  properties: {
+    worthTesting: { type: "boolean" },   // false when already covered / not worth a (esp. E2E) test
+    confidence: { enum: ["high", "medium", "low"] },
+    reason: { type: "string" },
+  },
+};
+
+// Inputs the driver passes in: diffText, changedFiles[], testResults, writeMode (bool)
+phase("audit");
+const TIERS = ["Unit", "UI", "E2E"];
+const audits = await parallel(TIERS.map((tier) => () =>
+  agent(auditPromptForTier(tier, diffText, changedFiles), {
+    label: `audit:${tier}`, phase: "audit", agentType: "test-builder", schema: gapsSchema,
+  })
+));
+const rawGaps = dedupeGaps(audits.filter(Boolean).flatMap((a) => a.gaps));  // barrier: needs all audits
+
+phase("verify");  // one skeptic per gap; DEFAULTS to "not worth it" when uncertain
+const verified = await parallel(rawGaps.map((g) => async () => {
+  const v = await agent(gapSkepticPrompt(g, diffText), { label: "verify", phase: "verify", schema: gapVerdictSchema });
+  if (!v || !v.worthTesting) return null;
+  if (v.confidence === "low") return null;
+  return g;
+}));
+const gaps = verified.filter(Boolean);
+
+if (!writeMode) return { gaps };   // /test audit + Smart Run Step 5 stop here
+
+phase("write");  // SERIAL through one test-builder: owns shared-file edits, red-green, suite validation
+const writeReport = await agent(writePrompt(gaps, diffText), {
+  label: "write", phase: "write", agentType: "test-builder",
+});
+return { gaps, writeReport };
+```
+
+If a tier auditor fails, `parallel` resolves it to `null` and `.filter(Boolean)` drops it; the audit completes on the surviving tiers (note any dropped tier in the report). The driver relays `gaps` as the Coverage Gaps report (and, in write mode, `writeReport` as the write summary).
 
 ---
 
@@ -372,4 +458,5 @@ When `broadenOnUnmapped` fires repeatedly for the same source path, that's the s
 
 - `Read`, `Glob`, `Grep` - for file exploration (changed-file detection, domain map loading, spec filesystem expansion)
 - `Bash` - for `npm`, `npx`, and `git` commands only
-- `Task` - for delegating to the `test-builder` agent in audit / write / Smart Run Step 5 modes
+- `Task` - for delegating to the `test-builder` agent in audit / write / Smart Run Step 5 modes (small-change default)
+- `Workflow` - for the Heavy Path fan-out on sprawling changes (parallel per-tier auditors + adversarial gap verification + serial write). Orchestrate only in-session - **never** `claude -p` or any headless `claude` shell invocation.

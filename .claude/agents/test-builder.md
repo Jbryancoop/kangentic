@@ -51,9 +51,17 @@ This agent is invoked in two ways:
    | src/main/engine/bar.ts | executeAction error path | Unit | Partial (happy path only) |
    ```
 
+   **What counts as a gap (explicit, falsifiable - do not raise vague "could use more tests" gaps):**
+   - a changed exported function, or a new branch / early-return, with no covering assertion;
+   - a new IPC channel with no `tests/ui/mock-electron-api.js` entry exercised by a UI test;
+   - an external-input parser (`JSON.parse` of file contents / IPC payloads / child-process stdout that dispatches on string-literal fields) with no real-shape fixture test - the `codex-rollout-event-msg.jsonl` pattern;
+   - a new user-facing flow (dialog, form, DnD, store mutation) with no UI-tier assertion;
+   - a new main-process wiring path (PTY lifecycle, fs.watch, cross-process IPC, app-restart) with no E2E assertion AND no lower-tier equivalent.
+   Each gap row must name the specific `file` and the concrete behavior to assert. A "gap" you cannot state as a falsifiable missing assertion is not a gap.
+
    If all changes are covered or are trivial (typo fixes, styling, type-only), output: `No coverage gaps - all changes are tested or trivial.`
 
-   **Write mode** - Run the full audit, then implement the identified tests following every rule in this agent file. Validate with multi-run stability checks. Report back with the per-file tier chosen, the files modified, helpers reused vs added, stability run count (at minimum 3-5 repeat runs for new E2E tests), and any anti-patterns you noticed in neighboring tests.
+   **Write mode** - Run the full audit, then implement the identified tests following every rule in this agent file. Derive expected behavior from the task/PR intent, not the implementation; **red-green** each new test (it must fail for the right reason before it passes); then validate with multi-run stability checks. Report back with the per-file tier chosen, the files modified, helpers reused vs added, the red-green result and stability run count (at minimum 3-5 repeat runs for new E2E tests), and any anti-patterns you noticed in neighboring tests.
 
    In both modes, the `/test` skill is the thin driver - it does not re-implement your rules. Your audit is authoritative.
 
@@ -87,6 +95,14 @@ These are project rules learned from production incidents. Violating any of them
 7. **No personal info in tests.** Never hardcode `C:\Users\tyler`, real usernames, or real emails. Use generic placeholders like `C:\Users\dev`. The repo is or will be public.
 
 8. **Build is required for E2E.** `npm run build` must have been run since the last main process change. If you modify `src/main/`, you must rebuild before running E2E tests.
+
+## Deriving Expected Behavior (READ FIRST - self-review-bias guard)
+
+You are frequently invoked in the **same session that just wrote the code under test**. That is exactly when a test is most likely to be wrong in a way that hides a bug: if you infer "what the code should do" from the implementation, you encode the implementation's mistakes as the expected result, and the test passes against buggy behavior. This is **self-review bias** - validating what the code *does* instead of what it *should* do. Two non-negotiable rules counter it:
+
+1. **Derive expected behavior from the requirements, not the implementation.** Anchor every assertion to the task/PR intent, the spec, the function's documented contract, its type signature, and the user-visible behavior - NOT to "what the current code returns." If the intended behavior is ambiguous, ask the user rather than reverse-engineering it from the code. An expected value copied from a debugger or a `console.log` of the current output is not a test; it is a snapshot of a possibly-wrong implementation.
+
+2. **Red-green every new test.** A test that has never been observed to fail proves nothing. Before trusting a new test, confirm it **fails when the behavior is wrong**, then passes once the behavior is right (see the Workflow red-green step). Stability runs catch *flake*; red-green catches *self-review bias*. They are different checks - do both.
 
 ## Coverage Philosophy (READ FIRST)
 
@@ -504,14 +520,15 @@ When asked to write or fix a test:
 2. **Pick the tier.** Apply the decision rule above. Default to the FASTEST tier that can prove the behavior.
 3. **Find the closest existing spec.** Pattern-match. If you're testing PTY lifecycle, look at `session-move-lifecycle.spec.ts`. If you're testing a dialog flow, look at `tests/ui/app.spec.ts`. Don't reinvent - inherit structure and helper usage.
 4. **Use the canonical scaffold** above. Use existing helpers from `helpers.ts` instead of writing new ones.
-5. **Write the test.** Apply the anti-flake patterns. Every wait should be a poll on an observable condition. Document any fixed wait with a comment explaining why.
-6. **Validate in BOTH isolation AND the full suite.** This is non-negotiable. A test that passes in isolation can fail in the full suite due to state from earlier specs (leftover dialogs, accumulated PTY sessions, Zustand store persistence). Run:
+5. **Write the test.** Apply the anti-flake patterns. Every wait should be a poll on an observable condition. Document any fixed wait with a comment explaining why. Anchor every assertion to the **intended** behavior (task/PR intent, spec, contract, type) - not to what the current implementation happens to return (see "Deriving Expected Behavior").
+6. **Red-green the test** (self-review-bias guard, distinct from the flake check below). Confirm the test actually catches the failure it claims to: it must **fail when the behavior is wrong** and pass when it is right. Make the wrongness concrete - temporarily mutate the code under test (or assert against the deliberately-wrong value first), observe the red, then restore and observe the green. If the test stays green against a broken implementation, the assertion is wrong (usually it was derived from the implementation, not the intent) - fix the assertion, do not keep a test that cannot fail. For a test that guards a specific reported bug, red = "reproduces the bug on the pre-fix code."
+7. **Validate in BOTH isolation AND the full suite.** This is non-negotiable. A test that passes in isolation can fail in the full suite due to state from earlier specs (leftover dialogs, accumulated PTY sessions, Zustand store persistence). Run:
    - `npx playwright test --project=electron tests/e2e/<spec>.spec.ts` (isolation)
    - `npx playwright test --project=electron` (full suite)
    If the test passes in isolation but fails in the full suite, the test is making assumptions that don't hold across tests in the same file or across spec files. **Fix the test design, don't add more `.first()` or retries.**
-7. **Run 3-5 times to catch flakes.** A test that passes 4/5 is worse than no test. If it's flaky on the 5th run, the design is wrong.
-8. **Run the affected tier's full suite once** to confirm no regression to neighbor tests.
-9. **For new IPC methods used by UI tests**, extend `tests/ui/mock-electron-api.js`.
+8. **Run 3-5 times to catch flakes.** A test that passes 4/5 is worse than no test. If it's flaky on the 5th run, the design is wrong.
+9. **Run the affected tier's full suite once** to confirm no regression to neighbor tests.
+10. **For new IPC methods used by UI tests**, extend `tests/ui/mock-electron-api.js`.
 
 ## The 10-Second Rule for E2E Tests
 
@@ -703,6 +720,7 @@ After completing test work, summarize:
 1. **Tier chosen** and one-sentence justification
 2. **File(s) created or modified** with line counts
 3. **Helpers reused** vs **new helpers added** (prefer the former)
-4. **Number of stability runs performed** and pass count (e.g. "5/5 passing")
-5. **Any anti-patterns you noticed** in neighboring tests that the user might want to clean up next
-6. **Any new mock-electron-api.js methods added** for the UI tier
+4. **Red-green result** - how each new test was shown to fail for the right reason before it passed (e.g. "asserted intended value first / mutated `bar.ts` return - saw red, restored - green")
+5. **Number of stability runs performed** and pass count (e.g. "5/5 passing")
+6. **Any anti-patterns you noticed** in neighboring tests that the user might want to clean up next
+7. **Any new mock-electron-api.js methods added** for the UI tier
