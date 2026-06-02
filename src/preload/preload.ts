@@ -59,6 +59,7 @@ const api: ElectronAPI = {
     bulkUnarchive: (ids, targetSwimlaneId) => ipcRenderer.invoke(IPC.TASK_BULK_UNARCHIVE, ids, targetSwimlaneId),
     switchBranch: (input) => ipcRenderer.invoke(IPC.TASK_SWITCH_BRANCH, input),
     setRuntimeOverride: (input) => ipcRenderer.invoke(IPC.TASK_SET_RUNTIME_OVERRIDE, input),
+    resolvePr: (taskId) => ipcRenderer.invoke(IPC.TASK_RESOLVE_PR, taskId),
     onAutoMoved: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, taskId: string, targetSwimlaneId: string, taskTitle: string, projectId?: string) =>
         callback(taskId, targetSwimlaneId, taskTitle, projectId);

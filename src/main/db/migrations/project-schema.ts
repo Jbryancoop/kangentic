@@ -31,6 +31,8 @@ export function runProjectMigrations(db: Database.Database): void {
       branch_name TEXT,
       pr_number INTEGER,
       pr_url TEXT,
+      pr_state TEXT,
+      head_sha TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -122,6 +124,23 @@ export function runProjectMigrations(db: Database.Database): void {
     .some((col) => col.name === 'base_branch');
   if (!hasBaseBranchColumn) {
     db.exec('ALTER TABLE tasks ADD COLUMN base_branch TEXT DEFAULT NULL');
+  }
+
+  // Migration: add 'pr_state' column so the authoritative branch->PR resolver can
+  // persist open/draft/merged/closed and re-resolution can reflect state changes.
+  const hasPrStateColumn = (db.pragma('table_info(tasks)') as Array<{ name: string }>)
+    .some((col) => col.name === 'pr_state');
+  if (!hasPrStateColumn) {
+    db.exec('ALTER TABLE tasks ADD COLUMN pr_state TEXT DEFAULT NULL');
+  }
+
+  // Migration: add 'head_sha' column - the captured worktree HEAD commit, an
+  // immutable anchor that lets PR resolution survive worktree deletion (Done) and
+  // branch renames (resolve by commit when branch/number are unavailable).
+  const hasHeadShaColumn = (db.pragma('table_info(tasks)') as Array<{ name: string }>)
+    .some((col) => col.name === 'head_sha');
+  if (!hasHeadShaColumn) {
+    db.exec('ALTER TABLE tasks ADD COLUMN head_sha TEXT DEFAULT NULL');
   }
 
   // Migration: add 'use_worktree' column for per-task worktree override

@@ -5,13 +5,13 @@ import { SessionRepository } from '../../db/repositories/session-repository';
 import { UsageHistoryRepository } from '../../db/repositories/usage-history-repository';
 import { TaskRepository } from '../../db/repositories/task-repository';
 import { getProjectDb } from '../../db/database';
-import { getProjectRepos, ensureTaskWorktree, createTransitionEngine, resolveSpawnOverrides } from '../helpers';
+import { getProjectRepos, ensureTaskWorktree, createTransitionEngine, resolveSpawnOverrides, resolveAndLinkPR, maybeResolvePRAfterMove } from '../helpers';
 import { handleTaskMove } from './task-move';
 import { trackEvent } from '../../analytics/analytics';
 import { captureSessionMetrics } from './session-metrics';
 import { markRecordExited, promoteRecord, recoverStaleSessionId } from '../../engine/session-lifecycle';
 import { applySuspendDbWrites, reconcileTaskSessionRef } from './session-reconcile';
-import type { Session, UsageTimePeriod } from '../../../shared/types';
+import type { Session, UsageTimePeriod, TaskResolvePrResult } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 import { isAbortError } from '../../../shared/abort-utils';
 import { computePeriodCutoff } from '../../../shared/period-cutoff';
@@ -550,26 +550,28 @@ export function registerSessionHandlers(context: IpcContext): void {
     }
   });
 
-  // Auto-link PR URL when agent runs a gh pr command
-  context.sessionManager.on('pr-detected', (sessionId: string, prUrl: string, prNumber: number) => {
-    const resolvedProjectId = context.sessionManager.getSessionProjectId(sessionId);
-    if (!resolvedProjectId) return;
-    try {
-      const { tasks } = getProjectRepos(context, resolvedProjectId);
-      const task = tasks.getBySessionId(sessionId);
-      if (!task) return;
+  // Auto-link PR when an agent's `gh pr ...` command finishes (or on session
+  // exit if its ToolEnd was lost). The candidate is just the hint; the
+  // authoritative branch->PR query runs in resolveAndLinkPR, with the scrollback
+  // passed through only as the gh-unavailable degradation fallback.
+  context.sessionManager.on('pr-candidate', (sessionId: string, scrollback: string) => {
+    void resolveAndLinkPR(context, { sessionId, scrollback }).catch((error) => {
+      console.error(`[pr-candidate] Failed to resolve PR for session ${sessionId}:`, error);
+    });
+  });
 
-      // Update the task with the detected PR info
-      tasks.update({ id: task.id, pr_url: prUrl, pr_number: prNumber });
-      console.log(`[pr-detected] Linked PR #${prNumber} to "${task.title}": ${prUrl}`);
-
-      // Notify renderer so the board refreshes with the PR badge/pill
-      if (!context.mainWindow.isDestroyed()) {
-        context.mainWindow.webContents.send(IPC.TASK_UPDATED_BY_AGENT, task.id, task.title, resolvedProjectId);
-      }
-    } catch (error) {
-      console.error(`[pr-detected] Failed to link PR for session ${sessionId}:`, error);
-    }
+  // Manual "Link / refresh PR" - on-demand authoritative resolve for a task.
+  // Works with no live session (maps by task id, resolves via the confidence ladder).
+  ipcMain.handle(IPC.TASK_RESOLVE_PR, async (_, taskId: string): Promise<TaskResolvePrResult> => {
+    const projectId = context.currentProjectId;
+    if (!projectId) return { task: null, linked: false, reason: 'no-anchor' };
+    const result = await resolveAndLinkPR(context, { projectId, taskId, force: true });
+    return {
+      task: result.task,
+      linked: result.status === 'linked' || result.status === 'unchanged',
+      reason: result.status,
+      message: result.message,
+    };
   });
 
   // Auto-move task when agent exits plan mode (ExitPlanMode tool)
@@ -601,6 +603,8 @@ export function registerSessionHandlers(context: IpcContext): void {
         context.mainWindow.webContents.send(IPC.TASK_AUTO_MOVED, task.id, target.id, task.title, resolvedProjectId);
       }
       console.log(`[plan-exit] Auto-moved "${task.title}" -> "${target.name}"`);
+      // Resolve the PR for the new (non-To Do) lane - runs after the move's lock released.
+      maybeResolvePRAfterMove(context, task.id, resolvedProjectId);
     } catch (err) {
       console.error('[plan-exit] Auto-move failed:', err);
     }

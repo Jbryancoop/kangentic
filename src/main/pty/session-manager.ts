@@ -17,7 +17,6 @@ import { FirstOutputTracker } from './lifecycle/first-output-tracker';
 import { disposeAdapterAttachment, removeAdapterHooks } from './lifecycle/adapter-lifecycle';
 import { safeKillPty } from './lifecycle/pty-kill';
 import { performSpawn } from './lifecycle/session-spawn-flow';
-import { detectPR } from './pr/pr-connectors';
 import { SessionRegistry, toSession, filterCacheByProject, type ManagedSession } from './session-registry';
 import { createWriteQueue, type WriteQueue } from './write-queue';
 import { isShuttingDown } from '../shutdown-state';
@@ -135,11 +134,12 @@ export class SessionManager extends EventEmitter {
       },
       onPlanExit: (sessionId) => this.emit('plan-exit', sessionId),
       onPRCandidate: (sessionId) => {
+        // A `gh pr ...` Bash command finished - this is just the hint that NOW is
+        // a good time to resolve. The authoritative branch->PR query happens in
+        // the IPC listener; forward the raw scrollback so it can degrade to
+        // scraping if gh is unavailable.
         const scrollback = this.bufferManager.getRawScrollback(sessionId);
-        const detected = detectPR(scrollback);
-        if (detected) {
-          this.emit('pr-detected', sessionId, detected.url, detected.number);
-        }
+        this.emit('pr-candidate', sessionId, scrollback);
       },
       onAgentSessionId: (sessionId, agentReportedId) => {
         // Agent session ID capture covers two cases:

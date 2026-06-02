@@ -3,18 +3,20 @@ import type { SessionEvent } from '../../../shared/types';
 import { matchesPRCommand } from '../pr/pr-connectors';
 
 /**
- * Detects `gh pr ...` (and equivalent) commands so the orchestrator can
- * scan PTY scrollback for the printed PR URL on the matching ToolEnd.
+ * Detects `gh pr ...` (and equivalent) commands so the orchestrator knows when
+ * to resolve the task's PR. This is only the *hint* that a PR operation just
+ * finished; the matching ToolEnd fires a `pr-candidate` event whose listener
+ * runs the authoritative branch->PR query.
  *
  * State: per-session "pending" flag, set when a Bash ToolStart matches
  * a PR-creating command, cleared when the matching Bash ToolEnd arrives
- * (and a `pr-detected` callback fires for that session).
+ * (and a `pr-candidate` event fires for that session).
  *
  * Why this is its own module:
  *   - The flag was previously stored on the activity engine, but it
  *     has nothing to do with activity transitions - the engine should
  *     not know about PR sniffing.
- *   - A fallback PR scan also runs on session exit when ToolEnd was
+ *   - A fallback PR resolve also runs on session exit when ToolEnd was
  *     dropped (event-bridge crash, hook never fired). That path needs
  *     to read and clear the flag from outside the event-ingest loop.
  */
@@ -24,8 +26,8 @@ export class PRCommandDetector {
   /**
    * Inspect one event. On Bash ToolStart with a PR command, mark the
    * session as pending. On Bash ToolEnd while pending, clear the flag
-   * and return `true` so the caller can fire its `pr-detected`
-   * callback (which scans scrollback for the printed URL).
+   * and return `{ fireCandidate: true }` so the caller can fire its
+   * `pr-candidate` event (which runs the authoritative branch->PR query).
    */
   detect(sessionId: string, event: SessionEvent): { fireCandidate: boolean } {
     if (event.type === EventType.ToolStart

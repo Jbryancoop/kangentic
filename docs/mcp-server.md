@@ -26,7 +26,7 @@ Claude Code agent calls MCP tool (e.g. kangentic_create_task)
 | Component | File | Purpose |
 |-----------|------|---------|
 | MCP HTTP Server | `src/main/agent/mcp-http-server.ts` | In-process Node `http` server using `@modelcontextprotocol/sdk` Streamable HTTP transport. Binds 127.0.0.1, random `:0` port, random per-launch token validated via `X-Kangentic-Token`. |
-| Task Tools | `src/main/agent/mcp-http/task-tools.ts` | Board/task/column mutations + related reads (`kangentic_create_task`, `kangentic_move_task`, `kangentic_update_task`, `kangentic_update_column`, `kangentic_delete_task`, `kangentic_list_columns`, `kangentic_find_task`, `kangentic_get_current_task`, etc.). |
+| Task Tools | `src/main/agent/mcp-http/task-tools.ts` | Board/task/column mutations + related reads (`kangentic_create_task`, `kangentic_move_task`, `kangentic_update_task`, `kangentic_link_pr`, `kangentic_update_column`, `kangentic_delete_task`, `kangentic_list_columns`, `kangentic_find_task`, `kangentic_get_current_task`, etc.). |
 | Session Tools | `src/main/agent/mcp-http/session-tools.ts` | Session inspection, backlog, read-only SQL (`kangentic_list_sessions`, `kangentic_get_transcript`, `kangentic_query_db`, `kangentic_list_backlog`, etc.). |
 | Project Tools | `src/main/agent/mcp-http/project-tools.ts` | Multi-project discovery (`kangentic_list_projects`). |
 | Search Tools | `src/main/agent/mcp-http/search-tools.ts` | Unified board+backlog search and cross-project search (`kangentic_search_tasks`, `kangentic_search_everything`). |
@@ -202,6 +202,17 @@ Update a task's title, description, PR info, agent assignment, priority, labels,
 | `useWorktree` | boolean | No | Whether the task uses an isolated git worktree |
 
 At least one updatable field is required.
+
+### kangentic_link_pr
+
+Authoritatively resolve and link the pull request for a task's git branch using the `gh` CLI (`gh pr list --head <branch>`, plus by-number and by-commit fallbacks). Unlike the terminal-scraping auto-linker, this finds PRs opened by a human, the web UI, `git push`, scripts, or `gh api`, and works even when the task has no live session. Re-running refreshes the linked PR's state (`open`/`draft`/`merged`/`closed`). Use after opening a PR, or to backfill a task whose PR was never linked.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `taskId` | string | Yes | Task ID (numeric display ID or full UUID) |
+| `project` | string | No | Project selector to target a different project |
+
+Returns the linked PR (number, url, state) on success, or a message when no PR is found or the `gh` CLI is unavailable.
 
 ### kangentic_move_task
 

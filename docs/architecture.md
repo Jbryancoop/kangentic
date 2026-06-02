@@ -54,7 +54,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `projectGroup:reorder` | invoke | Reorder groups by ID array |
 | `projectGroup:setCollapsed` | invoke | Toggle group collapsed state |
 
-### Tasks (18 channels)
+### Tasks (19 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `task:list` | invoke | Fetch tasks, optionally by swimlane |
@@ -69,6 +69,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `task:bulk-unarchive` | invoke | Restore multiple archived tasks to a target swimlane |
 | `task:switchBranch` | invoke | Switch base branch or enable worktree for a task |
 | `task:setRuntimeOverride` | invoke | Set per-task model/effort override; applies live via slash injection, suspend+respawn, or persisted-only depending on session state and adapter capability |
+| `task:resolvePr` | invoke | Authoritatively resolve and link the PR for a task's branch via the gh CLI; refreshes `pr_state`, `pr_url`, `pr_number` |
 | `task:autoMoved` | on | Event: task was auto-moved by transition engine |
 | `task:createdByAgent` | on | Event: task was created by an agent via MCP tool call |
 | `task:updatedByAgent` | on | Event: task was updated by an agent via MCP tool call |
@@ -340,7 +341,7 @@ Stores the project list. Tables:
 Created on project open. Stored in the global config directory (not inside the project). Tables:
 
 - **swimlanes** -- Kanban columns. Fields: id, name, role (`todo`/`done`/null), position, color, icon, is_archived, permission_mode, auto_spawn, auto_command, agent_override, model_override, effort_override, handoff_context, plan_exit_target_id, is_ghost, created_at
-- **tasks** -- Kanban cards. Fields: id, display_id, title, description, swimlane_id, position, agent, agent_override, model_override, effort_override, session_id, worktree_path, branch_name, pr_number, pr_url, base_branch, use_worktree, labels, priority, archived_at, created_at, updated_at
+- **tasks** -- Kanban cards. Fields: id, display_id, title, description, swimlane_id, position, agent, agent_override, model_override, effort_override, session_id, worktree_path, branch_name, pr_number, pr_url, pr_state, head_sha, base_branch, use_worktree, labels, priority, archived_at, created_at, updated_at
 - **actions** -- Executable steps. Types: `spawn_agent`, `send_command`, `run_script`, `kill_session`, `create_worktree`, `cleanup_worktree`, `create_pr`, `webhook`. Config stored as JSON.
 - **swimlane_transitions** -- Maps lane pairs to action chains. Fields: from_swimlane_id (`*` = any), to_swimlane_id, action_id, execution_order
 - **sessions** -- Session persistence for recovery/resume. Fields: id, task_id, session_type, agent_session_id, command, cwd, permission_mode, prompt, status (`running`/`queued`/`suspended`/`exited`/`orphaned`), exit_code, timestamps

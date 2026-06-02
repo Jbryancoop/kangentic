@@ -1,7 +1,7 @@
 export type { CommandContext, CommandResponse, CommandHandler } from './types';
 export { resolveColumn, listActiveSwimlanes } from './column-resolver';
 
-import { handleCreateTask, handleUpdateTask, handleDeleteTask, handleMoveTask } from './task-commands';
+import { handleCreateTask, handleUpdateTask, handleDeleteTask, handleMoveTask, handleLinkPr } from './task-commands';
 import { handleUpdateColumn } from './column-commands';
 import { handleListColumns, handleListTasks } from './inventory-commands';
 import { handleSearchTasks, handleFindTask, handleGetCurrentTask } from './search-commands';
@@ -22,6 +22,7 @@ export const commandHandlers: Record<string, CommandHandler> = {
   update_task: handleUpdateTask,
   delete_task: handleDeleteTask,
   move_task: handleMoveTask,
+  link_pr: handleLinkPr,
   update_column: handleUpdateColumn,
   list_columns: handleListColumns,
   list_tasks: handleListTasks,

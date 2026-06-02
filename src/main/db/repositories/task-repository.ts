@@ -59,6 +59,20 @@ export class TaskRepository {
     return row ? rowToTask(row) : undefined;
   }
 
+  /**
+   * Find the active (non-archived) task owning a git branch. Used by PR linking
+   * to map a branch->PR result back to a task without a live session. Branch
+   * names are effectively unique per task; picks the most recently updated to be
+   * safe if duplicates ever exist.
+   */
+  getByBranchName(branchName: string): Task | undefined {
+    const row = this.db.prepare(`${TaskRepository.SELECT_WITH_COUNT}
+      WHERE t.branch_name = ? AND t.archived_at IS NULL
+      ORDER BY t.updated_at DESC
+      LIMIT 1`).get(branchName) as TaskRow | undefined;
+    return row ? rowToTask(row) : undefined;
+  }
+
   create(input: TaskCreateInput): Task {
     const now = new Date().toISOString();
     const id = uuidv4();
@@ -86,6 +100,8 @@ export class TaskRepository {
       branch_name: input.customBranchName?.trim() || null,
       pr_number: null,
       pr_url: null,
+      pr_state: null,
+      head_sha: null,
       external_id: input.externalId ?? null,
       external_source: input.externalSource ?? null,
       external_url: input.externalUrl ?? null,
@@ -103,9 +119,9 @@ export class TaskRepository {
     };
 
     this.db.prepare(`
-      INSERT INTO tasks (id, display_id, title, description, swimlane_id, position, agent, session_id, worktree_path, branch_name, pr_number, pr_url, external_id, external_source, external_url, base_branch, use_worktree, labels, priority, model_override, effort_override, agent_override, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(task.id, task.display_id, task.title, task.description, task.swimlane_id, task.position, task.agent, task.session_id, task.worktree_path, task.branch_name, task.pr_number, task.pr_url, task.external_id, task.external_source, task.external_url, task.base_branch, task.use_worktree, JSON.stringify(labels), task.priority, task.model_override, task.effort_override, task.agent_override, task.created_at, task.updated_at);
+      INSERT INTO tasks (id, display_id, title, description, swimlane_id, position, agent, session_id, worktree_path, branch_name, pr_number, pr_url, pr_state, head_sha, external_id, external_source, external_url, base_branch, use_worktree, labels, priority, model_override, effort_override, agent_override, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(task.id, task.display_id, task.title, task.description, task.swimlane_id, task.position, task.agent, task.session_id, task.worktree_path, task.branch_name, task.pr_number, task.pr_url, task.pr_state, task.head_sha, task.external_id, task.external_source, task.external_url, task.base_branch, task.use_worktree, JSON.stringify(labels), task.priority, task.model_override, task.effort_override, task.agent_override, task.created_at, task.updated_at);
 
     return task;
   }
@@ -121,9 +137,9 @@ export class TaskRepository {
     };
 
     this.db.prepare(`
-      UPDATE tasks SET title = ?, description = ?, swimlane_id = ?, position = ?, agent = ?, session_id = ?, worktree_path = ?, branch_name = ?, pr_number = ?, pr_url = ?, base_branch = ?, use_worktree = ?, labels = ?, priority = ?, model_override = ?, effort_override = ?, agent_override = ?, updated_at = ?
+      UPDATE tasks SET title = ?, description = ?, swimlane_id = ?, position = ?, agent = ?, session_id = ?, worktree_path = ?, branch_name = ?, pr_number = ?, pr_url = ?, pr_state = ?, head_sha = ?, base_branch = ?, use_worktree = ?, labels = ?, priority = ?, model_override = ?, effort_override = ?, agent_override = ?, updated_at = ?
       WHERE id = ?
-    `).run(updated.title, updated.description, updated.swimlane_id, updated.position, updated.agent, updated.session_id, updated.worktree_path, updated.branch_name, updated.pr_number, updated.pr_url, updated.base_branch, updated.use_worktree, JSON.stringify(updated.labels), updated.priority, updated.model_override, updated.effort_override, updated.agent_override, updated.updated_at, updated.id);
+    `).run(updated.title, updated.description, updated.swimlane_id, updated.position, updated.agent, updated.session_id, updated.worktree_path, updated.branch_name, updated.pr_number, updated.pr_url, updated.pr_state, updated.head_sha, updated.base_branch, updated.use_worktree, JSON.stringify(updated.labels), updated.priority, updated.model_override, updated.effort_override, updated.agent_override, updated.updated_at, updated.id);
 
     return updated;
   }

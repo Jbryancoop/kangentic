@@ -5,6 +5,7 @@ import { readFileAsAttachment } from '../../db/repositories/attachment-utils';
 import { resolveColumn } from './column-resolver';
 import { resolveTask } from './task-resolver';
 import { handleCreateBacklogTask } from './backlog-commands';
+import { resolveAndLinkPRForTask } from '../../ipc/helpers/pr-linking';
 import type { CommandContext, CommandHandler, CommandResponse } from './types';
 import type { TaskUpdateInput } from '../../../shared/types';
 
@@ -170,6 +171,76 @@ export const handleUpdateTask: CommandHandler = (
       useWorktree: updated.use_worktree,
     },
   };
+};
+
+/**
+ * Authoritatively resolve and link the PR for a task via the confidence ladder
+ * (PR number -> worktree branch -> commit SHA -> stored slug). Works without a
+ * live session, picks up human/web-UI-created PRs the scraper misses, and
+ * refreshes the linked PR's state (open/draft/merged/closed) on re-run.
+ */
+export const handleLinkPr: CommandHandler = async (
+  params: Record<string, unknown>,
+  context: CommandContext,
+): Promise<CommandResponse> => {
+  const taskId = params.taskId as string;
+  if (!taskId) {
+    return { success: false, error: 'taskId is required' };
+  }
+
+  const db = context.getProjectDb();
+  const taskRepo = new TaskRepository(db);
+  const task = resolveTask(taskRepo, taskId);
+  if (!task) {
+    return { success: false, error: `Task "${taskId}" not found` };
+  }
+
+  let result;
+  try {
+    result = await resolveAndLinkPRForTask(task.id, {
+      tasks: taskRepo,
+      projectPath: context.getProjectPath(),
+      force: true,
+      onLinked: (linked) => context.onTaskUpdated(linked),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: `PR resolution failed: ${message}` };
+  }
+
+  const linkedTask = result.task;
+  switch (result.status) {
+    case 'linked':
+    case 'unchanged':
+      return {
+        success: true,
+        message: `PR #${linkedTask?.pr_number} (${linkedTask?.pr_state ?? 'open'}) linked to "${task.title}".`,
+        data: {
+          id: linkedTask?.id,
+          displayId: linkedTask?.display_id,
+          prUrl: linkedTask?.pr_url,
+          prNumber: linkedTask?.pr_number,
+          prState: linkedTask?.pr_state,
+        },
+      };
+    case 'resolver-unavailable':
+      return { success: false, error: result.message ?? 'GitHub CLI not available. Install gh and run: gh auth login' };
+    case 'transient-error':
+      return { success: false, error: result.message ?? 'Temporary GitHub error while resolving the PR - try again.' };
+    case 'no-anchor':
+      return {
+        success: true,
+        message: `"${task.title}" has no branch, worktree, or PR number to resolve a PR from.`,
+        data: { id: task.id, linked: false },
+      };
+    case 'not-found':
+    default:
+      return {
+        success: true,
+        message: `No PR found for "${task.title}".`,
+        data: { id: task.id, linked: false },
+      };
+  }
 };
 
 export const handleMoveTask: CommandHandler = (

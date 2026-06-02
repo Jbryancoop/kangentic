@@ -18,7 +18,6 @@ import { attachAdapter, disposeAdapterAttachment, removeAdapterHooks } from './a
 import { safeKillPty } from './pty-kill';
 import { resolveShellArgs, buildSpawnEnv, resolveSpawnCwd } from '../spawn/pty-spawn';
 import { handleSpawnFailure } from '../spawn/spawn-failure-handler';
-import { detectPR } from '../pr/pr-connectors';
 import { isShuttingDown } from '../../shutdown-state';
 import { adaptCommandForShell } from '../../../shared/paths';
 
@@ -379,16 +378,15 @@ export async function performSpawn(
     // SessionFileManager.detachOnPtyExit.
     context.sessionFiles.detachOnPtyExit(id);
 
-    // Fallback PR scan: if a PR command was flagged (ToolStart seen) but
-    // ToolEnd was never processed (event lost or never written), scan the
-    // scrollback now as a last resort before the session is fully closed.
+    // Fallback PR resolution: if a PR command was flagged (ToolStart seen) but
+    // ToolEnd was never processed (event lost or never written), fire the
+    // candidate now as a last resort before the session is fully closed. The
+    // IPC listener runs the authoritative branch->PR query (with the scrollback
+    // as a degradation fallback).
     if (context.telemetry.hasPendingPRCommand(id)) {
       context.telemetry.clearPendingPRCommand(id);
       const scrollback = context.bufferManager.getRawScrollback(id);
-      const detected = detectPR(scrollback);
-      if (detected) {
-        context.emit('pr-detected', id, detected.url, detected.number);
-      }
+      context.emit('pr-candidate', id, scrollback);
     }
 
     // Dev-only: stop trace recording for this session. Files persist

@@ -49,6 +49,114 @@ interface GitHubProjectItemRaw {
 
 const COMMAND_TIMEOUT = 15_000;
 
+/**
+ * Raw PR shape from `gh pr list --json number,url,state,isDraft,headRefName,baseRefName,updatedAt,isCrossRepository`.
+ * `state` is GitHub's uppercase enum: OPEN | CLOSED | MERGED. `isCrossRepository`
+ * is true for PRs opened from a fork - the disambiguator filters those out so a
+ * fork PR that happens to share a branch name can't be mislinked.
+ */
+export interface GhPrListItem {
+  number: number;
+  url: string;
+  state: 'OPEN' | 'CLOSED' | 'MERGED';
+  isDraft: boolean;
+  headRefName: string;
+  baseRefName: string;
+  updatedAt: string;
+  isCrossRepository?: boolean;
+}
+
+/** JSON field set requested from `gh pr list` / `gh pr view`. */
+const PR_JSON_FIELDS = 'number,url,state,isDraft,headRefName,baseRefName,updatedAt,isCrossRepository';
+
+/**
+ * Thrown by resolver paths when the `gh` CLI is missing or unauthenticated, so
+ * callers can degrade to the scrollback scraper instead of treating it as a
+ * "no PR found" result.
+ */
+export class GhUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GhUnavailableError';
+  }
+}
+
+/**
+ * Thrown when a gh call fails transiently (network error, GitHub 5xx, rate-limit
+ * 403/429, or a timeout) rather than because there is genuinely no PR. Callers
+ * must NOT treat this as "not found" or overwrite an existing link - the truth is
+ * "couldn't check", so the prior link is preserved.
+ */
+export class GhTransientError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GhTransientError';
+  }
+}
+
+/**
+ * Classify a failed gh invocation. Inspects message + stderr + node error fields:
+ *   - 'unavailable': gh missing / unauthenticated -> degrade to scraper.
+ *   - 'transient': network / 5xx / rate-limit / timeout -> preserve, don't report not-found.
+ *   - 'not-found': gh ran cleanly but matched nothing (or not a GitHub repo).
+ */
+function classifyGhError(error: unknown): 'unavailable' | 'transient' | 'not-found' {
+  const err = error as { message?: string; stderr?: string; code?: string; killed?: boolean };
+  const text = `${err.message ?? ''}\n${err.stderr ?? ''}`;
+  // execFile kills on timeout (killed=true / ETIMEDOUT) -> transient.
+  if (err.killed || err.code === 'ETIMEDOUT') return 'transient';
+  if (/HTTP 401|not logged|auth|login/i.test(text)) return 'unavailable';
+  if (/HTTP 4(03|29)|HTTP 5\d\d|rate limit|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|timed? ?out|network|temporar/i.test(text)) {
+    return 'transient';
+  }
+  return 'not-found';
+}
+
+/** Map a classified gh error to the throw the resolver paths use (null = swallow as not-found). */
+function ghErrorToThrow(error: unknown): GhUnavailableError | GhTransientError | null {
+  const message = error instanceof Error ? error.message : String(error);
+  switch (classifyGhError(error)) {
+    case 'unavailable':
+      return new GhUnavailableError(`gh CLI not authenticated. Run: gh auth login\n${message}`);
+    case 'transient':
+      return new GhTransientError(`Temporary GitHub/gh error - try again.\n${message}`);
+    default:
+      return null;
+  }
+}
+
+/** Raw PR shape from the REST endpoint `repos/{owner}/{repo}/commits/{sha}/pulls`. */
+interface GhCommitPullRaw {
+  number: number;
+  html_url: string;
+  state: string;          // 'open' | 'closed' (REST does not surface 'merged' here)
+  draft?: boolean;
+  merged_at?: string | null;
+  head?: { ref?: string; repo?: { full_name?: string } | null };
+  base?: { ref?: string; repo?: { full_name?: string } | null };
+  updated_at?: string;
+}
+
+/** Normalize a REST commit-pull object into the camelCase GhPrListItem shape. */
+function normalizeCommitPull(raw: GhCommitPullRaw): GhPrListItem {
+  const state: GhPrListItem['state'] = raw.merged_at ? 'MERGED' : (raw.state === 'closed' ? 'CLOSED' : 'OPEN');
+  // A fork PR has a head repo distinct from the base repo (or a null head repo
+  // when the fork was deleted). Same-repo PRs share the full_name.
+  const headRepo = raw.head?.repo?.full_name ?? null;
+  const baseRepo = raw.base?.repo?.full_name ?? null;
+  const isCrossRepository = headRepo == null || (baseRepo != null && headRepo !== baseRepo);
+  return {
+    number: raw.number,
+    url: raw.html_url,
+    state,
+    isDraft: raw.draft ?? false,
+    headRefName: raw.head?.ref ?? '',
+    baseRefName: raw.base?.ref ?? '',
+    updatedAt: raw.updated_at ?? '',
+    isCrossRepository,
+  };
+}
+
 export class GitHubImporter {
   private ghPath: string | null = null;
   private detectPromise: Promise<string | null> | null = null;
@@ -88,6 +196,99 @@ export class GitHubImporter {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       return { authenticated: false, error: `gh CLI not authenticated. Run: gh auth login\n${message}` };
+    }
+  }
+
+  /**
+   * Resolve open/closed/merged PRs whose head ref matches `branchName`, run from
+   * inside the repo/worktree at `cwd` so `gh` auto-detects the owner/repo.
+   *
+   * Returns the raw list (caller disambiguates). Throws GhUnavailableError when
+   * gh is missing/unauthenticated; returns [] when the query runs but finds no PR.
+   */
+  async resolvePRByBranch(cwd: string, branchName: string): Promise<GhPrListItem[]> {
+    const ghPath = await this.detect();
+    if (!ghPath) {
+      throw new GhUnavailableError('gh CLI not found. Install it from https://cli.github.com');
+    }
+    try {
+      const { stdout } = await execFileAsync(
+        ghPath,
+        [
+          'pr', 'list',
+          '--head', branchName,
+          '--state', 'all',
+          '--json', PR_JSON_FIELDS,
+          '--limit', '30',
+        ],
+        { cwd, timeout: COMMAND_TIMEOUT },
+      );
+      const parsed = JSON.parse(stdout) as GhPrListItem[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error: unknown) {
+      // Auth/missing -> degrade to scraper; transient (network/5xx/timeout) ->
+      // preserve link; anything else is a genuine "no PR / not a gh repo" -> [].
+      const toThrow = ghErrorToThrow(error);
+      if (toThrow) throw toThrow;
+      return [];
+    }
+  }
+
+  /**
+   * Resolve a single PR by its number via `gh pr view`. The exact, branch-independent
+   * anchor used to refresh an already-linked PR's state.
+   *
+   * Throws GhUnavailableError when gh is missing/unauthenticated; returns null when
+   * the number no longer resolves (deleted/wrong repo).
+   */
+  async resolvePRByNumber(cwd: string, prNumber: number): Promise<GhPrListItem | null> {
+    const ghPath = await this.detect();
+    if (!ghPath) {
+      throw new GhUnavailableError('gh CLI not found. Install it from https://cli.github.com');
+    }
+    try {
+      const { stdout } = await execFileAsync(
+        ghPath,
+        [
+          'pr', 'view', String(prNumber),
+          '--json', PR_JSON_FIELDS,
+        ],
+        { cwd, timeout: COMMAND_TIMEOUT },
+      );
+      return JSON.parse(stdout) as GhPrListItem;
+    } catch (error: unknown) {
+      const toThrow = ghErrorToThrow(error);
+      if (toThrow) throw toThrow;
+      return null;
+    }
+  }
+
+  /**
+   * Resolve PRs associated with a commit SHA via the REST endpoint
+   * `repos/{owner}/{repo}/commits/{sha}/pulls`. `gh api` fills `{owner}/{repo}` from
+   * the remote of the repo at `cwd`, so this works from the main repo even after a
+   * task's worktree has been reclaimed - an immutable anchor immune to branch renames.
+   *
+   * Returns the list normalized to GhPrListItem (caller disambiguates). Throws
+   * GhUnavailableError when gh is missing/unauthenticated; returns [] otherwise.
+   */
+  async resolvePRByCommit(cwd: string, commitSha: string): Promise<GhPrListItem[]> {
+    const ghPath = await this.detect();
+    if (!ghPath) {
+      throw new GhUnavailableError('gh CLI not found. Install it from https://cli.github.com');
+    }
+    try {
+      const { stdout } = await execFileAsync(
+        ghPath,
+        ['api', `repos/{owner}/{repo}/commits/${commitSha}/pulls`],
+        { cwd, timeout: COMMAND_TIMEOUT },
+      );
+      const parsed = JSON.parse(stdout) as GhCommitPullRaw[];
+      return Array.isArray(parsed) ? parsed.map(normalizeCommitPull) : [];
+    } catch (error: unknown) {
+      const toThrow = ghErrorToThrow(error);
+      if (toThrow) throw toThrow;
+      return [];
     }
   }
 

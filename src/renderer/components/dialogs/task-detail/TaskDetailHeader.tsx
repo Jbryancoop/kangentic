@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useCopyDisplayId } from './useCopyDisplayId';
-import { X, Trash2, Pencil, Loader2, FolderGit2, FolderOpen, GitPullRequest, GitCompare, ArrowRightLeft, ChevronRight, ChevronLeft, CirclePause, CirclePlay, Clock, SquareChevronRight, Zap, Archive, Inbox, Copy, Check, Globe } from 'lucide-react';
+import { X, Trash2, Pencil, Loader2, FolderGit2, FolderOpen, GitPullRequest, GitCompare, ArrowRightLeft, ChevronRight, ChevronLeft, CirclePause, CirclePlay, Clock, SquareChevronRight, Zap, Archive, Inbox, Copy, Check, Globe, RefreshCw } from 'lucide-react';
 import { usePopoverPosition } from '../../../hooks/usePopoverPosition';
 import { getSwimlaneIcon } from '../../../utils/swimlane-icons';
 import { ICON_REGISTRY } from '../../../utils/swimlane-icons';
@@ -9,6 +9,8 @@ import { KebabMenu, KebabMenuItem, KebabMenuDivider } from '../../KebabMenu';
 import { CommandPalettePopover } from './CommandPalettePopover';
 import { PriorityBadge } from '../../backlog/PriorityBadge';
 import { useConfigStore } from '../../../stores/config-store';
+import { useToastStore } from '../../../stores/toast-store';
+import { prStatePresentation } from '../../../lib/pr-state';
 import type { Task, AgentCommand, ShortcutConfig, Swimlane } from '../../../../shared/types';
 
 interface TaskDetailHeaderProps {
@@ -203,12 +205,13 @@ export function TaskDetailHeader({
             <Pill
               shape="square"
               onClick={() => window.electronAPI.shell.openExternal(task.pr_url!)}
-              className="bg-surface-hover/50 text-fg-muted hover:text-fg-secondary hover:bg-surface-hover transition-colors flex-shrink-0"
-              title={task.pr_url}
+              className={`bg-surface-hover/50 hover:bg-surface-hover transition-colors flex-shrink-0 ${prStatePresentation(task.pr_state).textClass}`}
+              title={task.pr_state ? `${task.pr_url} (${task.pr_state})` : task.pr_url}
               data-testid="pr-pill"
             >
               <GitPullRequest size={14} />
               PR #{task.pr_number}
+              {task.pr_state && <span className="opacity-70">· {task.pr_state}</span>}
             </Pill>
           )}
 
@@ -363,6 +366,40 @@ function TaskDetailKebabItems({
   const [showMoveSubmenu, setShowMoveSubmenu] = useState(false);
   const [showCommandsSubmenu, setShowCommandsSubmenu] = useState(false);
   const [kebabCommands, setKebabCommands] = useState<AgentCommand[]>([]);
+  const [linkingPr, setLinkingPr] = useState(false);
+
+  const handleLinkPr = async () => {
+    if (linkingPr) return;
+    setLinkingPr(true);
+    try {
+      const result = await window.electronAPI.tasks.resolvePr(task.id);
+      if (result.reason === 'resolver-unavailable') {
+        useToastStore.getState().addToast({
+          message: 'GitHub CLI not found - install gh and run gh auth login to link PRs',
+          variant: 'error',
+        });
+      } else if (result.reason === 'transient-error') {
+        useToastStore.getState().addToast({
+          message: 'Could not reach GitHub - try again in a moment',
+          variant: 'error',
+        });
+      } else if (result.linked && result.task?.pr_number != null) {
+        useToastStore.getState().addToast({
+          message: `Linked PR #${result.task.pr_number} (${result.task.pr_state ?? 'open'})`,
+          variant: 'success',
+        });
+      } else {
+        useToastStore.getState().addToast({
+          message: task.branch_name ? `No PR found for branch "${task.branch_name}"` : 'No PR found for this task',
+          variant: 'info',
+        });
+      }
+    } catch {
+      useToastStore.getState().addToast({ message: 'Could not resolve PR', variant: 'error' });
+    } finally {
+      setLinkingPr(false);
+    }
+  };
 
   const commandsFlyoutTriggerRef = useRef<HTMLDivElement>(null);
   const commandsFlyoutRef = useRef<HTMLDivElement>(null);
@@ -421,6 +458,16 @@ function TaskDetailKebabItems({
           icon={<GitPullRequest size={14} />}
           label={`View PR #${task.pr_number}`}
           onClick={() => { closeAll(); window.electronAPI.shell.openExternal(task.pr_url!); }}
+        />
+      )}
+
+      {/* Link / refresh PR (authoritative branch->PR resolve; works with no live session) */}
+      {(task.branch_name || task.worktree_path) && (
+        <KebabMenuItem
+          icon={linkingPr ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          label={task.pr_url ? 'Refresh PR' : 'Link PR'}
+          onClick={() => { closeAll(); void handleLinkPr(); }}
+          disabled={linkingPr}
         />
       )}
 

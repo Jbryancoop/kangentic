@@ -4,6 +4,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { Loader2, CirclePause, Mail, Paperclip, GitPullRequest, FolderMinus, Trash2 } from 'lucide-react';
 import { formatRelativeTime } from '../../lib/datetime';
+import { prStatePresentation } from '../../lib/pr-state';
 import { TaskDetailDialog } from '../dialogs/TaskDetailDialog';
 import { TaskChangesDialog } from '../dialogs/TaskChangesDialog';
 import { ConfirmDialog } from '../dialogs/ConfirmDialog';
@@ -293,11 +294,13 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
                 event.stopPropagation();
                 window.electronAPI.shell.openExternal(task.pr_url!);
               }}
-              className="text-xs text-accent-fg hover:underline flex items-center gap-1"
+              className={`text-xs hover:underline flex items-center gap-1 ${prStatePresentation(task.pr_state).textClass}`}
+              title={task.pr_state ? `PR #${task.pr_number} (${task.pr_state})` : `PR #${task.pr_number}`}
               data-testid="task-card-pr-link"
             >
               <GitPullRequest size={12} />
               PR #{task.pr_number}
+              {task.pr_state && <span className="opacity-70">· {task.pr_state}</span>}
             </button>
           </div>
         )}

@@ -105,6 +105,8 @@ Valid role values: `todo`, `done`, or NULL (custom column).
 | branch_name | TEXT | | NULL |
 | pr_number | INTEGER | | NULL |
 | pr_url | TEXT | | NULL |
+| pr_state | TEXT | | NULL |
+| head_sha | TEXT | | NULL |
 | external_id | TEXT | | NULL |
 | external_source | TEXT | | NULL |
 | external_url | TEXT | | NULL |
@@ -360,6 +362,8 @@ Listed in execution order within `runProjectMigrations()`:
 35. **Performance indices on sessions and tasks** -- adds four idempotent hot-path indices: `idx_sessions_task_started` on (task_id, started_at DESC) for per-task session lookups and cost summaries, `idx_sessions_status` on (status) for getResumable/getOrphaned/markRunningAsOrphaned, `idx_sessions_agent_session_id` on (agent_session_id) for the resume-by-agent-id path, and `idx_tasks_session_id` on (session_id) for session-change IPC events. Targets startup reconciliation and live board state lookups under accumulated session history.
 36. **`external_id`, `external_source`, `external_url` columns on tasks** -- carries external origin (GitHub/Asana/etc.) onto board tasks promoted from imported backlog items, plus an `idx_tasks_external` index on (external_source, external_id). Promotion deletes the `backlog_tasks` row, so without these columns the board task loses all trace of its origin and the same issue could be re-imported. The dedup query (`findByExternalIds`) now unions `backlog_tasks` with `tasks` (archived included) so a previously imported-and-promoted issue stays "imported". Carried back through demote via `createFromTask`.
 37. **`usage_history` append-only ledger** -- creates the `usage_history` table (in the initial `CREATE TABLE IF NOT EXISTS` block) plus two query indices (`idx_usage_history_session_started_at`, `idx_usage_history_recorded_at`) for StatusBar period bucketing. Adds a one-shot guarded backfill that copies existing `sessions` rows where `total_cost_usd IS NOT NULL` into `usage_history` so installs upgrading to this version retain their lifetime totals. Backfill is wrapped in a single transaction and uses `INSERT OR IGNORE` plus a `COUNT(*) = 0` guard so re-running is safe. Rows in this table have no foreign keys to `tasks` or `sessions`, so totals survive task deletion (the original bug this feature fixes).
+38. **`pr_state` column on tasks** -- adds `pr_state TEXT DEFAULT NULL` so the authoritative branch->PR resolver can persist normalized PR state (`open`/`draft`/`merged`/`closed`) and re-resolution can reflect state changes on the card pill. Idempotent guarded `ALTER TABLE`.
+39. **`head_sha` column on tasks** -- adds `head_sha TEXT DEFAULT NULL`, the captured worktree HEAD commit SHA. An immutable anchor that lets PR resolution match by commit (`gh api repos/{owner}/{repo}/commits/{sha}/pulls`) even after the worktree is reclaimed on Done or the branch is renamed. Captured opportunistically during resolution and on worktree deletion. Idempotent guarded `ALTER TABLE`.
 
 ### Key Migrations (Global DB)
 

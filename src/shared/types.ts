@@ -114,6 +114,17 @@ export interface ProjectSearchEntriesResult {
   truncated: boolean;
 }
 
+/** Normalized, platform-agnostic pull-request state. */
+export type PRState = 'open' | 'draft' | 'merged' | 'closed';
+
+/**
+ * Outcome of an on-demand PR resolve. `linked`/`unchanged` mean a PR is associated;
+ * `not-found`/`no-anchor` mean none was found; `resolver-unavailable` means the
+ * provider CLI is missing/unauthenticated; `transient-error` means the check
+ * failed temporarily (network/5xx/timeout) and the existing link was preserved.
+ */
+export type PRLinkStatus = 'linked' | 'unchanged' | 'not-found' | 'no-anchor' | 'resolver-unavailable' | 'transient-error';
+
 export interface Task {
   id: string;
   display_id: number;
@@ -127,6 +138,10 @@ export interface Task {
   branch_name: string | null;
   pr_number: number | null;
   pr_url: string | null;
+  /** Normalized PR state from the authoritative branch->PR resolver. null when no PR is linked or it was linked before state tracking. */
+  pr_state: PRState | null;
+  /** Last-captured worktree HEAD commit SHA. Immutable anchor for resolving the PR after the worktree is reclaimed (Done) or the branch is renamed. null until captured. */
+  head_sha: string | null;
   /** External origin, carried through when this task was promoted from an imported backlog item. Lets import dedup stay aware of promoted (and archived) tasks. null for tasks created directly. */
   external_id: string | null;
   external_source: string | null;
@@ -1405,6 +1420,8 @@ export interface TaskUpdateInput {
   branch_name?: string | null;
   pr_number?: number | null;
   pr_url?: string | null;
+  pr_state?: PRState | null;
+  head_sha?: string | null;
   base_branch?: string | null;
   use_worktree?: number | null;
   labels?: string[];
@@ -1412,6 +1429,18 @@ export interface TaskUpdateInput {
   model_override?: string | null;
   effort_override?: string | null;
   agent_override?: string | null;
+}
+
+/** Result of `IPC.TASK_RESOLVE_PR` - the on-demand branch->PR resolver. */
+export interface TaskResolvePrResult {
+  /** The task after resolution (latest pr_url/pr_number/pr_state), or null if not found. */
+  task: Task | null;
+  /** True when the task now has a linked PR (whether or not it changed this call). */
+  linked: boolean;
+  /** Why the resolve ended this way - lets the UI/MCP show an accurate message. */
+  reason: PRLinkStatus;
+  /** Detail for `resolver-unavailable` (e.g. "gh CLI not found - run gh auth login"). */
+  message?: string;
 }
 
 /**
@@ -1994,6 +2023,8 @@ export interface ElectronAPI {
     bulkUnarchive: (ids: string[], targetSwimlaneId: string) => Promise<void>;
     switchBranch: (input: TaskSwitchBranchInput) => Promise<Task>;
     setRuntimeOverride: (input: TaskSetRuntimeOverrideInput) => Promise<TaskSetRuntimeOverrideResult>;
+    /** On-demand authoritative branch->PR resolve + link for a task (works without a live session). */
+    resolvePr: (taskId: string) => Promise<TaskResolvePrResult>;
     onAutoMoved: (callback: (taskId: string, targetSwimlaneId: string, taskTitle: string, projectId?: string) => void) => () => void;
     onCreatedByAgent: (callback: (taskId: string, taskTitle: string, columnName: string, projectId?: string) => void) => () => void;
     onUpdatedByAgent: (callback: (taskId: string, taskTitle: string, projectId?: string) => void) => () => void;

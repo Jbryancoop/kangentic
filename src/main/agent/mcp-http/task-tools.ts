@@ -346,6 +346,19 @@ export function registerTaskTools(
     },
   );
 
+  // --- kangentic_link_pr ---
+  server.registerTool(
+    'kangentic_link_pr',
+    {
+      description: 'Authoritatively resolve and link the pull request for a task\'s git branch using the gh CLI (`gh pr list --head <branch>`). Unlike the terminal-scraping auto-linker, this finds PRs opened by a human, the web UI, `git push`, scripts, or `gh api`, and works even when the task has no live session. Re-running refreshes the linked PR\'s state (open/draft/merged/closed). Use after opening a PR, or to backfill a task whose PR was never linked. Find the task ID first with kangentic_find_task. Pass `project` to target a different project.',
+      inputSchema: z.object({
+        taskId: z.string().describe('Task ID (numeric display ID like "42" or full UUID).'),
+        project: z.string().optional().describe(PROJECT_SELECTOR_DESCRIPTION),
+      }),
+    },
+    async ({ taskId, project }) => withProject(resolver, project, (ctx) => callHandler('link_pr', { taskId }, ctx, 'Failed to resolve PR')),
+  );
+
   // --- kangentic_move_task ---
   server.registerTool(
     'kangentic_move_task',

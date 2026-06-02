@@ -67,6 +67,8 @@ function taskContentsMatch(previous: Task, next: Task): boolean {
     previous.use_worktree !== next.use_worktree ||
     previous.pr_number !== next.pr_number ||
     previous.pr_url !== next.pr_url ||
+    previous.pr_state !== next.pr_state ||
+    previous.head_sha !== next.head_sha ||
     previous.priority !== next.priority ||
     previous.attachment_count !== next.attachment_count ||
     previous.archived_at !== next.archived_at ||

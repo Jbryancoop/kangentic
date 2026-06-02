@@ -23,6 +23,8 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     branch_name: null,
     pr_number: null,
     pr_url: null,
+    pr_state: null,
+    head_sha: null,
     base_branch: null,
     use_worktree: null,
     labels: [],
@@ -156,7 +158,7 @@ describe('applyStructuralSharing', () => {
   // `src/renderer/stores/board-store/structural-sharing.ts` taskContentsMatch,
   // add the new field there, then update TASK_FIELD_COUNT below to match.
   it('guards against Task-interface field drift', () => {
-    const TASK_FIELD_COUNT = 20; // keep in sync with taskContentsMatch
+    const TASK_FIELD_COUNT = 22; // keep in sync with taskContentsMatch
     const sample = makeTask();
     expect(Object.keys(sample)).toHaveLength(TASK_FIELD_COUNT);
   });

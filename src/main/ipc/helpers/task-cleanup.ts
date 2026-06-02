@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { simpleGit } from 'simple-git';
 import { TaskRepository } from '../../db/repositories/task-repository';
 import { SessionRepository } from '../../db/repositories/session-repository';
 import { WorktreeManager } from '../../git/worktree-manager';
@@ -157,6 +158,16 @@ export async function deleteTaskWorktree(
   const resolvedProjectPath = projectPath ?? context.currentProjectPath;
   if (!task.worktree_path || !resolvedProjectPath) return false;
 
+  // Capture the worktree HEAD before removal so the immutable commit anchor
+  // survives the Done transition - PR resolution can then match by commit even
+  // after the branch is renamed or the worktree is gone.
+  let capturedSha: string | null = null;
+  try {
+    capturedSha = (await simpleGit(task.worktree_path).revparse(['HEAD'])).trim() || null;
+  } catch {
+    // Best-effort; the worktree may already be in a bad state.
+  }
+
   let removed = false;
   try {
     const worktreeManager = new WorktreeManager(resolvedProjectPath);
@@ -168,7 +179,7 @@ export async function deleteTaskWorktree(
   }
 
   if (removed) {
-    tasks.update({ id: task.id, worktree_path: null });
+    tasks.update({ id: task.id, worktree_path: null, ...(capturedSha ? { head_sha: capturedSha } : {}) });
   }
   return removed;
 }

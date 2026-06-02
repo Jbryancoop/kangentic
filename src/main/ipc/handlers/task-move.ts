@@ -17,6 +17,7 @@ import {
   deleteTaskWorktree,
   spawnAgent,
   buildAutoCommandVars,
+  maybeResolvePRAfterMove,
 } from '../helpers';
 import { interpolateTemplate } from '../../agent/shared';
 import { trackEvent } from '../../analytics/analytics';
@@ -696,7 +697,12 @@ export async function handleTaskMove(
 export function registerTaskMoveHandlers(context: IpcContext): void {
   ipcMain.handle(IPC.TASK_MOVE, async (_, input) => {
     try {
-      return await handleTaskMove(context, input);
+      const result = await handleTaskMove(context, input);
+      // After the move's task lock has released, resolve the PR for the new lane
+      // (gated on a branch + non-To Do lane inside the helper). Fire-and-forget so
+      // a slow gh query never blocks the move response.
+      maybeResolvePRAfterMove(context, input.taskId, context.currentProjectId);
+      return result;
     } catch (error) {
       // Shutdown closes the DB synchronously; any handler that crossed an
       // await boundary will throw "database connection is not open" or an

@@ -524,6 +524,7 @@
           branch_name: input.customBranchName || null,
           pr_number: null,
           pr_url: null,
+          pr_state: null,
           base_branch: input.baseBranch || null,
           use_worktree: input.useWorktree != null ? (input.useWorktree ? 1 : 0) : null,
           labels: input.labels || [],
@@ -883,6 +884,21 @@
         tasks[idx] = Object.assign({}, tasks[idx], patch, { updated_at: now() });
         var mode = tasks[idx].session_id ? 'live' : 'persisted';
         return { ok: true, mode: mode };
+      },
+      resolvePr: async function (taskId) {
+        // Test hook: spec can override the response by setting
+        // window.__mockResolvePrResult before calling. Defaults to returning the
+        // task unchanged (no PR linked) - real resolution needs the gh CLI.
+        if (typeof window !== 'undefined') {
+          if (!window.__mockResolvePrCalls) window.__mockResolvePrCalls = [];
+          window.__mockResolvePrCalls.push(taskId);
+          if (typeof window.__mockResolvePrResult === 'function') {
+            return window.__mockResolvePrResult(taskId);
+          }
+        }
+        var found = tasks.find(function (t) { return t.id === taskId; }) || null;
+        var isLinked = !!(found && found.pr_url);
+        return { task: found, linked: isLinked, reason: isLinked ? 'unchanged' : 'not-found' };
       },
     },
 
@@ -1562,6 +1578,7 @@
             branch_name: null,
             pr_number: null,
             pr_url: null,
+            pr_state: null,
             external_id: item.external_id || null,
             external_source: item.external_source || null,
             external_url: item.external_url || null,
