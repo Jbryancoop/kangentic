@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import { app } from 'electron';
 import { getProjectDb } from '../../db/database';
 import { SessionRepository } from '../../db/repositories/session-repository';
 import { TaskRepository } from '../../db/repositories/task-repository';
@@ -11,6 +10,7 @@ import { isResumeEligible } from '../spawn-intent';
 import { retireRecord, markRecordSuspended } from '../session-lifecycle';
 import { isShuttingDown } from '../../shutdown-state';
 import { prepareAgentSpawn, type PreparedSpawn } from './prepare-spawn';
+import { startStartupTimer } from './timing';
 
 /**
  * Recover suspended and orphaned agent sessions on project open.
@@ -38,8 +38,7 @@ export async function resumeSuspendedSessions(
 ): Promise<void> {
   if (isShuttingDown()) return;
 
-  const timerLabel = `[startup] resumeSuspendedSessions:${projectId.slice(0, 8)}`;
-  if (!app.isPackaged) console.time(timerLabel);
+  const done = startStartupTimer('resumeSuspendedSessions', projectId, 'resumed');
   const db = getProjectDb(projectId);
   const sessionRepo = new SessionRepository(db);
   const taskRepo = new TaskRepository(db);
@@ -64,7 +63,7 @@ export async function resumeSuspendedSessions(
   const orphaned = sessionRepo.getOrphaned();
   const allRecords = [...suspended, ...orphaned];
   if (allRecords.length === 0) {
-    if (!app.isPackaged) console.timeEnd(timerLabel);
+    done(0);
     return;
   }
 
@@ -191,7 +190,7 @@ export async function resumeSuspendedSessions(
         `[SESSION_RECOVERY] Skipped ${skipped} of ${toRecover.length} task(s) -- non-auto-spawn columns, deleted, user-paused, or auto-resume disabled`,
       );
     }
-    if (!app.isPackaged) console.timeEnd(timerLabel);
+    done(0);
     return;
   }
 
@@ -266,7 +265,7 @@ export async function resumeSuspendedSessions(
   // adapter.detect and shell resolution). Avoids firing N spawns that
   // would each individually throw and log errors against a closing DB.
   if (isShuttingDown()) {
-    if (!app.isPackaged) console.timeEnd(timerLabel);
+    done(0);
     return;
   }
 
@@ -337,5 +336,5 @@ export async function resumeSuspendedSessions(
       `[SESSION_RECOVERY] Resumed ${recovered}, skipped ${skipped} (of ${toRecover.length} unique tasks, ${allRecords.length} total records)`,
     );
   }
-  if (!app.isPackaged) console.timeEnd(timerLabel);
+  done(recovered);
 }

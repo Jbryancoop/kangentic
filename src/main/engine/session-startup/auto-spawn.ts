@@ -1,15 +1,14 @@
 import fs from 'node:fs';
-import { app } from 'electron';
 import { getProjectDb } from '../../db/database';
 import { SessionRepository } from '../../db/repositories/session-repository';
 import { TaskRepository } from '../../db/repositories/task-repository';
-import { ActionRepository } from '../../db/repositories/action-repository';
 import { SwimlaneRepository } from '../../db/repositories/swimlane-repository';
 import { SessionManager } from '../../pty/session-manager';
 import { ConfigManager } from '../../config/config-manager';
-import type { Task } from '../../../shared/types';
+import type { Swimlane, Task } from '../../../shared/types';
 import { isShuttingDown } from '../../shutdown-state';
 import { prepareAgentSpawn, type PreparedSpawn } from './prepare-spawn';
+import { startStartupTimer } from './timing';
 
 /**
  * Enforce the auto-spawn invariant on project open: find tasks in
@@ -35,121 +34,114 @@ export async function autoSpawnTasks(
 ): Promise<void> {
   if (isShuttingDown()) return;
 
-  const timerLabel = `[startup] autoSpawnTasks:${projectId.slice(0, 8)}`;
-  if (!app.isPackaged) console.time(timerLabel);
+  const done = startStartupTimer('autoSpawnTasks', projectId, 'spawned');
   const db = getProjectDb(projectId);
   const taskRepo = new TaskRepository(db);
   const sessionRepo = new SessionRepository(db);
-  const config = configManager.getEffectiveConfig(projectPath);
 
   // Determine which columns should have active agents (auto_spawn=true)
   const swimlaneRepo = new SwimlaneRepository(db);
   const allLanes = swimlaneRepo.list();
   const activeLanes = allLanes.filter((lane) => lane.auto_spawn);
   if (activeLanes.length === 0) {
-    if (!app.isPackaged) console.timeEnd(timerLabel);
+    done(0);
+    return;
+  }
+
+  // --- Cheap discovery pass: find tasks in active lanes that lack a session.
+  // Every auto_spawn lane spawns its tasks regardless of whether a transition
+  // wired a spawn_agent action to it - this matches the pre-refactor behavior
+  // and is preserved by design, so no transition/action lookup is needed here.
+  // Done before any shell/config/paused-ID resolution so a project where
+  // everything already has a session costs nothing.
+  const candidates: Array<{ lane: Swimlane; task: Task }> = [];
+  for (const lane of activeLanes) {
+    for (const task of taskRepo.list(lane.id)) {
+      if (!sessionManager.hasSessionForTask(task.id)) {
+        candidates.push({ lane, task });
+      }
+    }
+  }
+  if (candidates.length === 0) {
+    done(0);
     return;
   }
 
   const resolvedShell = await sessionManager.getShell();
+  const config = configManager.getEffectiveConfig(projectPath);
 
   // Batch-fetch user-paused task IDs to skip during reconciliation
   const userPausedTaskIds = sessionRepo.getUserPausedTaskIds();
 
-  // Discover incoming spawn_agent transitions so we know which columns
-  // have a spawn trigger wired up. Action configs are NOT used to build
-  // the command here - the legacy path read them but never passed them
-  // to buildCommand, so we drop the lookup entirely.
-  const actionRepo = new ActionRepository(db);
-  const allTransitions = actionRepo.listTransitions();
-  const allActions = actionRepo.list();
-  const spawnAgentActionIds = new Set(
-    allActions.filter((action) => action.type === 'spawn_agent').map((action) => action.id),
-  );
-  const lanesWithIncomingSpawn = new Set(
-    allTransitions
-      .filter((transition) => spawnAgentActionIds.has(transition.action_id))
-      .map((transition) => transition.to_swimlane_id),
-  );
-
   // --- Preparation pass: collect spawn inputs ---
   const spawnInputs: Array<PreparedSpawn & { task: Task }> = [];
 
-  for (const lane of activeLanes) {
-    const tasks = taskRepo.list(lane.id);
-    // Note: lanesWithIncomingSpawn is currently informational only -
-    // every auto_spawn lane still gets its tasks auto-spawned regardless
-    // of whether a transition wired a spawn_agent action to it. This
-    // matches the pre-refactor behavior and is preserved by design.
-    void lanesWithIncomingSpawn;
+  for (const { lane, task } of candidates) {
+    // Defensive re-check: a session may have been registered for this task
+    // during the `await getShell()` above (a concurrent project open or
+    // resumeSuspendedSessions). Placeholders registered by
+    // resumeSuspendedSessions cover user-paused records and
+    // 'system'-suspended records when autoResumeSessionsOnRestart=false;
+    // in either case the user must explicitly Resume - don't auto-spawn over
+    // the placeholder and clobber the resumable record's agent_session_id.
+    if (sessionManager.hasSessionForTask(task.id)) continue;
 
-    for (const task of tasks) {
-      // Skip if the session manager already has a session for this task -
-      // running, queued, OR a suspended placeholder. Placeholders are
-      // registered by resumeSuspendedSessions (which runs before this) for:
-      //   - user-paused records (explicit Pause button)
-      //   - 'system'-suspended records when autoResumeSessionsOnRestart=false
-      // Either case, the user must explicitly Resume - don't auto-spawn over
-      // the placeholder and clobber the resumable record's agent_session_id.
-      if (sessionManager.hasSessionForTask(task.id)) continue;
+    // Safety net: register a placeholder for user-paused records that
+    // somehow weren't registered by resumeSuspendedSessions (e.g. the
+    // record was created after that pass, or cwd existence check failed).
+    // Without this the task would auto-spawn a fresh agent and lose the
+    // --resume transcript.
+    if (userPausedTaskIds.has(task.id)) {
+      const cwd = task.worktree_path || projectPath;
+      sessionManager.registerSuspendedPlaceholder({ taskId: task.id, projectId, cwd });
+      continue;
+    }
 
-      // Safety net: register a placeholder for user-paused records that
-      // somehow weren't registered by resumeSuspendedSessions (e.g. the
-      // record was created after that pass, or cwd existence check failed).
-      // Without this the task would auto-spawn a fresh agent and lose the
-      // --resume transcript.
-      if (userPausedTaskIds.has(task.id)) {
-        const cwd = task.worktree_path || projectPath;
-        sessionManager.registerSuspendedPlaceholder({ taskId: task.id, projectId, cwd });
+    try {
+      let cwd = task.worktree_path || projectPath;
+
+      // Guard: CWD must still exist -- fall back to projectPath if worktree was deleted
+      if (task.worktree_path && !fs.existsSync(task.worktree_path)) {
+        console.log(`[AUTO_SPAWN] Worktree missing for task ${task.id} -- falling back to project path`);
+        taskRepo.update({ id: task.id, worktree_path: null, branch_name: null });
+        cwd = projectPath;
+      }
+      if (!fs.existsSync(cwd)) {
+        console.log(`[AUTO_SPAWN] CWD ${cwd} missing -- skipping task ${task.id}`);
         continue;
       }
 
-      try {
-        let cwd = task.worktree_path || projectPath;
+      const prep = await prepareAgentSpawn({
+        task,
+        swimlane: lane,
+        cwd,
+        projectId,
+        projectPath,
+        effectiveConfig: config,
+        projectDefaultAgent: projectDefaultAgent ?? null,
+        resolvedShell,
+        mcpServerHandle,
+        resume: null,
+      });
 
-        // Guard: CWD must still exist -- fall back to projectPath if worktree was deleted
-        if (task.worktree_path && !fs.existsSync(task.worktree_path)) {
-          console.log(`[AUTO_SPAWN] Worktree missing for task ${task.id} -- falling back to project path`);
-          taskRepo.update({ id: task.id, worktree_path: null, branch_name: null });
-          cwd = projectPath;
+      if (!prep.ok) {
+        if (prep.reason === 'unknown-agent') {
+          console.warn(`[AUTO_SPAWN] Unknown agent for task ${task.id.slice(0, 8)} -- skipping`);
+        } else {
+          console.warn(`[AUTO_SPAWN] CLI not found for task ${task.id.slice(0, 8)} -- skipping`);
         }
-        if (!fs.existsSync(cwd)) {
-          console.log(`[AUTO_SPAWN] CWD ${cwd} missing -- skipping task ${task.id}`);
-          continue;
-        }
-
-        const prep = await prepareAgentSpawn({
-          task,
-          swimlane: lane,
-          cwd,
-          projectId,
-          projectPath,
-          effectiveConfig: config,
-          projectDefaultAgent: projectDefaultAgent ?? null,
-          resolvedShell,
-          mcpServerHandle,
-          resume: null,
-        });
-
-        if (!prep.ok) {
-          if (prep.reason === 'unknown-agent') {
-            console.warn(`[AUTO_SPAWN] Unknown agent for task ${task.id.slice(0, 8)} -- skipping`);
-          } else {
-            console.warn(`[AUTO_SPAWN] CLI not found for task ${task.id.slice(0, 8)} -- skipping`);
-          }
-          continue;
-        }
-
-        spawnInputs.push({ task, ...prep.data });
-      } catch (err) {
-        console.error(`[AUTO_SPAWN] Preparation failed for task ${task.id}:`, err);
+        continue;
       }
+
+      spawnInputs.push({ task, ...prep.data });
+    } catch (err) {
+      console.error(`[AUTO_SPAWN] Preparation failed for task ${task.id}:`, err);
     }
   }
 
   // --- Spawn pass (parallel): fire all spawns concurrently ---
   if (isShuttingDown()) {
-    if (!app.isPackaged) console.timeEnd(timerLabel);
+    done(0);
     return;
   }
 
@@ -214,5 +206,5 @@ export async function autoSpawnTasks(
   if (spawned > 0) {
     console.log(`[AUTO_SPAWN] Spawned ${spawned} session(s) for tasks without agents`);
   }
-  if (!app.isPackaged) console.timeEnd(timerLabel);
+  done(spawned);
 }
