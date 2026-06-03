@@ -53,6 +53,7 @@ const api: ElectronAPI = {
     update: (input) => ipcRenderer.invoke(IPC.TASK_UPDATE, input),
     delete: (id) => ipcRenderer.invoke(IPC.TASK_DELETE, id),
     move: (input) => ipcRenderer.invoke(IPC.TASK_MOVE, input),
+    cancelSpawn: (taskId) => ipcRenderer.invoke(IPC.TASK_CANCEL_SPAWN, taskId),
     listArchived: () => ipcRenderer.invoke(IPC.TASK_LIST_ARCHIVED),
     unarchive: (input) => ipcRenderer.invoke(IPC.TASK_UNARCHIVE, input),
     bulkDelete: (ids) => ipcRenderer.invoke(IPC.TASK_BULK_DELETE, ids),

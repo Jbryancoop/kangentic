@@ -9,7 +9,7 @@ import { SessionManager } from '../pty/session-manager';
 import { slugify } from '../../shared/slugify';
 import { removeNodeModulesPath } from '../git/node-modules-link';
 import { removeWithRetry } from '../git/rm-with-retry';
-import { WorktreeManager } from '../git/worktree-manager';
+import { WorktreeManager, GitQueuePriority } from '../git/worktree-manager';
 import { withTaskLock } from '../ipc/task-lifecycle-lock';
 
 const execFileAsync = promisify(execFile);
@@ -267,7 +267,13 @@ export async function retryFailedDoneCleanups(
       const current = taskRepo.getById(task.id);
       if (!current?.worktree_path) return 'skipped';
 
-      const removed = await worktreeManager.withLock(() => worktreeManager.removeWorktree(current.worktree_path!));
+      // Background best-effort: low priority so a user-initiated spawn jumps
+      // ahead, and fail-fast so one stuck removal can't hold the queue for 15s.
+      // A false return is logged below and deferred to the next project open.
+      const removed = await worktreeManager.withLock(
+        () => worktreeManager.removeWorktree(current.worktree_path!, { timeoutMs: 3000, fast: true }),
+        { priority: GitQueuePriority.BACKGROUND },
+      );
       if (!removed) {
         console.warn(
           `[RESOURCE_CLEANUP] Retry pass could not remove worktree for `

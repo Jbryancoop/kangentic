@@ -104,6 +104,21 @@ describe('removeWithRetry', () => {
     );
   });
 
+  it('fast mode (delays:[0], innerMaxRetries:0) attempts exactly once with no inner retries', async () => {
+    mockFsRm.mockRejectedValue(eperm('locked'));
+
+    const resultPromise = removeWithRetry('/tmp/locked', { delays: [0], innerMaxRetries: 0 });
+    resultPromise.catch(() => {});
+
+    await expect(resultPromise).rejects.toThrow(/locked/);
+    // Single outer attempt, and inner per-file retries disabled.
+    expect(mockFsRm).toHaveBeenCalledTimes(1);
+    expect(mockFsRm).toHaveBeenCalledWith(
+      '/tmp/locked',
+      expect.objectContaining({ recursive: true, force: true, maxRetries: 0 }),
+    );
+  });
+
   it('rethrows the last error after exhausting all retry attempts', async () => {
     vi.useFakeTimers();
     mockFsRm.mockRejectedValue(eperm('persistent lock'));

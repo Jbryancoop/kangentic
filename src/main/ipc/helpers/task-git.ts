@@ -16,15 +16,16 @@ export async function ensureTaskWorktree(
   task: Task,
   tasks: TaskRepository,
   projectPath?: string | null,
-  options?: { signal?: AbortSignal; onProgress?: (phase: string) => void },
+  options?: { signal?: AbortSignal; onProgress?: (phase: string) => void; onWait?: (jobsAhead: number) => void },
 ): Promise<void> {
   options?.signal?.throwIfAborted();
   const resolvedProjectPath = projectPath ?? context.currentProjectPath;
   if (!resolvedProjectPath) return;
   const config = context.configManager.getEffectiveConfig(resolvedProjectPath);
   const worktreeManager = new WorktreeManager(resolvedProjectPath);
-  const result = await worktreeManager.withLock(() =>
-    worktreeManager.ensureWorktree(task, config.git, { onProgress: options?.onProgress, signal: options?.signal }),
+  const result = await worktreeManager.withLock(
+    () => worktreeManager.ensureWorktree(task, config.git, { onProgress: options?.onProgress, signal: options?.signal }),
+    { onWait: options?.onWait },
   );
   if (result) {
     tasks.update({ id: task.id, worktree_path: result.worktreePath, branch_name: result.branchName });
@@ -46,7 +47,7 @@ export async function ensureTaskWorktree(
 export async function ensureTaskBranchCheckout(
   task: Task,
   projectPath?: string | null,
-  options?: { signal?: AbortSignal; onProgress?: (phase: string) => void },
+  options?: { signal?: AbortSignal; onProgress?: (phase: string) => void; onWait?: (jobsAhead: number) => void },
 ): Promise<void> {
   options?.signal?.throwIfAborted();
   if (!projectPath) return;
@@ -58,6 +59,9 @@ export async function ensureTaskBranchCheckout(
     await WorktreeManager.withGitLock(projectPath, async () => {
       const git = simpleGit(projectPath);
 
+      // Emit 'fetching' once the job actually starts (after any queue wait) so
+      // the card flips from "Waiting for git queue..." to "Fetching latest...".
+      options?.onProgress?.('fetching');
       // Fetch latest from origin (throttled to avoid redundant network I/O)
       await fetchIfStale(git, projectPath, task.branch_name!, { signal: options?.signal });
       options?.onProgress?.('switching-branch');
@@ -94,7 +98,7 @@ export async function ensureTaskBranchCheckout(
 
       const worktreeManager = new WorktreeManager(projectPath);
       await worktreeManager.checkoutBranch(task.branch_name!);
-    });
+    }, { onWait: options?.onWait });
     return;
   }
 
@@ -102,5 +106,10 @@ export async function ensureTaskBranchCheckout(
   if (!task.base_branch) return;
 
   const worktreeManager = new WorktreeManager(projectPath);
-  await worktreeManager.withLock(() => worktreeManager.checkoutBranch(task.base_branch!));
+  await worktreeManager.withLock(async () => {
+    // Once the job actually starts (after any queue wait), flip the card from
+    // "Waiting for git queue..." to an active label for the duration of the checkout.
+    options?.onProgress?.('switching-branch');
+    await worktreeManager.checkoutBranch(task.base_branch!);
+  }, { onWait: options?.onWait });
 }

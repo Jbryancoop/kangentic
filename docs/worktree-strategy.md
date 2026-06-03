@@ -34,7 +34,7 @@ The chosen base branch is stored in the worktree's git config as `kangentic.base
 
 ### Concurrency
 
-All git-mutating operations (create, remove, branch delete, prune, checkout, rename) are serialized per project via a promise-chain queue (`WorktreeManager.withGitLock`). Different projects run independently. This eliminates git lock contention when multiple tasks are dragged simultaneously.
+All git-mutating operations (create, remove, branch delete, prune, checkout, rename) are serialized per project via a priority-aware queue (`WorktreeManager.withGitLock` / instance `withLock`). Exactly one operation runs at a time per project (preserving the `.git` lock-contention guarantee), but waiting operations are ordered by `GitQueuePriority` - `USER` (0, the default) runs ahead of `BACKGROUND` (10, e.g. retry cleanups and background prune), with FIFO order within a priority band. This keeps a user-initiated spawn from head-of-line-blocking behind a slow or failing background cleanup. Different projects run independently. Background worktree removal also runs fail-fast (`removeWorktree`'s `{ timeoutMs, fast }` options) so one stuck removal cannot hold the queue for the full timeout. `clearQueue` (on project close) rejects any still-waiting jobs so their callers do not hang.
 
 ### Creation Flow
 
@@ -253,12 +253,17 @@ Uses real temp files with mocked `os.homedir()`.
 - `createWorktree` cleans up stale directory before `git worktree add`
 - `pruneWorktrees` calls `git worktree prune`
 
-**Serial queue:**
-- Concurrent operations on same project execute sequentially
+**Priority queue:**
+- Concurrent operations on same project execute sequentially (one at a time)
 - Concurrent operations on different projects execute in parallel
 - Failed operation does not block subsequent operations
-- `clearQueue` removes the project entry
+- A later `USER`-priority op jumps ahead of an already-queued `BACKGROUND` op; equal priority drains FIFO
+- `clearQueue` removes the project entry and rejects any still-waiting jobs
 - `withLock` instance method uses the project path
+
+**Fail-fast removal:**
+- `removeWorktree({ fast: true })` forwards single-attempt opts to `removeWithRetry`; no-opts keeps the full backoff
+- Background retry cleanup runs at `BACKGROUND` priority with `{ timeoutMs: 3000, fast: true }`
 
 **listWorktrees:**
 - Parses `git worktree list --porcelain` output correctly

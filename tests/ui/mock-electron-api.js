@@ -82,11 +82,13 @@
         onAgentIdle: true,
         onAgentCrash: true,
         onPlanComplete: true,
+        onSpawnStalled: true,
       },
       toasts: {
         onAgentIdle: true,
         onAgentCrash: true,
         onPlanComplete: true,
+        onSpawnStalled: true,
         durationSeconds: 4,
         maxCount: 5,
       },
@@ -685,6 +687,14 @@
           });
           archivedTasks.push(archived);
           tasks.splice(idx, 1);
+        }
+      },
+      cancelSpawn: async function (taskId) {
+        // Record cancellations so UI tests can assert the stall toast's Cancel
+        // button wired through to the IPC layer.
+        if (typeof window !== 'undefined') {
+          if (!window.__mockCancelSpawnCalls) window.__mockCancelSpawnCalls = [];
+          window.__mockCancelSpawnCalls.push(taskId);
         }
       },
       listArchived: async function () {

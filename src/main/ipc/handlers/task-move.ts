@@ -28,7 +28,7 @@ import { isAbortError } from '../../../shared/abort-utils';
 import { abortBacklogPromotion } from './backlog';
 import { withTaskLock } from '../task-lifecycle-lock';
 import { isShuttingDown } from '../../shutdown-state';
-import { emitSpawnProgress, clearSpawnProgress, createProgressCallback, getInFlightSpawnProgress } from '../../engine/spawn-progress';
+import { emitSpawnProgress, emitSpawnWaiting, clearSpawnProgress, createProgressCallback, getInFlightSpawnProgress } from '../../engine/spawn-progress';
 import { resolveTargetAgent } from '../../engine/agent-resolver';
 import { agentRegistry } from '../../agent/agent-registry';
 import { prepareInjectionPlan } from '../../engine/injection-plan';
@@ -70,6 +70,21 @@ export function guardActiveNonWorktreeSessions(
  * AbortError when cancelled, and cleanup is centralized in a single catch.
  */
 const taskMoveControllers = new Map<string, AbortController>();
+
+/**
+ * Abort the in-flight move/spawn for a task, if any. Returns true if a move
+ * was actually aborted. The abort is deliberately OUTSIDE any task lock (per
+ * the task-lifecycle-lock contract): the holder observes the signal and runs
+ * the existing AbortError path, which clears spawn progress and rolls the move
+ * back. Used by the TASK_CANCEL_SPAWN handler so the user can cancel a spawn
+ * that is parked in the git queue or stuck fetching.
+ */
+export function abortTaskMove(taskId: string): boolean {
+  const controller = taskMoveControllers.get(taskId);
+  if (!controller) return false;
+  controller.abort();
+  return true;
+}
 
 /**
  * Core task-move logic shared by the TASK_MOVE IPC handler and the
@@ -539,14 +554,18 @@ export async function handleTaskMove(
     // Git I/O is serialized per-project by WorktreeManager.projectQueues; DB
     // writes inside ensureTaskWorktree are sync better-sqlite3 calls.
     const onProgress = createProgressCallback(context.mainWindow, task.id);
+    // Emitted only when the git op parks in the per-project queue behind
+    // another op. The 'fetching' label is emitted by the git layer itself once
+    // the op actually starts, so we no longer eagerly show "Fetching latest..."
+    // here (which made a queue wait masquerade as an active fetch).
+    const onWait = (jobsAhead: number) => emitSpawnWaiting(context.mainWindow, task.id, jobsAhead);
     try {
       // Create worktree if worktrees are enabled and task doesn't have one yet.
       // If worktree creation fails (e.g. duplicate branch), revert the task
       // back to its original column so it doesn't get stuck without a session.
       try {
-        emitSpawnProgress(context.mainWindow, task.id, 'fetching');
         const { tasks: tasksPhase2 } = getProjectRepos(context, resolvedProjectId);
-        await ensureTaskWorktree(context, task, tasksPhase2, resolvedProjectPath, { signal, onProgress });
+        await ensureTaskWorktree(context, task, tasksPhase2, resolvedProjectPath, { signal, onProgress, onWait });
       } catch (error) {
         // Let AbortError propagate to the outer catch for centralized handling
         if (isAbortError(error)) throw error;
@@ -594,8 +613,7 @@ export async function handleTaskMove(
       // the outer catch which also handles AbortError cleanup.
       const { tasks: tasksCheckout } = getProjectRepos(context, resolvedProjectId);
       guardActiveNonWorktreeSessions(context, task, tasksCheckout);
-      if (!task.worktree_path) emitSpawnProgress(context.mainWindow, task.id, 'fetching');
-      await ensureTaskBranchCheckout(task, resolvedProjectPath, { signal, onProgress });
+      await ensureTaskBranchCheckout(task, resolvedProjectPath, { signal, onProgress, onWait });
 
       // === Phase 3 (locked, short) ===
       // CAS-check invariants before spawning. If a newer move ran during our
@@ -717,4 +735,11 @@ export function registerTaskMoveHandlers(context: IpcContext): void {
   // syncSessions() reconciles its spawnProgress map against this so an HMR
   // reload during the brief "Starting agent..." window cannot strand a card.
   ipcMain.handle(IPC.TASK_GET_SPAWN_PROGRESS, () => getInFlightSpawnProgress());
+
+  // Cancel an in-flight spawn (e.g. from the "still preparing" stall toast).
+  // Fire-and-forget abort, OUTSIDE any lock - the move's holder observes the
+  // signal and runs the existing AbortError rollback.
+  ipcMain.handle(IPC.TASK_CANCEL_SPAWN, (_event, taskId: string) => {
+    abortTaskMove(taskId);
+  });
 }

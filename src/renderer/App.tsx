@@ -151,6 +151,102 @@ export function App() {
       window.electronAPI.window.flashFrame(true);
     }
 
+    // Spawn-stall watcher: when a task sits in a "preparing" spawn-progress
+    // state (worktree creation / git fetch / queue wait) past the threshold,
+    // surface a non-blocking toast (with a Cancel action) and an optional
+    // desktop notification so a slow/head-of-line-blocked spawn never hangs
+    // silently. Timers are effect-scoped (like notificationCooldowns above), so
+    // they tear down with the effect on unmount/HMR - no module-scope state.
+    const STALL_THRESHOLD_MS = 8000;
+    const spawnStallTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    // Toast id per task so the stall toast can be dismissed when the spawn
+    // resolves or is superseded - this also prevents a stale Cancel from
+    // aborting a newer move for the same task.
+    const spawnStallToastIds = new Map<string, string>();
+
+    function maybeNotifySpawnStall(taskId: string) {
+      // The spawn may have finished between arming and firing.
+      const label = useSessionStore.getState().spawnProgress[taskId];
+      if (!label) return;
+
+      // spawnProgress is a global map keyed by taskId; only surface a stall for
+      // a task on the currently-open project's board. A task missing here
+      // belongs to a background project - filing it under the active project
+      // would mislabel it (the exit/idle handlers gate the same way).
+      const task = useBoardStore.getState().tasks.find((candidateTask) => candidateTask.id === taskId);
+      if (!task) return;
+
+      const projectId = useProjectStore.getState().currentProject?.id ?? '';
+      const notifyConfig = useConfigStore.getState().config.notifications;
+      // The 8s timer arms for any preparing label, so describe the actual cause
+      // rather than always claiming a git-queue wait.
+      const detail = label.startsWith('Waiting for git queue')
+        ? 'waiting on the git queue'
+        : label.replace(/\.\.\.$/, '').toLowerCase();
+
+      if (notifyConfig.toasts.onSpawnStalled) {
+        const toastId = useToastStore.getState().addToast({
+          message: `"${task.title}" is still preparing - ${detail}`,
+          variant: 'warning',
+          duration: 0, // sticky: the Cancel action must outlive the default auto-dismiss
+          action: {
+            label: 'Cancel',
+            onClick: () => { window.electronAPI.tasks.cancelSpawn(taskId); },
+          },
+        });
+        spawnStallToastIds.set(taskId, toastId);
+      }
+
+      if (notifyConfig.desktop.onSpawnStalled && projectId) {
+        shouldNotify(`spawnstall:${taskId}`, projectId).then((notify) => {
+          if (!notify) return;
+          const project = useProjectStore.getState().projects.find((candidateProject) => candidateProject.id === projectId);
+          sendNotification(
+            `spawnstall:${taskId}`,
+            `Still preparing: ${task.title}`,
+            project?.name ?? 'A project',
+            projectId,
+            taskId,
+          );
+        });
+      }
+    }
+
+    const unsubscribeSpawnStall = useSessionStore.subscribe((state, prevState) => {
+      if (state.spawnProgress === prevState.spawnProgress) return;
+      const current = state.spawnProgress;
+      const previous = prevState.spawnProgress;
+      // Arm when a task newly enters spawnProgress. Do NOT re-arm on a label
+      // change (e.g. waiting -> fetching); the threshold measures total
+      // continuous preparing time, not time-in-current-phase.
+      for (const taskId of Object.keys(current)) {
+        if (!(taskId in previous) && !spawnStallTimers.has(taskId)) {
+          spawnStallTimers.set(taskId, setTimeout(() => {
+            spawnStallTimers.delete(taskId);
+            maybeNotifySpawnStall(taskId);
+          }, STALL_THRESHOLD_MS));
+        }
+      }
+      // Disarm when a task leaves spawnProgress (session arrived, abort, or
+      // moved to To Do). Also dismiss any stall toast so its now-stale Cancel
+      // can't abort a newer move for the same task, and the sticky toast for a
+      // resolved spawn doesn't linger.
+      for (const taskId of Object.keys(previous)) {
+        if (!(taskId in current)) {
+          const timer = spawnStallTimers.get(taskId);
+          if (timer) { clearTimeout(timer); spawnStallTimers.delete(taskId); }
+          const toastId = spawnStallToastIds.get(taskId);
+          if (toastId) { useToastStore.getState().dismissToast(toastId); spawnStallToastIds.delete(taskId); }
+        }
+      }
+    });
+    cleanups.push(() => {
+      unsubscribeSpawnStall();
+      for (const timer of spawnStallTimers.values()) clearTimeout(timer);
+      spawnStallTimers.clear();
+      spawnStallToastIds.clear();
+    });
+
     // Session exit events
     if (sessions.onExit) {
       cleanups.push(sessions.onExit((sessionId, exitCode, projectId) => {

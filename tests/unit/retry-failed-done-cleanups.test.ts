@@ -20,14 +20,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { mockRemoveWorktree, mockWithLock } = vi.hoisted(() => ({
-  mockRemoveWorktree: vi.fn(async (_path: string): Promise<boolean> => true),
-  mockWithLock: vi.fn(async <T,>(fn: () => Promise<T>): Promise<T> => fn()),
+  mockRemoveWorktree: vi.fn(async (_path: string, _opts?: unknown): Promise<boolean> => true),
+  mockWithLock: vi.fn(async <T,>(fn: () => Promise<T>, _opts?: unknown): Promise<T> => fn()),
 }));
 
 vi.mock('../../src/main/git/worktree-manager', () => ({
+  GitQueuePriority: { USER: 0, BACKGROUND: 10 },
   WorktreeManager: class {
-    removeWorktree(path: string) { return mockRemoveWorktree(path); }
-    withLock<T>(fn: () => Promise<T>) { return mockWithLock(fn); }
+    removeWorktree(path: string, opts?: unknown) { return mockRemoveWorktree(path, opts); }
+    withLock<T>(fn: () => Promise<T>, opts?: unknown) { return mockWithLock(fn, opts); }
   },
 }));
 
@@ -73,6 +74,9 @@ vi.mock('../../src/main/ipc/task-lifecycle-lock', () => ({
 }));
 
 import { retryFailedDoneCleanups } from '../../src/main/engine/resource-cleanup';
+import { GitQueuePriority } from '../../src/main/git/worktree-manager';
+
+const FAST_OPTS = { timeoutMs: 3000, fast: true };
 
 interface MockTask {
   id: string;
@@ -158,8 +162,29 @@ describe('retryFailedDoneCleanups', () => {
     const result = await retryFailedDoneCleanups(PROJECT_PATH, taskRepo as never, swimlaneRepo as never);
 
     expect(result).toBe(1);
-    expect(mockRemoveWorktree).toHaveBeenCalledWith('/home/dev/my-project/.kangentic/worktrees/stuck-bbbb2222');
+    expect(mockRemoveWorktree).toHaveBeenCalledWith('/home/dev/my-project/.kangentic/worktrees/stuck-bbbb2222', FAST_OPTS);
     expect(taskRepo.update).toHaveBeenCalledWith({ id: 'bbbb2222', worktree_path: null });
+  });
+
+  it('runs background cleanup at low priority with fail-fast removal opts', async () => {
+    const swimlaneRepo = makeSwimlaneRepo([
+      { id: 'lane-done', role: 'done', name: 'Done' },
+    ]);
+    const taskRepo = makeTaskRepo({
+      'lane-done': [
+        { id: 'ffff6666', title: 'Stuck', worktree_path: '/home/dev/my-project/.kangentic/worktrees/stuck-ffff6666' },
+      ],
+    });
+
+    await retryFailedDoneCleanups(PROJECT_PATH, taskRepo as never, swimlaneRepo as never);
+
+    // The git lock is acquired at BACKGROUND priority so a user spawn jumps ahead.
+    expect(mockWithLock).toHaveBeenCalledWith(expect.any(Function), { priority: GitQueuePriority.BACKGROUND });
+    // The removal itself is fail-fast (short timeout + single attempt).
+    expect(mockRemoveWorktree).toHaveBeenCalledWith(
+      '/home/dev/my-project/.kangentic/worktrees/stuck-ffff6666',
+      FAST_OPTS,
+    );
   });
 
   it('leaves worktree_path set when the retry fails, so the next startup can try again', async () => {
@@ -235,7 +260,7 @@ describe('retryFailedDoneCleanups', () => {
     expect(taskRepo.listAllInSwimlane).toHaveBeenCalledWith('lane-done');
     expect(taskRepo.list).not.toHaveBeenCalled();
     expect(result).toBe(1);
-    expect(mockRemoveWorktree).toHaveBeenCalledWith('/home/dev/my-project/.kangentic/worktrees/archived-eeee5555');
+    expect(mockRemoveWorktree).toHaveBeenCalledWith('/home/dev/my-project/.kangentic/worktrees/archived-eeee5555', FAST_OPTS);
     expect(taskRepo.update).toHaveBeenCalledWith({ id: 'eeee5555', worktree_path: null });
   });
 

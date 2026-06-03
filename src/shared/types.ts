@@ -917,11 +917,15 @@ export interface NotificationConfig {
     onAgentIdle: boolean;
     onAgentCrash: boolean;
     onPlanComplete: boolean;
+    /** A task spawn has been preparing (worktree/git) longer than the stall threshold. */
+    onSpawnStalled: boolean;
   };
   toasts: {
     onAgentIdle: boolean;
     onAgentCrash: boolean;
     onPlanComplete: boolean;
+    /** A task spawn has been preparing (worktree/git) longer than the stall threshold. */
+    onSpawnStalled: boolean;
     durationSeconds: number;
     maxCount: number;
   };
@@ -1136,11 +1140,13 @@ export const DEFAULT_CONFIG: AppConfig = {
       onAgentIdle: true,
       onAgentCrash: true,
       onPlanComplete: true,
+      onSpawnStalled: true,
     },
     toasts: {
       onAgentIdle: true,
       onAgentCrash: true,
       onPlanComplete: true,
+      onSpawnStalled: true,
       durationSeconds: 4,
       maxCount: 5,
     },
@@ -2017,6 +2023,12 @@ export interface ElectronAPI {
     update: (input: TaskUpdateInput) => Promise<Task>;
     delete: (id: string) => Promise<void>;
     move: (input: TaskMoveInput) => Promise<void>;
+    /**
+     * Cancel an in-flight spawn for a task (e.g. while it is parked in the
+     * git queue or fetching). Aborts the move's AbortController; the existing
+     * AbortError path clears spawn progress and rolls the move back.
+     */
+    cancelSpawn: (taskId: string) => Promise<void>;
     listArchived: () => Promise<Task[]>;
     unarchive: (input: TaskUnarchiveInput) => Promise<Task>;
     bulkDelete: (ids: string[]) => Promise<TaskBulkDeleteResult>;

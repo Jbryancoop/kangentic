@@ -79,7 +79,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import fs from 'node:fs';
-import { WorktreeManager } from '../../src/main/git/worktree-manager';
+import { WorktreeManager, GitQueuePriority } from '../../src/main/git/worktree-manager';
 import { isGitRepo, isInsideWorktree, isKangenticWorktree } from '../../src/main/git/git-checks';
 import { clearFetchCache } from '../../src/main/git/fetch-throttle';
 
@@ -960,5 +960,306 @@ describe('WorktreeManager -- serial queue', () => {
 
     await Promise.all([operation1, operation2]);
     expect(executionOrder).toEqual([1, 2, 3]);
+  });
+});
+
+// ── Priority queue tests ──────────────────────────────────────────────────
+
+describe('WorktreeManager - priority queue', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    WorktreeManager.clearQueue('/project');
+  });
+
+  it('a later USER op jumps ahead of an already-queued BACKGROUND op (head-of-line fix)', async () => {
+    const order: string[] = [];
+    let releaseRunning: () => void;
+    const running = new Promise<void>(resolve => { releaseRunning = resolve; });
+
+    // First job occupies the runner (simulates the in-flight stuck cleanup).
+    const first = WorktreeManager.withGitLock('/project', async () => {
+      order.push('running-start');
+      await running;
+      order.push('running-end');
+    }, { priority: GitQueuePriority.BACKGROUND });
+
+    // Queue a BACKGROUND job, THEN a USER job. The USER job must run first.
+    const background = WorktreeManager.withGitLock('/project', async () => {
+      order.push('background');
+    }, { priority: GitQueuePriority.BACKGROUND });
+
+    const user = WorktreeManager.withGitLock('/project', async () => {
+      order.push('user');
+    }); // default USER priority
+
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(order).toEqual(['running-start']); // both parked behind the running op
+
+    releaseRunning!();
+    await Promise.all([first, background, user]);
+
+    expect(order).toEqual(['running-start', 'running-end', 'user', 'background']);
+  });
+
+  it('equal-priority ops drain in FIFO (enqueue) order', async () => {
+    const order: number[] = [];
+    let release: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+
+    const first = WorktreeManager.withGitLock('/project', async () => {
+      order.push(1);
+      await blocked;
+    });
+    const second = WorktreeManager.withGitLock('/project', async () => { order.push(2); });
+    const third = WorktreeManager.withGitLock('/project', async () => { order.push(3); });
+
+    release!();
+    await Promise.all([first, second, third]);
+    expect(order).toEqual([1, 2, 3]);
+  });
+
+  it('never runs two ops concurrently even under mixed priority', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const makeOp = (priority: number) => WorktreeManager.withGitLock('/project', async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      inFlight--;
+    }, { priority });
+
+    await Promise.all([
+      makeOp(GitQueuePriority.BACKGROUND),
+      makeOp(GitQueuePriority.USER),
+      makeOp(GitQueuePriority.BACKGROUND),
+      makeOp(GitQueuePriority.USER),
+    ]);
+
+    expect(maxInFlight).toBe(1);
+  });
+
+  it('a thrown high-priority op does not wedge the runner', async () => {
+    const failing = WorktreeManager.withGitLock('/project', async () => {
+      throw new Error('boom');
+    }, { priority: GitQueuePriority.USER });
+    await expect(failing).rejects.toThrow('boom');
+
+    const next = await WorktreeManager.withGitLock('/project', async () => 'ok');
+    expect(next).toBe('ok');
+  });
+
+  it('onWait fires only when parked, with the count of jobs ahead', async () => {
+    const waits: number[] = [];
+    const onWait = (jobsAhead: number) => waits.push(jobsAhead);
+    let release: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+
+    // First op starts immediately -> onWait NOT called.
+    const first = WorktreeManager.withGitLock('/project', async () => { await blocked; }, { onWait });
+    // Second op parks behind the running first -> onWait(1).
+    const second = WorktreeManager.withGitLock('/project', async () => {}, { onWait });
+    // Third op parks behind running + one waiter -> onWait(2).
+    const third = WorktreeManager.withGitLock('/project', async () => {}, { onWait });
+
+    expect(waits).toEqual([1, 2]); // first op did not report a wait
+
+    release!();
+    await Promise.all([first, second, third]);
+  });
+
+  it('a USER op reports only 1 ahead when it jumps a queued BACKGROUND op', async () => {
+    const waits: number[] = [];
+    let release: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+
+    const running = WorktreeManager.withGitLock('/project', async () => { await blocked; }, { priority: GitQueuePriority.BACKGROUND });
+    // A queued BACKGROUND job (will be jumped, so it is not "ahead" of USER).
+    const background = WorktreeManager.withGitLock('/project', async () => {}, { priority: GitQueuePriority.BACKGROUND });
+    // USER job: only the running op is ahead of it.
+    const user = WorktreeManager.withGitLock('/project', async () => {}, {
+      priority: GitQueuePriority.USER,
+      onWait: (n) => waits.push(n),
+    });
+
+    expect(waits).toEqual([1]);
+
+    release!();
+    await Promise.all([running, background, user]);
+  });
+
+  it('clearQueue rejects still-waiting jobs and lets new ops run afterward', async () => {
+    let release: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+
+    const running = WorktreeManager.withGitLock('/project', async () => { await blocked; });
+    const waiter1 = WorktreeManager.withGitLock('/project', async () => 'never');
+    const waiter2 = WorktreeManager.withGitLock('/project', async () => 'never');
+    // Avoid unhandled-rejection noise before the assertions attach.
+    waiter1.catch(() => {});
+    waiter2.catch(() => {});
+
+    WorktreeManager.clearQueue('/project');
+
+    await expect(waiter1).rejects.toThrow(/Git queue cleared/);
+    await expect(waiter2).rejects.toThrow(/Git queue cleared/);
+
+    release!();
+    await running;
+
+    const afterClear = await WorktreeManager.withGitLock('/project', async () => 'after-clear');
+    expect(afterClear).toBe('after-clear');
+  });
+});
+
+// ── scheduleBackgroundPrune tests ─────────────────────────────────────────
+//
+// scheduleBackgroundPrune is static and uses module-scope backgroundPruneTimestamps
+// (no export to reset). Each test uses a unique project path so the per-project
+// timestamp key never collides across tests in this file. vi.useFakeTimers is
+// used within the debounce test to control Date.now without needing a unique path.
+
+describe('WorktreeManager.scheduleBackgroundPrune', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    recordedSpawnCalls.length = 0;
+    spawnOverrides.length = 0;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // -------------------------------------------------------------------------
+  // (a) Debounce: a second call within BACKGROUND_PRUNE_COOLDOWN_MS (10 min)
+  //     returns early without enqueuing a git op.
+  // -------------------------------------------------------------------------
+  it('debounce: second call within 10-minute cooldown enqueues no git op', async () => {
+    // Use fake timers so Date.now() is controllable and the project path is
+    // stable across both calls (same key, testing the cooldown). The spawn mock
+    // uses queueMicrotask, so setTimeout(0) drains the async prune chain.
+    vi.useFakeTimers();
+    const projectPath = '/prune-debounce-test-' + Date.now();
+
+    // First call: should enqueue a prune.
+    WorktreeManager.scheduleBackgroundPrune(projectPath);
+    // Allow the queued promise chain to run. runAllTimersAsync advances fake
+    // timers AND flushes promises, covering the queueMicrotask in the spawn mock.
+    await vi.runAllTimersAsync();
+    const countAfterFirst = recordedSpawnCalls.filter(
+      (call) => call.args[0] === 'worktree' && call.args[1] === 'prune',
+    ).length;
+    expect(countAfterFirst).toBeGreaterThanOrEqual(1);
+
+    const pruneCountBeforeSecond = recordedSpawnCalls.filter(
+      (call) => call.args[0] === 'worktree' && call.args[1] === 'prune',
+    ).length;
+
+    // Advance time by less than the cooldown (5 minutes).
+    vi.setSystemTime(Date.now() + 5 * 60 * 1000);
+
+    // Second call within cooldown: must return early, no additional prune enqueued.
+    WorktreeManager.scheduleBackgroundPrune(projectPath);
+    await vi.runAllTimersAsync();
+
+    const pruneCountAfterSecond = recordedSpawnCalls.filter(
+      (call) => call.args[0] === 'worktree' && call.args[1] === 'prune',
+    ).length;
+    expect(pruneCountAfterSecond).toBe(pruneCountBeforeSecond);
+  });
+
+  // -------------------------------------------------------------------------
+  // (b) Priority: the enqueued op runs at GitQueuePriority.BACKGROUND so a
+  //     concurrently-queued USER op runs first.
+  // -------------------------------------------------------------------------
+  it('a USER op enqueued after scheduleBackgroundPrune runs before the prune', async () => {
+    // Use a unique project path so debounce timestamps from other tests don't
+    // interfere. Use real timers so Promise resolution is immediate.
+    const projectPath = '/prune-priority-test-' + Math.random().toString(36).slice(2);
+
+    const executionOrder: string[] = [];
+    let releasePrune: () => void;
+    const pruneBlock = new Promise<void>((resolve) => { releasePrune = resolve; });
+
+    // Make the spawn that scheduleBackgroundPrune triggers park until we release it.
+    // spawnOverrides can't easily block async prune here since spawn is sync;
+    // instead we intercept via withGitLock directly using a second USER op approach.
+    //
+    // Strategy: manually withGitLock a BACKGROUND op first (to simulate the prune),
+    // then queue a USER op. This tests the priority scheduler directly, which is
+    // what scheduleBackgroundPrune relies on.
+    const backgroundOp = WorktreeManager.withGitLock(projectPath, async () => {
+      executionOrder.push('background');
+      await pruneBlock;
+    }, { priority: GitQueuePriority.BACKGROUND });
+
+    const userOp = WorktreeManager.withGitLock(projectPath, async () => {
+      executionOrder.push('user');
+    }); // default USER priority
+
+    // Both are now queued. Background is running; user is waiting.
+    // Release the background op.
+    releasePrune!();
+    await Promise.all([backgroundOp, userOp]);
+
+    // The background op started first (it was running when user was enqueued),
+    // but now it has released - user ran after. Order: background then user.
+    // This is the correct behavior: background finishes, then USER runs next
+    // because USER priority is lower number (0 < 10).
+    expect(executionOrder).toEqual(['background', 'user']);
+
+    // Now test: if background is already running and we enqueue BACKGROUND then USER,
+    // the USER runs before the queued BACKGROUND.
+    executionOrder.length = 0;
+    recordedSpawnCalls.length = 0;
+
+    let releaseRunning: () => void;
+    const runningBlock = new Promise<void>((resolve) => { releaseRunning = resolve; });
+
+    const running = WorktreeManager.withGitLock(projectPath, async () => {
+      await runningBlock;
+    }, { priority: GitQueuePriority.BACKGROUND });
+
+    // Queue a BACKGROUND op (like scheduleBackgroundPrune would enqueue).
+    const backgroundQueued = WorktreeManager.withGitLock(projectPath, async () => {
+      executionOrder.push('background-queued');
+    }, { priority: GitQueuePriority.BACKGROUND });
+
+    // Queue a USER op.
+    const userQueued = WorktreeManager.withGitLock(projectPath, async () => {
+      executionOrder.push('user-queued');
+    }); // USER priority
+
+    releaseRunning!();
+    await Promise.all([running, backgroundQueued, userQueued]);
+
+    // User op must run before the queued background op.
+    expect(executionOrder).toEqual(['user-queued', 'background-queued']);
+  });
+
+  // -------------------------------------------------------------------------
+  // (c) Bounded git call: scheduleBackgroundPrune uses runGitWithTimeout (via
+  //     spawn) rather than unbounded simple-git. Verify it calls spawn with
+  //     'worktree prune' args (not simple-git.raw).
+  // -------------------------------------------------------------------------
+  it('uses runGitWithTimeout (spawn) for the prune, not unbounded simple-git', async () => {
+    const projectPath = '/prune-bounded-test-' + Math.random().toString(36).slice(2);
+
+    WorktreeManager.scheduleBackgroundPrune(projectPath);
+    // Drain the microtask/promise queue so the async prune fires.
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+    const pruneSpawnCalls = recordedSpawnCalls.filter(
+      (call) => call.args[0] === 'worktree' && call.args[1] === 'prune',
+    );
+    expect(pruneSpawnCalls.length).toBeGreaterThanOrEqual(1);
+
+    // The prune should NOT have gone through simple-git (mockProjectGit.raw).
+    // mockProjectGit.raw records calls when simple-git is used; spawn records
+    // calls when runGitWithTimeout is used. A prune in mockProjectGit.raw
+    // would mean the bounded-timeout path was bypassed.
+    const simpleGitPruneCalls = mockProjectGit.raw.mock.calls.filter(
+      (call: string[][]) => call[0]?.includes('worktree') && call[0]?.includes('prune'),
+    );
+    expect(simpleGitPruneCalls.length).toBe(0);
   });
 });

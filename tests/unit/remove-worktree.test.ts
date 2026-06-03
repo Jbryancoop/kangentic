@@ -46,7 +46,7 @@ const {
     mockExistsSync: vi.fn((): boolean => false),
     mockFsRm: vi.fn(async () => {}),
     mockRemoveNodeModulesPath: vi.fn(),
-    mockRemoveWithRetry: vi.fn(async (_target: string): Promise<void> => {}),
+    mockRemoveWithRetry: vi.fn(async (_target: string, _opts?: unknown): Promise<void> => {}),
     mockSpawn: vi.fn((command: string, args: readonly string[], options: { cwd: string }) => {
       recordedSpawnCalls.push({ command, args, cwd: options.cwd });
       const override = spawnOverrides.find((entry) => entry.match(args));
@@ -115,7 +115,7 @@ vi.mock('../../src/main/git/node-modules-link', () => ({
 }));
 
 vi.mock('../../src/main/git/rm-with-retry', () => ({
-  removeWithRetry: (target: string) => mockRemoveWithRetry(target),
+  removeWithRetry: (target: string, opts?: unknown) => mockRemoveWithRetry(target, opts),
 }));
 
 vi.mock('../../src/main/git/fetch-throttle', () => ({
@@ -224,7 +224,8 @@ describe('WorktreeManager.removeWorktree', () => {
     const result = await manager.removeWorktree(WORKTREE_PATH);
 
     expect(result).toBe(true);
-    expect(mockRemoveWithRetry).toHaveBeenCalledWith(WORKTREE_PATH);
+    // No opts -> full backoff (undefined second arg).
+    expect(mockRemoveWithRetry).toHaveBeenCalledWith(WORKTREE_PATH, undefined);
     // worktree prune should also be called after the manual rm
     const pruneCall = recordedSpawnCalls.find(
       (call) => call.args[0] === 'worktree' && call.args[1] === 'prune',
@@ -262,6 +263,23 @@ describe('WorktreeManager.removeWorktree', () => {
     const result = await manager.removeWorktree(WORKTREE_PATH);
 
     expect(result).toBe(false);
+  });
+
+  // Fast mode (background retry cleanup): collapse the manual-removal backoff
+  // to a single attempt so a stuck removal can't hold the git queue for ~15s
+  // while a user spawn waits behind it.
+  it('fast mode forwards single-attempt opts to removeWithRetry', async () => {
+    mockExistsSync.mockReturnValue(true);
+    spawnOverrides.push({
+      match: (args) => args[0] === 'worktree' && args[1] === 'remove',
+      behavior: { exitCode: 1, stderr: 'fatal: git worktree remove failed' },
+    });
+    mockRemoveWithRetry.mockResolvedValue(undefined);
+
+    const result = await manager.removeWorktree(WORKTREE_PATH, { timeoutMs: 3000, fast: true });
+
+    expect(result).toBe(true);
+    expect(mockRemoveWithRetry).toHaveBeenCalledWith(WORKTREE_PATH, { delays: [0], innerMaxRetries: 0 });
   });
 
   // Guard: node_modules junction cleaned up BEFORE git/fs recursive operations

@@ -119,6 +119,25 @@ export function emitSpawnProgress(
 }
 
 /**
+ * Emit a "waiting in the per-project git queue" label. Not a PHASE_LABELS
+ * entry because it carries a runtime count - but it rides the same
+ * pushSpawnProgress path, so it lands in the queryable map and is reconciled
+ * by syncSessions / swept by the TTL exactly like a phase label. Used while a
+ * spawn is parked behind another git op so the card shows a distinct waiting
+ * state instead of a static "Fetching latest...".
+ */
+export function emitSpawnWaiting(
+  mainWindow: BrowserWindow,
+  taskId: string,
+  jobsAhead: number,
+): void {
+  const label = jobsAhead > 0
+    ? `Waiting for git queue... (${jobsAhead} ahead)`
+    : 'Waiting for git queue...';
+  pushSpawnProgress(mainWindow, taskId, label);
+}
+
+/**
  * Create an onProgress callback that emits spawn progress labels.
  * The callback accepts phase strings from the git layer and resolves
  * them to user-facing labels via the PHASE_LABELS map. Unknown phases

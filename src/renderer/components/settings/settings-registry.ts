@@ -85,6 +85,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   // ── Notifications ──
   { id: 'notifications.onAgentIdle', tabId: 'notifications', label: 'Agent Idle', description: 'When an agent needs attention on a non-visible project', scope: 'global', keywords: ['desktop', 'toast', 'alert'] },
   { id: 'notifications.onPlanComplete', tabId: 'notifications', label: 'Plan Complete', description: 'When a plan finishes and the task auto-moves', scope: 'global', keywords: ['desktop', 'toast', 'alert'] },
+  { id: 'notifications.onSpawnStalled', tabId: 'notifications', label: 'Spawn Stalled', description: 'When a task spawn waits too long on the git queue while preparing', scope: 'global', keywords: ['desktop', 'toast', 'alert', 'queue', 'fetching', 'worktree', 'preparing'] },
   { id: 'notifications.toasts.durationSeconds', tabId: 'notifications', label: 'Toast Auto-Dismiss', description: 'How long toasts remain visible', scope: 'global', keywords: ['timeout', 'seconds'] },
   { id: 'notifications.toasts.maxCount', tabId: 'notifications', label: 'Max Visible Toasts', description: 'Maximum simultaneous toasts on screen', scope: 'global', keywords: ['limit', 'count'] },
 

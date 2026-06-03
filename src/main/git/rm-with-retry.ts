@@ -29,16 +29,29 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function removeWithRetry(targetPath: string): Promise<void> {
+/**
+ * `opts` lets a best-effort/background caller collapse the retry budget. Pass
+ * `{ delays: [0], innerMaxRetries: 0 }` to attempt removal exactly once with no
+ * backoff (outer) and no per-file retry (inner) - the only way to actually
+ * bound the call to a few seconds, since `delays: [0]` alone still incurs
+ * Node's ~2s inner `maxRetries` budget per locked path.
+ */
+export async function removeWithRetry(
+  targetPath: string,
+  options?: { delays?: readonly number[]; innerMaxRetries?: number; innerRetryDelayMs?: number },
+): Promise<void> {
+  const delays = options?.delays ?? RETRY_DELAYS_MS;
+  const maxRetries = options?.innerMaxRetries ?? INNER_MAX_RETRIES;
+  const retryDelay = options?.innerRetryDelayMs ?? INNER_RETRY_DELAY_MS;
   let lastError: unknown;
-  for (const delay of RETRY_DELAYS_MS) {
+  for (const delay of delays) {
     if (delay > 0) await sleep(delay);
     try {
       await fs.promises.rm(targetPath, {
         recursive: true,
         force: true,
-        maxRetries: INNER_MAX_RETRIES,
-        retryDelay: INNER_RETRY_DELAY_MS,
+        maxRetries,
+        retryDelay,
       });
       return;
     } catch (error) {

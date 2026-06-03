@@ -35,20 +35,64 @@ const backgroundPruneTimestamps = new Map<string, number>();
 const BACKGROUND_PRUNE_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 
 // ---------------------------------------------------------------------------
-// Per-project serial queue for git-mutating operations
+// Per-project priority queue for git-mutating operations
 // ---------------------------------------------------------------------------
 
 /**
- * Promise chain per project path. Each git-mutating call chains onto the
- * previous promise so operations execute in FIFO order. Different projects
- * run independently. This eliminates git lock contention that occurs when
- * multiple worktree operations hit the same .git directory concurrently.
+ * Priority for a queued git operation. LOWER number runs sooner, so the
+ * default (USER) wins over background maintenance. A user-initiated spawn
+ * enqueued behind a slow/failing background cleanup jumps ahead of every
+ * other *waiting* background job - it still has to let the one currently
+ * running op finish (so the `.git` lock is never contended), but it no longer
+ * sits behind a pile of doomed cleanup removals.
  */
-const projectQueues = new Map<string, Promise<unknown>>();
+export enum GitQueuePriority {
+  USER = 0,
+  BACKGROUND = 10,
+}
+
+/** A single git-mutating operation waiting on (or running in) a project queue. */
+interface GitJob {
+  priority: number;
+  /** Monotonic enqueue counter; FIFO tiebreak within equal priority. */
+  seq: number;
+  run: () => Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+}
+
+/**
+ * Per-project scheduler state. `running` is true while exactly one job's
+ * `run()` is in flight (this is what preserves the one-op-at-a-time guarantee
+ * that prevents `.git` lock contention). `waiting` is kept sorted by
+ * (priority asc, seq asc) so `shift()` always yields the next job to run.
+ */
+interface ProjectQueue {
+  running: boolean;
+  waiting: GitJob[];
+}
+
+const projectQueues = new Map<string, ProjectQueue>();
+
+/** Monotonic counter for FIFO ordering within a priority band. */
+let gitJobSeq = 0;
 
 /** Normalize project path for use as a queue key (Windows is case-insensitive). */
 function queueKey(projectPath: string): string {
   return process.platform === 'win32' ? projectPath.toLowerCase() : projectPath;
+}
+
+/** Options accepted by withGitLock / withLock. */
+interface GitLockOptions {
+  /** Lower = runs sooner. Defaults to GitQueuePriority.USER. */
+  priority?: number;
+  /**
+   * Called synchronously at enqueue time IFF the job cannot start immediately
+   * (something is running or already queued). `jobsAhead` is the number of
+   * jobs that will run before this one (snapshot at enqueue; only ever an
+   * upper bound as the queue drains).
+   */
+  onWait?: (jobsAhead: number) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,29 +108,110 @@ export class WorktreeManager {
 
   /**
    * Serialize a git-mutating operation on this project's queue.
-   * Operations on the same project execute in FIFO order; different
-   * projects run independently.
+   * Only one op per project runs at a time; when the runner frees, the
+   * highest-priority waiting job runs next (FIFO within equal priority).
    */
-  withLock<T>(operation: () => Promise<T>): Promise<T> {
-    return WorktreeManager.withGitLock(this.projectPath, operation);
+  withLock<T>(operation: () => Promise<T>, options?: GitLockOptions): Promise<T> {
+    return WorktreeManager.withGitLock(this.projectPath, operation, options);
   }
 
   /**
-   * Serialize a git-mutating operation on the given project's queue.
-   * A failed operation does not block subsequent ones.
+   * Serialize a git-mutating operation on the given project's queue. Exactly
+   * one operation runs at a time per project (no `.git` lock contention), but
+   * waiting operations are ordered by priority so a user-initiated spawn does
+   * not sit behind a slow/failing background cleanup. A failed operation does
+   * not block subsequent ones (the runner always advances).
    */
-  static withGitLock<T>(projectPath: string, operation: () => Promise<T>): Promise<T> {
+  static withGitLock<T>(
+    projectPath: string,
+    operation: () => Promise<T>,
+    options?: GitLockOptions,
+  ): Promise<T> {
     const key = queueKey(projectPath);
-    const previous = projectQueues.get(key) ?? Promise.resolve();
-    const result = previous.then(operation, () => operation());
-    // Store a caught version so unhandled rejections don't leak
-    projectQueues.set(key, result.catch(() => {}));
-    return result;
+    let queue = projectQueues.get(key);
+    if (!queue) {
+      queue = { running: false, waiting: [] };
+      projectQueues.set(key, queue);
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      const job: GitJob = {
+        priority: options?.priority ?? GitQueuePriority.USER,
+        seq: gitJobSeq++,
+        run: operation as () => Promise<unknown>,
+        resolve: resolve as (value: unknown) => void,
+        reject,
+      };
+
+      if (!queue!.running && queue!.waiting.length === 0) {
+        // Runner free and nothing queued: start immediately, no wait signal.
+        WorktreeManager.runJob(key, queue!, job);
+        return;
+      }
+
+      // Parked behind the running op and/or other waiters. The new job always
+      // has the max seq, so every equal-or-higher-priority waiter is ahead of
+      // it - count them plus the running op.
+      const jobsAhead = (queue!.running ? 1 : 0)
+        + queue!.waiting.filter((other) => other.priority <= job.priority).length;
+      WorktreeManager.insertSorted(queue!.waiting, job);
+      options?.onWait?.(jobsAhead);
+    });
   }
 
-  /** Remove the queue entry for a project (e.g. on project close/delete). */
+  /** Insert a job into `waiting`, keeping it sorted by (priority asc, seq asc). */
+  private static insertSorted(waiting: GitJob[], job: GitJob): void {
+    let insertionIndex = waiting.length;
+    for (let candidateIndex = 0; candidateIndex < waiting.length; candidateIndex++) {
+      if (job.priority < waiting[candidateIndex].priority
+        || (job.priority === waiting[candidateIndex].priority && job.seq < waiting[candidateIndex].seq)) {
+        insertionIndex = candidateIndex;
+        break;
+      }
+    }
+    waiting.splice(insertionIndex, 0, job);
+  }
+
+  /** Run a job, then drain the next waiter regardless of how this one settled. */
+  private static runJob(key: string, queue: ProjectQueue, job: GitJob): void {
+    queue.running = true;
+    // Both arms advance the runner, so a thrown/rejected op never wedges the
+    // queue (this preserves the old `previous.then(op, () => op())` behavior).
+    Promise.resolve()
+      .then(job.run)
+      .then(
+        (value) => { job.resolve(value); WorktreeManager.runNext(key); },
+        (error) => { job.reject(error); WorktreeManager.runNext(key); },
+      );
+  }
+
+  /** Mark the runner free and start the next-highest-priority waiting job. */
+  private static runNext(key: string): void {
+    const queue = projectQueues.get(key);
+    // The queue may have been cleared (project closed) while a job ran; the
+    // finished job simply stops and does not recreate the queue.
+    if (!queue) return;
+    queue.running = false;
+    const next = queue.waiting.shift();
+    if (next) WorktreeManager.runJob(key, queue, next);
+  }
+
+  /**
+   * Remove the queue entry for a project (e.g. on project close/delete).
+   * Any still-waiting jobs are rejected so their callers don't hang forever.
+   * A job that is currently running is left to settle; `runNext` then finds
+   * no queue entry and stops cleanly.
+   */
   static clearQueue(projectPath: string): void {
-    projectQueues.delete(queueKey(projectPath));
+    const key = queueKey(projectPath);
+    const queue = projectQueues.get(key);
+    if (queue) {
+      for (const job of queue.waiting) {
+        job.reject(new Error('Git queue cleared (project closed)'));
+      }
+      queue.waiting.length = 0;
+    }
+    projectQueues.delete(key);
   }
 
   /**
@@ -183,6 +308,10 @@ export class WorktreeManager {
 
     // Fetch the latest from origin so worktrees start from up-to-date code.
     // Uses throttle cache to skip redundant fetches within a 5-minute window.
+    // Emit 'fetching' here (not eagerly before the lock) so a job that parked
+    // in the queue flips from "Waiting for git queue..." to "Fetching latest..."
+    // the instant it actually starts the fetch.
+    options?.onProgress?.('fetching');
     const startPoint = await fetchIfStale(this.git, this.projectPath, baseBranch, { signal: options?.signal });
     options?.onProgress?.('creating-worktree');
     options?.signal?.throwIfAborted();
@@ -320,8 +449,25 @@ export class WorktreeManager {
     }
   }
 
-  async removeWorktree(worktreePath: string): Promise<boolean> {
+  /**
+   * Remove a worktree directory. Returns false when the directory could not be
+   * removed (file handles still held) so the caller leaves `worktree_path` set
+   * for the next project-open retry pass.
+   *
+   * `options.timeoutMs` caps each git call; `options.fast` short-circuits the
+   * manual-removal backoff to a single attempt. Background retry cleanup passes
+   * both (it is best-effort and deferred to next open anyway) so it cannot hold
+   * the per-project git queue for the full 15s while a user spawn waits behind
+   * it. The user-initiated create path passes no options and keeps the full
+   * timeout + backoff.
+   */
+  async removeWorktree(
+    worktreePath: string,
+    options?: { timeoutMs?: number; fast?: boolean },
+  ): Promise<boolean> {
     if (!fs.existsSync(worktreePath)) return true;
+
+    const timeoutMs = options?.timeoutMs ?? GIT_REMOVAL_TIMEOUT_MS;
 
     // Remove node_modules junction BEFORE any recursive operation to prevent
     // git worktree remove (or the async rm below) from traversing the junction
@@ -333,7 +479,7 @@ export class WorktreeManager {
       await runGitWithTimeout(
         this.projectPath,
         ['worktree', 'remove', worktreePath, '--force'],
-        GIT_REMOVAL_TIMEOUT_MS,
+        timeoutMs,
       );
       return true;
     } catch (error) {
@@ -346,9 +492,13 @@ export class WorktreeManager {
     // Also handles EISDIR explicitly (dirent race where a child flips from
     // file to directory mid-walk), which Node's recursive rm can surface on
     // nested node_modules left by sub-package npm installs.
+    //
+    // Fast mode (background retry) collapses both the outer backoff AND Node's
+    // inner fs.rm retries to a single attempt, so the whole call is bounded by
+    // `timeoutMs` rather than ~15s + ~3.7s backoff + ~2s inner retry.
     try {
-      await removeWithRetry(worktreePath);
-      await runGitWithTimeout(this.projectPath, ['worktree', 'prune'], GIT_REMOVAL_TIMEOUT_MS);
+      await removeWithRetry(worktreePath, options?.fast ? { delays: [0], innerMaxRetries: 0 } : undefined);
+      await runGitWithTimeout(this.projectPath, ['worktree', 'prune'], timeoutMs);
       return true;
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
@@ -362,7 +512,7 @@ export class WorktreeManager {
       // whatever was holding file handles (orphaned subprocesses, AV scan)
       // has moved on.
       try {
-        await runGitWithTimeout(this.projectPath, ['worktree', 'prune'], GIT_REMOVAL_TIMEOUT_MS);
+        await runGitWithTimeout(this.projectPath, ['worktree', 'prune'], timeoutMs);
       } catch { /* best effort */ }
       return false;
     }
@@ -434,10 +584,12 @@ export class WorktreeManager {
     backgroundPruneTimestamps.set(key, Date.now());
 
     WorktreeManager.withGitLock(projectPath, async () => {
-      const git = simpleGit(projectPath);
-      await git.raw(['worktree', 'prune']);
+      // Bounded git call (matches pruneWorktrees): an unbounded simple-git
+      // prune that hangs on a held .git lock would set queue.running and never
+      // release, wedging every later op (incl. user spawns) on this project.
+      await runGitWithTimeout(projectPath, ['worktree', 'prune'], GIT_REMOVAL_TIMEOUT_MS);
       console.log(`[WORKTREE] Background prune completed for ${projectPath}`);
-    }).catch((error) => {
+    }, { priority: GitQueuePriority.BACKGROUND }).catch((error) => {
       console.warn(`[WORKTREE] Background prune failed (non-fatal): ${(error as Error).message}`);
     });
   }

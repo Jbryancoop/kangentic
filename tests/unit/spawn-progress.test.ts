@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
 import {
   emitSpawnProgress,
+  emitSpawnWaiting,
   createProgressCallback,
   clearSpawnProgress,
   getInFlightSpawnProgress,
@@ -58,6 +59,31 @@ describe('spawn-progress queryable map', () => {
     // Raw git progress string (not a known phase) flows through unchanged.
     onProgress('Resolving deltas: 42%');
     expect(getInFlightSpawnProgress()['task-1']).toBe('Resolving deltas: 42%');
+  });
+
+  it('emitSpawnWaiting pushes a dynamic "waiting" label with the jobs-ahead count', () => {
+    const { window, send } = makeWindow();
+    emitSpawnWaiting(window, 'task-1', 2);
+
+    expect(getInFlightSpawnProgress()).toEqual({ 'task-1': 'Waiting for git queue... (2 ahead)' });
+    expect(send).toHaveBeenCalledWith('task:spawnProgress', 'task-1', 'Waiting for git queue... (2 ahead)');
+  });
+
+  it('emitSpawnWaiting omits the count when no jobs are ahead', () => {
+    const { window } = makeWindow();
+    emitSpawnWaiting(window, 'task-1', 0);
+
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Waiting for git queue...');
+  });
+
+  it('a later phase push overwrites the waiting label (waiting -> fetching transition)', () => {
+    const { window } = makeWindow();
+    emitSpawnWaiting(window, 'task-1', 1);
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Waiting for git queue... (1 ahead)');
+
+    // When the parked job dequeues and starts, the git layer emits 'fetching'.
+    emitSpawnProgress(window, 'task-1', 'fetching');
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Fetching latest...');
   });
 
   it('clearSpawnProgress deletes the entry and pushes a null label', () => {
