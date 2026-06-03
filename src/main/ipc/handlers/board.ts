@@ -8,6 +8,7 @@ import { SessionRepository } from '../../db/repositories/session-repository';
 import { getProjectDb } from '../../db/database';
 import { agentRegistry } from '../../agent/agent-registry';
 import { prepareInjectionPlan } from '../../engine/injection-plan';
+import { runWithProjectLogContext } from '../../diagnostics/project-log-context';
 import type { ShortcutConfig } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 
@@ -190,8 +191,14 @@ export function registerBoardHandlers(context: IpcContext): void {
   ipcMain.handle(IPC.BOARD_CONFIG_APPLY, (_, projectId: string) => {
     const project = context.projectRepo.getById(projectId);
     if (!project) throw new Error(`Project ${projectId} not found`);
-    const result = context.boardConfigManager.applyFileChange(projectId, project.path);
-    return result.warnings;
+    // Reconcile is keyed to an explicit projectId (the kangentic.json file
+    // watcher fires it for whichever project changed, not necessarily the
+    // focused one), so tag the [BOARD_CONFIG] reconcile warnings with that
+    // project regardless of which board the user is looking at.
+    return runWithProjectLogContext(project.name, () => {
+      const result = context.boardConfigManager.applyFileChange(projectId, project.path);
+      return result.warnings;
+    });
   });
 
   ipcMain.handle(IPC.BOARD_CONFIG_GET_SHORTCUTS, () => {

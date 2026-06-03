@@ -4,6 +4,7 @@ import { IPC } from '../../shared/ipc-channels';
 import type { LogEntry } from '../../shared/types';
 import { resolveLogEntry } from './source-map-resolver';
 import { queueAppend } from './async-file-queue';
+import { getCurrentProjectLogName } from './project-log-context';
 
 /**
  * Persistent console-output mirror. Patches `console.log/warn/error/info/debug`
@@ -50,8 +51,17 @@ export function startLogMirror(options: LogMirrorOptions): void {
       // visible behavior is unchanged. A compact local-time prefix is prepended
       // to the terminal echo only (the persisted record below keeps its own
       // un-prefixed `args` plus a full ISO `ts`) so it's clear when each line
-      // happened while watching the dev terminal.
-      original.apply(console, prefixConsoleArgs(args, `[${formatLogTimestamp(now)}]`));
+      // happened while watching the dev terminal. When the line was emitted
+      // inside a per-project async region (see project-log-context.ts), a
+      // `[projectName]` tag follows the timestamp so interleaved multi-project
+      // output (the startup-recovery flurry, etc.) can be tied back to its
+      // project; global lines (updater, shutdown, bootstrap) have no ambient
+      // project and stay untagged.
+      const projectName = getCurrentProjectLogName();
+      const prefix = projectName
+        ? `[${formatLogTimestamp(now)}] [${projectName}]`
+        : `[${formatLogTimestamp(now)}]`;
+      original.apply(console, prefixConsoleArgs(args, prefix));
       if (!shouldPersist(level, options.getPersistInfoDebug())) return;
       appendLog(options.getProjectRoot(), {
         ts: now.toISOString(),

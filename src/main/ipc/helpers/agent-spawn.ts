@@ -19,6 +19,7 @@ import { emitSpawnProgress } from '../../engine/spawn-progress';
 import { ensureTaskWorktree, ensureTaskBranchCheckout } from './task-git';
 import { getProjectRepos } from './project-repos';
 import { withTaskLock } from '../task-lifecycle-lock';
+import { runWithProjectLogContext } from '../../diagnostics/project-log-context';
 
 /** Build template variables for auto-command interpolation. */
 export function buildAutoCommandVars(task: Task): Record<string, string> {
@@ -118,6 +119,14 @@ export interface AgentSpawnOptions {
 export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
   const { context, engine, tasks, sessionRepo, task, fromSwimlaneId, toLane, skipPromptTemplate, signal } = options;
 
+  // Resolve the owning project once: used for the default-agent fallback below
+  // and to tag every log this spawn emits with [projectName] (see
+  // project-log-context.ts). When no project id is supplied the body runs
+  // without establishing a new context, inheriting any ambient tag (e.g. from
+  // an enclosing task-move).
+  const project = options.projectId ? context.projectRepo.getById(options.projectId) : null;
+
+  const run = async (): Promise<void> => {
   // Guard: if the target column doesn't want agents, no-op
   if (!toLane.auto_spawn) return;
 
@@ -130,7 +139,6 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
   }
 
   // --- Resolve target agent ONCE (single source of truth) ---
-  const project = options.projectId ? context.projectRepo.getById(options.projectId) : null;
   const { agent: targetAgent, isHandoff } = resolveTargetAgent({
     taskAgentOverride: task.agent_override,
     columnAgent: toLane.agent_override,
@@ -296,6 +304,9 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
     const interpolated = interpolateTemplate(toLane.auto_command, vars);
     context.terminalSubmitScheduler.scheduleKeystrokes(currentTask.id, currentTask.session_id, [interpolated], { freshlySpawned: true });
   }
+  };
+
+  return project?.name ? runWithProjectLogContext(project.name, run) : run();
 }
 
 /**
@@ -316,6 +327,11 @@ export async function autoSpawnForTask(
   // Serialize against any other task-lifecycle op (suspend/resume/move/kill)
   // so an MCP-created auto-spawn can't race a user drag of the same task.
   return withTaskLock(task.id, async () => {
+    // Tag the worktree/checkout/spawn logs below with the project the new task
+    // belongs to. This is the entry point for MCP-created-task spawns, which
+    // have no enclosing move context to inherit a tag from.
+    const logProjectName = context.projectRepo.getById(projectId)?.name ?? null;
+    const run = async (): Promise<void> => {
     try {
       const db = getProjectDb(projectId);
       const swimlaneRepo = new SwimlaneRepository(db);
@@ -369,5 +385,7 @@ export async function autoSpawnForTask(
     } catch (err) {
       console.error('[MCP auto-spawn] Failed:', err);
     }
+    };
+    return logProjectName ? runWithProjectLogContext(logProjectName, run) : run();
   });
 }

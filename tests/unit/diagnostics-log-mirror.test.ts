@@ -208,3 +208,38 @@ describe('terminal-echo timestamp prefix', () => {
     expect(original).toEqual(['[startup] hi', 'extra']);
   });
 });
+
+describe('terminal-echo project tag', () => {
+  it('appends [projectName] after the timestamp for logs emitted inside a run', async () => {
+    // Capture the echo by making the patched-over original a spy: startLogMirror
+    // snapshots console.log at install time, so a spy installed first becomes
+    // the `original` the wrap calls through to.
+    const echoSpy = vi.fn();
+    console.log = echoSpy;
+    const { startLogMirror } = await import('../../src/main/diagnostics/log-mirror');
+    const { runWithProjectLogContext } = await import('../../src/main/diagnostics/project-log-context');
+    startLogMirror({ getProjectRoot: () => tempDirectory, getPersistInfoDebug: () => false });
+
+    runWithProjectLogContext('kangentic', () => {
+      console.log('spawned %s', 'claude');
+    });
+
+    expect(echoSpy).toHaveBeenCalledTimes(1);
+    const [formatString, trailingArg] = echoSpy.mock.calls[0];
+    expect(formatString).toMatch(/^\[\d{2}:\d{2}:\d{2}\.\d{3}\] \[kangentic\] spawned %s$/);
+    expect(trailingArg).toBe('claude');
+  });
+
+  it('leaves global logs (outside any run) untagged', async () => {
+    const echoSpy = vi.fn();
+    console.log = echoSpy;
+    const { startLogMirror } = await import('../../src/main/diagnostics/log-mirror');
+    startLogMirror({ getProjectRoot: () => tempDirectory, getPersistInfoDebug: () => false });
+
+    console.log('global line');
+
+    const [formatString] = echoSpy.mock.calls[0];
+    expect(formatString).toMatch(/^\[\d{2}:\d{2}:\d{2}\.\d{3}\] global line$/);
+    expect(formatString).not.toContain('[kangentic]');
+  });
+});

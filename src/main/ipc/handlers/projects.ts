@@ -18,6 +18,7 @@ import { ensureGitignore } from '../helpers';
 import { searchProjectEntries } from '../helpers/project-entry-search';
 import { trackEvent } from '../../analytics/analytics';
 import { isShuttingDown } from '../../shutdown-state';
+import { runWithProjectLogContext } from '../../diagnostics/project-log-context';
 import { DEFAULT_AGENT } from '../../../shared/types';
 import type { Project, Task, AppConfig, ProjectSearchEntriesInput } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
@@ -387,10 +388,12 @@ export async function openProjectByPath(context: IpcContext, projectPath: string
     cleanupStaleResourcesAsync(project.path, taskRepo, swimlaneRepo, sessionRepo, context.sessionManager)
       .catch((err) => console.error(`[PROJECT_OPEN] Resource cleanup failed for ${project.name}:`, err));
 
-    resumeSuspendedSessions(project.id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle)
-      .catch((err) => console.error('[PROJECT_OPEN] Session recovery failed:', err))
-      .then(() => autoSpawnTasks(project.id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle))
-      .catch((err) => console.error('[PROJECT_OPEN] Session reconciliation failed:', err));
+    runWithProjectLogContext(project.name, () =>
+      resumeSuspendedSessions(project.id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle)
+        .catch((err) => console.error('[PROJECT_OPEN] Session recovery failed:', err))
+        .then(() => autoSpawnTasks(project.id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle))
+        .catch((err) => console.error('[PROJECT_OPEN] Session reconciliation failed:', err)),
+    );
 
     context.recoveredProjects.add(project.id);
   }
@@ -417,7 +420,11 @@ export async function activateAllProjects(context: IpcContext): Promise<void> {
   if (otherProjects.length === 0) return;
 
   const results = await Promise.allSettled(
-    otherProjects.map(async (project) => {
+    // Each project gets its own ALS log-tag context so the concurrently
+    // emitted recovery/auto-spawn lines (resumeSuspendedSessions /
+    // autoSpawnTasks fired in parallel across all projects) are each tagged
+    // with the project that produced them, not the focused project.
+    otherProjects.map((project) => runWithProjectLogContext(project.name, async () => {
       if (isShuttingDown()) return;
       ensureGitignore(project.path);
       const db = getProjectDb(project.id);
@@ -435,7 +442,7 @@ export async function activateAllProjects(context: IpcContext): Promise<void> {
       await resumeSuspendedSessions(project.id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle);
       await autoSpawnTasks(project.id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle);
       context.recoveredProjects.add(project.id);
-    }),
+    })),
   );
 
   for (let index = 0; index < results.length; index++) {
@@ -497,19 +504,22 @@ export function registerProjectHandlers(context: IpcContext): void {
       // Guard against rapid project switching: if the user has already
       // switched to a different project, the boardConfigManager singleton
       // is now attached to that project -- skip the deferred work to
-      // avoid exporting the wrong project's state.
+      // avoid exporting the wrong project's state. The guard also makes the
+      // focused project the correct one to tag here.
       if (context.currentProjectId !== id) return;
-      try {
-        if (context.boardConfigManager.exists()) {
-          const configWarnings = context.boardConfigManager.applyConfigOnOpen();
-          for (const warning of configWarnings) {
-            console.warn('[BOARD_CONFIG] Initial reconcile:', warning);
+      runWithProjectLogContext(project.name, () => {
+        try {
+          if (context.boardConfigManager.exists()) {
+            const configWarnings = context.boardConfigManager.applyConfigOnOpen();
+            for (const warning of configWarnings) {
+              console.warn('[BOARD_CONFIG] Initial reconcile:', warning);
+            }
           }
+          context.boardConfigManager.exportFromDb();
+        } catch (err) {
+          console.error('[PROJECT_OPEN] Deferred board config work failed:', err);
         }
-        context.boardConfigManager.exportFromDb();
-      } catch (err) {
-        console.error('[PROJECT_OPEN] Deferred board config work failed:', err);
-      }
+      });
     });
 
     // Apply project config overrides (always -- config may have changed)
@@ -528,10 +538,12 @@ export function registerProjectHandlers(context: IpcContext): void {
       cleanupStaleResourcesAsync(project.path, taskRepo, swimlaneRepo, sessionRepo, context.sessionManager)
         .catch((err) => console.error(`[PROJECT_OPEN] Resource cleanup failed for ${project.name}:`, err));
 
-      resumeSuspendedSessions(id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle)
-        .catch((err) => console.error('[PROJECT_OPEN] Session recovery failed:', err))
-        .then(() => autoSpawnTasks(id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle))
-        .catch((err) => console.error('[PROJECT_OPEN] Session reconciliation failed:', err));
+      runWithProjectLogContext(project.name, () =>
+        resumeSuspendedSessions(id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle)
+          .catch((err) => console.error('[PROJECT_OPEN] Session recovery failed:', err))
+          .then(() => autoSpawnTasks(id, project.path, context.sessionManager, context.configManager, project.default_agent, context.mcpServerHandle))
+          .catch((err) => console.error('[PROJECT_OPEN] Session reconciliation failed:', err)),
+      );
 
       context.recoveredProjects.add(id);
     }

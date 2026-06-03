@@ -28,6 +28,7 @@ import { isAbortError } from '../../../shared/abort-utils';
 import { abortBacklogPromotion } from './backlog';
 import { withTaskLock } from '../task-lifecycle-lock';
 import { isShuttingDown } from '../../shutdown-state';
+import { runWithProjectLogContext } from '../../diagnostics/project-log-context';
 import { emitSpawnProgress, emitSpawnWaiting, clearSpawnProgress, createProgressCallback, getInFlightSpawnProgress } from '../../engine/spawn-progress';
 import { resolveTargetAgent } from '../../engine/agent-resolver';
 import { agentRegistry } from '../../agent/agent-registry';
@@ -121,6 +122,16 @@ export async function handleTaskMove(
   taskMoveControllers.set(input.taskId, moveController);
   const { signal } = moveController;
 
+  // Tag every project-scoped log emitted across Phases 1-3 (worktree + spawn)
+  // with the project this move targets, so concurrent moves on different
+  // projects stay distinguishable in the dev terminal. Resolve the name from
+  // the same id Phase 1 resolves; an unresolvable id (no project open) skips
+  // the tag so the body inherits no misleading ambient context.
+  const logProjectId = projectId ?? context.currentProjectId;
+  const logProjectName = logProjectId
+    ? context.projectRepo.getById(logProjectId)?.name ?? null
+    : null;
+  const runMove = async (): Promise<void> => {
   try {
     // === Phase 1 (locked, short) ===
     // All DB mutations and PTY kill/suspend dispatch for priorities 1-3.
@@ -710,6 +721,9 @@ export async function handleTaskMove(
       taskMoveControllers.delete(input.taskId);
     }
   }
+  };
+
+  return logProjectName ? runWithProjectLogContext(logProjectName, runMove) : runMove();
 }
 
 export function registerTaskMoveHandlers(context: IpcContext): void {
