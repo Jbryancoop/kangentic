@@ -12,11 +12,14 @@ import {
   type DragOverEvent,
   type DragEndEvent,
   type CollisionDetection,
+  type DropAnimation,
+  type DropAnimationKeyframeResolver,
 } from '@dnd-kit/core';
 import {
   sortableKeyboardCoordinates,
   arrayMove,
 } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { useBoardStore } from '../stores/board-store';
 import { useConfigStore } from '../stores/config-store';
 import { useToastStore } from '../stores/toast-store';
@@ -38,7 +41,7 @@ interface UseBoardDragDropResult {
   handleDragCancel: () => void;
   activeTask: Task | null;
   sortableColumnIds: string[];
-  isOverDone: boolean;
+  dropAnimation: DropAnimation;
 }
 
 /**
@@ -89,22 +92,35 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
 
   const [activeTask, setActiveTask] = useState<Task | null>(null);
 
-  // Whether the pointer is currently over the Done lane. Drives the
-  // DragOverlay's `dropAnimation` prop: `null` over Done (the FlyingCard path
-  // owns the motion, so the default drop animation must not snap the overlay
-  // back to origin first), default settle everywhere else. dnd-kit reads
-  // `dropAnimation` at drop time, so this must already be correct before
-  // handleDragEnd; we flip it in handleDragOver.
-  const [isOverDone, setIsOverDone] = useState(false);
-  // Gate the state flip so only a Done-boundary crossing re-renders the board,
-  // never a per-pointermove move within the same lane. Mirrors
-  // hoveringSwimlaneIdRef's ref-based, re-render-free philosophy.
+  // Whether the pointer is over the Done lane, tracked as a ref (never state) so
+  // the value is correct at drop time without waiting on a React commit to land.
+  // Updated synchronously in handleDragStart/handleDragOver; crossing the Done
+  // boundary therefore never re-renders the board.
   const overDoneRef = useRef(false);
-  const setOverDone = useCallback((value: boolean) => {
-    if (overDoneRef.current === value) return;
-    overDoneRef.current = value;
-    setIsOverDone(value);
-  }, []);
+
+  // dnd-kit invokes this keyframe resolver as the overlay detaches on drop, so
+  // reading overDoneRef here is race-free (no dependency on a React re-render of
+  // a `dropAnimation` prop). Over Done we return two identical keyframes:
+  // dnd-kit's createDefaultDropAnimation detects first === last and skips the
+  // animation entirely, so the overlay detaches synchronously and the FlyingCard
+  // owns the motion - no snap-back to the origin column. Everywhere else we
+  // return dnd-kit's default transform tween, inheriting the default duration,
+  // easing, and source-fade side effect via the config merge, so normal
+  // cross-column moves keep their settle animation.
+  const resolveDropKeyframes = useCallback<DropAnimationKeyframeResolver>(
+    ({ transform }) =>
+      overDoneRef.current
+        ? [{ opacity: 0 }, { opacity: 0 }]
+        : [
+            { transform: CSS.Transform.toString(transform.initial) },
+            { transform: CSS.Transform.toString(transform.final) },
+          ],
+    [],
+  );
+  const dropAnimation = useMemo<DropAnimation>(
+    () => ({ keyframes: resolveDropKeyframes }),
+    [resolveDropKeyframes],
+  );
 
   // Ref-based drop highlight: avoids React re-renders during drag
   const hoveringSwimlaneIdRef = useRef<string | null>(null);
@@ -265,10 +281,9 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
   }, [updateDropHighlight]);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
-    // Reset at the start of each drag (never at drop time, where it would race
-    // the overlay reading dropAnimation). handleDragOver re-derives it before
-    // any drop fires, so a stale value between drags is harmless.
-    setOverDone(false);
+    // Reset for this drag. handleDragOver re-derives it before any drop fires,
+    // so a stale value carried over between drags is harmless.
+    overDoneRef.current = false;
     // Gate non-positional session-store updates for the duration of the drag so
     // an in-flight spawn can't re-render a sortable card and force dnd-kit to
     // re-measure on the pointer-move thread. Flushed in handleDragEnd/Cancel.
@@ -288,7 +303,7 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
         }
       }
     }
-  }, [taskToSwimlane, setOverDone]);
+  }, [taskToSwimlane]);
 
   // Track which swimlane the pointer is hovering over for column highlights.
   // Done is excluded - it has its own drop-zone animation (green spinning border)
@@ -297,7 +312,7 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
   const handleDragOver = useCallback((event: DragOverEvent) => {
     if (!event.over) {
       updateDropHighlight(null);
-      setOverDone(false);
+      overDoneRef.current = false;
       return;
     }
 
@@ -306,11 +321,11 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
 
     const targetLane = findSwimlane(String(event.over.id)) ?? null;
     updateDropHighlight(targetLane === doneLaneId ? null : targetLane);
-    // Keep dropAnimation correct for the upcoming drop (gated to flip only on a
-    // Done-boundary crossing). dnd-kit fires onDragOver with the final `over`
-    // before onDragEnd, so by drop time this reflects the real target.
-    setOverDone(targetLane !== null && targetLane === doneLaneId);
-  }, [findSwimlane, doneLaneId, updateDropHighlight, setOverDone]);
+    // Record the live drop target so the keyframe resolver reads the right
+    // value at drop time. dnd-kit fires onDragOver with the final `over` before
+    // onDragEnd, so by drop time this ref reflects the real target.
+    overDoneRef.current = targetLane !== null && targetLane === doneLaneId;
+  }, [findSwimlane, doneLaneId, updateDropHighlight]);
 
   const handleDragEnd = useCallback(async (event: DragEndEvent) => {
     const { active, over } = event;
@@ -504,6 +519,6 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
     handleDragCancel,
     activeTask,
     sortableColumnIds,
-    isOverDone,
+    dropAnimation,
   };
 }

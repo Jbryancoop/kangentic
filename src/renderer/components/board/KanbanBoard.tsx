@@ -74,10 +74,11 @@ const SortableSwimlane = React.memo(function SortableSwimlane({ swimlane, tasks 
 /** Fixed-position card that flies from the drop position into the Done drop zone.
  *  Animates compositor-friendly transform + opacity only (never left/top/all),
  *  so the motion stays on the GPU and does not fight the board reflow that fires
- *  when setCompletingTask removes the task from its source column. The
- *  DragOverlay's default drop animation is disabled (dropAnimation={null}), so
- *  this is the only element in motion on release - there is no snap-back-to-
- *  origin overlay clone competing with it.
+ *  when setCompletingTask removes the task from its source column. Over Done the
+ *  DragOverlay's keyframe resolver returns identical keyframes so dnd-kit skips
+ *  the settle animation (see useBoardDragDrop's resolveDropKeyframes), so this is
+ *  the only element in motion on release - there is no snap-back-to-origin
+ *  overlay clone competing with it.
  *
  *  Fallback timer guarantees finalizeCompletion() fires even when
  *  onTransitionEnd never does (drop zone not in DOM, propertyName mismatch,
@@ -275,7 +276,7 @@ export function KanbanBoard() {
     handleDragCancel,
     activeTask,
     sortableColumnIds,
-    isOverDone,
+    dropAnimation,
   } = useBoardDragDrop({ swimlanes, tasks, archivedTasks });
 
   // Re-key DndContext on HMR to remount dnd-kit with a clean manager.
@@ -392,10 +393,12 @@ export function KanbanBoard() {
           </div>
         </SortableContext>
 
-        {/* Default 250ms settle for normal moves; disabled (`null`) only over
-            Done, where FlyingCard owns the motion and a default drop animation
-            would snap the overlay back to origin before the fly. */}
-        <DragOverlay dropAnimation={isOverDone ? null : undefined} style={{ pointerEvents: 'none', willChange: 'transform' }}>
+        {/* Default settle for normal moves; over Done the resolver returns
+            identical keyframes so dnd-kit skips the animation and the FlyingCard
+            owns the motion (no snap-back). The resolver reads the live target at
+            drop time, so a fast release can't race a stale prop. See
+            useBoardDragDrop's resolveDropKeyframes. */}
+        <DragOverlay dropAnimation={dropAnimation} style={{ pointerEvents: 'none', willChange: 'transform' }}>
           {activeTask ? (
             <div className="drag-overlay" style={{ opacity: 0.9 }}>
               <TaskCard task={activeTask} isDragOverlay />
