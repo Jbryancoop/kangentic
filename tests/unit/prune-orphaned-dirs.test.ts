@@ -248,6 +248,53 @@ describe('pruneStaleResources -- async background cleanup', () => {
     expect(mockRm).not.toHaveBeenCalled();
   });
 
+  it('preserves a session directory whose id is live in the session manager (regression)', async () => {
+    // task-cleanup's live-session guard may delete a live session's DB record
+    // while sparing its on-disk dir. The orphan prune must keep that dir alive
+    // until the session actually exits - it protects every id from
+    // sessionManager.listSessions(). This locks that guarantee.
+    const taskRepo = makeMockTaskRepo([]);
+    const sessionRepo = makeMockSessionRepo(); // no DB-referenced ids
+    const sessionMgr = makeMockSessionManager();
+    (sessionMgr as unknown as { listSessions: ReturnType<typeof vi.fn> })
+      .listSessions.mockReturnValue([{ id: 'live-session-uuid', status: 'running' }]);
+
+    setupReaddir({
+      [SESSIONS_DIR]: [dirEntry('live-session-uuid'), dirEntry('dead-session-uuid')],
+    });
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await pruneOrphanedDirectories(PROJECT, taskRepo, sessionRepo, sessionMgr);
+    await runWithTimers();
+
+    // The genuinely-dead dir is removed...
+    expect(mockRm).toHaveBeenCalledWith(
+      path.join(SESSIONS_DIR, 'dead-session-uuid'),
+      expect.objectContaining({ recursive: true, force: true }),
+    );
+    // ...but the live session's dir is never touched.
+    expect(mockRm).not.toHaveBeenCalledWith(
+      path.join(SESSIONS_DIR, 'live-session-uuid'),
+      expect.anything(),
+    );
+    logSpy.mockRestore();
+  });
+
+  it('preserves a session directory whose id is only in listAllSessionIds (DB regression)', async () => {
+    const taskRepo = makeMockTaskRepo([]);
+    const sessionRepo = makeMockSessionRepo(['db-only-session-uuid']);
+    const sessionMgr = makeMockSessionManager();
+
+    setupReaddir({
+      [SESSIONS_DIR]: [dirEntry('db-only-session-uuid')],
+    });
+
+    await pruneOrphanedDirectories(PROJECT, taskRepo, sessionRepo, sessionMgr);
+    await runWithTimers();
+
+    expect(mockRm).not.toHaveBeenCalled();
+  });
+
   it('retries rm on EPERM then succeeds', async () => {
     vi.useRealTimers(); // Retry delays need real timers since function is awaited
     const taskRepo = makeMockTaskRepo([]);

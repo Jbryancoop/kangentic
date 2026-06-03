@@ -60,7 +60,24 @@ export async function cleanupTaskSession(
       const records = db.prepare(
         'SELECT id FROM sessions WHERE task_id = ?'
       ).all(task.id) as Array<{ id: string }>;
+
+      // Never delete the on-disk directory of a session that is still live.
+      // The kills above (task.session_id + removeByTaskId) clear the
+      // intended-for-deletion sessions from the manager, so anything still
+      // running/queued here is a session a concurrent spawn brought to life
+      // for this task. Wiping its events.jsonl directory mid-write severs the
+      // activity feed and makes the card falsely read idle. A spared dir whose
+      // DB record we then delete is still protected from the orphan prune by
+      // pruneOrphanedDirectories' listSessions() guard until the session
+      // actually exits, at which point it gets pruned normally.
+      const liveSessionIds = new Set(
+        context.sessionManager.listSessions()
+          .filter((session) => session.status === 'running' || session.status === 'queued')
+          .map((session) => session.id),
+      );
+
       await Promise.all(records.map(({ id }) => {
+        if (liveSessionIds.has(id)) return Promise.resolve();
         const sessionDir = path.join(resolvedProjectPath, '.kangentic', 'sessions', id);
         return fs.promises.rm(sessionDir, {
           recursive: true,

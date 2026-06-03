@@ -912,6 +912,52 @@ describe('Merged Settings -- Local Settings Merge', () => {
     expect(merged.permissions).toEqual({ allow: ['Read'], deny: [] });
   });
 
+  it('recreates a missing session directory and re-wires event-bridge hooks (resume self-heal)', () => {
+    // A resume after the prior session directory was deleted: the .claude
+    // project settings exist but the session dir does NOT. buildClaudeCommand
+    // -> createMergedSettings must idempotently recreate the dir and write a
+    // settings.json whose hooks point the event bridge at this session's
+    // eventsOutputPath, so the resumed session always has a working feed.
+    const claudeDir = path.join(tmpDir, '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({}));
+
+    const sessionDir = path.join(tmpDir, '.kangentic', 'sessions', 'resumed-sess');
+    const statusOutput = path.join(sessionDir, 'status.json');
+    const eventsOutput = path.join(sessionDir, 'events.jsonl');
+
+    // Deliberately do NOT pre-create sessionDir - simulate the wiped prior dir.
+    expect(fs.existsSync(sessionDir)).toBe(false);
+
+    const builder = new CommandBuilder();
+    const cmd = builder.buildClaudeCommand({
+      cliPath: '/usr/bin/claude',
+      taskId: 'resumed-task',
+      cwd: tmpDir,
+      permissionMode: 'default',
+      sessionId: 'agent-sess-uuid',
+      resume: true,
+      statusOutputPath: statusOutput,
+      eventsOutputPath: eventsOutput,
+    });
+
+    // Directory + settings.json recreated idempotently.
+    expect(fs.existsSync(sessionDir)).toBe(true);
+    const mergedPath = path.join(sessionDir, 'settings.json');
+    expect(fs.existsSync(mergedPath)).toBe(true);
+
+    // Hooks re-wired to the event bridge + this session's events path.
+    const merged = JSON.parse(fs.readFileSync(mergedPath, 'utf-8'));
+    const hooksJson = JSON.stringify(merged.hooks);
+    expect(hooksJson).toContain('event-bridge');
+    expect(hooksJson).toContain('resumed-sess');
+    expect(hooksJson).toContain('events.jsonl');
+
+    // The command consumes the recreated settings file and resumes the session.
+    expect(cmd).toContain('--settings');
+    expect(cmd).toContain('--resume');
+  });
+
   it('deep-merges permissions.allow from project and local settings', () => {
     const claudeDir = path.join(tmpDir, '.claude');
     fs.mkdirSync(claudeDir, { recursive: true });

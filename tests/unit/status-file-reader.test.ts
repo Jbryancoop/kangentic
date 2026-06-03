@@ -7,11 +7,20 @@ import {
   type StatusFileReaderCallbacks,
   type StatusFileHook,
 } from '../../src/main/pty/readers/status-file-reader';
+import { ClaudeStatusParser } from '../../src/main/agent/adapters/claude/status-parser';
 import {
   EventType,
   type SessionUsage,
   type SessionEvent,
 } from '../../src/shared/types';
+
+/**
+ * A real Claude hook line captured from a live session, copied verbatim from
+ * tests/fixtures/replay/session-001-bg-shell-orphans.jsonl. `tool_start` is a
+ * thinking-initiating event, so a feed that delivers it is unambiguously alive.
+ */
+const REAL_TOOL_START_LINE =
+  '{"ts":1777839680827,"type":"tool_start","tool":"Agent","detail":"Explore prompt template code"}';
 
 /**
  * Tests for StatusFileReader - the subsystem that owns Claude's hook-based
@@ -474,6 +483,85 @@ describe('StatusFileReader', () => {
     reader.flushPendingEvents('session-1');
 
     expect(callbacks.onEventsParsed).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // self-heal: recreate a vanished session directory for a live session
+  // ---------------------------------------------------------------------------
+
+  it('self-heals a vanished session directory so a live session\'s feed resumes (real captured event)', () => {
+    // Mirror the on-disk layout <project>/.kangentic/sessions/<id>/events.jsonl
+    // so the directory we delete is the session dir, not the temp root.
+    const sessionDir = path.join(tempDir, 'sessions', 'sess-live');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const eventsPath = path.join(sessionDir, 'events.jsonl');
+
+    reader.attach({
+      sessionId: 'session-1',
+      statusOutputPath: null,
+      eventsOutputPath: eventsPath,
+      // Use the REAL Claude parser so the captured line is parsed exactly as
+      // it would be in production (parseEvent is a direct JSON.parse).
+      statusFileHook: {
+        parseStatus: () => null,
+        parseEvent: ClaudeStatusParser.parseEvent,
+        isFullRewrite: true,
+      },
+    });
+
+    // The cleanup race: the whole session directory is wiped mid-session while
+    // the PTY (and thus this attachment) is still live.
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    expect(fs.existsSync(sessionDir)).toBe(false);
+
+    // RED baseline: with the directory gone the feed is dead - a flush reads
+    // nothing and the engine would be left to fall back to idle.
+    reader.flushPendingEvents('session-1');
+    expect(callbacks.onEventsParsed).not.toHaveBeenCalled();
+
+    // GREEN: self-heal recreates the directory. In production this is driven by
+    // the 1s events poll's ENOENT path (the isStale closure); here we invoke it
+    // directly, matching this file's private-method test style.
+    const privateReader = reader as unknown as {
+      repairMissingEventsDir(sessionId: string): boolean;
+    };
+    expect(privateReader.repairMissingEventsDir('session-1')).toBe(true);
+    expect(fs.existsSync(sessionDir)).toBe(true);
+
+    // The live agent's event-bridge hooks resume appending to the recreated
+    // directory. The reader now reads and dispatches the real event end-to-end.
+    fs.writeFileSync(eventsPath, REAL_TOOL_START_LINE + '\n');
+    reader.flushPendingEvents('session-1');
+
+    expect(callbacks.onEventsParsed).toHaveBeenCalledTimes(1);
+    const call = (callbacks.onEventsParsed as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0]).toBe('session-1');
+    expect(call[1]).toEqual([REAL_TOOL_START_LINE]);
+    expect(call[2]).toHaveLength(1);
+    expect(call[2][0]).toMatchObject({ type: 'tool_start', tool: 'Agent' });
+  });
+
+  it('repairMissingEventsDir is a no-op when the directory still exists', () => {
+    const eventsPath = path.join(tempDir, 'events.jsonl');
+    reader.attach({
+      sessionId: 'session-1',
+      statusOutputPath: null,
+      eventsOutputPath: eventsPath,
+      statusFileHook: makeStubStatusFileHook({}),
+    });
+
+    const privateReader = reader as unknown as {
+      repairMissingEventsDir(sessionId: string): boolean;
+    };
+    // tempDir (the parent of eventsPath) exists, so there is nothing to heal.
+    expect(privateReader.repairMissingEventsDir('session-1')).toBe(false);
+  });
+
+  it('repairMissingEventsDir is a safe no-op for an unknown session', () => {
+    const privateReader = reader as unknown as {
+      repairMissingEventsDir(sessionId: string): boolean;
+    };
+    expect(privateReader.repairMissingEventsDir('never-attached')).toBe(false);
   });
 
   // ---------------------------------------------------------------------------

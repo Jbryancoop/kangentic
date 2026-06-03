@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { FileWatcher } from './file-watcher';
 import * as traceRecorder from '../activity/trace-recorder';
 import type { SessionUsage, SessionEvent, AdapterRuntimeStrategy } from '../../../shared/types';
@@ -150,6 +151,13 @@ export class StatusFileReader {
             const stat = fs.statSync(eventsOutputPath);
             return stat.size > state.eventsFileOffset;
           } catch {
+            // ENOENT: the session directory (or the events file) vanished
+            // out from under a still-attached - i.e. live - session. Recreate
+            // the directory so the running agent's event-bridge hooks can
+            // resume appending; otherwise the activity feed stays dead and the
+            // card falsely reads idle. The 1s poll keeps re-checking, so the
+            // next hook write after the heal is picked up normally.
+            this.repairMissingEventsDir(sessionId);
             return false;
           }
         },
@@ -251,6 +259,52 @@ export class StatusFileReader {
       this.callbacks.onUsageParsed(sessionId, usage);
     } catch {
       // File may not exist yet, or be partially written - ignore.
+    }
+  }
+
+  /**
+   * Self-heal a vanished session directory for a still-attached session.
+   *
+   * The events file is written by event-bridge hooks that `appendFileSync`
+   * to an absolute path without creating parent directories. If the session
+   * directory is deleted mid-session (a cleanup race, an external `rm`), every
+   * subsequent hook append throws ENOENT and the activity feed goes silent -
+   * the engine then has no signal and the card falsely reads idle even while
+   * the agent is actively working.
+   *
+   * Recreating the directory is enough to restore the feed: the running CLI's
+   * hooks point at the same absolute path and re-read nothing, so the next
+   * append succeeds once the parent directory exists again. We do NOT rewrite
+   * `settings.json` - that would be a no-op for an already-running process.
+   *
+   * Liveness gate: `detachOnPtyExit` removes a session from `states` the moment
+   * its PTY exits, so any session this reader is still watching has a live PTY.
+   * Recreating its directory can therefore never resurrect a dead session.
+   *
+   * Returns true when a missing directory was recreated.
+   */
+  private repairMissingEventsDir(sessionId: string): boolean {
+    const state = this.states.get(sessionId);
+    if (!state?.eventsOutputPath) return false;
+    const directory = path.dirname(state.eventsOutputPath);
+    if (fs.existsSync(directory)) return false;
+    try {
+      fs.mkdirSync(directory, { recursive: true });
+      // The events file will be recreated fresh by the next hook append, so
+      // start reading from byte 0 again.
+      state.eventsFileOffset = 0;
+      console.warn(
+        `[status-file] recreated vanished session dir for session=${sessionId.slice(0, 8)} - activity feed self-healing`,
+      );
+      return true;
+    } catch (error) {
+      // Best-effort: log once and keep polling. A persistent failure here
+      // (EACCES, parent also gone) means the next poll retries.
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[status-file] failed to recreate session dir for session=${sessionId.slice(0, 8)}: ${message}`,
+      );
+      return false;
     }
   }
 
