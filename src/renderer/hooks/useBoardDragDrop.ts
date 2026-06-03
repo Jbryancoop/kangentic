@@ -38,6 +38,7 @@ interface UseBoardDragDropResult {
   handleDragCancel: () => void;
   activeTask: Task | null;
   sortableColumnIds: string[];
+  isOverDone: boolean;
 }
 
 /**
@@ -87,6 +88,23 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
   const reorderTaskInColumn = useBoardStore((s) => s.reorderTaskInColumn);
 
   const [activeTask, setActiveTask] = useState<Task | null>(null);
+
+  // Whether the pointer is currently over the Done lane. Drives the
+  // DragOverlay's `dropAnimation` prop: `null` over Done (the FlyingCard path
+  // owns the motion, so the default drop animation must not snap the overlay
+  // back to origin first), default settle everywhere else. dnd-kit reads
+  // `dropAnimation` at drop time, so this must already be correct before
+  // handleDragEnd; we flip it in handleDragOver.
+  const [isOverDone, setIsOverDone] = useState(false);
+  // Gate the state flip so only a Done-boundary crossing re-renders the board,
+  // never a per-pointermove move within the same lane. Mirrors
+  // hoveringSwimlaneIdRef's ref-based, re-render-free philosophy.
+  const overDoneRef = useRef(false);
+  const setOverDone = useCallback((value: boolean) => {
+    if (overDoneRef.current === value) return;
+    overDoneRef.current = value;
+    setIsOverDone(value);
+  }, []);
 
   // Ref-based drop highlight: avoids React re-renders during drag
   const hoveringSwimlaneIdRef = useRef<string | null>(null);
@@ -247,6 +265,10 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
   }, [updateDropHighlight]);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
+    // Reset at the start of each drag (never at drop time, where it would race
+    // the overlay reading dropAnimation). handleDragOver re-derives it before
+    // any drop fires, so a stale value between drags is harmless.
+    setOverDone(false);
     // Gate non-positional session-store updates for the duration of the drag so
     // an in-flight spawn can't re-render a sortable card and force dnd-kit to
     // re-measure on the pointer-move thread. Flushed in handleDragEnd/Cancel.
@@ -266,7 +288,7 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
         }
       }
     }
-  }, [taskToSwimlane]);
+  }, [taskToSwimlane, setOverDone]);
 
   // Track which swimlane the pointer is hovering over for column highlights.
   // Done is excluded - it has its own drop-zone animation (green spinning border)
@@ -275,15 +297,20 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
   const handleDragOver = useCallback((event: DragOverEvent) => {
     if (!event.over) {
       updateDropHighlight(null);
+      setOverDone(false);
       return;
     }
 
     const activeId = String(event.active.id);
-    if (activeId.startsWith('column:')) return;
+    if (activeId.startsWith('column:')) return; // column reorder: stays default
 
     const targetLane = findSwimlane(String(event.over.id)) ?? null;
     updateDropHighlight(targetLane === doneLaneId ? null : targetLane);
-  }, [findSwimlane, doneLaneId, updateDropHighlight]);
+    // Keep dropAnimation correct for the upcoming drop (gated to flip only on a
+    // Done-boundary crossing). dnd-kit fires onDragOver with the final `over`
+    // before onDragEnd, so by drop time this reflects the real target.
+    setOverDone(targetLane !== null && targetLane === doneLaneId);
+  }, [findSwimlane, doneLaneId, updateDropHighlight, setOverDone]);
 
   const handleDragEnd = useCallback(async (event: DragEndEvent) => {
     const { active, over } = event;
@@ -477,5 +504,6 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
     handleDragCancel,
     activeTask,
     sortableColumnIds,
+    isOverDone,
   };
 }

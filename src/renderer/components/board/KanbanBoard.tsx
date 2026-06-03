@@ -275,6 +275,7 @@ export function KanbanBoard() {
     handleDragCancel,
     activeTask,
     sortableColumnIds,
+    isOverDone,
   } = useBoardDragDrop({ swimlanes, tasks, archivedTasks });
 
   // Re-key DndContext on HMR to remount dnd-kit with a clean manager.
@@ -391,7 +392,10 @@ export function KanbanBoard() {
           </div>
         </SortableContext>
 
-        <DragOverlay dropAnimation={null} style={{ pointerEvents: 'none', willChange: 'transform' }}>
+        {/* Default 250ms settle for normal moves; disabled (`null`) only over
+            Done, where FlyingCard owns the motion and a default drop animation
+            would snap the overlay back to origin before the fly. */}
+        <DragOverlay dropAnimation={isOverDone ? null : undefined} style={{ pointerEvents: 'none', willChange: 'transform' }}>
           {activeTask ? (
             <div className="drag-overlay" style={{ opacity: 0.9 }}>
               <TaskCard task={activeTask} isDragOverlay />
