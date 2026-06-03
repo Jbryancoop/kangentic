@@ -43,14 +43,18 @@ export function startLogMirror(options: LogMirrorOptions): void {
   const wrap =
     (level: LogEntry['level'], original: (...args: unknown[]) => void) =>
     (...args: unknown[]): void => {
+      const now = new Date();
       // Always call the original first so the dev console still shows output
       // and any other listeners (analytics, devtools) see the call. Even if
       // the persistence path throws below, the original was invoked first so
-      // visible behavior is unchanged.
-      original.apply(console, args);
+      // visible behavior is unchanged. A compact local-time prefix is prepended
+      // to the terminal echo only (the persisted record below keeps its own
+      // un-prefixed `args` plus a full ISO `ts`) so it's clear when each line
+      // happened while watching the dev terminal.
+      original.apply(console, prefixConsoleArgs(args, `[${formatLogTimestamp(now)}]`));
       if (!shouldPersist(level, options.getPersistInfoDebug())) return;
       appendLog(options.getProjectRoot(), {
-        ts: new Date().toISOString(),
+        ts: now.toISOString(),
         level,
         source: 'main',
         args: args.map(stringifyArg),
@@ -74,6 +78,34 @@ export function startLogMirror(options: LogMirrorOptions): void {
 function shouldPersist(level: LogEntry['level'], persistInfoDebug: boolean): boolean {
   if (level === 'error' || level === 'warn') return true;
   return persistInfoDebug;
+}
+
+/**
+ * Compact local-time stamp `HH:MM:SS.mmm` for the terminal echo. Local (not
+ * UTC) because it's read by a developer watching their own clock; the persisted
+ * NDJSON keeps the unambiguous full ISO `ts` separately.
+ */
+export function formatLogTimestamp(date: Date): string {
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  const milliseconds = String(date.getMilliseconds()).padStart(3, '0');
+  return `${hours}:${minutes}:${seconds}.${milliseconds}`;
+}
+
+/**
+ * Prepend `prefix` to a console arg list in a printf-format-safe way. When the
+ * first argument is a string it is concatenated into the format-string slot so
+ * any specifiers (`%s`, `%d`, ...) keep binding to the trailing args; a
+ * separate leading arg would shift them out of alignment. Otherwise (object
+ * first arg, or no args at all) the prefix is passed as its own leading arg so
+ * the object still renders structured in the terminal.
+ */
+export function prefixConsoleArgs(args: unknown[], prefix: string): unknown[] {
+  if (typeof args[0] === 'string') {
+    return [`${prefix} ${args[0]}`, ...args.slice(1)];
+  }
+  return [prefix, ...args];
 }
 
 function appendLog(projectRoot: string | null, entry: LogEntry): void {

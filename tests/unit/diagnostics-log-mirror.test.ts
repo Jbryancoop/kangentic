@@ -176,3 +176,35 @@ describe('log-mirror', () => {
     });
   });
 });
+
+describe('terminal-echo timestamp prefix', () => {
+  it('formats a compact zero-padded local HH:MM:SS.mmm', async () => {
+    const { formatLogTimestamp } = await import('../../src/main/diagnostics/log-mirror');
+    // Local-component constructor (year, monthIndex, day, h, m, s, ms).
+    expect(formatLogTimestamp(new Date(2026, 5, 3, 9, 4, 5, 7))).toBe('09:04:05.007');
+    expect(formatLogTimestamp(new Date(2026, 5, 3, 14, 23, 1, 123))).toBe('14:23:01.123');
+    expect(formatLogTimestamp(new Date(2026, 5, 3, 0, 0, 0, 0))).toBe('00:00:00.000');
+  });
+
+  it('concatenates the prefix into a string first arg (keeps printf specifiers aligned)', async () => {
+    const { prefixConsoleArgs } = await import('../../src/main/diagnostics/log-mirror');
+    expect(prefixConsoleArgs(['[startup] hi'], '[T]')).toEqual(['[T] [startup] hi']);
+    // A `%s` format specifier must stay in the format-string slot so the
+    // trailing arg still binds to it.
+    expect(prefixConsoleArgs(['x %s', 'y'], '[T]')).toEqual(['[T] x %s', 'y']);
+  });
+
+  it('passes the prefix as its own leading arg when the first arg is not a string', async () => {
+    const { prefixConsoleArgs } = await import('../../src/main/diagnostics/log-mirror');
+    expect(prefixConsoleArgs([{ a: 1 }], '[T]')).toEqual(['[T]', { a: 1 }]);
+    // Empty console.log() still echoes just the timestamp.
+    expect(prefixConsoleArgs([], '[T]')).toEqual(['[T]']);
+  });
+
+  it('does not mutate the original args array (persisted record stays un-prefixed)', async () => {
+    const { prefixConsoleArgs } = await import('../../src/main/diagnostics/log-mirror');
+    const original = ['[startup] hi', 'extra'];
+    prefixConsoleArgs(original, '[T]');
+    expect(original).toEqual(['[startup] hi', 'extra']);
+  });
+});
