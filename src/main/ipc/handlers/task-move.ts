@@ -33,6 +33,7 @@ import { emitSpawnProgress, emitSpawnWaiting, clearSpawnProgress, createProgress
 import { resolveTargetAgent } from '../../engine/agent-resolver';
 import { agentRegistry } from '../../agent/agent-registry';
 import { prepareInjectionPlan } from '../../engine/injection-plan';
+import { resolveIsolatedSwimlaneId } from '../../engine/session-isolation';
 import type { Task, Swimlane } from '../../../shared/types';
 
 /**
@@ -334,6 +335,67 @@ export async function handleTaskMove(
       if (task.session_id) {
         context.terminalSubmitScheduler.cancel(task.id);
 
+        // The session record for the currently-live PTY. Read once here and
+        // reused by the agent-change / respawn suspend paths below (one read,
+        // not three).
+        const activeRecord = sessionRepo.getLatestForTask(task.id);
+
+        // --- Session switch: the live session belongs to a different isolation
+        //     than the target column wants. A single inequality covers both
+        //     transitions: entering an isolated column (active != that column's
+        //     id) and leaving one back to main (active is a swimlane id, target is
+        //     null). Same isolation on both sides (e.g. normal -> normal, or
+        //     re-entering the same isolated column) is NOT a switch. The leave
+        //     case is the bug guard: without it, leaving an isolated column would
+        //     mis-fire as Priority 3d keep-alive and strand the isolated session
+        //     in a normal column. Suspend the live session (preserving
+        //     agent_session_id so it stays resumable), then route to Phase 2/3
+        //     which resumes-or-spawns the TARGET session via spawnAgent(toLane) -
+        //     the isolation is derived from the column strategy in
+        //     resolveSpawnOverrides. The worktree is shared and already exists, so
+        //     Phase 2 is a no-op; going through Phase 3 reuses the CAS + abort +
+        //     rollback machinery (a PTY spawned here in Phase 1 would bypass that
+        //     and could leak on a mid-spawn abort). Entering an isolated column
+        //     with NO live session is handled by Priority 4 below; this branch
+        //     only fires for a live one.
+        const targetIsolatedSwimlaneId = resolveIsolatedSwimlaneId(toLane);
+        const activeIsolatedSwimlaneId = activeRecord?.isolated_swimlane_id ?? null;
+        const needsSessionSwitch = toLane !== undefined
+          && activeIsolatedSwimlaneId !== targetIsolatedSwimlaneId;
+        if (needsSessionSwitch && toLane) {
+          if (activeRecord && activeRecord.agent_session_id
+              && (activeRecord.status === 'running' || activeRecord.status === 'exited')) {
+            captureSessionMetrics(
+              context.sessionManager,
+              sessionRepo,
+              usageHistoryRepo,
+              task.session_id,
+              activeRecord.id,
+              activeRecord.started_at,
+              activeRecord.session_type,
+            );
+            markRecordSuspended(sessionRepo, activeRecord.id, 'system');
+          } else if (activeRecord && activeRecord.status === 'queued') {
+            markRecordExited(sessionRepo, activeRecord.id);
+          }
+          await context.sessionManager.suspend(task.session_id);
+          tasks.update({ id: task.id, session_id: null });
+          console.log(
+            `[TASK_MOVE] Session switch for task ${task.id.slice(0, 8)}:`
+            + ` ${activeIsolatedSwimlaneId ?? 'main'} -> ${targetIsolatedSwimlaneId ?? 'main'}`
+            + ` (suspended live session; Phase 3 will resume/spawn the target).`,
+          );
+          return {
+            task,
+            fromSwimlaneId,
+            originalPosition,
+            toLane,
+            skipPromptTemplate,
+            resolvedProjectId,
+            resolvedProjectPath,
+          };
+        }
+
         const project = context.projectRepo.getById(resolvedProjectId);
         const { agent: effectiveTargetAgent, isHandoff: isAgentChange } = resolveTargetAgent({
           taskAgentOverride: task.agent_override,
@@ -345,7 +407,7 @@ export async function handleTaskMove(
         if (isAgentChange) {
           // (a) Cross-agent handoff: suspend and fall through to spawnAgent.
           // Cross-agent resume is impossible (agent_session_id is agent-specific).
-          const sessionRecord = sessionRepo.getLatestForTask(task.id);
+          const sessionRecord = activeRecord;
           if (sessionRecord && sessionRecord.agent_session_id
               && (sessionRecord.status === 'running' || sessionRecord.status === 'exited')) {
             captureSessionMetrics(
@@ -451,7 +513,7 @@ export async function handleTaskMove(
           if (restartNeeded && !interpolatedAuto) {
             // Settings changed but adapter returned no plan (no live swap).
             // Suspend and respawn to apply settings via command flags.
-            const sessionRecord = sessionRepo.getLatestForTask(task.id);
+            const sessionRecord = activeRecord;
             if (sessionRecord && sessionRecord.agent_session_id
                 && (sessionRecord.status === 'running' || sessionRecord.status === 'exited')) {
               captureSessionMetrics(

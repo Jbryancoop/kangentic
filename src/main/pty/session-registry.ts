@@ -32,6 +32,8 @@ export interface ManagedSession {
   exitCode: number | null;
   resuming: boolean;
   transient: boolean;
+  /** Swimlane this session is isolated to (null = main session). Drives the Main/Isolated badge. */
+  isolatedSwimlaneId?: string | null;
   /** Sequence of strings to write to PTY for graceful exit before force-killing. */
   exitSequence: string[];
   /** Agent adapter for adapter-specific behavior (readiness detection, parsing,
@@ -73,6 +75,7 @@ export function toSession(session: ManagedSession): Session {
     exitCode: session.exitCode,
     resuming: session.resuming,
     transient: session.transient || undefined,
+    isolatedSwimlaneId: session.isolatedSwimlaneId,
   };
 }
 

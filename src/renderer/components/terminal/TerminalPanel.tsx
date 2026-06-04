@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo } from 'react';
-import { Activity, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { Activity, ChevronDown, ChevronUp, Split, Loader2 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useSessionStore } from '../../stores/session-store';
 import { useBoardStore } from '../../stores/board-store';
@@ -144,12 +144,15 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
 
           {activeSessions.map((session) => {
             const label = taskLabelMap.get(session.id) || session.taskId.slice(0, 8);
+            // Null/undefined is the Main session; a swimlane id means this is a
+            // separate, context-isolated session for that column.
+            const isIsolated = session.isolatedSwimlaneId != null;
             return (
               <button
                 key={session.id}
                 onClick={() => selectActiveSession(session.id)}
                 onDoubleClick={() => setDetailTaskId(session.taskId)}
-                title={`${label} (${shellDisplayName(session.shell)})`}
+                title={`${label} (${shellDisplayName(session.shell)})${isIsolated ? ' - Isolated session' : ''}`}
                 className={`flex items-center gap-1.5 px-3 py-1.5 text-xs border-r border-edge transition-colors whitespace-nowrap ${
                   effectiveActiveId === session.id
                     ? 'bg-surface-raised text-fg'
@@ -168,6 +171,15 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
                   }`} />
                 )}
                 {label}
+                {isIsolated && (
+                  <span
+                    data-testid="terminal-tab-isolated-badge"
+                    className="flex items-center gap-0.5 text-[11px] text-purple-300 bg-purple-500/15 border border-purple-500/30 rounded px-1 py-px leading-none flex-shrink-0"
+                  >
+                    <Split size={10} />
+                    Isolated
+                  </span>
+                )}
               </button>
             );
           })}

@@ -25,6 +25,7 @@ import {
   type Swimlane,
   type SwimlaneRole,
   type PermissionMode,
+  type SessionStrategy,
   type SwimlaneCreateInput,
   type SwimlaneUpdateInput,
 } from '../../../shared/types';
@@ -47,7 +48,9 @@ const SECTIONS: { id: SectionId; label: string; icon: typeof Sliders }[] = [
   { id: 'handoff', label: 'Handoff', icon: History },
 ];
 
-const TEMPLATE_VARIABLES = ['{{title}}', '{{description}}', '{{branchName}}'];
+// Mirrors the keys in buildAutoCommandVars (agent-spawn.ts) - keep in sync so the
+// chips surface exactly what the auto-command interpolation actually substitutes.
+const TEMPLATE_VARIABLES = ['{{title}}', '{{description}}', '{{taskId}}', '{{worktreePath}}', '{{branchName}}'];
 
 // ────────────────────────────────────────────────────────────────────────
 // Pure helpers (exported for unit tests)
@@ -92,6 +95,7 @@ export function buildUpdateInput(draft: Swimlane, original: Swimlane): SwimlaneU
     model_override: isTodoOrDone ? undefined : (draft.model_override?.trim() || null),
     effort_override: isTodoOrDone ? undefined : (draft.effort_override || null),
     handoff_context: isTodoOrDone ? undefined : draft.handoff_context,
+    session_strategy: isTodoOrDone ? undefined : draft.session_strategy,
   };
 }
 
@@ -109,6 +113,7 @@ export function buildCreateInput(draft: Swimlane): SwimlaneCreateInput {
     model_override: draft.model_override?.trim() || null,
     effort_override: draft.effort_override || null,
     handoff_context: draft.handoff_context,
+    session_strategy: draft.session_strategy,
   };
 }
 
@@ -131,6 +136,7 @@ function makeNewDraft(): Swimlane {
     model_override: null,
     effort_override: null,
     handoff_context: false,
+    session_strategy: 'main',
     created_at: new Date().toISOString(),
   };
 }
@@ -1212,7 +1218,32 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
             )}
 
             {activeSection === 'auto' && (
-              <SettingField label="Auto-command">
+              <div className="space-y-5">
+                <SettingField
+                  label="Session strategy"
+                  description="Which session a task runs when it enters this column."
+                >
+                  <Select
+                    value={draft.session_strategy ?? 'main'}
+                    onChange={(event) => updateDraft((current) => ({
+                      ...current,
+                      session_strategy: event.target.value as SessionStrategy,
+                    }))}
+                    wrapperClassName="relative"
+                    className={DIALOG_SELECT_CLASS}
+                    data-testid="column-session-strategy"
+                  >
+                    <option value="main">Main session (default)</option>
+                    <option value="isolated">Isolated session</option>
+                  </Select>
+                  <p className="text-xs text-fg-faint mt-2">
+                    {draft.session_strategy === 'isolated'
+                      ? 'Runs this column on a separate, isolated session that does not see the main conversation - a clean context for work that should stay independent of it (for example, a code review). Leaving the column resumes the main session. Pair with an Auto-command like /code-review.'
+                      : 'Continues the task\'s main session and resumes it on entry.'}
+                  </p>
+                </SettingField>
+
+                <SettingField label="Auto-command">
                 <p className="text-xs text-fg-faint -mt-2 mb-2">
                   Runs in the agent on startup, the moment a task enters this column. Supports template variables.
                 </p>
@@ -1253,7 +1284,8 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
                     </button>
                   ))}
                 </div>
-              </SettingField>
+                </SettingField>
+              </div>
             )}
 
             {activeSection === 'handoff' && (

@@ -7,6 +7,7 @@ import { SessionManager } from '../../pty/session-manager';
 import { ConfigManager } from '../../config/config-manager';
 import type { SessionRecord, Task } from '../../../shared/types';
 import { isResumeEligible } from '../spawn-intent';
+import { resolveIsolatedSwimlaneId } from '../session-isolation';
 import { retireRecord, markRecordSuspended } from '../session-lifecycle';
 import { isShuttingDown } from '../../shutdown-state';
 import { prepareAgentSpawn, type PreparedSpawn } from './prepare-spawn';
@@ -67,44 +68,76 @@ export async function resumeSuspendedSessions(
     return;
   }
 
-  // 3. Deduplicate: for each task_id, keep only the most recent record.
-  //    Mark all older duplicates as exited immediately.
   const now = new Date().toISOString();
-  const latestByTask = new Map<string, SessionRecord>();
 
+  // Resolve tasks and lanes once: needed for isolation targeting (3b) and the
+  // auto_spawn / deleted / paused filters below.
+  const swimlaneRepo = new SwimlaneRepository(db);
+  const laneMap = new Map(swimlaneRepo.list().map((lane) => [lane.id, lane]));
+  const allTasks = taskRepo.list();
+  const taskMap = new Map(allTasks.map((task) => [task.id, task]));
+
+  // 3a. Deduplicate PER (task_id, isolated_swimlane_id): keep only the most recent
+  //     record for each parallel session. Retire strictly-older SAME-session
+  //     duplicates only. A task may hold multiple sessions (e.g. its main session
+  //     plus an isolated column's session), and we must not destroy a dormant one.
+  //     Null (main) is folded into the key string via `?? 'main'`.
+  const latestByTaskSession = new Map<string, SessionRecord>();
+  let duplicatesRetired = 0;
   for (const record of allRecords) {
-    const existing = latestByTask.get(record.task_id);
+    const key = `${record.task_id}::${record.isolated_swimlane_id ?? 'main'}`;
+    const existing = latestByTaskSession.get(key);
     if (!existing) {
-      latestByTask.set(record.task_id, record);
+      latestByTaskSession.set(key, record);
+    } else if ((record.started_at || '') > (existing.started_at || '')) {
+      retireRecord(sessionRepo, existing.id);
+      latestByTaskSession.set(key, record);
+      duplicatesRetired++;
     } else {
-      const existingTime = existing.started_at || '';
-      const recordTime = record.started_at || '';
-      if (recordTime > existingTime) {
-        retireRecord(sessionRepo, existing.id);
-        latestByTask.set(record.task_id, record);
-      } else {
-        retireRecord(sessionRepo, record.id);
-      }
+      retireRecord(sessionRepo, record.id);
+      duplicatesRetired++;
     }
   }
-
-  const toRecover = Array.from(latestByTask.values());
-  const duplicatesRetired = allRecords.length - toRecover.length;
   if (duplicatesRetired > 0) {
     console.log(`[SESSION_RECOVERY] Retired ${duplicatesRetired} duplicate record(s)`);
   }
 
+  // 3b. Per task, recover ONLY the session matching the task's CURRENT column
+  //     strategy. Non-target sessions are PRESERVED (never retired) so re-entering
+  //     their column later continues their own conversation; an orphaned
+  //     non-target session (live at crash) is CAS-upgraded to 'suspended' so it is
+  //     not reprocessed on the next startup but stays resumable. One PTY per task
+  //     means at most one session was live at crash, and the task cannot move
+  //     while the app is down, so that session IS the current column's target.
+  const toRecover: SessionRecord[] = [];
+  let preservedSessions = 0;
+  for (const record of latestByTaskSession.values()) {
+    const task = taskMap.get(record.task_id);
+    if (!task) {
+      // Task deleted: retire every session of it.
+      retireRecord(sessionRepo, record.id);
+      continue;
+    }
+    const targetIsolatedSwimlaneId = resolveIsolatedSwimlaneId(laneMap.get(task.swimlane_id));
+    if (record.isolated_swimlane_id === targetIsolatedSwimlaneId) {
+      toRecover.push(record);
+    } else {
+      if (record.status === 'orphaned') {
+        markRecordSuspended(sessionRepo, record.id, 'system');
+      }
+      preservedSessions++;
+    }
+  }
+  if (preservedSessions > 0) {
+    console.log(`[SESSION_RECOVERY] Preserved ${preservedSessions} non-target session(s) for later resume`);
+  }
+
   // 4. Determine which columns should NOT have active agents (auto_spawn=false)
-  const swimlaneRepo = new SwimlaneRepository(db);
   const excludedLaneIds = new Set(
-    swimlaneRepo.list()
+    Array.from(laneMap.values())
       .filter((lane) => !lane.auto_spawn)
       .map((lane) => lane.id),
   );
-
-  // --- Pre-filter: batch-resolve tasks and partition records ---
-  const allTasks = taskRepo.list();
-  const taskMap = new Map(allTasks.map((task) => [task.id, task]));
 
   const autoResumeSessionsOnRestart = configManager.load().agent.autoResumeSessionsOnRestart;
 
@@ -214,11 +247,11 @@ export async function resumeSuspendedSessions(
 
       const swimlane = swimlaneRepo.getById(task.swimlane_id) ?? null;
 
-      // Decide whether to resume or start fresh. Uses type-aware lookup
-      // so cross-agent resume mismatches are structurally impossible.
-      // The adapter isn't known yet - we use the record's session_type
-      // which was captured at spawn time and is agent-specific.
-      const typeMatch = sessionRepo.getLatestForTaskByType(record.task_id, record.session_type);
+      // Decide whether to resume or start fresh. Uses type-AND-isolation-aware
+      // lookup so cross-agent and main-vs-isolated resume mismatches are
+      // structurally impossible. The adapter isn't known yet - we use the record's
+      // session_type (captured at spawn, agent-specific) and its isolation.
+      const typeMatch = sessionRepo.getLatestForTaskByTypeAndIsolation(record.task_id, record.session_type, record.isolated_swimlane_id);
       const canResume = isResumeEligible(typeMatch);
       const resume = canResume ? { agentSessionId: typeMatch!.agent_session_id! } : null;
 
@@ -283,6 +316,7 @@ export async function resumeSuspendedSessions(
         agentParser: input.adapter,
         agentName: input.adapter.name,
         agentSessionId: input.agentSessionId,
+        isolatedSwimlaneId: input.record.isolated_swimlane_id,
         exitSequence: input.adapter.getExitSequence?.() ?? ['\x03'],
       });
       return { input, newSession };
@@ -302,6 +336,7 @@ export async function resumeSuspendedSessions(
         id: newSession.id,
         task_id: input.task.id,
         session_type: input.record.session_type,
+        isolated_swimlane_id: input.record.isolated_swimlane_id,
         agent_session_id: input.agentSessionId,
         command: input.command,
         cwd: input.cwd,

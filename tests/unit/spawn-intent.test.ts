@@ -25,7 +25,7 @@ function mockSessionRecord(overrides: Record<string, unknown> = {}) {
 /** Minimal mock session repository. */
 function mockSessionRepo(record: ReturnType<typeof mockSessionRecord> | undefined = undefined) {
   return {
-    getLatestForTaskByType: vi.fn().mockReturnValue(record),
+    getLatestForTaskByTypeAndIsolation: vi.fn().mockReturnValue(record),
   } as unknown as Parameters<typeof resolveSpawnIntent>[0]['sessionRepo'];
 }
 
@@ -211,7 +211,7 @@ describe('resolveSpawnIntent', () => {
     expect(intent.prompt).toBeUndefined();
   });
 
-  it('queries by session type for agent-aware lookup', () => {
+  it('queries by session type and the main session (null) by default', () => {
     const sessionRepo = mockSessionRepo(undefined);
     resolveSpawnIntent({
       ...baseOptions,
@@ -219,7 +219,32 @@ describe('resolveSpawnIntent', () => {
       sessionRepo,
     });
 
-    expect(sessionRepo!.getLatestForTaskByType).toHaveBeenCalledWith('task-1', 'codex_agent');
+    expect(sessionRepo!.getLatestForTaskByTypeAndIsolation).toHaveBeenCalledWith('task-1', 'codex_agent', null);
+  });
+
+  it('queries the given isolated swimlane when one is passed', () => {
+    const sessionRepo = mockSessionRepo(undefined);
+    resolveSpawnIntent({
+      ...baseOptions,
+      isolatedSwimlaneId: 'swimlane-review-id',
+      sessionRepo,
+    });
+
+    expect(sessionRepo!.getLatestForTaskByTypeAndIsolation).toHaveBeenCalledWith('task-1', 'claude_agent', 'swimlane-review-id');
+  });
+
+  it('resumes the isolation-scoped record when one exists for that swimlane', () => {
+    const record = mockSessionRecord({ status: 'suspended', isolated_swimlane_id: 'swimlane-review-id' });
+    const intent = resolveSpawnIntent({
+      ...baseOptions,
+      isolatedSwimlaneId: 'swimlane-review-id',
+      sessionRepo: mockSessionRepo(record),
+      resumePrompt: '/code-review',
+    });
+
+    expect(intent.mode).toBe('resume');
+    expect(intent.agentSessionId).toBe('agent-uuid-A');
+    expect(intent.prompt).toBe('/code-review');
   });
 
   it('expands {{task_xml}} placeholder through the fresh-spawn path', () => {

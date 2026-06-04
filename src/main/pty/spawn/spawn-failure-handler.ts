@@ -80,6 +80,7 @@ export function handleSpawnFailure(
     exitCode: -1,
     resuming: input.resuming ?? false,
     transient: input.transient ?? false,
+    isolatedSwimlaneId: input.isolatedSwimlaneId,
     exitSequence: input.exitSequence ?? ['\x03'],
     agentParser: input.agentParser,
   };

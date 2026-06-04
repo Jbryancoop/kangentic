@@ -85,9 +85,12 @@ All queries are synchronous via **better-sqlite3** -- they block the Node.js eve
 | model_override | TEXT | | NULL |
 | effort_override | TEXT | | NULL |
 | handoff_context | INTEGER | NOT NULL | 0 |
+| session_strategy | TEXT | NOT NULL | 'main' |
 | created_at | TEXT | NOT NULL | |
 
 Valid role values: `todo`, `done`, or NULL (custom column).
+
+Valid session_strategy values: `main` (default, the task's main session), `isolated` (a separate, context-isolated session keyed by the swimlane id). See `SessionStrategy` in `src/shared/types.ts`.
 
 ### tasks table
 
@@ -157,6 +160,7 @@ Index: `idx_transitions_from_to` on (from_swimlane_id, to_swimlane_id).
 | task_id | TEXT | NOT NULL, FK->tasks | |
 | session_type | TEXT | NOT NULL | |
 | agent_session_id | TEXT | | NULL |
+| isolated_swimlane_id | TEXT | | NULL |
 | command | TEXT | NOT NULL | |
 | cwd | TEXT | NOT NULL | |
 | permission_mode | TEXT | | NULL |
@@ -185,11 +189,13 @@ Valid status values: `running`, `queued`, `suspended`, `exited`, `orphaned`.
 
 Valid suspended_by values: `user` (explicit pause button), `system` (shutdown, task move, idle timeout), or `NULL` (legacy records, treated as `system`).
 
+`isolated_swimlane_id`: NULL = the task's main session; a swimlane id = the separate, context-isolated session belonging to that `isolated`-strategy column. Lets one task hold multiple independently-resumable sessions (see `docs/session-lifecycle.md` "Isolated Sessions").
+
 Valid permission_mode values: `default`, `plan`, `acceptEdits`, `dontAsk`, `bypassPermissions`, `auto` (see `PermissionMode` type in `src/shared/types.ts`).
 
 `tool_breakdown` is JSON-encoded `PerToolStat[]` (see `src/shared/types.ts`). One entry per distinct tool name with `callCount`, `totalDurationMs`, `interruptedCount`, and optional `costUsd` / `inputTokens` / `outputTokens` when the adapter emits per-tool telemetry on `tool_end` events. NULL on records captured before the column existed and on records whose session produced no tool events. Written by `captureSessionMetrics` from `UsageAccumulator` (`src/main/pty/activity/usage-accumulator.ts`), which pairs `tool_start` / `tool_end` timestamps in a per-session aggregator and is tracked independently of the bounded event cache so totals are not truncated for long sessions.
 
-Indexes: `idx_sessions_task_started` on (task_id, started_at DESC), `idx_sessions_status` on (status), `idx_sessions_agent_session_id` on (agent_session_id).
+Indexes: `idx_sessions_task_started` on (task_id, started_at DESC), `idx_sessions_task_type_isolation_started` on (task_id, session_type, isolated_swimlane_id, started_at DESC) (the resume-decision hot path for per-column isolated sessions), `idx_sessions_status` on (status), `idx_sessions_agent_session_id` on (agent_session_id).
 
 ### usage_history table
 
@@ -359,7 +365,7 @@ Listed in execution order within `runProjectMigrations()`:
 32. **`handoffs` table** -- creates the table for tracking cross-agent context handoffs. FK on `task_id` with CASCADE delete, FKs on `from_session_id` and `to_session_id` with SET NULL. Indexed on `task_id`.
 33. **Remove hardcoded agent from `spawn_agent` action configs** -- data migration that strips a legacy `agent: 'claude'` value from existing `spawn_agent` action `config_json`. The seed data previously hardcoded `agent: 'claude'`, which shadowed the project default and per-column `agent_override`; clearing it lets the agent resolution chain respect user configuration. Malformed configs are skipped.
 34. **`session_history_path` column on handoffs** -- adds the `session_history_path TEXT` column to the `handoffs` table. Session history passthrough stores the source agent's native session history file path instead of a manufactured context packet, so `packet_json` becomes a legacy column that repository queries no longer read or write.
-35. **Performance indices on sessions and tasks** -- adds four idempotent hot-path indices: `idx_sessions_task_started` on (task_id, started_at DESC) for per-task session lookups and cost summaries, `idx_sessions_status` on (status) for getResumable/getOrphaned/markRunningAsOrphaned, `idx_sessions_agent_session_id` on (agent_session_id) for the resume-by-agent-id path, and `idx_tasks_session_id` on (session_id) for session-change IPC events. Targets startup reconciliation and live board state lookups under accumulated session history.
+35. **Performance indices on sessions and tasks** -- adds idempotent hot-path indices: `idx_sessions_task_started` on (task_id, started_at DESC) for per-task session lookups and cost summaries, `idx_sessions_task_type_isolation_started` on (task_id, session_type, isolated_swimlane_id, started_at DESC) for the per-column isolated-session resume-decision path, `idx_sessions_status` on (status) for getResumable/getOrphaned/markRunningAsOrphaned, `idx_sessions_agent_session_id` on (agent_session_id) for the resume-by-agent-id path, and `idx_tasks_session_id` on (session_id) for session-change IPC events. Targets startup reconciliation and live board state lookups under accumulated session history.
 36. **`external_id`, `external_source`, `external_url` columns on tasks** -- carries external origin (GitHub/Asana/etc.) onto board tasks promoted from imported backlog items, plus an `idx_tasks_external` index on (external_source, external_id). Promotion deletes the `backlog_tasks` row, so without these columns the board task loses all trace of its origin and the same issue could be re-imported. The dedup query (`findByExternalIds`) now unions `backlog_tasks` with `tasks` (archived included) so a previously imported-and-promoted issue stays "imported". Carried back through demote via `createFromTask`.
 37. **`usage_history` append-only ledger** -- creates the `usage_history` table (in the initial `CREATE TABLE IF NOT EXISTS` block) plus two query indices (`idx_usage_history_session_started_at`, `idx_usage_history_recorded_at`) for StatusBar period bucketing. Adds a one-shot guarded backfill that copies existing `sessions` rows where `total_cost_usd IS NOT NULL` into `usage_history` so installs upgrading to this version retain their lifetime totals. Backfill is wrapped in a single transaction and uses `INSERT OR IGNORE` plus a `COUNT(*) = 0` guard so re-running is safe. Rows in this table have no foreign keys to `tasks` or `sessions`, so totals survive task deletion (the original bug this feature fixes).
 38. **`pr_state` column on tasks** -- adds `pr_state TEXT DEFAULT NULL` so the authoritative branch->PR resolver can persist normalized PR state (`open`/`draft`/`merged`/`closed`) and re-resolution can reflect state changes on the card pill. Idempotent guarded `ALTER TABLE`.

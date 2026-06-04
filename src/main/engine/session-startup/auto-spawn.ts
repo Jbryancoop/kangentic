@@ -7,6 +7,7 @@ import { SessionManager } from '../../pty/session-manager';
 import { ConfigManager } from '../../config/config-manager';
 import type { Swimlane, Task } from '../../../shared/types';
 import { isShuttingDown } from '../../shutdown-state';
+import { resolveIsolatedSwimlaneId } from '../session-isolation';
 import { prepareAgentSpawn, type PreparedSpawn } from './prepare-spawn';
 import { startStartupTimer } from './timing';
 
@@ -74,7 +75,11 @@ export async function autoSpawnTasks(
   const userPausedTaskIds = sessionRepo.getUserPausedTaskIds();
 
   // --- Preparation pass: collect spawn inputs ---
-  const spawnInputs: Array<PreparedSpawn & { task: Task }> = [];
+  // `isolatedSwimlaneId` tags each fresh session (null for normal columns, the
+  // swimlane id for an 'isolated' column). Resumable isolated sessions are already
+  // handled by resumeSuspendedSessions, which runs first, so this pass only ever
+  // spawns fresh - it just records the correct isolation on that fresh row.
+  const spawnInputs: Array<PreparedSpawn & { task: Task; isolatedSwimlaneId: string | null }> = [];
 
   for (const { lane, task } of candidates) {
     // Defensive re-check: a session may have been registered for this task
@@ -133,7 +138,7 @@ export async function autoSpawnTasks(
         continue;
       }
 
-      spawnInputs.push({ task, ...prep.data });
+      spawnInputs.push({ task, isolatedSwimlaneId: resolveIsolatedSwimlaneId(lane), ...prep.data });
     } catch (err) {
       console.error(`[AUTO_SPAWN] Preparation failed for task ${task.id}:`, err);
     }
@@ -159,6 +164,7 @@ export async function autoSpawnTasks(
         agentParser: input.adapter,
         agentName: input.adapter.name,
         agentSessionId: input.agentSessionId,
+        isolatedSwimlaneId: input.isolatedSwimlaneId,
         exitSequence: input.adapter.getExitSequence?.() ?? ['\x03'],
       });
       return { input, newSession };
@@ -183,6 +189,7 @@ export async function autoSpawnTasks(
         id: newSession.id,
         task_id: input.task.id,
         session_type: input.adapter.sessionType,
+        isolated_swimlane_id: input.isolatedSwimlaneId,
         agent_session_id: input.agentSessionId,
         command: input.command,
         cwd: input.cwd,

@@ -341,6 +341,17 @@ export function runProjectMigrations(db: Database.Database): void {
     }
   }
 
+  // Migration: add 'isolated_swimlane_id' so a task can hold multiple parallel,
+  // independently-resumable sessions. NULL means the task's main session; a
+  // swimlane id means the separate, context-isolated session that belongs to that
+  // 'isolated'-strategy column, so re-entering that column resumes its own
+  // conversation, disconnected from the main session. Existing rows are NULL (main).
+  const hasIsolatedSwimlaneId = (db.pragma('table_info(sessions)') as Array<{ name: string }>)
+    .some((col) => col.name === 'isolated_swimlane_id');
+  if (!hasIsolatedSwimlaneId) {
+    db.exec('ALTER TABLE sessions ADD COLUMN isolated_swimlane_id TEXT DEFAULT NULL');
+  }
+
   // Migration: rename permission_strategy column -> permission_mode
   const currentSwimlaneCols = new Set(
     (db.pragma('table_info(swimlanes)') as Array<{ name: string }>).map((col) => col.name),
@@ -503,6 +514,16 @@ export function runProjectMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE swimlanes ADD COLUMN effort_override TEXT DEFAULT NULL');
   }
 
+  // Migration: add per-column session strategy. 'main' (default) runs the task's
+  // main session; 'isolated' runs the column on its own separate, resumable
+  // session line. Modeled as an enum so future strategies need no schema change.
+  // Existing rows backfill to 'main' via the column default.
+  const hasSessionStrategy = (db.pragma('table_info(swimlanes)') as Array<{ name: string }>)
+    .some((col) => col.name === 'session_strategy');
+  if (!hasSessionStrategy) {
+    db.exec("ALTER TABLE swimlanes ADD COLUMN session_strategy TEXT NOT NULL DEFAULT 'main'");
+  }
+
   // Migration: add per-task model_override and effort_override columns. Set
   // by the ContextBar popover; takes precedence over the swimlane override
   // (so the user's explicit "use Sonnet for this task" choice is sticky
@@ -614,10 +635,13 @@ export function runProjectMigrations(db: Database.Database): void {
 
   // Hot-path indices for session lookups.
   // - sessions(task_id, started_at): getLatestForTask, cost summaries, per-task history
+  // - sessions(task_id, session_type, isolated_swimlane_id, started_at): getLatestForTaskByTypeAndIsolation,
+  //   the resume-decision hot path for per-column isolated sessions
   // - sessions(status): getResumable, getOrphaned, markRunningAsOrphaned
   // - sessions(agent_session_id): findByIdOrAgentSessionId (resume-by-agent-id path)
   // - tasks(session_id): listBySessionId used by session-changed IPC events
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_task_started ON sessions(task_id, started_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_task_type_isolation_started ON sessions(task_id, session_type, isolated_swimlane_id, started_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_agent_session_id ON sessions(agent_session_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)');

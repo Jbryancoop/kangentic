@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import type Database from 'better-sqlite3';
-import type { Swimlane, SwimlaneCreateInput, SwimlaneUpdateInput, SwimlaneRole, PermissionMode } from '../../../shared/types';
+import type { Swimlane, SwimlaneCreateInput, SwimlaneUpdateInput, SwimlaneRole, PermissionMode, SessionStrategy } from '../../../shared/types';
 
 /** Raw row shape returned by better-sqlite3 for the swimlanes table. */
 interface SwimlaneRow {
@@ -20,6 +20,7 @@ interface SwimlaneRow {
   model_override: string | null;
   effort_override: string | null;
   handoff_context: number;
+  session_strategy: string | null;
   created_at: string;
 }
 
@@ -76,12 +77,13 @@ export class SwimlaneRepository {
       model_override: input.model_override ?? null,
       effort_override: input.effort_override ?? null,
       handoff_context: input.handoff_context ?? false,
+      session_strategy: input.session_strategy ?? 'main',
       created_at: now,
     };
 
     this.db.prepare(
-      'INSERT INTO swimlanes (id, name, role, position, color, icon, is_archived, is_ghost, permission_mode, auto_spawn, auto_command, plan_exit_target_id, agent_override, model_override, effort_override, handoff_context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(swimlane.id, swimlane.name, swimlane.role, swimlane.position, swimlane.color, swimlane.icon, swimlane.is_archived ? 1 : 0, swimlane.is_ghost ? 1 : 0, swimlane.permission_mode, swimlane.auto_spawn ? 1 : 0, swimlane.auto_command, swimlane.plan_exit_target_id, swimlane.agent_override, swimlane.model_override, swimlane.effort_override, swimlane.handoff_context ? 1 : 0, swimlane.created_at);
+      'INSERT INTO swimlanes (id, name, role, position, color, icon, is_archived, is_ghost, permission_mode, auto_spawn, auto_command, plan_exit_target_id, agent_override, model_override, effort_override, handoff_context, session_strategy, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(swimlane.id, swimlane.name, swimlane.role, swimlane.position, swimlane.color, swimlane.icon, swimlane.is_archived ? 1 : 0, swimlane.is_ghost ? 1 : 0, swimlane.permission_mode, swimlane.auto_spawn ? 1 : 0, swimlane.auto_command, swimlane.plan_exit_target_id, swimlane.agent_override, swimlane.model_override, swimlane.effort_override, swimlane.handoff_context ? 1 : 0, swimlane.session_strategy, swimlane.created_at);
 
     return swimlane;
   }
@@ -105,10 +107,11 @@ export class SwimlaneRepository {
     if (input.model_override !== undefined) updated.model_override = input.model_override;
     if (input.effort_override !== undefined) updated.effort_override = input.effort_override;
     if (input.handoff_context !== undefined) updated.handoff_context = input.handoff_context;
+    if (input.session_strategy !== undefined) updated.session_strategy = input.session_strategy;
 
     this.db.prepare(
-      'UPDATE swimlanes SET name = ?, color = ?, icon = ?, position = ?, is_archived = ?, is_ghost = ?, permission_mode = ?, auto_spawn = ?, auto_command = ?, plan_exit_target_id = ?, agent_override = ?, model_override = ?, effort_override = ?, handoff_context = ? WHERE id = ?'
-    ).run(updated.name, updated.color, updated.icon, updated.position, updated.is_archived ? 1 : 0, updated.is_ghost ? 1 : 0, updated.permission_mode, updated.auto_spawn ? 1 : 0, updated.auto_command, updated.plan_exit_target_id, updated.agent_override, updated.model_override, updated.effort_override, updated.handoff_context ? 1 : 0, updated.id);
+      'UPDATE swimlanes SET name = ?, color = ?, icon = ?, position = ?, is_archived = ?, is_ghost = ?, permission_mode = ?, auto_spawn = ?, auto_command = ?, plan_exit_target_id = ?, agent_override = ?, model_override = ?, effort_override = ?, handoff_context = ?, session_strategy = ? WHERE id = ?'
+    ).run(updated.name, updated.color, updated.icon, updated.position, updated.is_archived ? 1 : 0, updated.is_ghost ? 1 : 0, updated.permission_mode, updated.auto_spawn ? 1 : 0, updated.auto_command, updated.plan_exit_target_id, updated.agent_override, updated.model_override, updated.effort_override, updated.handoff_context ? 1 : 0, updated.session_strategy, updated.id);
 
     return updated;
   }
@@ -195,6 +198,7 @@ export class SwimlaneRepository {
       model_override: row.model_override || null,
       effort_override: row.effort_override || null,
       handoff_context: Boolean(row.handoff_context),
+      session_strategy: (row.session_strategy as SessionStrategy) ?? 'main',
       created_at: row.created_at,
     };
   }

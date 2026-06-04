@@ -21,7 +21,7 @@ The skill reads `$ARGUMENTS`. If the literal token `review-only` is present, ski
 
 ### Reviewer independence
 
-This review often runs in the **same session that produced the code under review**. Judge the diff strictly on its own merits - correctness, conventions, and the criteria below - and do **not** assume the author's (or your own prior) intent was correct. That a change was just made is not evidence it is right. The driver delegates every finding to a fresh subagent that receives the diff as input but not the generation reasoning, so it can re-derive expected behavior independently. Adversarial verifiers treat "the author clearly meant X" as inadmissible: verify X is actually present and correct in the code, and when uncertain, **refute** (drop) the finding rather than wave it through on assumed intent.
+This review may run in the **same session that produced the code under review**, or in a **separate one that did not** - treat both the same. Judge the diff strictly on its own merits - correctness, conventions, and the criteria below - and do **not** assume the author's (or your own prior) intent was correct. That a change was just made is not evidence it is right. The driver delegates every finding to a fresh subagent that receives the diff as input but not the generation reasoning, so it can re-derive expected behavior independently even in the same-session case. Adversarial verifiers treat "the author clearly meant X" as inadmissible: verify X is actually present and correct in the code, and when uncertain, **refute** (drop) the finding rather than wave it through on assumed intent.
 
 ### Not the same as `/code-review ultra`
 

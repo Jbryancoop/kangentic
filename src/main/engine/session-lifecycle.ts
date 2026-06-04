@@ -125,10 +125,18 @@ export function promoteRecord(
  */
 export function recoverStaleSessionId(
   sessionRepo: SessionRepository,
+  sessionId: string,
   taskId: string,
   agentReportedId: string,
 ): boolean {
-  const record = sessionRepo.getLatestForTask(taskId);
+  // Target the EXACT live record by its id (the PTY session id is the record's
+  // primary key). This is isolation-safe: a task can hold multiple session records
+  // (its main session + per-column isolated sessions), so resolving by "latest for
+  // task" could misattribute the captured id to a different session. Fall back to
+  // getLatestForTask only for the pre-insert window where the record row does not
+  // exist yet (the same coarse behavior as before, see session-spawn-flow.ts's
+  // attach() note).
+  const record = sessionRepo.findByAnyId(sessionId) ?? sessionRepo.getLatestForTask(taskId);
   if (!record) return false;
 
   // Fresh capture: agent_session_id was null, now we have the real ID

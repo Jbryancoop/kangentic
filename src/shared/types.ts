@@ -184,6 +184,20 @@ export interface BacklogAttachment {
 
 export type SwimlaneRole = 'todo' | 'done';
 
+/**
+ * Per-column session strategy. Controls which session line a task runs on when
+ * it enters this column.
+ * - 'main' (default): run the task's main session (resume it on entry).
+ * - 'isolated': run on this column's own separate, independently-resumable session
+ *   (keyed by the swimlane id). Context-isolated from the main session - it does NOT
+ *   inherit the main conversation, which suits work that should stay independent of it
+ *   (for example, a code review). Leaving an isolated column resumes the main session.
+ *
+ * Modeled as an enum (not a boolean) so future strategies can be added without a
+ * schema migration. Only 'main' and 'isolated' are implemented today.
+ */
+export type SessionStrategy = 'main' | 'isolated';
+
 export interface Swimlane {
   id: string;
   name: string;
@@ -203,6 +217,8 @@ export interface Swimlane {
   /** Adapter-specific effort/reasoning level (e.g. Claude's "low" | "medium" | "high" | "xhigh" | "max"). Null inherits the agent default. */
   effort_override: string | null;
   handoff_context: boolean;
+  /** Per-column session strategy (see SessionStrategy). Defaults to 'main'. */
+  session_strategy: SessionStrategy;
   created_at: string;
 }
 
@@ -274,6 +290,13 @@ export interface Session {
   resuming: boolean;
   /** True for ephemeral command terminal sessions (no task association, no DB persistence). */
   transient?: boolean;
+  /**
+   * Parallel-session discriminator for the terminal badge. Null/undefined (main
+   * session, or legacy/transient sessions) shows as "Main"; a swimlane id (the
+   * column this session is isolated to) shows as "Isolated". See
+   * SessionRecord.isolated_swimlane_id.
+   */
+  isolatedSwimlaneId?: string | null;
 }
 
 // === Session Persistence (DB) ===
@@ -286,6 +309,13 @@ export interface SessionRecord {
   id: string;
   task_id: string;
   session_type: string;
+  /**
+   * Parallel-session discriminator. NULL means this session is part of the task's
+   * main session. A swimlane id means it is the separate, context-isolated session
+   * that belongs to that 'isolated'-strategy column, letting one task hold
+   * multiple independently-resumable sessions.
+   */
+  isolated_swimlane_id: string | null;
   agent_session_id: string | null;
   command: string;
   cwd: string;
@@ -1543,6 +1573,7 @@ export interface SwimlaneCreateInput {
   model_override?: string | null;
   effort_override?: string | null;
   handoff_context?: boolean;
+  session_strategy?: SessionStrategy;
 }
 
 export interface SwimlaneUpdateInput {
@@ -1561,6 +1592,7 @@ export interface SwimlaneUpdateInput {
   model_override?: string | null;
   effort_override?: string | null;
   handoff_context?: boolean;
+  session_strategy?: SessionStrategy;
 }
 
 export interface ActionCreateInput {
@@ -1918,6 +1950,12 @@ export interface SpawnSessionInput {
    * for adapters that auto-generate IDs (Codex, Gemini, Droid).
    */
   agentSessionId?: string | null;
+  /**
+   * The swimlane this PTY's session is isolated to (null = the task's main
+   * session). Carried onto the live Session so the terminal can badge Main vs
+   * Isolated. Defaults to null when omitted.
+   */
+  isolatedSwimlaneId?: string | null;
 }
 
 export interface SpawnTransientSessionInput {

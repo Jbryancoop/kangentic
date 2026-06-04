@@ -68,10 +68,10 @@ vi.mock('../../src/main/db/repositories/session-repository', () => {
     markAllRunningAsOrphaned = () => sessionRepoMarkAllRunningAsOrphaned();
     markRunningAsOrphanedExcluding = (...args: unknown[]) =>
       sessionRepoMarkRunningAsOrphanedExcluding(...args);
-    // getLatestForTaskByType is called inside the preparation pass (which
-    // is only reached when a record enters toProcess). These tests skip that
-    // pass, but define the method to avoid "not a function" errors.
-    getLatestForTaskByType = vi.fn(() => null);
+    // getLatestForTaskByTypeAndIsolation is called inside the preparation pass
+    // (reached when a record enters toProcess). Define it to avoid "not a
+    // function" errors; returns null so the prep treats it as a fresh spawn.
+    getLatestForTaskByTypeAndIsolation = vi.fn(() => null);
   }
   return { SessionRepository: FakeSessionRepository };
 });
@@ -120,6 +120,7 @@ function makeOrphanedRecord(overrides: Partial<SessionRecord> = {}): SessionReco
     id: 'record-1',
     task_id: 'task-1',
     session_type: 'claude',
+    isolated_swimlane_id: null,
     agent_session_id: null,
     command: 'claude --task test',
     cwd: '/project/cwd',

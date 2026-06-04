@@ -64,12 +64,13 @@ export class SessionRepository {
 
   insert(record: SessionInsertInput): SessionRecord {
     this.db.prepare(`
-      INSERT INTO sessions (id, task_id, session_type, agent_session_id, command, cwd, permission_mode, prompt, status, exit_code, started_at, suspended_at, exited_at, suspended_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (id, task_id, session_type, isolated_swimlane_id, agent_session_id, command, cwd, permission_mode, prompt, status, exit_code, started_at, suspended_at, exited_at, suspended_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       record.id,
       record.task_id,
       record.session_type,
+      record.isolated_swimlane_id,
       record.agent_session_id,
       record.command,
       record.cwd,
@@ -203,11 +204,18 @@ export class SessionRepository {
     ).get(taskId) as SessionRecord | undefined;
   }
 
-  /** Find the latest session record for a given task filtered by session_type. */
-  getLatestForTaskByType(taskId: string, sessionType: string): SessionRecord | undefined {
+  /**
+   * Find the latest session record for a task, scoped to session_type AND the
+   * isolated swimlane (null = the main session). This is the resume-decision
+   * lookup: cross-agent (session_type) and cross-isolation mismatches are
+   * structurally impossible. An isolated column resumes its own session while the
+   * main session records stay untouched. Uses `IS ?` so a null param matches the
+   * main-session rows (`isolated_swimlane_id IS NULL`).
+   */
+  getLatestForTaskByTypeAndIsolation(taskId: string, sessionType: string, isolatedSwimlaneId: string | null): SessionRecord | undefined {
     return this.db.prepare(
-      `SELECT * FROM sessions WHERE task_id = ? AND session_type = ? ORDER BY started_at DESC LIMIT 1`
-    ).get(taskId, sessionType) as SessionRecord | undefined;
+      `SELECT * FROM sessions WHERE task_id = ? AND session_type = ? AND isolated_swimlane_id IS ? ORDER BY started_at DESC LIMIT 1`
+    ).get(taskId, sessionType, isolatedSwimlaneId) as SessionRecord | undefined;
   }
 
   /**

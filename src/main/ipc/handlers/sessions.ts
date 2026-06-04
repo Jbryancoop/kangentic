@@ -456,11 +456,11 @@ export function registerSessionHandlers(context: IpcContext): void {
   // Stale session ID recovery: when a resuming session reports a different
   // agent session_id (from status.json), --resume failed silently and Claude
   // created a fresh session. Update the DB so the next resume uses the correct UUID.
-  context.sessionManager.on('agent-session-id', (_sessionId: string, taskId: string, projectId: string, agentReportedId: string) => {
+  context.sessionManager.on('agent-session-id', (sessionId: string, taskId: string, projectId: string, agentReportedId: string) => {
     try {
       const database = getProjectDb(projectId);
       const sessionRepo = new SessionRepository(database);
-      recoverStaleSessionId(sessionRepo, taskId, agentReportedId);
+      recoverStaleSessionId(sessionRepo, sessionId, taskId, agentReportedId);
     } catch {
       // DB may be closed
     }
@@ -504,7 +504,14 @@ export function registerSessionHandlers(context: IpcContext): void {
         let updated = false;
         const session = context.sessionManager.getSession(sessionId);
         if (session) {
-          const record = sessionRepo.getLatestForTask(session.taskId);
+          // Resolve the EXACT record for the exiting PTY by its id (the DB record
+          // id equals the PTY session id), NOT getLatestForTask: a task can hold
+          // multiple session records (its main session + per-column isolated
+          // sessions), so "latest for task" could mark a newer, still-running
+          // session's record exited if this exit arrives out of order after a
+          // session switch. The CAS still no-ops on an intentionally 'suspended'
+          // record.
+          const record = sessionRepo.findByAnyId(sessionId);
           if (record) {
             updated = markRecordExited(sessionRepo, record.id, {
               exit_code: exitCode,
@@ -528,7 +535,7 @@ export function registerSessionHandlers(context: IpcContext): void {
         // Capture session metrics (usage/event caches are still populated at this point).
         // Determine the DB record from whichever lookup path succeeded above.
         const metricsRecord = session
-          ? sessionRepo.getLatestForTask(session.taskId)
+          ? sessionRepo.findByAnyId(sessionId)
           : (updated ? null : (db.prepare(
               `SELECT id, started_at, session_type FROM sessions WHERE agent_session_id = ? ORDER BY started_at DESC LIMIT 1`
             ).get(sessionId) as { id: string; started_at: string; session_type: string } | undefined) ?? null);

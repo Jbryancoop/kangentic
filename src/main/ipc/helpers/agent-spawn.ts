@@ -15,6 +15,7 @@ import type { IpcContext } from '../ipc-context';
 import { isAbortError } from '../../../shared/abort-utils';
 import { resolveTargetAgent } from '../../engine/agent-resolver';
 import { canResume as checkCanResume } from '../../engine/session-lifecycle';
+import { resolveIsolatedSwimlaneId } from '../../engine/session-isolation';
 import { emitSpawnProgress } from '../../engine/spawn-progress';
 import { ensureTaskWorktree, ensureTaskBranchCheckout } from './task-git';
 import { getProjectRepos } from './project-repos';
@@ -33,20 +34,28 @@ export function buildAutoCommandVars(task: Task): Record<string, string> {
 }
 
 /**
- * Resolve the model/effort overrides handed to `engine.resumeSuspendedSession`
- * and `engine.executeTransition`. Per-task override (set via the ContextBar
- * popover) wins over the swimlane override - the user's explicit choice is
- * sticky across column moves and respawns. Returns the undefined values
- * unchanged so a fully-unset (undefined / undefined) row produces `undefined`
- * rather than `null` and downstream `?? undefined` coalescing stays a no-op.
+ * Resolve the column-derived spawn overrides handed to
+ * `engine.resumeSuspendedSession` and `engine.executeTransition`.
+ *
+ * model/effort: per-task override (set via the ContextBar popover) wins over the
+ * swimlane override - the user's explicit choice is sticky across column moves
+ * and respawns. Undefined values are returned unchanged so a fully-unset
+ * (undefined / undefined) row produces `undefined` rather than `null` and
+ * downstream `?? undefined` coalescing stays a no-op.
+ *
+ * isolatedSwimlaneId: derived from the destination column's session strategy.
+ * This is the single isolation-resolution site for the spawn path, so every spawn
+ * through spawnAgent (normal move, session switch, Phase 3 deferred spawn) lands on
+ * the correct session without threading it as a separate parameter.
  */
 export function resolveSpawnOverrides(
   task: Pick<Task, 'model_override' | 'effort_override'>,
-  lane: Pick<Swimlane, 'model_override' | 'effort_override'> | null | undefined,
-): { model: string | null | undefined; effort: string | null | undefined } {
+  lane: Pick<Swimlane, 'id' | 'model_override' | 'effort_override' | 'session_strategy'> | null | undefined,
+): { model: string | null | undefined; effort: string | null | undefined; isolatedSwimlaneId: string | null } {
   return {
     model: task.model_override ?? lane?.model_override,
     effort: task.effort_override ?? lane?.effort_override,
+    isolatedSwimlaneId: resolveIsolatedSwimlaneId(lane),
   };
 }
 

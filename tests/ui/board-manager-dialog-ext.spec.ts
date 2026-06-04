@@ -443,4 +443,39 @@ test.describe('BoardManagerDialog extended', () => {
     await page.locator('button', { hasText: 'Discard' }).click();
     await dialog.waitFor({ state: 'detached', timeout: 2000 });
   });
+
+  // ── Session strategy (main / isolated) select ────────────────────────────
+  //
+  // The Automation tab exposes a "Session strategy" Select (main / isolated).
+  // Verify it defaults to 'main' and that picking 'isolated' persists.
+
+  test('Automation tab: session strategy defaults to main and saves isolated', async () => {
+    await openManagerByHeader('Code Review');
+    const dialog = page.locator('[data-testid="board-manager-dialog"]');
+
+    await dialog.locator('[data-testid="board-manager-section-auto"]').click();
+
+    const strategySelect = dialog.locator('[data-testid="column-session-strategy"]');
+    await expect(strategySelect).toBeVisible();
+    await expect(strategySelect).toHaveValue('main');
+
+    await strategySelect.selectOption('isolated');
+    await expect(strategySelect).toHaveValue('isolated');
+
+    await dialog.locator('[data-testid="board-manager-save"]').click();
+    await dialog.waitFor({ state: 'detached', timeout: 3000 });
+
+    const saved = await page.evaluate(async () => {
+      const lanes = await window.electronAPI.swimlanes.list();
+      return lanes.find((s) => s.name === 'Code Review')?.session_strategy;
+    });
+    expect(saved).toBe('isolated');
+
+    // Cleanup: restore the default strategy.
+    await page.evaluate(async () => {
+      const lanes = await window.electronAPI.swimlanes.list();
+      const lane = lanes.find((s) => s.name === 'Code Review');
+      if (lane) await window.electronAPI.swimlanes.update({ id: lane.id, session_strategy: 'main' });
+    });
+  });
 });

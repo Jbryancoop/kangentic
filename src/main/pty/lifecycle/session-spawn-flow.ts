@@ -184,6 +184,7 @@ export async function performSpawn(
     exitCode: null,
     resuming: input.resuming ?? false,
     transient: input.transient ?? false,
+    isolatedSwimlaneId: input.isolatedSwimlaneId,
     exitSequence: input.exitSequence ?? ['\x03'],
     agentParser: input.agentParser,
     agentName: input.agentName ?? 'agent',

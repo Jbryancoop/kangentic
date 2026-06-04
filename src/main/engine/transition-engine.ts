@@ -31,14 +31,19 @@ interface TransitionEngineConfig {
 }
 
 /**
- * Adapter-specific spawn knobs surfaced as column-level overrides. Both fields
- * are passed through to `CommandOptions` and translated to CLI flags by the
- * resolved adapter (e.g. Claude `--model` / `--effort`). Empty/null values
- * are forwarded as undefined, leaving the agent default in place.
+ * Column-resolved spawn knobs. `model`/`effort` are passed through to
+ * `CommandOptions` and translated to CLI flags by the resolved adapter (e.g.
+ * Claude `--model` / `--effort`); empty/null values are forwarded as undefined,
+ * leaving the agent default in place. `isolatedSwimlaneId` is consumed by the
+ * spawn-intent resolver and persistence (not the CLI): it selects which session to
+ * resume (null = the task's main session, a swimlane id = that column's isolated
+ * session).
  */
 export interface SpawnOverrides {
   model?: string | null;
   effort?: string | null;
+  /** Isolated swimlane to resume/persist. Defaults to null (main session). */
+  isolatedSwimlaneId?: string | null;
 }
 
 export class TransitionEngine {
@@ -189,14 +194,19 @@ export class TransitionEngine {
     await adapter.ensureTrust(cwd);
     console.log(`[spawnAgent] Trust ensured for ${cwd}`);
 
+    // Which session this spawn belongs to: null = the task's main session, the
+    // swimlane id for an 'isolated'-strategy column.
+    const isolatedSwimlaneId = spawnOverrides?.isolatedSwimlaneId ?? null;
+
     // Resolve whether to resume an existing session or spawn fresh.
-    // The intent resolver queries by adapter.sessionType, so cross-agent
-    // resume mismatches are structurally impossible (no guard needed).
-    // Resume is only attempted when agent_session_id is non-null (real CLI
-    // session ID has been captured or pre-specified).
+    // The intent resolver queries by adapter.sessionType AND isolated_swimlane_id,
+    // so cross-agent and main-vs-isolated resume mismatches are structurally
+    // impossible (no guard needed). Resume is only attempted when agent_session_id
+    // is non-null (real CLI session ID has been captured or pre-specified).
     const intent = resolveSpawnIntent({
       taskId: task.id,
       sessionType: adapter.sessionType,
+      isolatedSwimlaneId,
       sessionRepo: this.sessionRepo,
       promptTemplate: config.promptTemplate,
       templateVars: vars,
@@ -220,7 +230,7 @@ export class TransitionEngine {
     const ptySessionId = randomUUID();
 
     console.log(
-      `[spawnAgent] task=${task.id.slice(0, 8)} intent=${intent.mode}`
+      `[spawnAgent] task=${task.id.slice(0, 8)} intent=${intent.mode} session=${isolatedSwimlaneId ?? 'main'}`
       + ` agent=${agentName} ptySessionId=${ptySessionId.slice(0, 8)}`
       + (agentSessionId ? ` agentSessionId=${agentSessionId.slice(0, 8)}` : '')
       + (intent.retireRecordId ? ` retiring=${intent.retireRecordId.slice(0, 8)}` : ''),
@@ -288,6 +298,7 @@ export class TransitionEngine {
       agentParser: adapter,
       agentName: adapter.name,
       agentSessionId,
+      isolatedSwimlaneId,
       exitSequence: adapter.getExitSequence?.() ?? ['\x03'],
     });
 
@@ -312,6 +323,7 @@ export class TransitionEngine {
         id: ptySessionId,
         task_id: task.id,
         session_type: adapter.sessionType,
+        isolated_swimlane_id: isolatedSwimlaneId,
         agent_session_id: agentSessionId ?? null,
         command,
         cwd,

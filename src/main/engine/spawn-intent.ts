@@ -30,6 +30,12 @@ export interface SpawnIntentOptions {
   taskId: string;
   /** The target adapter's session type (e.g. 'claude_agent', 'codex_agent'). */
   sessionType: string;
+  /**
+   * The isolated swimlane to scope the resume lookup to. Defaults to null (the
+   * task's main session). An 'isolated'-strategy column passes its own swimlane id
+   * to resume its separate session.
+   */
+  isolatedSwimlaneId?: string | null;
   sessionRepo: SessionRepository | null | undefined;
   promptTemplate: string | undefined;
   templateVars: Record<string, string>;
@@ -59,12 +65,17 @@ export function isResumeEligible(record: SessionRecord | undefined): boolean {
  * If not, returns 'fresh'.
  *
  * Cross-agent safety is structural: the WHERE clause filters by session_type,
- * so a Claude lookup never finds a Codex session and vice versa.
+ * so a Claude lookup never finds a Codex session and vice versa. The isolation
+ * filter adds the same structural separation between a task's main session and its
+ * per-column isolated sessions.
  */
 export function resolveSpawnIntent(options: SpawnIntentOptions): SpawnIntent {
-  const { taskId, sessionType, sessionRepo, promptTemplate, templateVars, resumePrompt } = options;
+  const {
+    taskId, sessionType, sessionRepo, promptTemplate, templateVars, resumePrompt,
+    isolatedSwimlaneId = null,
+  } = options;
 
-  const match = sessionRepo?.getLatestForTaskByType(taskId, sessionType);
+  const match = sessionRepo?.getLatestForTaskByTypeAndIsolation(taskId, sessionType, isolatedSwimlaneId);
   const canResume = isResumeEligible(match);
 
   if (canResume) {

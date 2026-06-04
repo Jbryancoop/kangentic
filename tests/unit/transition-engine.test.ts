@@ -59,7 +59,7 @@ function makeSessionRepo() {
   const insertedRecords: unknown[] = [];
   return {
     getLatestForTask: vi.fn(() => null),
-    getLatestForTaskByType: vi.fn(() => null),
+    getLatestForTaskByTypeAndIsolation: vi.fn(() => null),
     insert: vi.fn((record: unknown) => { insertedRecords.push(record); }),
     update: vi.fn(),
     insertedRecords,
