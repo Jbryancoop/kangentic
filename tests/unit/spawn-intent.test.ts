@@ -200,7 +200,7 @@ describe('resolveSpawnIntent', () => {
     expect(resumeIntent.prompt).toBe('/test');
   });
 
-  it('returns undefined prompt on fresh spawn with no template', () => {
+  it('returns undefined prompt on fresh spawn with no template and no resumePrompt', () => {
     const intent = resolveSpawnIntent({
       ...baseOptions,
       promptTemplate: undefined,
@@ -209,6 +209,23 @@ describe('resolveSpawnIntent', () => {
 
     expect(intent.mode).toBe('fresh');
     expect(intent.prompt).toBeUndefined();
+  });
+
+  it('uses resumePrompt as the initial prompt on a fresh spawn with no template (isolated review)', () => {
+    // A promptless fresh spawn (skipPromptTemplate -> promptTemplate undefined)
+    // with a caller-supplied auto_command runs it as the session's first prompt,
+    // so an isolated review column launches /code-review immediately rather than
+    // waiting out the keystroke scheduler's 30s fresh-spawn fallback.
+    const intent = resolveSpawnIntent({
+      ...baseOptions,
+      promptTemplate: undefined,
+      resumePrompt: '/code-review',
+      sessionRepo: mockSessionRepo(undefined),
+    });
+
+    expect(intent.mode).toBe('fresh');
+    expect(intent.agentSessionId).toBeNull();
+    expect(intent.prompt).toBe('/code-review');
   });
 
   it('queries by session type and the main session (null) by default', () => {
@@ -264,5 +281,32 @@ describe('resolveSpawnIntent', () => {
     expect(intent.prompt).toContain('<task>');
     expect(intent.prompt).toContain('<title>Hello</title>');
     expect(intent.prompt).not.toContain('<description');
+  });
+
+  it('forceFresh spawns fresh and retires the prior record even when a resumable one exists', () => {
+    // An 'always_spawn_new' column entry: a resumable record is present, but we
+    // deliberately skip it and mark it for retirement so it does not linger.
+    const record = mockSessionRecord({ status: 'suspended' });
+    const intent = resolveSpawnIntent({
+      ...baseOptions,
+      sessionRepo: mockSessionRepo(record),
+      forceFresh: true,
+    });
+
+    expect(intent.mode).toBe('fresh');
+    expect(intent.agentSessionId).toBeNull();
+    expect(intent.retireRecordId).toBe('rec-1');
+    expect(intent.prompt).toBe('Fix bug: login broken');
+  });
+
+  it('forceFresh with no prior record spawns fresh with nothing to retire', () => {
+    const intent = resolveSpawnIntent({
+      ...baseOptions,
+      sessionRepo: mockSessionRepo(undefined),
+      forceFresh: true,
+    });
+
+    expect(intent.mode).toBe('fresh');
+    expect(intent.retireRecordId).toBeNull();
   });
 });

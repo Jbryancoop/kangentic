@@ -14,8 +14,8 @@ import type { Task, Swimlane } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 import { isAbortError } from '../../../shared/abort-utils';
 import { resolveTargetAgent } from '../../engine/agent-resolver';
-import { canResume as checkCanResume } from '../../engine/session-lifecycle';
-import { resolveIsolatedSwimlaneId } from '../../engine/session-isolation';
+import { isResumeEligible } from '../../engine/spawn-intent';
+import { resolveIsolatedSwimlaneId, resolveForceFresh } from '../../engine/session-isolation';
 import { emitSpawnProgress } from '../../engine/spawn-progress';
 import { ensureTaskWorktree, ensureTaskBranchCheckout } from './task-git';
 import { getProjectRepos } from './project-repos';
@@ -43,19 +43,21 @@ export function buildAutoCommandVars(task: Task): Record<string, string> {
  * (undefined / undefined) row produces `undefined` rather than `null` and
  * downstream `?? undefined` coalescing stays a no-op.
  *
- * isolatedSwimlaneId: derived from the destination column's session strategy.
- * This is the single isolation-resolution site for the spawn path, so every spawn
- * through spawnAgent (normal move, session switch, Phase 3 deferred spawn) lands on
- * the correct session without threading it as a separate parameter.
+ * isolatedSwimlaneId / forceFresh: derived from the destination column's session
+ * target + spawn strategy. This is the single resolution site for the spawn path,
+ * so every spawn through spawnAgent (normal move, session switch, Phase 3 deferred
+ * spawn) lands on the correct track with the correct fresh-vs-resume policy without
+ * threading them as separate parameters.
  */
 export function resolveSpawnOverrides(
   task: Pick<Task, 'model_override' | 'effort_override'>,
-  lane: Pick<Swimlane, 'id' | 'model_override' | 'effort_override' | 'session_strategy'> | null | undefined,
-): { model: string | null | undefined; effort: string | null | undefined; isolatedSwimlaneId: string | null } {
+  lane: Pick<Swimlane, 'id' | 'model_override' | 'effort_override' | 'session_target' | 'session_spawn_strategy'> | null | undefined,
+): { model: string | null | undefined; effort: string | null | undefined; isolatedSwimlaneId: string | null; forceFresh: boolean } {
   return {
     model: task.model_override ?? lane?.model_override,
     effort: task.effort_override ?? lane?.effort_override,
     isolatedSwimlaneId: resolveIsolatedSwimlaneId(lane),
+    forceFresh: resolveForceFresh(lane),
   };
 }
 
@@ -285,10 +287,36 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
   // Fallback: no transition spawned a session - resume or spawn fresh
   console.log(`[spawnAgent] No session after transitions, spawning ${targetAgent} for task ${task.id.slice(0, 8)}`);
 
-  const resumeCheck = checkCanResume(task.id, sessionRepo);
-  const resumePrompt = (toLane.auto_command?.trim() && resumeCheck.resumable)
+  // Resolve resume eligibility scoped to the DESTINATION session (agent type +
+  // isolated swimlane), mirroring executeSpawnAgent's resolveSpawnIntent. A
+  // task-level check (getLatestForTask) would treat a suspended MAIN session as
+  // "resumable" when entering an isolated column, which would mis-route the
+  // auto_command and drop it; scoping by isolation keeps this decision in
+  // lockstep with the actual spawn.
+  const destinationIsolatedSwimlaneId = resolveIsolatedSwimlaneId(toLane);
+  const destinationAdapter = agentRegistry.get(targetAgent);
+  const destinationResumeRecord = destinationAdapter
+    ? sessionRepo.getLatestForTaskByTypeAndIsolation(task.id, destinationAdapter.sessionType, destinationIsolatedSwimlaneId)
+    : undefined;
+  const canResumeDestination = isResumeEligible(destinationResumeRecord);
+
+  // Auto_command delivery. The command is handed to the spawn as the INITIAL
+  // PROMPT (runs immediately, no keystroke timing) whenever the session has no
+  // task prompt of its own to run:
+  //   - resume: --resume carries it as the next message;
+  //   - fresh + skipPromptTemplate: a promptless fresh spawn (e.g. an isolated
+  //     review column, which omits the "do this task" prompt). Without this the
+  //     CLI sits idle at an empty prompt, never emits a 'thinking' event, and
+  //     the keystroke scheduler waits out its full 30s fallback before the
+  //     command appears - which reads as "the auto_command never ran".
+  // Only a fresh spawn that DOES get a task template needs the post-spawn
+  // keystroke, because the task description owns the prompt slot.
+  const interpolatedAutoCommand = toLane.auto_command?.trim()
     ? interpolateTemplate(toLane.auto_command, buildAutoCommandVars(currentTask))
     : undefined;
+  const deliverAutoCommandAsPrompt = interpolatedAutoCommand !== undefined
+    && (canResumeDestination || skipPromptTemplate === true);
+  const resumePrompt = deliverAutoCommandAsPrompt ? interpolatedAutoCommand : undefined;
 
   try {
     // Always pass targetAgent so the column's agent_override is respected.
@@ -308,10 +336,8 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
 
   currentTask = tasks.getById(task.id);
 
-  if (currentTask?.session_id && toLane.auto_command?.trim() && !resumePrompt) {
-    const vars = buildAutoCommandVars(currentTask);
-    const interpolated = interpolateTemplate(toLane.auto_command, vars);
-    context.terminalSubmitScheduler.scheduleKeystrokes(currentTask.id, currentTask.session_id, [interpolated], { freshlySpawned: true });
+  if (currentTask?.session_id && interpolatedAutoCommand !== undefined && !deliverAutoCommandAsPrompt) {
+    context.terminalSubmitScheduler.scheduleKeystrokes(currentTask.id, currentTask.session_id, [interpolatedAutoCommand], { freshlySpawned: true });
   }
   };
 

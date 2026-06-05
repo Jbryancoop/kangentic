@@ -161,7 +161,8 @@ function makeSwimlane(id: string, overrides: Partial<Swimlane> = {}): Swimlane {
     model_override: null,
     effort_override: null,
     handoff_context: false,
-    session_strategy: 'main',
+    session_target: 'main',
+    session_spawn_strategy: 'create_or_resume',
     created_at: '2025-01-01T00:00:00.000Z',
     ...overrides,
   };
@@ -206,8 +207,8 @@ describe('handleTaskMove session switch', () => {
   });
 
   it('ENTER isolated: suspends the live main session and spawns the isolated column', async () => {
-    const execLane = makeSwimlane(EXEC_LANE_ID, { session_strategy: 'main' });
-    const isolatedLane = makeSwimlane(REVIEW_ISOLATED_LANE_ID, { session_strategy: 'isolated', auto_command: '/code-review' });
+    const execLane = makeSwimlane(EXEC_LANE_ID, { session_target: 'main' });
+    const isolatedLane = makeSwimlane(REVIEW_ISOLATED_LANE_ID, { session_target: 'isolated', auto_command: '/code-review' });
     const swimlaneRepo = {
       getById: vi.fn((id: string) => (id === EXEC_LANE_ID ? execLane : id === REVIEW_ISOLATED_LANE_ID ? isolatedLane : null)),
       list: vi.fn(() => [execLane, isolatedLane]),
@@ -245,12 +246,12 @@ describe('handleTaskMove session switch', () => {
     expect(mockSpawnAgent).toHaveBeenCalledTimes(1);
     const spawnArg = mockSpawnAgent.mock.calls[0][0] as { toLane: Swimlane };
     expect(spawnArg.toLane.id).toBe(REVIEW_ISOLATED_LANE_ID);
-    expect(spawnArg.toLane.session_strategy).toBe('isolated');
+    expect(spawnArg.toLane.session_target).toBe('isolated');
   });
 
   it('LEAVE isolated: suspends the isolated line and spawns the normal column (no keep-alive strand)', async () => {
-    const execLane = makeSwimlane(EXEC_LANE_ID, { session_strategy: 'main' });
-    const isolatedLane = makeSwimlane(REVIEW_ISOLATED_LANE_ID, { session_strategy: 'isolated' });
+    const execLane = makeSwimlane(EXEC_LANE_ID, { session_target: 'main' });
+    const isolatedLane = makeSwimlane(REVIEW_ISOLATED_LANE_ID, { session_target: 'isolated' });
     const swimlaneRepo = {
       getById: vi.fn((id: string) => (id === EXEC_LANE_ID ? execLane : id === REVIEW_ISOLATED_LANE_ID ? isolatedLane : null)),
       list: vi.fn(() => [execLane, isolatedLane]),
@@ -287,12 +288,12 @@ describe('handleTaskMove session switch', () => {
     expect(mockSpawnAgent).toHaveBeenCalledTimes(1);
     const spawnArg = mockSpawnAgent.mock.calls[0][0] as { toLane: Swimlane };
     expect(spawnArg.toLane.id).toBe(EXEC_LANE_ID);
-    expect(spawnArg.toLane.session_strategy).toBe('main');
+    expect(spawnArg.toLane.session_target).toBe('main');
   });
 
   it('regression: normal -> normal move of a main session does NOT line-switch', async () => {
-    const execLane = makeSwimlane(EXEC_LANE_ID, { session_strategy: 'main' });
-    const otherLane = makeSwimlane('lane-other', { session_strategy: 'main' });
+    const execLane = makeSwimlane(EXEC_LANE_ID, { session_target: 'main' });
+    const otherLane = makeSwimlane('lane-other', { session_target: 'main' });
     const swimlaneRepo = {
       getById: vi.fn((id: string) => (id === EXEC_LANE_ID ? execLane : id === 'lane-other' ? otherLane : null)),
       list: vi.fn(() => [execLane, otherLane]),
@@ -323,5 +324,51 @@ describe('handleTaskMove session switch', () => {
     expect(markRecordSuspended).not.toHaveBeenCalled();
     expect(context.sessionManager.suspend).not.toHaveBeenCalled();
     expect(mockSpawnAgent).not.toHaveBeenCalled();
+  });
+
+  it('FORCE-FRESH (reset-main): a main + always_spawn_new column suspends the live main session and respawns fresh', async () => {
+    // Same track on both sides (main -> main), so the isolation inequality does
+    // NOT fire. But the target column forces a fresh session each entry
+    // (always_spawn_new), so it must still suspend + route to Phase 3 (which
+    // spawns fresh via forceFresh) rather than fall through to Priority 3d
+    // keep-alive. This is the reset-main cell of the matrix, and the only case
+    // the targetForceFresh predicate clause exists for.
+    const execLane = makeSwimlane(EXEC_LANE_ID, { session_target: 'main', session_spawn_strategy: 'create_or_resume' });
+    const resetLane = makeSwimlane('lane-reset', { session_target: 'main', session_spawn_strategy: 'always_spawn_new' });
+    const swimlaneRepo = {
+      getById: vi.fn((id: string) => (id === EXEC_LANE_ID ? execLane : id === 'lane-reset' ? resetLane : null)),
+      list: vi.fn(() => [execLane, resetLane]),
+    };
+
+    // Live MAIN session (isolation null on both the active record and the target).
+    hoisted.activeRecord = {
+      id: 'rec-main', task_id: 'task-aaa00001', isolated_swimlane_id: null,
+      agent_session_id: 'agent-A', status: 'running',
+      started_at: '2026-01-01T00:00:00Z', session_type: 'claude_agent',
+    };
+
+    const taskRepo = {
+      getById: vi.fn()
+        .mockReturnValueOnce(makeTask({ swimlane_id: EXEC_LANE_ID, session_id: 'active-session-1' }))
+        .mockReturnValue(makeTask({ swimlane_id: 'lane-reset', session_id: null })),
+      move: vi.fn(),
+      update: vi.fn(),
+      list: vi.fn(() => [makeTask()]),
+      archive: vi.fn(),
+    };
+
+    const context = makeContext(taskRepo, swimlaneRepo);
+
+    await handleTaskMove(context as never, {
+      taskId: 'task-aaa00001', targetSwimlaneId: 'lane-reset', targetPosition: 0,
+    });
+
+    // Suspended the live main session and routed to Phase 3 to spawn fresh.
+    expect(markRecordSuspended).toHaveBeenCalledWith(expect.anything(), 'rec-main', 'system');
+    expect(context.sessionManager.suspend).toHaveBeenCalledWith('active-session-1');
+    expect(mockSpawnAgent).toHaveBeenCalledTimes(1);
+    const spawnArg = mockSpawnAgent.mock.calls[0][0] as { toLane: Swimlane };
+    expect(spawnArg.toLane.id).toBe('lane-reset');
+    expect(spawnArg.toLane.session_spawn_strategy).toBe('always_spawn_new');
   });
 });

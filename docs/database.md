@@ -85,12 +85,15 @@ All queries are synchronous via **better-sqlite3** -- they block the Node.js eve
 | model_override | TEXT | | NULL |
 | effort_override | TEXT | | NULL |
 | handoff_context | INTEGER | NOT NULL | 0 |
-| session_strategy | TEXT | NOT NULL | 'main' |
+| session_target | TEXT | NOT NULL | 'main' |
+| session_spawn_strategy | TEXT | NOT NULL | 'create_or_resume' |
 | created_at | TEXT | NOT NULL | |
 
 Valid role values: `todo`, `done`, or NULL (custom column).
 
-Valid session_strategy values: `main` (default, the task's main session), `isolated` (a separate, context-isolated session keyed by the swimlane id). See `SessionStrategy` in `src/shared/types.ts`.
+Per-column session model (two orthogonal axes; see `src/shared/types.ts` and `docs/session-lifecycle.md` "Isolated Sessions"):
+- `session_target` (renamed from the original `session_strategy`): `main` (default, the task's main session) or `isolated` (a separate, context-isolated session keyed by the swimlane id). See `SessionTarget`.
+- `session_spawn_strategy`: `create_or_resume` (default, resume the target track's session or spawn one) or `always_spawn_new` (always spawn fresh on entry, retiring the prior session for that `(task, target)`). See `SessionSpawnStrategy`. The fresh-vs-resume default is context-aware (`resolveForceFresh`): isolated columns default to `always_spawn_new`, main columns to `create_or_resume`.
 
 ### tasks table
 
@@ -370,6 +373,8 @@ Listed in execution order within `runProjectMigrations()`:
 37. **`usage_history` append-only ledger** -- creates the `usage_history` table (in the initial `CREATE TABLE IF NOT EXISTS` block) plus two query indices (`idx_usage_history_session_started_at`, `idx_usage_history_recorded_at`) for StatusBar period bucketing. Adds a one-shot guarded backfill that copies existing `sessions` rows where `total_cost_usd IS NOT NULL` into `usage_history` so installs upgrading to this version retain their lifetime totals. Backfill is wrapped in a single transaction and uses `INSERT OR IGNORE` plus a `COUNT(*) = 0` guard so re-running is safe. Rows in this table have no foreign keys to `tasks` or `sessions`, so totals survive task deletion (the original bug this feature fixes).
 38. **`pr_state` column on tasks** -- adds `pr_state TEXT DEFAULT NULL` so the authoritative branch->PR resolver can persist normalized PR state (`open`/`draft`/`merged`/`closed`) and re-resolution can reflect state changes on the card pill. Idempotent guarded `ALTER TABLE`.
 39. **`head_sha` column on tasks** -- adds `head_sha TEXT DEFAULT NULL`, the captured worktree HEAD commit SHA. An immutable anchor that lets PR resolution match by commit (`gh api repos/{owner}/{repo}/commits/{sha}/pulls`) even after the worktree is reclaimed on Done or the branch is renamed. Captured opportunistically during resolution and on worktree deletion. Idempotent guarded `ALTER TABLE`.
+40. **`isolated_swimlane_id` column on sessions** -- adds `isolated_swimlane_id TEXT DEFAULT NULL` so a task can hold multiple parallel, independently-resumable sessions. NULL = the task's main session; a swimlane id = the separate, context-isolated session belonging to that `isolated`-target column. Existing rows are NULL (main). Companion index `idx_sessions_task_type_isolation_started` (see migration 35) keys the resume-decision lookup. Idempotent guarded `ALTER TABLE`.
+41. **Per-column session model on swimlanes (`session_target` + `session_spawn_strategy`)** -- renames the original `session_strategy` column to `session_target` (`main` | `isolated`, values unchanged) via a guarded `RENAME COLUMN`, and adds `session_spawn_strategy TEXT NOT NULL DEFAULT 'create_or_resume'` (`create_or_resume` | `always_spawn_new`). Idempotent across fresh DBs, DBs still on the old `session_strategy` column, and already-migrated DBs. Together they select which session track a column runs a task on and whether it resumes or always spawns fresh on entry; the fresh-vs-resume default is context-aware (`resolveForceFresh`). See `docs/session-lifecycle.md` "Isolated Sessions".
 
 ### Key Migrations (Global DB)
 

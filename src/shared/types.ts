@@ -185,18 +185,29 @@ export interface BacklogAttachment {
 export type SwimlaneRole = 'todo' | 'done';
 
 /**
- * Per-column session strategy. Controls which session line a task runs on when
- * it enters this column.
- * - 'main' (default): run the task's main session (resume it on entry).
- * - 'isolated': run on this column's own separate, independently-resumable session
- *   (keyed by the swimlane id). Context-isolated from the main session - it does NOT
- *   inherit the main conversation, which suits work that should stay independent of it
- *   (for example, a code review). Leaving an isolated column resumes the main session.
+ * Which session track a task runs on when it enters a column.
+ * - 'main' (default): the task's main conversation (Anthropic's "main agent"),
+ *   resumed as the task moves between normal columns.
+ * - 'isolated': this column's own separate, independently-resumable session,
+ *   keyed by the swimlane id (an "isolated context"). It does NOT inherit the
+ *   main conversation, which suits work that should stay independent of it (for
+ *   example, a code review). Leaving an isolated column resumes the main session.
  *
- * Modeled as an enum (not a boolean) so future strategies can be added without a
+ * Modeled as an enum (not a boolean) so future tracks can be added without a
  * schema migration. Only 'main' and 'isolated' are implemented today.
  */
-export type SessionStrategy = 'main' | 'isolated';
+export type SessionTarget = 'main' | 'isolated';
+
+/**
+ * What a column does with its target session track on entry.
+ * - 'create_or_resume' (default): resume the track's session if one exists for
+ *   this (task, target), else spawn a fresh one.
+ * - 'always_spawn_new': always spawn a fresh session on entry, retiring the
+ *   prior session for that (task, target). This is the independent-pass-each-time
+ *   behavior (the reviewer archetype). Fresh applies on column entry only; an
+ *   app restart / pause-resume of an in-progress session still resumes it.
+ */
+export type SessionSpawnStrategy = 'create_or_resume' | 'always_spawn_new';
 
 export interface Swimlane {
   id: string;
@@ -217,8 +228,10 @@ export interface Swimlane {
   /** Adapter-specific effort/reasoning level (e.g. Claude's "low" | "medium" | "high" | "xhigh" | "max"). Null inherits the agent default. */
   effort_override: string | null;
   handoff_context: boolean;
-  /** Per-column session strategy (see SessionStrategy). Defaults to 'main'. */
-  session_strategy: SessionStrategy;
+  /** Which session track a task runs on in this column (see SessionTarget). Defaults to 'main'. */
+  session_target: SessionTarget;
+  /** What to do with that track on entry (see SessionSpawnStrategy). Defaults to 'create_or_resume'. */
+  session_spawn_strategy: SessionSpawnStrategy;
   created_at: string;
 }
 
@@ -1573,7 +1586,8 @@ export interface SwimlaneCreateInput {
   model_override?: string | null;
   effort_override?: string | null;
   handoff_context?: boolean;
-  session_strategy?: SessionStrategy;
+  session_target?: SessionTarget;
+  session_spawn_strategy?: SessionSpawnStrategy;
 }
 
 export interface SwimlaneUpdateInput {
@@ -1592,7 +1606,8 @@ export interface SwimlaneUpdateInput {
   model_override?: string | null;
   effort_override?: string | null;
   handoff_context?: boolean;
-  session_strategy?: SessionStrategy;
+  session_target?: SessionTarget;
+  session_spawn_strategy?: SessionSpawnStrategy;
 }
 
 export interface ActionCreateInput {

@@ -233,13 +233,13 @@
   }
 
   var DEFAULT_SWIMLANES = [
-    { name: 'To Do', role: 'todo', color: '#6b7280', icon: 'layers', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: false, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_strategy: 'main' },
-    { name: 'Planning', role: null, color: '#8b5cf6', icon: 'map', is_archived: false, is_ghost: false, permission_mode: 'plan', auto_spawn: true, auto_command: null, plan_exit_target_id: '__executing__', agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_strategy: 'main' },
-    { name: 'Executing', role: null, color: '#3b82f6', icon: 'square-terminal', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_strategy: 'main' },
-    { name: 'Code Review', role: null, color: '#f59e0b', icon: 'code', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_strategy: 'main' },
-    { name: 'Tests', role: null, color: '#06b6d4', icon: 'flask-conical', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_strategy: 'main' },
-    { name: 'Ship It', role: null, color: '#F97316', icon: 'sailboat', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_strategy: 'main' },
-    { name: 'Done', role: 'done', color: '#10b981', icon: 'circle-check-big', is_archived: true, is_ghost: false, permission_mode: null, auto_spawn: false, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_strategy: 'main' },
+    { name: 'To Do', role: 'todo', color: '#6b7280', icon: 'layers', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: false, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_target: 'main', session_spawn_strategy: 'create_or_resume' },
+    { name: 'Planning', role: null, color: '#8b5cf6', icon: 'map', is_archived: false, is_ghost: false, permission_mode: 'plan', auto_spawn: true, auto_command: null, plan_exit_target_id: '__executing__', agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_target: 'main', session_spawn_strategy: 'create_or_resume' },
+    { name: 'Executing', role: null, color: '#3b82f6', icon: 'square-terminal', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_target: 'main', session_spawn_strategy: 'create_or_resume' },
+    { name: 'Code Review', role: null, color: '#f59e0b', icon: 'code', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_target: 'main', session_spawn_strategy: 'create_or_resume' },
+    { name: 'Tests', role: null, color: '#06b6d4', icon: 'flask-conical', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_target: 'main', session_spawn_strategy: 'create_or_resume' },
+    { name: 'Ship It', role: null, color: '#F97316', icon: 'sailboat', is_archived: false, is_ghost: false, permission_mode: null, auto_spawn: true, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_target: 'main', session_spawn_strategy: 'create_or_resume' },
+    { name: 'Done', role: 'done', color: '#10b981', icon: 'circle-check-big', is_archived: true, is_ghost: false, permission_mode: null, auto_spawn: false, auto_command: null, plan_exit_target_id: null, agent_override: null, model_override: null, effort_override: null, handoff_context: false, session_target: 'main', session_spawn_strategy: 'create_or_resume' },
   ];
 
   var MOCK_PROJECT_ENTRIES = [
@@ -983,7 +983,8 @@
           model_override: input.model_override || null,
           effort_override: input.effort_override || null,
           handoff_context: input.handoff_context !== undefined ? input.handoff_context : false,
-          session_strategy: input.session_strategy ?? 'main',
+          session_target: input.session_target ?? 'main',
+          session_spawn_strategy: input.session_spawn_strategy ?? 'create_or_resume',
           position: swimlanes.length,
           created_at: now(),
         };

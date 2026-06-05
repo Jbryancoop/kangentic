@@ -44,6 +44,11 @@ export interface SpawnOverrides {
   effort?: string | null;
   /** Isolated swimlane to resume/persist. Defaults to null (main session). */
   isolatedSwimlaneId?: string | null;
+  /**
+   * Force a fresh spawn on the target track (retiring any prior session), set by
+   * an 'always_spawn_new' column. Defaults to false (resume if one exists).
+   */
+  forceFresh?: boolean;
 }
 
 export class TransitionEngine {
@@ -211,6 +216,7 @@ export class TransitionEngine {
       promptTemplate: config.promptTemplate,
       templateVars: vars,
       resumePrompt,
+      forceFresh: spawnOverrides?.forceFresh,
     });
 
     const canResume = intent.mode === 'resume';

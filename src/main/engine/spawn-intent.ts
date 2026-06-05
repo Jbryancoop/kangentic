@@ -39,8 +39,18 @@ export interface SpawnIntentOptions {
   sessionRepo: SessionRepository | null | undefined;
   promptTemplate: string | undefined;
   templateVars: Record<string, string>;
-  /** Pre-computed prompt for resumed sessions (typically the auto_command). */
+  /**
+   * Pre-computed prompt used when the session has no task template of its own:
+   * a resumed session's next message, or a promptless fresh session's initial
+   * prompt (typically the auto_command). Ignored when promptTemplate is set.
+   */
   resumePrompt: string | undefined;
+  /**
+   * Force a fresh spawn even when a resumable record exists, retiring that prior
+   * record. Set by an 'always_spawn_new' column on entry. When false (default),
+   * a resumable record is resumed (the create_or_resume behavior).
+   */
+  forceFresh?: boolean;
 }
 
 /**
@@ -72,11 +82,14 @@ export function isResumeEligible(record: SessionRecord | undefined): boolean {
 export function resolveSpawnIntent(options: SpawnIntentOptions): SpawnIntent {
   const {
     taskId, sessionType, sessionRepo, promptTemplate, templateVars, resumePrompt,
-    isolatedSwimlaneId = null,
+    isolatedSwimlaneId = null, forceFresh = false,
   } = options;
 
   const match = sessionRepo?.getLatestForTaskByTypeAndIsolation(taskId, sessionType, isolatedSwimlaneId);
-  const canResume = isResumeEligible(match);
+  // forceFresh ('always_spawn_new' columns) spawns fresh even when a resumable
+  // record exists, but still retires that prior record so it does not linger or
+  // get resumed later.
+  const canResume = !forceFresh && isResumeEligible(match);
 
   if (canResume) {
     return {
@@ -90,9 +103,18 @@ export function resolveSpawnIntent(options: SpawnIntentOptions): SpawnIntent {
   return {
     mode: 'fresh',
     agentSessionId: null,
+    // When the spawn has no task template (skipPromptTemplate - e.g. an isolated
+    // review column that omits the "do this task" prompt), fall back to
+    // resumePrompt so a caller-supplied auto_command becomes the fresh session's
+    // initial prompt and runs immediately. With a template, the task description
+    // owns the prompt slot and the auto_command is injected as a post-spawn
+    // keystroke instead.
     prompt: promptTemplate
       ? interpolateTemplate(promptTemplate, templateVars)
-      : undefined,
-    retireRecordId: null,
+      : resumePrompt,
+    // On a forced-fresh entry, retire the prior record we deliberately skipped so
+    // it does not linger or get resumed later. (retireRecord no-ops on records
+    // not in a retireable state, so passing a non-eligible match.id is safe.)
+    retireRecordId: forceFresh ? (match?.id ?? null) : null,
   };
 }

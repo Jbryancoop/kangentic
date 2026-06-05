@@ -134,7 +134,7 @@ On project open (`session-recovery.ts`):
 1. **Prune orphaned worktrees** -- delete tasks whose worktree directories were removed externally
 2. **Mark crash recovery** -- leftover `running` DB records become `orphaned` (skip records with live PTYs to handle re-entrant calls)
 3. **Collect candidates** -- all `suspended` + `orphaned` agent records (any `session_type` except `run_script`)
-4. **Deduplicate per `(task_id, isolated_swimlane_id)`** -- keep only the latest record for each parallel session (see [Isolated Sessions](#isolated-sessions-per-column-session-strategy)), mark older same-session duplicates as `exited`. A task may hold multiple sessions; only same-session duplicates are retired.
+4. **Deduplicate per `(task_id, isolated_swimlane_id)`** -- keep only the latest record for each parallel session (see [Isolated Sessions](#isolated-sessions-per-column-session-model)), mark older same-session duplicates as `exited`. A task may hold multiple sessions; only same-session duplicates are retired.
 5. **Select the current session** -- per task, recover ONLY the session matching the task's current column strategy (`resolveIsolatedSwimlaneId`). Non-target sessions are preserved (an orphaned one is CAS-upgraded to `suspended`) so re-entering their column later continues their own conversation.
 6. **Filter** -- skip tasks in non-auto-spawn columns, skip user-paused sessions (`suspended_by = 'user'`), skip missing CWD, skip deleted/archived tasks
 7. **Resume or respawn** (isolation-scoped via `getLatestForTaskByTypeAndIsolation`):
@@ -142,28 +142,36 @@ On project open (`session-recovery.ts`):
    - No session ID -- fresh `--session-id` with prompt from matching `spawn_agent` action
 8. **Reconcile** -- spawn fresh agents for tasks in auto_spawn columns with no session at all (skips user-paused tasks); fresh rows are tagged with the column's `isolated_swimlane_id`
 
-## Isolated Sessions (Per-Column Session Strategy)
+## Isolated Sessions (Per-Column Session Model)
 
-A task can run on multiple parallel, independently-resumable sessions. The `sessions.isolated_swimlane_id` column discriminates them: `NULL` is the task's **main** session (the shared default for normal columns); a swimlane id is the separate, context-isolated session belonging to a column whose `session_strategy = 'isolated'`. The pure rules live in `src/main/engine/session-isolation.ts` (`resolveSessionStrategy`, `resolveIsolatedSwimlaneId`).
+A task can run on multiple parallel, independently-resumable sessions. Two orthogonal column fields (set on the Automation tab of the Board Manager) control the behavior; the pure rules live in `src/main/engine/session-isolation.ts`:
 
-A column's `session_strategy` (set on the Automation tab of the Board Manager) is one of:
+- **`session_target`** (`main` | `isolated`, default `main`) - which session track a task runs on. `main` is the task's shared main conversation (resumed as the task moves between normal columns); `isolated` is this column's own separate, context-isolated session, keyed by the swimlane id. Resolved by `resolveSessionTarget` / `resolveIsolatedSwimlaneId`; the discriminator is `sessions.isolated_swimlane_id` (`NULL` = main, swimlane id = isolated).
+- **`session_spawn_strategy`** (`create_or_resume` | `always_spawn_new`, default `create_or_resume`) - what to do with that track on entry. `create_or_resume` resumes the track's session if one exists, else spawns it; `always_spawn_new` always spawns fresh, retiring the prior session for that `(task, target)`. Resolved by `resolveForceFresh`, whose default is **context-aware**: an isolated column defaults to `always_spawn_new` (an independent pass each entry), a main column to `create_or_resume` (continuity), unless `session_spawn_strategy` is set explicitly.
 
-| Strategy | Behavior |
-|----------|----------|
-| `main` (default) | Run the task's main session and resume it on entry (today's behavior) |
-| `isolated` | Run on this column's own separate, context-isolated session (keyed by the swimlane id) |
+The four combinations:
 
-The strategy is modeled as an enum (not a boolean) so future strategies can be added without a schema migration.
+| `session_target` | `session_spawn_strategy` | Behavior |
+|---|---|---|
+| `main` | `create_or_resume` | Resume the task's main session, or start it (the default) |
+| `main` | `always_spawn_new` | Restart the main session from scratch each entry (reset-main) |
+| `isolated` | `create_or_resume` | Resume this column's isolated session, or start it (a persistent isolated track) |
+| `isolated` | `always_spawn_new` | A fresh, independent pass every entry (the reviewer archetype) |
 
-**An isolated session is context-isolated.** It does NOT inherit the main session's conversation. This is the point of the feature: pairing `session_strategy: isolated` with `auto_command: /code-review` yields an independent reviewer that judges the diff without the generator's reasoning trail. Re-entering an isolated column resumes that column's own prior conversation only, never the main session's. (This is distinct from Claude Code's own `/fork` / `--fork-session`, which *inherit* the conversation; we deliberately do not.) "Restart the conversation" is left to the agent's native `/clear` / `/compact`.
+Both fields are enums so future tracks/strategies need no schema migration.
+
+**An isolated session is context-isolated.** It does NOT inherit the main session's conversation. This is the point of the feature: pairing `session_target: isolated` (with the default `always_spawn_new`) and `auto_command: /code-review` yields an independent reviewer that judges the current diff without the generator's reasoning trail. (This is distinct from Claude Code's own `/fork` / `--fork-session`, which *inherit* the conversation; we deliberately do not.) "Restart the conversation" within a session is otherwise left to the agent's native `/clear` / `/compact`.
 
 **One active PTY per task** is preserved. The worktree is shared across a task's sessions (same `task.worktree_path`), so an isolated session's edits are real and persist; the main session sees the changed tree but not the isolated conversation.
 
+**`always_spawn_new` applies on column entry only.** An app restart / pause-resume of an in-progress session still resumes it (the recovery path is unaffected), so a crash never discards active work.
+
 Lifecycle on task move (`task-move.ts`, the session switch branch inside Priority 3):
 
-- **Enter an isolated column from a live main session**: suspend the main session (preserve `agent_session_id`), then Phase 3 spawns the isolated session (fresh on first entry, resume on re-entry) and runs its `auto_command`.
+- **Enter an isolated column from a live main session**: suspend the main session (preserve `agent_session_id`), then Phase 3 spawns/resumes the isolated session and runs its `auto_command`. With `always_spawn_new` (the isolated default) it spawns fresh each entry, retiring the prior pass.
 - **Leave an isolated column for a normal column**: suspend the isolated session (resumable), then Phase 3 resumes the **main** session.
-- The isolation (`isolated_swimlane_id`) is derived from the destination column in `resolveSpawnOverrides`, threaded through `SpawnOverrides.isolatedSwimlaneId` into `resolveSpawnIntent` and `sessionRepo.insert`. The session switch fires when the live record's `isolated_swimlane_id` differs from the target column's. The terminal tab badges an isolated session as "Isolated" vs "Main".
+- **Reset-main / recycle**: an `always_spawn_new` column forces a fresh spawn on its target track even when the live session is already on that track, so the switch fires on `resolveForceFresh(toLane)`, not only on a target change.
+- The target + spawn policy are derived from the destination column in `resolveSpawnOverrides`, threaded through `SpawnOverrides.isolatedSwimlaneId` / `SpawnOverrides.forceFresh` into `resolveSpawnIntent` (which retires the prior record on a forced-fresh entry) and `sessionRepo.insert`. The terminal tab badges an isolated session as "Isolated" vs "Main".
 
 ## Shutdown
 

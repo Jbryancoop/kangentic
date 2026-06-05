@@ -25,7 +25,8 @@ import {
   type Swimlane,
   type SwimlaneRole,
   type PermissionMode,
-  type SessionStrategy,
+  type SessionTarget,
+  type SessionSpawnStrategy,
   type SwimlaneCreateInput,
   type SwimlaneUpdateInput,
 } from '../../../shared/types';
@@ -95,7 +96,8 @@ export function buildUpdateInput(draft: Swimlane, original: Swimlane): SwimlaneU
     model_override: isTodoOrDone ? undefined : (draft.model_override?.trim() || null),
     effort_override: isTodoOrDone ? undefined : (draft.effort_override || null),
     handoff_context: isTodoOrDone ? undefined : draft.handoff_context,
-    session_strategy: isTodoOrDone ? undefined : draft.session_strategy,
+    session_target: isTodoOrDone ? undefined : draft.session_target,
+    session_spawn_strategy: isTodoOrDone ? undefined : draft.session_spawn_strategy,
   };
 }
 
@@ -113,8 +115,28 @@ export function buildCreateInput(draft: Swimlane): SwimlaneCreateInput {
     model_override: draft.model_override?.trim() || null,
     effort_override: draft.effort_override || null,
     handoff_context: draft.handoff_context,
-    session_strategy: draft.session_strategy,
+    session_target: draft.session_target,
+    session_spawn_strategy: draft.session_spawn_strategy,
   };
+}
+
+/**
+ * One-line description of a column's session behavior for the chosen target +
+ * spawn strategy. Mirrors the matrix that `resolveForceFresh` encodes; it does
+ * not re-derive the default (the Select values are always concrete here).
+ */
+function describeSessionBehavior(
+  target: SessionTarget,
+  spawnStrategy: SessionSpawnStrategy,
+): string {
+  if (target === 'isolated') {
+    return spawnStrategy === 'always_spawn_new'
+      ? 'Runs this column on a fresh, isolated session each entry - a clean context independent of the main conversation (for example, a code review). Leaving the column resumes the main session. Pair with an Auto-command like /code-review.'
+      : 'Runs this column on its own isolated session, separate from the main conversation, and resumes that session on re-entry. Leaving the column resumes the main session.';
+  }
+  return spawnStrategy === 'always_spawn_new'
+    ? 'Restarts the main session from scratch each time a task enters this column, discarding its prior conversation.'
+    : 'Continues the task\'s main session, resuming it on entry (the default).';
 }
 
 function makeNewDraft(): Swimlane {
@@ -136,7 +158,8 @@ function makeNewDraft(): Swimlane {
     model_override: null,
     effort_override: null,
     handoff_context: false,
-    session_strategy: 'main',
+    session_target: 'main',
+    session_spawn_strategy: 'create_or_resume',
     created_at: new Date().toISOString(),
   };
 }
@@ -1219,29 +1242,64 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
 
             {activeSection === 'auto' && (
               <div className="space-y-5">
-                <SettingField
-                  label="Session strategy"
-                  description="Which session a task runs when it enters this column."
-                >
-                  <Select
-                    value={draft.session_strategy ?? 'main'}
-                    onChange={(event) => updateDraft((current) => ({
-                      ...current,
-                      session_strategy: event.target.value as SessionStrategy,
-                    }))}
-                    wrapperClassName="relative"
-                    className={DIALOG_SELECT_CLASS}
-                    data-testid="column-session-strategy"
-                  >
-                    <option value="main">Main session (default)</option>
-                    <option value="isolated">Isolated session</option>
-                  </Select>
+                <div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <SettingField
+                      label="Session"
+                      description="Which session track a task runs on here."
+                    >
+                      <Select
+                        value={draft.session_target ?? 'main'}
+                        onChange={(event) => {
+                          const nextTarget = event.target.value as SessionTarget;
+                          updateDraft((current) => ({
+                            ...current,
+                            session_target: nextTarget,
+                            // Snap the spawn policy to the sensible default for the
+                            // chosen track, but only when it is still at the other
+                            // track's default - an explicit non-default choice is
+                            // preserved. Mirrors resolveForceFresh's context-aware
+                            // default (isolated => always-fresh, main => resume).
+                            session_spawn_strategy:
+                              nextTarget === 'isolated' && current.session_spawn_strategy === 'create_or_resume'
+                                ? 'always_spawn_new'
+                                : nextTarget === 'main' && current.session_spawn_strategy === 'always_spawn_new'
+                                  ? 'create_or_resume'
+                                  : current.session_spawn_strategy,
+                          }));
+                        }}
+                        wrapperClassName="relative"
+                        className={DIALOG_SELECT_CLASS}
+                        data-testid="column-session-target"
+                      >
+                        <option value="main">Main session</option>
+                        <option value="isolated">Isolated session</option>
+                      </Select>
+                    </SettingField>
+
+                    <SettingField
+                      label="On enter"
+                      description="Resume the session or start fresh."
+                    >
+                      <Select
+                        value={draft.session_spawn_strategy ?? 'create_or_resume'}
+                        onChange={(event) => updateDraft((current) => ({
+                          ...current,
+                          session_spawn_strategy: event.target.value as SessionSpawnStrategy,
+                        }))}
+                        wrapperClassName="relative"
+                        className={DIALOG_SELECT_CLASS}
+                        data-testid="column-session-spawn-strategy"
+                      >
+                        <option value="create_or_resume">Create or resume</option>
+                        <option value="always_spawn_new">Always spawn new</option>
+                      </Select>
+                    </SettingField>
+                  </div>
                   <p className="text-xs text-fg-faint mt-2">
-                    {draft.session_strategy === 'isolated'
-                      ? 'Runs this column on a separate, isolated session that does not see the main conversation - a clean context for work that should stay independent of it (for example, a code review). Leaving the column resumes the main session. Pair with an Auto-command like /code-review.'
-                      : 'Continues the task\'s main session and resumes it on entry.'}
+                    {describeSessionBehavior(draft.session_target ?? 'main', draft.session_spawn_strategy ?? 'create_or_resume')}
                   </p>
-                </SettingField>
+                </div>
 
                 <SettingField label="Auto-command">
                 <p className="text-xs text-fg-faint -mt-2 mb-2">

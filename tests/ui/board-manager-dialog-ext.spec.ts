@@ -444,38 +444,49 @@ test.describe('BoardManagerDialog extended', () => {
     await dialog.waitFor({ state: 'detached', timeout: 2000 });
   });
 
-  // ── Session strategy (main / isolated) select ────────────────────────────
+  // ── Session target + spawn strategy selects ──────────────────────────────
   //
-  // The Automation tab exposes a "Session strategy" Select (main / isolated).
-  // Verify it defaults to 'main' and that picking 'isolated' persists.
+  // The Automation tab exposes two Selects: "Session" (session_target: main /
+  // isolated) and "On enter" (session_spawn_strategy: create_or_resume /
+  // always_spawn_new). Verify the defaults, the isolated -> always-spawn-new
+  // snap, and that both persist.
 
-  test('Automation tab: session strategy defaults to main and saves isolated', async () => {
+  test('Automation tab: session target + spawn strategy default and save', async () => {
     await openManagerByHeader('Code Review');
     const dialog = page.locator('[data-testid="board-manager-dialog"]');
 
     await dialog.locator('[data-testid="board-manager-section-auto"]').click();
 
-    const strategySelect = dialog.locator('[data-testid="column-session-strategy"]');
-    await expect(strategySelect).toBeVisible();
-    await expect(strategySelect).toHaveValue('main');
+    const targetSelect = dialog.locator('[data-testid="column-session-target"]');
+    const spawnSelect = dialog.locator('[data-testid="column-session-spawn-strategy"]');
+    await expect(targetSelect).toBeVisible();
+    await expect(spawnSelect).toBeVisible();
 
-    await strategySelect.selectOption('isolated');
-    await expect(strategySelect).toHaveValue('isolated');
+    // Defaults: main + create_or_resume.
+    await expect(targetSelect).toHaveValue('main');
+    await expect(spawnSelect).toHaveValue('create_or_resume');
+
+    // Choosing Isolated snaps the spawn Select to always_spawn_new.
+    await targetSelect.selectOption('isolated');
+    await expect(targetSelect).toHaveValue('isolated');
+    await expect(spawnSelect).toHaveValue('always_spawn_new');
 
     await dialog.locator('[data-testid="board-manager-save"]').click();
     await dialog.waitFor({ state: 'detached', timeout: 3000 });
 
     const saved = await page.evaluate(async () => {
       const lanes = await window.electronAPI.swimlanes.list();
-      return lanes.find((s) => s.name === 'Code Review')?.session_strategy;
+      const lane = lanes.find((s) => s.name === 'Code Review');
+      return { target: lane?.session_target, spawn: lane?.session_spawn_strategy };
     });
-    expect(saved).toBe('isolated');
+    expect(saved.target).toBe('isolated');
+    expect(saved.spawn).toBe('always_spawn_new');
 
-    // Cleanup: restore the default strategy.
+    // Cleanup: restore the defaults.
     await page.evaluate(async () => {
       const lanes = await window.electronAPI.swimlanes.list();
       const lane = lanes.find((s) => s.name === 'Code Review');
-      if (lane) await window.electronAPI.swimlanes.update({ id: lane.id, session_strategy: 'main' });
+      if (lane) await window.electronAPI.swimlanes.update({ id: lane.id, session_target: 'main', session_spawn_strategy: 'create_or_resume' });
     });
   });
 });

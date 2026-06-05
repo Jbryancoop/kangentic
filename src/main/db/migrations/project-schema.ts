@@ -514,14 +514,27 @@ export function runProjectMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE swimlanes ADD COLUMN effort_override TEXT DEFAULT NULL');
   }
 
-  // Migration: add per-column session strategy. 'main' (default) runs the task's
-  // main session; 'isolated' runs the column on its own separate, resumable
-  // session line. Modeled as an enum so future strategies need no schema change.
-  // Existing rows backfill to 'main' via the column default.
-  const hasSessionStrategy = (db.pragma('table_info(swimlanes)') as Array<{ name: string }>)
-    .some((col) => col.name === 'session_strategy');
-  if (!hasSessionStrategy) {
-    db.exec("ALTER TABLE swimlanes ADD COLUMN session_strategy TEXT NOT NULL DEFAULT 'main'");
+  // Migration: per-column session model (two orthogonal axes).
+  //   session_target ('main' default | 'isolated') - which session track a task
+  //     runs on. Renamed in place from the original 'session_strategy' column;
+  //     the values are unchanged, so no data backfill is needed.
+  //   session_spawn_strategy ('create_or_resume' default | 'always_spawn_new') -
+  //     what to do with that track on column entry.
+  // Idempotent across fresh DBs, DBs still on the old 'session_strategy' column,
+  // and already-migrated DBs (each ALTER is guarded against the live column set).
+  const swimlaneColumnNames = (): string[] =>
+    (db.pragma('table_info(swimlanes)') as Array<{ name: string }>).map((col) => col.name);
+  let swimlaneCols = swimlaneColumnNames();
+  if (swimlaneCols.includes('session_strategy') && !swimlaneCols.includes('session_target')) {
+    db.exec('ALTER TABLE swimlanes RENAME COLUMN session_strategy TO session_target');
+    swimlaneCols = swimlaneColumnNames();
+  }
+  if (!swimlaneCols.includes('session_target')) {
+    db.exec("ALTER TABLE swimlanes ADD COLUMN session_target TEXT NOT NULL DEFAULT 'main'");
+    swimlaneCols = swimlaneColumnNames();
+  }
+  if (!swimlaneCols.includes('session_spawn_strategy')) {
+    db.exec("ALTER TABLE swimlanes ADD COLUMN session_spawn_strategy TEXT NOT NULL DEFAULT 'create_or_resume'");
   }
 
   // Migration: add per-task model_override and effort_override columns. Set
