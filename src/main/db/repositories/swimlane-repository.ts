@@ -20,8 +20,10 @@ interface SwimlaneRow {
   model_override: string | null;
   effort_override: string | null;
   handoff_context: number;
-  session_target: string | null;
-  session_spawn_strategy: string | null;
+  // NOT NULL DEFAULT in the schema, so always a string from a SELECT. mapRow keeps
+  // a defensive `?? default` purely for rows read mid-migration.
+  session_target: string;
+  session_spawn_strategy: string;
   created_at: string;
 }
 

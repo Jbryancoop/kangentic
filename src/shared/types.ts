@@ -2005,6 +2005,10 @@ export interface BoardColumnConfig {
   /** Adapter-specific effort/reasoning level passed at spawn time (e.g. Claude `--effort`). Null inherits the agent default. */
   effortOverride?: string | null;
   handoffContext?: boolean;
+  /** Which session track this column runs a task on (see SessionTarget). Omitted = 'main'. */
+  sessionTarget?: SessionTarget;
+  /** What to do with that track on entry (see SessionSpawnStrategy). Omitted = 'create_or_resume'. */
+  sessionSpawnStrategy?: SessionSpawnStrategy;
 }
 
 export interface BoardActionConfig {

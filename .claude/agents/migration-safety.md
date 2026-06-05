@@ -89,6 +89,18 @@ Cross-reference TypeScript interfaces with the final schema (derived by replayin
 - Migration names/indices are used to track which have run -- reordering breaks existing databases
 - **Severity: Critical** -- reordered migrations corrupt production databases
 
+### 7. Board-Config Round-Trip Parity (swimlane columns)
+
+Team board state syncs through a curated `BoardColumnConfig`, not a full passthrough: `src/main/config/board-config/build-config.ts` writes DB->`kangentic.json` and `apply-config.ts` applies it back. A swimlane field that is user-configurable and team-relevant but NOT wired into this round-trip persists only to the per-machine project DB and never reaches teammates (the gap that hid `session_target` / `session_spawn_strategy`).
+
+When a change adds or modifies a `swimlanes` column (a new field on the `Swimlane` interface in `src/shared/types.ts`):
+
+- It MUST be classified in `SWIMLANE_FIELD_SHARING` in `tests/unit/board-config-parity.test.ts` (`'team'` or `'db-only'`). The `Record<keyof Swimlane, ...>` typing makes `npm run typecheck` fail otherwise - confirm the classification is correct, not just present.
+- If `'team'`: verify it round-trips end to end - a key on `BoardColumnConfig` (`src/shared/types.ts`), serialized in `build-config.ts` (with default-omission like its siblings), and threaded into BOTH the `create` and `update` calls in `apply-config.ts` (with the `(isTodo||isDone)` guard). A `'team'` field missing from any of these is the bug class to flag.
+- If `'db-only'`: confirm it is genuinely identity / ordering / runtime-state / timestamp (e.g. `id`, `position`, `is_ghost`, `created_at`) and not a user setting being silently dropped.
+- See `.claude/rules/board-config-parity.md` for the full rule.
+- **Severity: High** - a team-shared column setting that doesn't reach `kangentic.json` silently diverges per developer (e.g. an `auto_command` ships without its session settings).
+
 ## Output Format
 
 ### Schema Reconstruction

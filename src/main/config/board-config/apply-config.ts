@@ -131,6 +131,8 @@ export function applyBoardConfigToDb(
           model_override: (isTodo || isDone) ? null : (columnConfig.modelOverride ?? existing.model_override),
           effort_override: (isTodo || isDone) ? null : (columnConfig.effortOverride ?? existing.effort_override),
           handoff_context: columnConfig.handoffContext ?? existing.handoff_context,
+          session_target: (isTodo || isDone) ? 'main' : (columnConfig.sessionTarget ?? existing.session_target),
+          session_spawn_strategy: (isTodo || isDone) ? 'create_or_resume' : (columnConfig.sessionSpawnStrategy ?? existing.session_spawn_strategy),
         });
       } else {
         swimlaneRepo.create({
@@ -148,6 +150,8 @@ export function applyBoardConfigToDb(
           model_override: (isTodo || isDone) ? null : (columnConfig.modelOverride ?? null),
           effort_override: (isTodo || isDone) ? null : (columnConfig.effortOverride ?? null),
           handoff_context: columnConfig.handoffContext ?? false,
+          session_target: (isTodo || isDone) ? 'main' : (columnConfig.sessionTarget ?? 'main'),
+          session_spawn_strategy: (isTodo || isDone) ? 'create_or_resume' : (columnConfig.sessionSpawnStrategy ?? 'create_or_resume'),
           position: index,
         });
       }

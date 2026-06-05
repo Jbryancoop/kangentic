@@ -232,6 +232,8 @@ Each swimlane has its own overrides (stored in the per-project DB):
 | `model_override` | string \| null | null | Adapter-specific model identifier passed at spawn time (e.g. Claude `--model opus`). Live-applied via `/model` slash on column transition when supported. |
 | `effort_override` | string \| null | null | Adapter-specific effort/reasoning level passed at spawn time (e.g. Claude `--effort xhigh`). Live-applied via `/effort` slash on column transition when supported. |
 | `handoff_context` | boolean | false | When enabled, cross-agent transitions package prior session context for the target agent |
+| `session_target` | `'main'` \| `'isolated'` | `'main'` | Which session track a task runs on in this column. `main` = the task's shared main conversation; `isolated` = this column's own context-isolated session (keyed by the swimlane id). See `SessionTarget` in `src/shared/types.ts`. |
+| `session_spawn_strategy` | `'create_or_resume'` \| `'always_spawn_new'` | `'create_or_resume'` | What to do with that session track on column entry. `create_or_resume` resumes the track's session if one exists, else spawns; `always_spawn_new` always spawns fresh, retiring the prior session. Default resolves context-aware (`resolveForceFresh`): isolated columns default to always-fresh. See `SessionSpawnStrategy`. |
 
 ## Board Configuration
 
@@ -288,6 +290,8 @@ Ghost columns are invisible on the board but still exist in the database. Once a
       "modelOverride": null,
       "effortOverride": null,
       "handoffContext": false,
+      "sessionTarget": "main",
+      "sessionSpawnStrategy": "create_or_resume",
       "archived": false
     }
   ],

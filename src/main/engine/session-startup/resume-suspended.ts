@@ -245,7 +245,7 @@ export async function resumeSuspendedSessions(
         continue;
       }
 
-      const swimlane = swimlaneRepo.getById(task.swimlane_id) ?? null;
+      const swimlane = laneMap.get(task.swimlane_id) ?? null;
 
       // Decide whether to resume or start fresh. Uses type-AND-isolation-aware
       // lookup so cross-agent and main-vs-isolated resume mismatches are

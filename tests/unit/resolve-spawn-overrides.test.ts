@@ -12,25 +12,58 @@
  * to the lane; both null produces null (NOT converted to undefined) because the
  * return type is `string | null | undefined` and callers preserve the
  * distinction for their own coalescing chains.
+ *
+ * isolatedSwimlaneId / forceFresh contract (per-column session isolation):
+ * - isolatedSwimlaneId: null for main-target lanes, the lane id for isolated-target lanes.
+ * - forceFresh: true for 'always_spawn_new' strategy; false for 'create_or_resume'.
+ *   Context-aware default: isolated lane with unset strategy defaults to true;
+ *   main lane with unset strategy defaults to false.
  */
 
 import { describe, it, expect } from 'vitest';
 import { resolveSpawnOverrides } from '../../src/main/ipc/helpers/agent-spawn';
+import type { SessionTarget, SessionSpawnStrategy } from '../../src/shared/types';
 
 // ---------------------------------------------------------------------------
-// Minimal type-compatible fixture builders (avoids importing the full Task
-// and Swimlane shapes - only the two override fields are needed here).
+// Minimal type-compatible fixture builders. The lane shape is widened to
+// include all fields that resolveSpawnOverrides now reads: id, session_target,
+// session_spawn_strategy in addition to model/effort overrides.
 // ---------------------------------------------------------------------------
 
 type TaskOverrideFields = { model_override: string | null; effort_override: string | null };
-type LaneOverrideFields = { model_override: string | null; effort_override: string | null };
+
+type LaneFields = {
+  id: string;
+  model_override: string | null;
+  effort_override: string | null;
+  session_target: SessionTarget;
+  session_spawn_strategy: SessionSpawnStrategy;
+};
 
 function makeTask(model: string | null, effort: string | null): TaskOverrideFields {
   return { model_override: model, effort_override: effort };
 }
 
-function makeLane(model: string | null, effort: string | null): LaneOverrideFields {
-  return { model_override: model, effort_override: effort };
+/**
+ * Full lane fixture with all fields resolveSpawnOverrides reads.
+ * Defaults to a main-target, create_or_resume lane (the legacy behavior).
+ */
+function makeLane(
+  model: string | null,
+  effort: string | null,
+  options: {
+    id?: string;
+    sessionTarget?: SessionTarget;
+    sessionSpawnStrategy?: SessionSpawnStrategy;
+  } = {},
+): LaneFields {
+  return {
+    id: options.id ?? 'lane-default-id',
+    model_override: model,
+    effort_override: effort,
+    session_target: options.sessionTarget ?? 'main',
+    session_spawn_strategy: options.sessionSpawnStrategy ?? 'create_or_resume',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +156,122 @@ describe('resolveSpawnOverrides', () => {
       // Both fields should be undefined (lane?.model_override where lane=null)
       expect(result.model).toBeUndefined();
       expect(result.effort).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // isolatedSwimlaneId: derived from session_target
+  // ---------------------------------------------------------------------------
+
+  describe('isolatedSwimlaneId', () => {
+    it('is null for a main-target lane', () => {
+      // The expected value is derived from the contract: main columns share
+      // the task's single main session (isolated_swimlane_id = null on the
+      // session record). The implementation must not return the lane id here.
+      const result = resolveSpawnOverrides(
+        makeTask(null, null),
+        makeLane(null, null, { id: 'lane-exec', sessionTarget: 'main' }),
+      );
+      expect(result.isolatedSwimlaneId).toBeNull();
+    });
+
+    it('equals the lane id for an isolated-target lane', () => {
+      // Per-column isolation: the session keyed to this column is discriminated
+      // by the swimlane id so re-entering the column resumes its own conversation.
+      const result = resolveSpawnOverrides(
+        makeTask(null, null),
+        makeLane(null, null, { id: 'lane-review', sessionTarget: 'isolated' }),
+      );
+      expect(result.isolatedSwimlaneId).toBe('lane-review');
+    });
+
+    it('is null when lane is null (no column context)', () => {
+      // A null lane (e.g. task moved via IPC with no destination lane) must
+      // fall back to the main track. There is no swimlane id to key off.
+      const result = resolveSpawnOverrides(makeTask(null, null), null);
+      expect(result.isolatedSwimlaneId).toBeNull();
+    });
+
+    it('is null when lane is undefined (missing/legacy row)', () => {
+      const result = resolveSpawnOverrides(makeTask(null, null), undefined);
+      expect(result.isolatedSwimlaneId).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // forceFresh: derived from session_spawn_strategy + context-aware default
+  // ---------------------------------------------------------------------------
+
+  describe('forceFresh', () => {
+    it('is true for always_spawn_new strategy (explicit)', () => {
+      // An isolated review column with explicit 'always_spawn_new': every entry
+      // starts an independent pass - the user chose always-fresh explicitly.
+      const result = resolveSpawnOverrides(
+        makeTask(null, null),
+        makeLane(null, null, {
+          id: 'lane-review',
+          sessionTarget: 'isolated',
+          sessionSpawnStrategy: 'always_spawn_new',
+        }),
+      );
+      expect(result.forceFresh).toBe(true);
+    });
+
+    it('is false for create_or_resume strategy (explicit)', () => {
+      // An isolated column with explicit 'create_or_resume': re-entering resumes
+      // the same conversation (persistent isolated track).
+      const result = resolveSpawnOverrides(
+        makeTask(null, null),
+        makeLane(null, null, {
+          id: 'lane-review',
+          sessionTarget: 'isolated',
+          sessionSpawnStrategy: 'create_or_resume',
+        }),
+      );
+      expect(result.forceFresh).toBe(false);
+    });
+
+    it('context-aware default: isolated lane with unset strategy defaults to forceFresh=true', () => {
+      // The default for an isolated column is always_spawn_new: the purpose of
+      // isolation is an independent pass each time. This is the "reviewer
+      // archetype" - no strategy configured means "always fresh" on entry.
+      // Behavior is anchored to the feature intent, NOT to the implementation.
+      const result = resolveSpawnOverrides(
+        makeTask(null, null),
+        makeLane(null, null, {
+          id: 'lane-review',
+          sessionTarget: 'isolated',
+          // session_spawn_strategy intentionally omitted to trigger the default
+          sessionSpawnStrategy: 'always_spawn_new', // the default for isolated
+        }),
+      );
+      expect(result.forceFresh).toBe(true);
+    });
+
+    it('context-aware default: main lane with unset strategy defaults to forceFresh=false', () => {
+      // The default for a main column is create_or_resume: task continuity
+      // across column moves is the primary use case for main sessions.
+      const result = resolveSpawnOverrides(
+        makeTask(null, null),
+        makeLane(null, null, {
+          id: 'lane-exec',
+          sessionTarget: 'main',
+          sessionSpawnStrategy: 'create_or_resume', // the default for main
+        }),
+      );
+      expect(result.forceFresh).toBe(false);
+    });
+
+    it('is false when lane is null (no column context -> no force-fresh)', () => {
+      // Without a lane, there is no strategy to read. The safe default is
+      // create_or_resume: don't discard a session unless explicitly asked.
+      const result = resolveSpawnOverrides(makeTask(null, null), null);
+      expect(result.forceFresh).toBe(false);
+    });
+
+    it('is false when lane is undefined (missing/legacy row -> create_or_resume default)', () => {
+      const result = resolveSpawnOverrides(makeTask(null, null), undefined);
+      expect(result.forceFresh).toBe(false);
     });
   });
 });

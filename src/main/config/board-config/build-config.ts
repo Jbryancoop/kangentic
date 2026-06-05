@@ -56,6 +56,10 @@ export function buildBoardConfigFromDb(params: {
       if (lane.model_override) column.modelOverride = lane.model_override;
       if (lane.effort_override) column.effortOverride = lane.effort_override;
       if (lane.handoff_context) column.handoffContext = true;
+      // Omit defaults so a backward-compatible board stays byte-identical until
+      // a column is set non-default (matches the sibling fields above).
+      if (lane.session_target !== 'main') column.sessionTarget = lane.session_target;
+      if (lane.session_spawn_strategy !== 'create_or_resume') column.sessionSpawnStrategy = lane.session_spawn_strategy;
 
       // Resolve plan_exit_target_id to target column name
       if (lane.plan_exit_target_id) {

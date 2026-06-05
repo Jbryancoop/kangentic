@@ -1,12 +1,6 @@
 import type { SessionRepository } from '../db/repositories/session-repository';
 import type { SuspendedBy } from '../../shared/types';
 
-/** Result of canResume() - whether a task's latest session can be resumed. */
-export interface ResumeCheck {
-  resumable: boolean;
-  agentSessionId: string | null;
-}
-
 // ---------------------------------------------------------------------------
 // Session lifecycle: centralized state machine for session DB records
 //
@@ -24,32 +18,6 @@ export interface ResumeCheck {
 //   orphaned   → suspended  (pause-on-restart setting upgrades crashed sessions)
 //   exited     → suspended  (preserve for future resume on move to Done)
 // ---------------------------------------------------------------------------
-
-/**
- * Check whether a task's latest session can be resumed via --resume.
- *
- * Checks agent_session_id existence, NOT status. Any session with an
- * agent_session_id is potentially resumable - the agent wrote a transcript
- * (e.g. Claude's JSONL) that --resume can continue from.
- *
- * Note: Claude resolves its transcript by the CURRENT cwd
- * (~/.claude/projects/<slug-of-cwd>/<id>.jsonl). If the resume runs in a
- * different cwd than the original session, `claude --resume <id>` prints
- * "No conversation found" and EXITS - it does NOT silently start a fresh
- * session. The worktree path must therefore stay stable across Done
- * round-trips (see WorktreeManager.createWorktree) so --resume finds it.
- */
-export function canResume(taskId: string, sessionRepo: SessionRepository): ResumeCheck {
-  const latest = sessionRepo.getLatestForTask(taskId);
-  if (!latest?.agent_session_id || latest.session_type === 'run_script') {
-    return { resumable: false, agentSessionId: null };
-  }
-  // Queued sessions never started - no transcript to resume
-  if (latest.status === 'queued') {
-    return { resumable: false, agentSessionId: null };
-  }
-  return { resumable: true, agentSessionId: latest.agent_session_id };
-}
 
 /**
  * Atomically mark a session record as exited. Only transitions from
