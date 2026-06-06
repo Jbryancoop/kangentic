@@ -5,6 +5,7 @@ import { usePopoverPosition } from '../../../hooks/usePopoverPosition';
 import { getSwimlaneIcon } from '../../../utils/swimlane-icons';
 import { ICON_REGISTRY } from '../../../utils/swimlane-icons';
 import { Pill } from '../../Pill';
+import { IsolatedBadge } from '../../IsolatedBadge';
 import { KebabMenu, KebabMenuItem, KebabMenuDivider } from '../../KebabMenu';
 import { CommandPalettePopover } from './CommandPalettePopover';
 import { PriorityBadge } from '../../backlog/PriorityBadge';
@@ -22,6 +23,7 @@ interface TaskDetailHeaderProps {
   isSessionActive: boolean;
   isQueued: boolean;
   isArchived: boolean;
+  isIsolated: boolean;
   toggling: boolean;
   onToggle: () => void;
   onCommandSelect: (command: AgentCommand) => void;
@@ -51,6 +53,7 @@ export function TaskDetailHeader({
   isSessionActive,
   isQueued,
   isArchived,
+  isIsolated,
   toggling,
   onToggle,
   onCommandSelect,
@@ -138,6 +141,7 @@ export function TaskDetailHeader({
             Archived
           </span>
         )}
+        {isIsolated && <IsolatedBadge data-testid="task-detail-isolated-badge" />}
       </h2>
 
       {/* Scrollable pills container - hidden for archived tasks */}

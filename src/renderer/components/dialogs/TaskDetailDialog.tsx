@@ -284,6 +284,7 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
       isSessionActive={sessionState.isSessionActive}
       isQueued={sessionState.isQueued}
       isArchived={isArchived}
+      isIsolated={currentSwimlane?.session_target === 'isolated'}
       toggling={actions.toggling}
       onToggle={actions.handleToggle}
       onCommandSelect={actions.handleCommandSelect}

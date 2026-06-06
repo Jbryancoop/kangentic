@@ -2,9 +2,9 @@
  * UI tests for the "Isolated" badge on TerminalPanel session tabs.
  *
  * Feature intent (per-column session isolation):
- *   Each session tab in the terminal panel's tab bar shows a purple "Isolated"
- *   badge (with the Split icon and data-testid="terminal-tab-isolated-badge")
- *   when the session's isolatedSwimlaneId is non-null. Tabs whose session has
+ *   Each session tab in the terminal panel's tab bar shows a text-only
+ *   "Isolated" badge (data-testid="terminal-tab-isolated-badge") when the
+ *   session's isolatedSwimlaneId is non-null. Tabs whose session has
  *   isolatedSwimlaneId=null (the main track) show NO badge.
  *
  * The badge is the user-visible indicator that the bottom panel is showing a

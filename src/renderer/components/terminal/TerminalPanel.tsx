@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo } from 'react';
-import { Activity, ChevronDown, ChevronUp, Split, Loader2 } from 'lucide-react';
+import { Activity, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useSessionStore } from '../../stores/session-store';
 import { useBoardStore } from '../../stores/board-store';
@@ -7,6 +7,7 @@ import { useProjectStore } from '../../stores/project-store';
 import { TerminalTab } from './TerminalTab';
 import { ActivityLog } from './ActivityLog';
 import { ContextBar } from './ContextBar';
+import { IsolatedBadge } from '../IsolatedBadge';
 import { slugify } from '../../utils/slugify';
 import { shellDisplayName } from '../../utils/shell-display-name';
 import { ACTIVITY_TAB } from '../../../shared/types';
@@ -171,15 +172,7 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
                   }`} />
                 )}
                 {label}
-                {isIsolated && (
-                  <span
-                    data-testid="terminal-tab-isolated-badge"
-                    className="flex items-center gap-0.5 text-[11px] text-purple-300 bg-purple-500/15 border border-purple-500/30 rounded px-1 py-px leading-none flex-shrink-0"
-                  >
-                    <Split size={10} />
-                    Isolated
-                  </span>
-                )}
+                {isIsolated && <IsolatedBadge data-testid="terminal-tab-isolated-badge" />}
               </button>
             );
           })}
