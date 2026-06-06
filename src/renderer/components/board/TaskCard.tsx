@@ -2,7 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Loader2, CirclePause, Mail, Paperclip, GitPullRequest, FolderMinus, Trash2 } from 'lucide-react';
+import { Loader2, CirclePause, Mail, Paperclip, GitPullRequest, Trash2 } from 'lucide-react';
 import { formatRelativeTime } from '../../lib/datetime';
 import { prStatePresentation } from '../../lib/pr-state';
 import { TaskDetailDialog } from '../dialogs/TaskDetailDialog';
@@ -192,20 +192,10 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
             <LabelPills labels={taskLabels} labelColors={labelColors} />
           </div>
           {task.archived_at && (
-            <div className="mt-0.5 flex items-center gap-1.5">
+            <div className="mt-0.5">
               <span className="text-xs text-fg-disabled">
                 {formatRelativeTime(task.archived_at)}
               </span>
-              {!task.worktree_path && task.branch_name && (
-                <span
-                  className="inline-flex items-center gap-1 text-[11px] text-fg-disabled"
-                  title={`Worktree deleted; branch ${task.branch_name} preserved`}
-                  data-testid="worktree-deleted-badge"
-                >
-                  <FolderMinus size={11} />
-                  worktree deleted
-                </span>
-              )}
             </div>
           )}
         </div>
