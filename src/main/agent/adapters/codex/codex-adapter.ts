@@ -91,8 +91,10 @@ export class CodexAdapter implements AgentAdapter {
    *   below provides authoritative task_started/task_complete events
    *   from the rollout JSONL; the PTY tracker is suppressed once the
    *   first history event arrives.
-   * - Session ID (fromHook): CODEX_THREAD_ID env var (openai/codex#10096)
-   *   captured via hook-manager's `env:thread_id=CODEX_THREAD_ID` directive.
+   * - Session ID (fromHook): reads `thread_id` from the SessionStart
+   *   hookContext (openai/codex#10096). Inert today: Codex hook integration
+   *   is disabled (see codex/hook-manager.ts), so no SessionStart event is
+   *   emitted; fromOutput is the live path. Wired up when hooks return.
    * - Session ID (fromOutput): Codex v0.118+ prints "session id: <uuid>" in
    *   the startup header; older versions printed "codex resume thr_..." at exit.
    *   This UUID is used to locate the rollout file on disk.

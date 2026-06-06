@@ -499,7 +499,7 @@ export interface ActivityStatsSnapshot {
    * Increments on each watchdog fire or force-* call; never decrements.
    * Used by the debug overlay's counter strip to flag silent
    * compensations that don't visibly flip the activity pill. In a
-   * clean session, all five fields read 0.
+   * clean session, all six fields read 0.
    */
   compensationCounters: {
     /** `timer:stale-thinking` watchdog fires (turnActive held alone). */
@@ -512,6 +512,8 @@ export interface ActivityStatsSnapshot {
     forceThinking: number;
     /** PTY-silence / shutdown forced idle transitions. */
     forceIdle: number;
+    /** Unmatchable `background_shell_end` made a no-op (spurious end leaked). */
+    unmatchedBgShellEnd: number;
   };
   /**
    * Bucketed PTY-chunk arrivals over the last ~120 seconds (100ms

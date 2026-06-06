@@ -1,14 +1,27 @@
 /**
  * Unit tests for event-bridge.js - generic directive-based hook-to-JSONL bridge.
  *
- * Tests verify the directive mechanism (tool:, detail:, nested-detail:,
- * env:, remap:, arg-detail) that adapters use to control field extraction.
+ * Directives are produced by the typed builders in
+ * src/main/agent/shared/directive-builders.ts and carried as
+ * `<kind>:<base64(JSON)>` so they survive shell tokenization unchanged. These
+ * tests build directives with the same builders the adapters use and assert
+ * the emitted event shape.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { EventType } from '../../src/shared/types';
+import { buildBridgeCommand } from '../../src/main/agent/shared/hook-utils';
+import {
+  extractTool,
+  extractToolId,
+  extractDetail,
+  setDetail,
+  setTypeWhen,
+  setTypeWhenDetailContains,
+} from '../../src/main/agent/shared/directive-builders';
 
 const BRIDGE = path.resolve(__dirname, '../../src/main/agent/event-bridge.js');
 
@@ -24,6 +37,11 @@ function runBridge(stdin: string, args: string[]): void {
 
 function readEvent(): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(outputFile, 'utf-8').trim());
+}
+
+function readErrorLog(): string {
+  const errorPath = outputFile.replace(/events\.jsonl$/, 'events-bridge.error.log');
+  return fs.existsSync(errorPath) ? fs.readFileSync(errorPath, 'utf-8') : '';
 }
 
 beforeEach(() => {
@@ -62,150 +80,193 @@ describe('event-bridge', () => {
   });
 
   it('malformed JSON stdin produces event without extracted fields', () => {
-    runBridge('not json', [outputFile, 'tool_start', 'tool:tool_name']);
+    runBridge('not json', [outputFile, 'tool_start', extractTool('tool_name')]);
     const line = readEvent();
     expect(line.type).toBe('tool_start');
     expect(line.tool).toBeUndefined();
     expect(line.detail).toBeUndefined();
   });
 
-  // --- tool: directive ---
+  // --- tool directive ---
 
-  it('tool: directive extracts tool name', () => {
+  it('tool directive extracts tool name', () => {
     const stdin = JSON.stringify({ tool_name: 'Read' });
-    runBridge(stdin, [outputFile, 'tool_start', 'tool:tool_name']);
+    runBridge(stdin, [outputFile, 'tool_start', extractTool('tool_name')]);
     const line = readEvent();
     expect(line.tool).toBe('Read');
   });
 
-  it('tool: directive with missing field produces no tool', () => {
+  it('tool directive with missing field produces no tool', () => {
     const stdin = JSON.stringify({ other: 'data' });
-    runBridge(stdin, [outputFile, 'tool_end', 'tool:tool_name']);
+    runBridge(stdin, [outputFile, 'tool_end', extractTool('tool_name')]);
     const line = readEvent();
     expect(line.tool).toBeUndefined();
   });
 
-  // --- detail: directive ---
+  // --- detail directive (top-level) ---
 
-  it('detail: directive extracts first non-null field', () => {
+  it('detail directive extracts first non-null field', () => {
     const stdin = JSON.stringify({ message: 'Context getting full' });
-    runBridge(stdin, [outputFile, 'notification', 'detail:message,notification']);
+    runBridge(stdin, [outputFile, 'notification', extractDetail(['message', 'notification'])]);
     const line = readEvent();
     expect(line.detail).toBe('Context getting full');
   });
 
-  it('detail: directive falls through to second field', () => {
+  it('detail directive falls through to second field', () => {
     const stdin = JSON.stringify({ notification: 'Alert' });
-    runBridge(stdin, [outputFile, 'notification', 'detail:message,notification']);
+    runBridge(stdin, [outputFile, 'notification', extractDetail(['message', 'notification'])]);
     const line = readEvent();
     expect(line.detail).toBe('Alert');
   });
 
-  it('detail: directive truncates to 200 chars', () => {
+  it('detail directive truncates to 200 chars', () => {
     const stdin = JSON.stringify({ name: 'a'.repeat(250) });
-    runBridge(stdin, [outputFile, 'task_completed', 'detail:name']);
+    runBridge(stdin, [outputFile, 'task_completed', extractDetail(['name'])]);
     const line = readEvent();
     expect((line.detail as string).length).toBe(200);
   });
 
-  // --- nested-detail: directive ---
+  // --- detail directive (nested) ---
 
-  it('nested-detail: extracts from nested object', () => {
+  it('nested detail extracts from nested object', () => {
     const stdin = JSON.stringify({
       tool_name: 'Read',
       tool_input: { file_path: 'src/main.ts' },
     });
-    runBridge(stdin, [outputFile, 'tool_start', 'tool:tool_name', 'nested-detail:tool_input:file_path,command']);
+    runBridge(stdin, [outputFile, 'tool_start', extractTool('tool_name'), extractDetail(['file_path', 'command'], { nested: 'tool_input' })]);
     const line = readEvent();
     expect(line.tool).toBe('Read');
     expect(line.detail).toBe('src/main.ts');
   });
 
-  it('nested-detail: falls through to second field', () => {
+  it('nested detail falls through to second field', () => {
     const stdin = JSON.stringify({
       tool_name: 'Bash',
       tool_input: { command: 'npm test' },
     });
-    runBridge(stdin, [outputFile, 'tool_start', 'tool:tool_name', 'nested-detail:tool_input:file_path,command']);
+    runBridge(stdin, [outputFile, 'tool_start', extractTool('tool_name'), extractDetail(['file_path', 'command'], { nested: 'tool_input' })]);
     const line = readEvent();
     expect(line.tool).toBe('Bash');
     expect(line.detail).toBe('npm test');
   });
 
-  it('nested-detail: with missing parent produces no detail', () => {
+  it('nested detail with missing parent produces no detail', () => {
     const stdin = JSON.stringify({ tool_name: 'Read' });
-    runBridge(stdin, [outputFile, 'tool_start', 'nested-detail:tool_input:file_path']);
+    runBridge(stdin, [outputFile, 'tool_start', extractDetail(['file_path'], { nested: 'tool_input' })]);
     const line = readEvent();
     expect(line.detail).toBeUndefined();
   });
 
-  // --- remap: directive ---
+  // --- toolId directive (correlation ids) ---
 
-  it('remap: changes event type when field matches value', () => {
+  it('toolId extracts a top-level correlation id', () => {
+    const stdin = JSON.stringify({ tool_name: 'Bash', tool_use_id: 'tu_abc' });
+    runBridge(stdin, [outputFile, 'tool_start', extractToolId(['tool_use_id'])]);
+    expect(readEvent().toolId).toBe('tu_abc');
+  });
+
+  it('toolId extracts a nested correlation id', () => {
+    const stdin = JSON.stringify({ tool_input: { tool_use_id: 'tu_nested' } });
+    runBridge(stdin, [outputFile, 'tool_start', extractToolId(['tool_use_id'], { nested: 'tool_input' })]);
+    expect(readEvent().toolId).toBe('tu_nested');
+  });
+
+  it('toolId: first directive to resolve wins (top-level before nested)', () => {
+    const stdin = JSON.stringify({ tool_use_id: 'tu_top', tool_input: { tool_use_id: 'tu_nested' } });
+    runBridge(stdin, [outputFile, 'tool_start', extractToolId(['tool_use_id']), extractToolId(['tool_use_id'], { nested: 'tool_input' })]);
+    expect(readEvent().toolId).toBe('tu_top');
+  });
+
+  // --- remap directive (top-level field) ---
+
+  const INTERRUPT_REMAP = setTypeWhen({ field: 'is_interrupt', equals: 'true', to: EventType.Interrupted });
+
+  it('remap changes event type when a top-level field matches value', () => {
     const stdin = JSON.stringify({ tool_name: 'Bash', is_interrupt: true, error: 'User cancelled' });
-    runBridge(stdin, [outputFile, 'tool_end', 'tool:tool_name', 'remap:is_interrupt:true:interrupted', 'detail:error']);
+    runBridge(stdin, [outputFile, 'tool_end', extractTool('tool_name'), INTERRUPT_REMAP, extractDetail(['error'])]);
     const line = readEvent();
     expect(line.type).toBe('interrupted');
     expect(line.tool).toBe('Bash');
     expect(line.detail).toBe('User cancelled');
   });
 
-  it('remap: keeps original type when field does not match', () => {
+  it('remap keeps original type when field does not match', () => {
     const stdin = JSON.stringify({ tool_name: 'Read', is_interrupt: false });
-    runBridge(stdin, [outputFile, 'tool_end', 'tool:tool_name', 'remap:is_interrupt:true:interrupted']);
+    runBridge(stdin, [outputFile, 'tool_end', extractTool('tool_name'), INTERRUPT_REMAP]);
     const line = readEvent();
     expect(line.type).toBe('tool_end');
     expect(line.tool).toBe('Read');
   });
 
-  it('remap: keeps original type with malformed JSON', () => {
-    runBridge('not json', [outputFile, 'tool_end', 'remap:is_interrupt:true:interrupted']);
+  it('remap keeps original type with malformed stdin JSON', () => {
+    runBridge('not json', [outputFile, 'tool_end', INTERRUPT_REMAP]);
     const line = readEvent();
     expect(line.type).toBe('tool_end');
   });
 
-  // --- arg-detail directive ---
+  // --- setTypeWhenDetailContains directive (shell-safe value with spaces) ---
 
-  it('arg-detail uses next argv as detail', () => {
-    runBridge('{}', [outputFile, 'idle', 'arg-detail', 'permission']);
+  it('setTypeWhenDetailContains retypes on an extracted detail substring containing spaces', () => {
+    // The substring "waiting for your input" has spaces. Because the directive
+    // payload is base64-encoded, the whole directive is a single shell token,
+    // so the spaces cannot split it (the bug this encoding fixes). Here we feed
+    // args directly, but the value with spaces must still round-trip the wire.
+    const stdin = JSON.stringify({ message: 'Claude is waiting for your input' });
+    runBridge(stdin, [outputFile, 'notification',
+      extractDetail(['message', 'notification']),
+      setTypeWhenDetailContains('waiting for your input', EventType.IdleHint)]);
+    const line = readEvent();
+    expect(line.type).toBe('idle_hint');
+    expect(line.detail).toBe('Claude is waiting for your input');
+  });
+
+  // --- setDetail directive ---
+
+  it('setDetail sets a fixed detail value', () => {
+    runBridge('{}', [outputFile, 'idle', setDetail('permission')]);
     const line = readEvent();
     expect(line.type).toBe('idle');
     expect(line.detail).toBe('permission');
   });
 
-  // --- env: directive (session_start only) ---
+  // --- diagnostics: malformed / unknown directives ---
 
-  it('env: directive captures env var into hookContext', () => {
-    const threadId = '019d60ac-b67c-7a22-bcbb-af55c8295c38';
-    execFileSync(process.execPath, [BRIDGE, outputFile, 'session_start', 'env:thread_id=CODEX_THREAD_ID'], {
-      input: '',
-      timeout: 5000,
-      env: { ...process.env, CODEX_THREAD_ID: threadId },
-    });
+  it('a malformed directive payload is a no-op and is logged, the event still writes', () => {
+    // Valid base64 of invalid JSON -> payload undefined -> skipped + logged.
+    const malformed = 'setTypeWhen:' + Buffer.from('not json', 'utf8').toString('base64');
+    runBridge(JSON.stringify({ is_interrupt: true }), [outputFile, 'tool_end', malformed]);
     const line = readEvent();
-    const hookCtx = JSON.parse(line.hookContext as string);
-    expect(hookCtx.thread_id).toBe(threadId);
+    expect(line.type).toBe('tool_end');
+    expect(readErrorLog()).toContain('malformed directive');
   });
 
-  it('env: directive does not overwrite stdin field', () => {
-    const stdin = JSON.stringify({ thread_id: 'from-stdin' });
-    execFileSync(process.execPath, [BRIDGE, outputFile, 'session_start', 'env:thread_id=CODEX_THREAD_ID'], {
-      input: stdin,
-      timeout: 5000,
-      env: { ...process.env, CODEX_THREAD_ID: 'from-env' },
-    });
-    const line = readEvent();
-    const hookCtx = JSON.parse(line.hookContext as string);
-    expect(hookCtx.thread_id).toBe('from-stdin');
+  it('a valid-JSON non-object payload (null, number) is a no-op and is logged, the event still writes', () => {
+    // JSON.parse('null') and JSON.parse('42') succeed but yield non-objects.
+    // The guard `payload === null || typeof payload !== 'object'` must reject
+    // both without crashing the bridge - the switch case would otherwise
+    // dereference a non-object and throw before the event is written.
+    const nullPayload = 'setTypeWhen:' + Buffer.from('null', 'utf8').toString('base64');
+    runBridge(JSON.stringify({ is_interrupt: true }), [outputFile, 'tool_end', nullPayload]);
+    const lineAfterNull = readEvent();
+    expect(lineAfterNull.type).toBe('tool_end');
+    expect(readErrorLog()).toContain('malformed directive');
+
+    // Also verify with a numeric payload; re-use the same tmpDir (append to the log).
+    const numericPayload = 'setTypeWhen:' + Buffer.from('42', 'utf8').toString('base64');
+    runBridge(JSON.stringify({ is_interrupt: true }), [outputFile, 'tool_end', numericPayload]);
+    // Two events now in the file - both must have type tool_end (no crash, no retype).
+    const allLines = fs.readFileSync(outputFile, 'utf-8').trim().split('\n');
+    expect(allLines.length).toBe(2);
+    expect(JSON.parse(allLines[1]).type).toBe('tool_end');
+    expect(readErrorLog()).toContain('malformed directive');
   });
 
-  it('env: directive ignored when env var not set', () => {
-    execFileSync(process.execPath, [BRIDGE, outputFile, 'session_start', 'env:thread_id=NONEXISTENT_VAR'], {
-      input: '',
-      timeout: 5000,
-    });
+  it('an unknown directive kind is a no-op and is logged, the event still writes', () => {
+    const unknown = 'bogusKind:' + Buffer.from(JSON.stringify({ x: 1 }), 'utf8').toString('base64');
+    runBridge('{}', [outputFile, 'tool_start', extractTool('tool_name'), unknown]);
     const line = readEvent();
-    expect(line.hookContext).toBeUndefined();
+    expect(line.type).toBe('tool_start');
+    expect(readErrorLog()).toContain('unknown directive kind: bogusKind');
   });
 
   // --- session_start hookContext ---
@@ -221,11 +282,16 @@ describe('event-bridge', () => {
     expect(hookCtx.session_id).toBe('4231e6aa-5409-4749-9272-270e9aab079b');
   });
 
-  it('session_start omits hookContext when no stdin and no env', () => {
+  it('session_start omits hookContext when stdin is empty', () => {
     runBridge('', [outputFile, 'session_start']);
     const line = readEvent();
     expect(line.type).toBe('session_start');
     expect(line.hookContext).toBeUndefined();
+  });
+
+  it('hookContext is only captured on session_start, not other events', () => {
+    runBridge(JSON.stringify({ session_id: 'abc' }), [outputFile, 'tool_start', extractTool('tool_name')]);
+    expect(readEvent().hookContext).toBeUndefined();
   });
 
   // --- No directives (events that need no extraction) ---
@@ -250,12 +316,12 @@ describe('event-bridge', () => {
 
   // --- Combined directives (real-world patterns) ---
 
-  it('tool + nested-detail combined (Claude PreToolUse pattern)', () => {
+  it('tool + nested detail combined (Claude PreToolUse pattern)', () => {
     const stdin = JSON.stringify({
       tool_name: 'Read',
       tool_input: { file_path: 'src/main.ts' },
     });
-    runBridge(stdin, [outputFile, 'tool_start', 'tool:tool_name', 'nested-detail:tool_input:file_path,command,query']);
+    runBridge(stdin, [outputFile, 'tool_start', extractTool('tool_name'), extractDetail(['file_path', 'command', 'query'], { nested: 'tool_input' })]);
     const line = readEvent();
     expect(line.type).toBe('tool_start');
     expect(line.tool).toBe('Read');
@@ -264,9 +330,73 @@ describe('event-bridge', () => {
 
   it('detail with multiple candidates (subagent pattern)', () => {
     const stdin = JSON.stringify({ agent_type: 'Explore' });
-    runBridge(stdin, [outputFile, 'subagent_start', 'detail:agent_type,subagent_type']);
+    runBridge(stdin, [outputFile, 'subagent_start', extractDetail(['agent_type', 'subagent_type'])]);
     const line = readEvent();
     expect(line.type).toBe('subagent_start');
     expect(line.detail).toBe('Explore');
+  });
+});
+
+describe('event-bridge directives survive real shell execution (shell form)', () => {
+  // Every test above invokes the script with an ARGS ARRAY (execFileSync),
+  // which bypasses the shell. But the agent CLIs run the hook `command` in
+  // SHELL form - the whole string is handed to a shell that tokenizes on
+  // whitespace. These tests run the FULL command string produced by
+  // buildBridgeCommand through the real platform shell (execSync defaults to
+  // the shell), which is the only thing that proves base64 keeps a directive
+  // a single token. A regression to a plaintext wire (e.g. a value with
+  // spaces like "waiting for your input") would split here, exactly the bug
+  // the encoding fixes.
+  let tmpDir: string;
+  let outputFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'evtbridge-shell-'));
+    outputFile = path.join(tmpDir, 'events.jsonl');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function runViaShell(stdin: string, eventType: string, directives: string[]): Record<string, unknown> {
+    const command = buildBridgeCommand(BRIDGE, outputFile, eventType, ...directives);
+    execSync(command, { input: stdin, stdio: ['pipe', 'ignore', 'ignore'], timeout: 10000 });
+    return JSON.parse(fs.readFileSync(outputFile, 'utf-8').trim());
+  }
+
+  it('a directive whose value contains spaces is NOT split by the shell', () => {
+    const emitted = runViaShell(
+      JSON.stringify({ message: 'Claude is waiting for your input' }),
+      'notification',
+      [
+        extractDetail(['message', 'notification']),
+        setTypeWhenDetailContains('waiting for your input', EventType.IdleHint),
+      ],
+    );
+    expect(emitted.type).toBe('idle_hint');
+    expect(emitted.detail).toBe('Claude is waiting for your input');
+  });
+
+  it('a plain extract directive round-trips through the shell', () => {
+    const emitted = runViaShell(
+      JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls -la' } }),
+      'tool_start',
+      [extractTool('tool_name'), extractDetail(['command'], { nested: 'tool_input' })],
+    );
+    expect(emitted.tool).toBe('Bash');
+    expect(emitted.detail).toBe('ls -la');
+  });
+
+  it('a tool-scoped setTypeWhen round-trips through the shell', () => {
+    const emitted = runViaShell(
+      JSON.stringify({ tool_name: 'Bash', tool_input: { run_in_background: true, command: 'sleep 5' } }),
+      'tool_start',
+      [
+        extractTool('tool_name'),
+        setTypeWhen({ whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: EventType.BackgroundShellStart }),
+      ],
+    );
+    expect(emitted.type).toBe('background_shell_start');
   });
 });

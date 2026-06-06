@@ -15,6 +15,7 @@ import {
   removeSessionConfig,
   COPILOT_HOOK_EVENTS,
 } from '../../src/main/agent/adapters/copilot';
+import { extractTool, extractDetail } from '../../src/main/agent/shared/directive-builders';
 
 // Mock bridge-utils so tests don't require built script assets.
 vi.mock('../../src/main/agent/shared/bridge-utils', () => ({
@@ -127,22 +128,22 @@ describe('copilot-hook-manager', () => {
       }
     });
 
-    it('preToolUse hook command contains tool_start and tool:toolName directive', () => {
+    it('preToolUse hook command contains tool_start and the extractTool directive', () => {
       const hooks = buildHooks(EVENTS_PATH);
       expect(hooks.preToolUse[0].command).toContain('tool_start');
-      expect(hooks.preToolUse[0].command).toContain('tool:toolName');
+      expect(hooks.preToolUse[0].command).toContain(extractTool('toolName'));
     });
 
-    it('postToolUse hook command contains tool_end and tool:toolName directive', () => {
+    it('postToolUse hook command contains tool_end and the extractTool directive', () => {
       const hooks = buildHooks(EVENTS_PATH);
       expect(hooks.postToolUse[0].command).toContain('tool_end');
-      expect(hooks.postToolUse[0].command).toContain('tool:toolName');
+      expect(hooks.postToolUse[0].command).toContain(extractTool('toolName'));
     });
 
-    it('agentStop hook command contains idle and detail:stopReason directive', () => {
+    it('agentStop hook command contains idle and the extractDetail directive', () => {
       const hooks = buildHooks(EVENTS_PATH);
       expect(hooks.agentStop[0].command).toContain('idle');
-      expect(hooks.agentStop[0].command).toContain('detail:stopReason');
+      expect(hooks.agentStop[0].command).toContain(extractDetail(['stopReason']));
     });
 
     it('preCompact hook command contains compact', () => {

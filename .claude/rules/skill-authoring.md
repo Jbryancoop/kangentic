@@ -16,9 +16,9 @@ session. Choosing it (or its alternatives) wrong makes skills slow, lossy, or un
   ALL hold: the skill is self-contained (derives everything from git, files, and args), produces
   heavy or noisy intermediate output, benefits from fresh / unbiased context, ends in a
   digestible summary, and has no mid-run user gate. No skill currently forks: `code-review`
-  previously did, but moved to a main-loop driver + delegation when it gained the size-gated
-  `Workflow` path (a forked driver calling `Workflow` would nest subagents). Its fresh-context
-  independence is preserved by delegating review judgment to fresh subagents instead.
+  previously did, but moved to a main-loop driver + delegation (a forked driver spawning
+  subagents would nest them). Its fresh-context independence is preserved by always running in an
+  isolated session and delegating review judgment to fresh parallel subagents instead.
 - **Do NOT fork** when ANY hold: it is a gated, mutating workflow (commit, rebase, push, tag,
   admin-merge) that needs main-loop visibility and confirmations; it is a knowledge-injection
   skill whose whole purpose is to enrich the MAIN context (`session-lifecycle`, `cross-platform`,
@@ -28,9 +28,9 @@ session. Choosing it (or its alternatives) wrong makes skills slow, lossy, or un
 - **Active-implementation skills** verify by auto-spawning their auditor agent (delegation), not
   by forking: `add-ipc-endpoint` to `ipc-auditor`, `add-migration` to `migration-safety`, and
   `code-review` to its dimension auditors (`ipc-auditor`, `hmr-parity`, `platform-guard`,
-  `session-debugger`, `migration-safety`) via the in-session `Workflow` orchestrator on large
-  diffs. `test` delegates to `test-builder`, fanning out per-tier coverage auditors via
-  `Workflow` on sprawling changes.
+  `session-debugger`, `migration-safety`) fanned out as parallel in-session subagents (the
+  `Agent` tool) and synthesized in the main loop. `test` delegates to `test-builder`, fanning out
+  per-tier coverage auditors via `Workflow` on sprawling changes.
 - **Never route a fixing or mutating skill to `agent: Explore` or `agent: Plan`** - those
   built-in agents are read-only and skip CLAUDE.md, so they would drop our conventions
   (single-command Bash, no em-dashes, no `any`). The default general-purpose fork loads CLAUDE.md

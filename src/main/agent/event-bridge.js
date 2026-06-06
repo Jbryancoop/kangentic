@@ -10,24 +10,24 @@
  * Usage:
  *   node event-bridge.js <events-file-path> <event-type> [directives...]
  *
- * Directives:
- *   tool:<field>                   Extract event.tool from ctx[field]
- *   tool-id:<f1>,<f2>,...          Extract event.toolId from first non-null ctx[f]
- *   tool-id-nested:<p>:<f1>,<f2>,. Extract event.toolId from first non-null ctx[p][f]
- *   detail:<f1>,<f2>,...           Extract event.detail from first non-null ctx[f]
- *   nested-detail:<p>:<f1>,<f2>,.. Extract event.detail from first non-null ctx[p][f]
- *   env:<key>=<ENV_VAR>            Capture env var into hookContext as key
- *   remap:<field>:<value>:<type>   If ctx[field]==value, change event.type to type
- *   remap-nested:<p>:<field>:<value>:<type>
- *                                  If ctx[p][field]==value, change event.type to type
- *   remap-detail-includes:<value>:<type>
- *                                  If the ALREADY-EXTRACTED event.detail CONTAINS
- *                                  value (case-insensitive substring), change
- *                                  event.type to type. Must run AFTER a detail
- *                                  directive. Classifies on the resolved detail text
- *                                  (not a guessed source field), so it is robust to
- *                                  which ctx field actually held the text.
- *   arg-detail                     Use argv[next] as event.detail (for inline values)
+ * Directives are produced by the typed builders in
+ * src/main/agent/shared/directive-builders.ts and have the wire form
+ * `<kind>:<base64(JSON(payload))>`. The CLI runs the hook command in SHELL
+ * form (the whole command string is tokenized on whitespace), so encoding the
+ * payload as base64 keeps every directive a single shell token regardless of
+ * the values it carries (spaces, quotes, ':' , unicode). Never hand-author the
+ * wire string - use the builders.
+ *
+ *   extractTool                { field }             -> event.tool = ctx[field]
+ *   extractToolId              { fields[], nested? } -> event.toolId = first non-null
+ *   extractDetail              { fields[], nested? } -> event.detail = first non-null
+ *   setDetail                  { value }            -> event.detail = value
+ *   setTypeWhen                { whenTool?, nested?:[p,f], field?, equals, to }
+ *                                 -> if (no whenTool or ctx.tool_name===whenTool) AND
+ *                                    String(addressed field's value) === equals, event.type = to
+ *   setTypeWhenDetailContains  { contains, to }     -> if event.detail (already
+ *                                 extracted) contains `contains` (case-insensitive),
+ *                                 event.type = to. Must be listed AFTER an extractDetail.
  *
  * Stdin: Agent CLIs pipe hook context as JSON. Directives control which
  * fields are extracted for each event type.
@@ -44,6 +44,44 @@ const outputPath = process.argv[2];
 const eventType = process.argv[3] || 'idle';
 const directives = process.argv.slice(4);
 
+/**
+ * Append a diagnostic line to the sibling error log so silent pipeline
+ * failures (unknown/malformed directive, file locked, disk full) are
+ * discoverable instead of vanishing. Best-effort: the error log may also fail.
+ */
+function logBridgeError(message) {
+  if (!outputPath) return;
+  try {
+    const errorPath = outputPath.replace(/events\.jsonl$/, 'events-bridge.error.log');
+    fs.appendFileSync(errorPath, `${new Date().toISOString()} ${eventType} ${message}\n`);
+  } catch {
+    // Truly nothing we can do
+  }
+}
+
+/** Decode a `<kind>:<base64(JSON)>` directive. payload is undefined if malformed. */
+function decodeDirective(directive) {
+  const colonIndex = directive.indexOf(':');
+  if (colonIndex <= 0) return { kind: directive, payload: undefined };
+  const kind = directive.slice(0, colonIndex);
+  try {
+    const json = Buffer.from(directive.slice(colonIndex + 1), 'base64').toString('utf8');
+    return { kind, payload: JSON.parse(json) };
+  } catch {
+    return { kind, payload: undefined };
+  }
+}
+
+/** First non-null value of `fields` in `container`, stringified and capped. */
+function firstNonNull(container, fields) {
+  if (!container || typeof container !== 'object' || !Array.isArray(fields)) return undefined;
+  for (const field of fields) {
+    const value = container[field];
+    if (value != null) return String(value).slice(0, 200);
+  }
+  return undefined;
+}
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
@@ -58,180 +96,77 @@ process.stdin.on('end', () => {
     try { ctx = JSON.parse(input); } catch { /* stdin not valid JSON */ }
   }
 
-  // Process directives
-  for (let i = 0; i < directives.length; i++) {
-    const directive = directives[i];
-
-    if (directive.startsWith('tool:')) {
-      // tool:<field> - extract event.tool from ctx[field]
-      const field = directive.slice(5);
-      if (ctx && ctx[field] != null) event.tool = ctx[field];
-
-    } else if (directive.startsWith('tool-id-nested:')) {
-      // tool-id-nested:<parent>:<f1>,<f2>,... - extract toolId from ctx[parent][f]
-      const rest = directive.slice(15);
-      const colonIndex = rest.indexOf(':');
-      if (colonIndex > 0 && ctx && !event.toolId) {
-        const parent = rest.slice(0, colonIndex);
-        const fields = rest.slice(colonIndex + 1).split(',');
-        const container = ctx[parent];
-        if (container && typeof container === 'object') {
-          for (const field of fields) {
-            const value = container[field];
-            if (value != null) {
-              event.toolId = String(value).slice(0, 200);
-              break;
-            }
-          }
-        }
-      }
-
-    } else if (directive.startsWith('tool-id:')) {
-      // tool-id:<f1>,<f2>,... - extract toolId from first non-null ctx[f]
-      if (!event.toolId) {
-        const fields = directive.slice(8).split(',');
-        if (ctx) {
-          for (const field of fields) {
-            if (ctx[field] != null) {
-              event.toolId = String(ctx[field]).slice(0, 200);
-              break;
-            }
-          }
-        }
-      }
-
-    } else if (directive.startsWith('nested-detail:')) {
-      // nested-detail:<parent>:<f1>,<f2>,... - extract detail from ctx[parent][f]
-      const rest = directive.slice(14);
-      const colonIndex = rest.indexOf(':');
-      if (colonIndex > 0 && ctx) {
-        const parent = rest.slice(0, colonIndex);
-        const fields = rest.slice(colonIndex + 1).split(',');
-        const container = ctx[parent];
-        if (container && typeof container === 'object') {
-          for (const field of fields) {
-            const value = container[field];
-            if (value != null) {
-              event.detail = String(value).slice(0, 200);
-              break;
-            }
-          }
-        }
-      }
-
-    } else if (directive.startsWith('detail:')) {
-      // detail:<f1>,<f2>,... - extract detail from first non-null ctx[f]
-      if (!event.detail) {
-        const fields = directive.slice(7).split(',');
-        if (ctx) {
-          for (const field of fields) {
-            if (ctx[field] != null) {
-              event.detail = String(ctx[field]).slice(0, 200);
-              break;
-            }
-          }
-        }
-      }
-
-    } else if (directive === 'arg-detail') {
-      // arg-detail - use next argv as event.detail
-      if (i + 1 < directives.length) {
-        event.detail = String(directives[++i]).slice(0, 200);
-      }
-
-    } else if (directive.startsWith('remap-nested:')) {
-      // remap-nested:<parent>:<field>:<value>:<new-type> - conditionally
-      // change event.type based on a NESTED field value. Parse the three
-      // leading colons; everything after the third colon is the new type.
-      const rest = directive.slice(13);
-      const firstColon = rest.indexOf(':');
-      const secondColon = rest.indexOf(':', firstColon + 1);
-      const thirdColon = rest.indexOf(':', secondColon + 1);
-      if (firstColon > 0 && secondColon > firstColon && thirdColon > secondColon && ctx) {
-        const parent = rest.slice(0, firstColon);
-        const field = rest.slice(firstColon + 1, secondColon);
-        const value = rest.slice(secondColon + 1, thirdColon);
-        const newType = rest.slice(thirdColon + 1);
-        const container = ctx[parent];
-        if (container && typeof container === 'object' && String(container[field]) === value) {
-          event.type = newType;
-        }
-      }
-
-    } else if (directive.startsWith('remap-detail-includes:')) {
-      // remap-detail-includes:<value>:<new-type> - change event.type when the
-      // ALREADY-EXTRACTED event.detail CONTAINS value (case-insensitive
-      // substring). Must run AFTER a detail directive. Classifying on the
-      // resolved detail (rather than a guessed source field) means it works
-      // regardless of which ctx field held the text. The new-type is the last
-      // colon-delimited segment; value may itself contain ':'.
-      const rest = directive.slice(22);
-      const lastColon = rest.lastIndexOf(':');
-      if (lastColon > 0) {
-        const value = rest.slice(0, lastColon);
-        const newType = rest.slice(lastColon + 1);
-        if (newType && typeof event.detail === 'string'
-            && event.detail.toLowerCase().includes(value.toLowerCase())) {
-          event.type = newType;
-        }
-      }
-
-    } else if (directive.startsWith('remap:')) {
-      // remap:<field>:<value>:<new-type> - conditionally change event.type.
-      // Field and value cannot contain ':' but new-type can (uses last 2 colons).
-      const rest = directive.slice(6);
-      const firstColon = rest.indexOf(':');
-      const secondColon = rest.indexOf(':', firstColon + 1);
-      if (firstColon > 0 && secondColon > firstColon && ctx) {
-        const field = rest.slice(0, firstColon);
-        const value = rest.slice(firstColon + 1, secondColon);
-        const newType = rest.slice(secondColon + 1);
-        if (String(ctx[field]) === value) {
-          event.type = newType;
-        }
-      }
+  // Process directives in list order (setTypeWhenDetailContains relies on a
+  // prior extractDetail directive having run).
+  for (const directive of directives) {
+    const { kind, payload } = decodeDirective(directive);
+    // Every directive payload is a JSON object. Reject undefined (malformed
+    // base64/JSON) AND any non-object (e.g. a literal `null`, which JSON.parse
+    // accepts) so a switch case can never dereference a non-object and crash
+    // the process before the event is written - it stays a logged no-op.
+    if (payload === null || typeof payload !== 'object') {
+      logBridgeError(`malformed directive: ${directive}`);
+      continue;
     }
-    // env: directives are handled below in the session_start block
+
+    switch (kind) {
+      case 'extractTool': {
+        if (ctx && payload.field && ctx[payload.field] != null) event.tool = ctx[payload.field];
+        break;
+      }
+      case 'extractToolId': {
+        if (event.toolId !== undefined) break;
+        const container = payload.nested ? (ctx && ctx[payload.nested]) : ctx;
+        const value = firstNonNull(container, payload.fields);
+        if (value !== undefined) event.toolId = value;
+        break;
+      }
+      case 'extractDetail': {
+        if (event.detail !== undefined) break;
+        const container = payload.nested ? (ctx && ctx[payload.nested]) : ctx;
+        const value = firstNonNull(container, payload.fields);
+        if (value !== undefined) event.detail = value;
+        break;
+      }
+      case 'setDetail': {
+        // A fixed value, not an extraction: overwrites any prior detail by design.
+        if (payload.value != null) event.detail = String(payload.value).slice(0, 200);
+        break;
+      }
+      case 'setTypeWhen': {
+        if (!ctx) break;
+        if (payload.whenTool && ctx.tool_name !== payload.whenTool) break;
+        const container = payload.nested ? ctx[payload.nested[0]] : ctx;
+        const field = payload.nested ? payload.nested[1] : payload.field;
+        if (container && typeof container === 'object' && String(container[field]) === payload.equals) {
+          event.type = payload.to;
+        }
+        break;
+      }
+      case 'setTypeWhenDetailContains': {
+        if (payload.to && typeof event.detail === 'string'
+            && event.detail.toLowerCase().includes(String(payload.contains).toLowerCase())) {
+          event.type = payload.to;
+        }
+        break;
+      }
+      default:
+        logBridgeError(`unknown directive kind: ${kind}`);
+    }
   }
 
-  // Build hookContext for adapter-specific session ID extraction.
-  // Only on session_start events to avoid bloating the JSONL file.
-  if (eventType === 'session_start') {
-    const hookCtx = ctx ? { ...ctx } : {};
-    // Capture env vars specified as env:<key>=<ENV_VAR> directives.
-    for (const directive of directives) {
-      if (directive.startsWith('env:')) {
-        const rest = directive.slice(4);
-        const eqIndex = rest.indexOf('=');
-        if (eqIndex > 0) {
-          const targetKey = rest.slice(0, eqIndex);
-          const envName = rest.slice(eqIndex + 1);
-          if (envName && process.env[envName] && !hookCtx[targetKey]) {
-            hookCtx[targetKey] = process.env[envName];
-          }
-        }
-      }
-    }
-    if (Object.keys(hookCtx).length > 0) {
-      event.hookContext = JSON.stringify(hookCtx).slice(0, 2048);
-    }
+  // Capture the full stdin payload as hookContext on session_start only (so
+  // adapters can extract the agent-assigned session id). Skipped for other
+  // event types to avoid bloating the JSONL file.
+  if (eventType === 'session_start' && ctx && Object.keys(ctx).length > 0) {
+    event.hookContext = JSON.stringify(ctx).slice(0, 2048);
   }
 
   try {
     fs.appendFileSync(outputPath, JSON.stringify(event) + '\n');
   } catch (err) {
-    // Don't swallow silently - write a sibling error log so genuine
-    // pipeline failures (file locked, path missing, disk full) are
-    // diagnosable. Best-effort: the error log itself may also fail.
-    try {
-      const errorPath = outputPath.replace(/events\.jsonl$/, 'events-bridge.error.log');
-      const errorMessage = err && err.message ? err.message : String(err);
-      fs.appendFileSync(
-        errorPath,
-        `${new Date().toISOString()} ${event.type || 'unknown'} ${errorMessage}\n`,
-      );
-    } catch {
-      // Truly nothing we can do
-    }
+    // Don't swallow silently - surface genuine pipeline failures (file
+    // locked, path missing, disk full) to the sibling error log.
+    logBridgeError(err && err.message ? err.message : String(err));
   }
 });

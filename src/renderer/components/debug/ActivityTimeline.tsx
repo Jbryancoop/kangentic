@@ -140,6 +140,7 @@ const COUNTER_LABELS: Record<keyof ActivityStatsSnapshot['compensationCounters']
   stuckPendingTools: 'stuck-pending-tools',
   forceThinking: 'force-thinking',
   forceIdle: 'force-idle',
+  unmatchedBgShellEnd: 'unmatched-bg-shell-end',
 };
 
 interface ActivityTimelineProps {

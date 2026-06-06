@@ -1,28 +1,33 @@
 /**
- * Unit tests for the remap-nested and remap directives in event-bridge.js,
- * specifically covering the background-shell event type remapping introduced
- * for the run_in_background / KillBash tracking feature.
+ * Unit tests for the setTypeWhen / setTypeWhenDetailContains directives in
+ * event-bridge.js, covering the background-shell event type changes for
+ * run_in_background / KillBash tracking AND the foreground Agent/Task
+ * completion that must NEVER be mis-mapped to a background-shell event.
  *
- * These tests were extracted from tests/e2e/claude-activity-detection.spec.ts
- * where they lived inside the "Claude Agent -- Event Bridge Script" describe
- * block. They have no Electron dependency: event-bridge.js is a standalone
- * Node script that runs in ~100ms vs the E2E tier's ~3-5s Electron launch.
- * Moving them here eliminates the E2E build requirement and makes the suite
- * ~3-5x faster per test.
+ * event-bridge.js is a standalone Node script that runs in ~100ms vs the
+ * E2E tier's ~3-5s Electron launch, so these run as fast unit tests that
+ * feed real-shape Claude hook payloads on stdin and assert the emitted
+ * event `type` / `detail`.
+ *
+ * Directives are built with the same typed builders the Claude adapter uses
+ * (src/main/agent/shared/directive-builders.ts), so the tested wire format
+ * matches what hook-manager.ts actually emits.
  *
  * Covered scenarios:
- * - remap-nested fires when tool_input.run_in_background === true -> background_shell_start
- * - remap-nested does NOT fire for foreground Bash (run_in_background absent)
- * - remap fires when tool_name === 'KillBash' -> background_shell_end
- * - remap-nested and remap compose cleanly with tool: and nested-detail: directives
+ * - PreToolUse: run_in_background -> background_shell_start; KillBash -> background_shell_end
+ * - PostToolUse: Agent/Task completion (status:"completed") stays tool_end (NOT bg-shell end)
+ * - PostToolUse: backgrounded Bash launch promotes with the real `shellId`
+ * - setTypeWhen is tool-scoped (whenTool) and shell-safe (base64 payload)
  *
- * Real Claude Code PreToolUse hook payload shapes are used throughout.
+ * Real Claude Code hook payload shapes are used throughout.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { EventType } from '../../src/shared/types';
+import { extractTool, extractToolId, extractDetail, setTypeWhen, setTypeWhenDetailContains } from '../../src/main/agent/shared/directive-builders';
 
 const BRIDGE = path.resolve(__dirname, '../../src/main/agent/event-bridge.js');
 
@@ -49,21 +54,32 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-/** The full set of directives that Claude's PreToolUse hook uses. */
+/** The exact directive set Claude's PreToolUse hook wires (built via the
+ *  same typed builders hook-manager.ts uses). */
 const PRETOOLUSE_DIRECTIVES = [
-  'tool:tool_name',
+  extractTool('tool_name'),
   // shell_id first so KillBash + future shell-aware events surface
   // their identity. Falls through to file_path/command/etc otherwise.
-  'nested-detail:tool_input:shell_id,file_path,command,query,pattern,url,description',
-  'remap-nested:tool_input:run_in_background:true:background_shell_start',
-  'remap:tool_name:KillBash:background_shell_end',
+  extractDetail(['shell_id', 'file_path', 'command', 'query', 'pattern', 'url', 'description'], { nested: 'tool_input' }),
+  setTypeWhen({ whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: EventType.BackgroundShellStart }),
+  setTypeWhen({ field: 'tool_name', equals: 'KillBash', to: EventType.BackgroundShellEnd }),
 ];
 
-describe('event-bridge remap-nested + remap for background-shell events', () => {
-  it('remap-nested retypes tool_start to background_shell_start when tool_input.run_in_background is true', () => {
+/** The exact directive set Claude's PostToolUse hook wires after the
+ *  tool-blind-remap fix. Note: NO status-based remap (those mis-mapped
+ *  Agent completions), and the bg-shell id field list is camelCase-first. */
+const POSTTOOLUSE_DIRECTIVES = [
+  extractTool('tool_name'),
+  extractToolId(['tool_use_id']),
+  extractToolId(['tool_use_id'], { nested: 'tool_response' }),
+  extractDetail(['shellId', 'shell_id', 'backgroundTaskId', 'bash_id'], { nested: 'tool_response' }),
+  setTypeWhen({ whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: EventType.BackgroundShellStart }),
+];
+
+describe('event-bridge background-shell events (PreToolUse)', () => {
+  it('retypes tool_start to background_shell_start when tool_input.run_in_background is true', () => {
     // Real-shape Claude Code PreToolUse hook payload for a backgrounded
-    // Bash invocation. The bridge should see tool_input.run_in_background
-    // === true and remap the event type.
+    // Bash invocation. The Bash-scoped setTypeWhen fires on run_in_background.
     const stdinContent = JSON.stringify({
       tool_name: 'Bash',
       tool_input: {
@@ -78,14 +94,12 @@ describe('event-bridge remap-nested + remap for background-shell events', () => 
     const emitted = readEvent();
     expect(emitted.type).toBe('background_shell_start');
     expect(emitted.tool).toBe('Bash');
-    // nested-detail still extracts the description field because nested-detail
-    // and remap-nested operate on the same object without interfering.
+    // extractDetail still extracts the command because extractDetail and
+    // setTypeWhen operate on the same object without interfering.
     expect(emitted.detail).toBe('npx playwright test --project=ui');
   });
 
-  it('remap-nested does NOT retype when run_in_background is absent (foreground Bash)', () => {
-    // Standard foreground Bash -- run_in_background is absent. The bridge
-    // should leave the event type as tool_start.
+  it('does NOT retype when run_in_background is absent (foreground Bash)', () => {
     const stdinContent = JSON.stringify({
       tool_name: 'Bash',
       tool_input: { command: 'ls -la', description: 'List files' },
@@ -99,8 +113,7 @@ describe('event-bridge remap-nested + remap for background-shell events', () => 
     expect(emitted.detail).toBe('ls -la');
   });
 
-  it('remap-nested does NOT retype when run_in_background is false', () => {
-    // run_in_background explicitly set to false -- should remain tool_start.
+  it('does NOT retype when run_in_background is false', () => {
     const stdinContent = JSON.stringify({
       tool_name: 'Bash',
       tool_input: { command: 'git status', run_in_background: false },
@@ -113,10 +126,7 @@ describe('event-bridge remap-nested + remap for background-shell events', () => 
     expect(emitted.tool).toBe('Bash');
   });
 
-  it('remap retypes tool_start to background_shell_end for KillBash', () => {
-    // Real-shape KillBash PreToolUse payload. The tool_name === 'KillBash'
-    // remap fires and the event type flips to background_shell_end so
-    // the state machine decrements activeBackgroundShells.
+  it('retypes tool_start to background_shell_end for KillBash', () => {
     const stdinContent = JSON.stringify({
       tool_name: 'KillBash',
       tool_input: { shell_id: 'bash_1' },
@@ -127,15 +137,12 @@ describe('event-bridge remap-nested + remap for background-shell events', () => 
     const emitted = readEvent();
     expect(emitted.type).toBe('background_shell_end');
     expect(emitted.tool).toBe('KillBash');
-    // shell_id is now extracted as detail so the engine can match it
+    // shell_id is extracted as detail so the engine can match it
     // against tracked background shell ids (Set-based path).
     expect(emitted.detail).toBe('bash_1');
   });
 
   it('extracts shell_id as detail when KillBash payload includes it', () => {
-    // Distinct test from the basic KillBash remap: pin the detail
-    // value so a future regression in directive ordering doesn't
-    // silently drop the shell_id.
     const stdinContent = JSON.stringify({
       tool_name: 'KillBash',
       tool_input: { shell_id: 'bash_42' },
@@ -158,11 +165,11 @@ describe('event-bridge remap-nested + remap for background-shell events', () => 
     expect(emitted.detail).toBe('ls -la');
   });
 
-  it('remap-nested takes priority over remap when both conditions match simultaneously', () => {
-    // Hypothetical: a KillBash with run_in_background: true. The
-    // remap-nested directive is processed first in the arg list and wins.
-    // This is an edge-case document test -- real Claude Code never sends
-    // this combination, but the order must be deterministic.
+  it('tool-scopes run_in_background to Bash: a KillBash carrying it still ends, never starts', () => {
+    // A KillBash with an incidental run_in_background:true. The
+    // run_in_background setTypeWhen is gated on whenTool:'Bash', so it does NOT
+    // fire for KillBash; the tool_name=KillBash rule does -> end. This is
+    // the structural protection against tool-blind remaps.
     const stdinContent = JSON.stringify({
       tool_name: 'KillBash',
       tool_input: { shell_id: 'bash_1', run_in_background: true },
@@ -171,89 +178,165 @@ describe('event-bridge remap-nested + remap for background-shell events', () => 
     runBridge(stdinContent, [outputFile, 'tool_start', ...PRETOOLUSE_DIRECTIVES]);
 
     const emitted = readEvent();
-    // remap-nested fires because run_in_background === true; the remap
-    // directive runs on the original tool_name check but after remap-nested
-    // has already rewritten the type. Verify the output type is one of the
-    // two expected remapped values (implementation detail) and the tool
-    // field is still present.
-    expect(['background_shell_start', 'background_shell_end']).toContain(emitted.type);
+    expect(emitted.type).toBe('background_shell_end');
     expect(emitted.tool).toBe('KillBash');
+    expect(emitted.detail).toBe('bash_1');
   });
 });
 
-describe('event-bridge tool-id directives (correlation IDs)', () => {
-  it('tool-id extracts toolId from a top-level field', () => {
+describe('event-bridge tool completions (PostToolUse)', () => {
+  it('T1: a foreground Agent/Task completion (status:"completed") stays tool_end, never background_shell_end', () => {
+    // THE BUG: a tool-blind status remap mapped this to background_shell_end,
+    // draining a real bg-shell count -> premature idle / false "task done".
+    // The Agent tool reports status:"completed" in tool_response on normal
+    // foreground completion; it must remain a plain tool_end.
+    const stdinContent = JSON.stringify({
+      tool_name: 'Agent',
+      tool_input: { description: 'Explore prompt template code', subagent_type: 'Explore' },
+      tool_response: { status: 'completed', content: '...summary...' },
+      tool_use_id: 'toolu_agent_1',
+    });
+
+    runBridge(stdinContent, [outputFile, 'tool_end', ...POSTTOOLUSE_DIRECTIVES]);
+
+    const emitted = readEvent();
+    expect(emitted.type).toBe('tool_end');
+    expect(emitted.tool).toBe('Agent');
+  });
+
+  it('T2: a backgrounded Bash launch promotes with the real camelCase shellId', () => {
+    // PostToolUse for Bash(run_in_background:true). tool_response carries
+    // the assigned shell id as `shellId` (camelCase). The bridge emits a
+    // second background_shell_start with that id so the engine promotes the
+    // anonymous slot (from PreToolUse) to a named slot -> count stays 1.
     const stdinContent = JSON.stringify({
       tool_name: 'Bash',
-      tool_use_id: 'tu_abc123',
-      tool_input: { command: 'ls' },
+      tool_input: { command: 'npx playwright test --project=electron', run_in_background: true },
+      tool_response: { shellId: 'bash_1', exitCode: null },
+      tool_use_id: 'toolu_bash_1',
     });
-    runBridge(stdinContent, [outputFile, 'tool_start',
-      'tool:tool_name', 'tool-id:tool_use_id']);
+
+    runBridge(stdinContent, [outputFile, 'tool_end', ...POSTTOOLUSE_DIRECTIVES]);
+
     const emitted = readEvent();
+    expect(emitted.type).toBe('background_shell_start');
     expect(emitted.tool).toBe('Bash');
-    expect(emitted.toolId).toBe('tu_abc123');
+    expect(emitted.detail).toBe('bash_1');
   });
 
-  it('tool-id-nested extracts toolId from a nested field', () => {
+  it('T3: a foreground Bash completion stays tool_end with no spurious detail', () => {
+    // Foreground Bash: tool_response has output/exitCode/killed, no shellId,
+    // no status. The PostToolUse directive set has no command fallback, so
+    // detail stays undefined and the type stays tool_end.
     const stdinContent = JSON.stringify({
       tool_name: 'Bash',
-      tool_input: { command: 'ls', tool_use_id: 'tu_nested_456' },
+      tool_input: { command: 'ls -la' },
+      tool_response: { stdout: 'file1\nfile2', exitCode: 0, killed: false },
+      tool_use_id: 'toolu_bash_fg',
     });
-    runBridge(stdinContent, [outputFile, 'tool_start',
-      'tool:tool_name', 'tool-id-nested:tool_input:tool_use_id']);
-    const emitted = readEvent();
-    expect(emitted.toolId).toBe('tu_nested_456');
-  });
 
-  it('tool-id wins when both top-level and nested directives are given (first-match precedence)', () => {
-    // Mirrors how Claude's hook-manager wires both directives - the
-    // top-level one runs first and wins when present.
-    const stdinContent = JSON.stringify({
-      tool_name: 'Bash',
-      tool_use_id: 'tu_top',
-      tool_input: { tool_use_id: 'tu_nested' },
-    });
-    runBridge(stdinContent, [outputFile, 'tool_start',
-      'tool:tool_name',
-      'tool-id:tool_use_id',
-      'tool-id-nested:tool_input:tool_use_id']);
-    const emitted = readEvent();
-    expect(emitted.toolId).toBe('tu_top');
-  });
+    runBridge(stdinContent, [outputFile, 'tool_end', ...POSTTOOLUSE_DIRECTIVES]);
 
-  it('tool-id-nested falls through when top-level directive missed', () => {
-    // tool_use_id only present nested - the top-level directive
-    // doesn't fire (no top-level field), nested fills in.
-    const stdinContent = JSON.stringify({
-      tool_name: 'Bash',
-      tool_input: { tool_use_id: 'tu_nested' },
-    });
-    runBridge(stdinContent, [outputFile, 'tool_start',
-      'tool:tool_name',
-      'tool-id:tool_use_id',
-      'tool-id-nested:tool_input:tool_use_id']);
     const emitted = readEvent();
-    expect(emitted.toolId).toBe('tu_nested');
-  });
-
-  it('toolId omitted when no directive matches (adapter without correlation)', () => {
-    const stdinContent = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls' } });
-    runBridge(stdinContent, [outputFile, 'tool_start', 'tool:tool_name']);
-    const emitted = readEvent();
+    expect(emitted.type).toBe('tool_end');
     expect(emitted.tool).toBe('Bash');
-    expect(emitted.toolId).toBeUndefined();
+    expect(emitted.detail).toBeUndefined();
+  });
+
+  it('T4: a BashOutput poll completion (status:"completed") stays tool_end, never background_shell_end', () => {
+    // BashOutput polling a still-running shell can report status:"completed".
+    // It must NOT decrement the engine's count - real termination is owned
+    // by the process-tree watcher and KillBash, not a status remap.
+    const stdinContent = JSON.stringify({
+      tool_name: 'BashOutput',
+      tool_input: { bash_id: 'bash_1' },
+      tool_response: { status: 'completed', stdout: 'done', exitCode: 0 },
+      tool_use_id: 'toolu_bashoutput_1',
+    });
+
+    runBridge(stdinContent, [outputFile, 'tool_end', ...POSTTOOLUSE_DIRECTIVES]);
+
+    const emitted = readEvent();
+    expect(emitted.type).toBe('tool_end');
+    expect(emitted.tool).toBe('BashOutput');
+  });
+
+  it('T5: older-CLI snake_case shell_id still promotes (field fallback)', () => {
+    // Version skew: an older Claude CLI emits tool_response.shell_id
+    // (snake_case). The multi-candidate field list still extracts it.
+    const stdinContent = JSON.stringify({
+      tool_name: 'Bash',
+      tool_input: { command: 'sleep 60', run_in_background: true },
+      tool_response: { shell_id: 'bash_1' },
+      tool_use_id: 'toolu_bash_old',
+    });
+
+    runBridge(stdinContent, [outputFile, 'tool_end', ...POSTTOOLUSE_DIRECTIVES]);
+
+    const emitted = readEvent();
+    expect(emitted.type).toBe('background_shell_start');
+    expect(emitted.detail).toBe('bash_1');
+  });
+
+  it('captures the tool_use_id correlation from tool_response on PostToolUse', () => {
+    const stdinContent = JSON.stringify({
+      tool_name: 'Read',
+      tool_input: { file_path: 'C:\\Users\\dev\\repo\\file.ts' },
+      tool_response: { tool_use_id: 'toolu_nested_read' },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_end', ...POSTTOOLUSE_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('tool_end');
+    expect(emitted.toolId).toBe('toolu_nested_read');
   });
 });
 
-describe('event-bridge remap-detail-includes (substring classification on extracted detail)', () => {
+describe('event-bridge setTypeWhen directive (tool-scoping + shell safety)', () => {
+  it('whenTool gates the remap: a non-Bash tool with run_in_background does not remap', () => {
+    // Defensive: a hypothetical tool carrying an incidental
+    // run_in_background:true must NOT be mis-typed to background_shell_start
+    // because the rule is scoped to whenTool:'Bash'.
+    const directive = setTypeWhen({ whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: EventType.BackgroundShellStart });
+    const stdinContent = JSON.stringify({
+      tool_name: 'WebFetch',
+      tool_input: { url: 'https://example.com', run_in_background: true },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_start', extractTool('tool_name'), directive]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('tool_start');
+    expect(emitted.tool).toBe('WebFetch');
+  });
+
+  it('applies a top-level (non-nested) field remap', () => {
+    const directive = setTypeWhen({ field: 'tool_name', equals: 'KillBash', to: EventType.BackgroundShellEnd });
+    runBridge(JSON.stringify({ tool_name: 'KillBash' }), [outputFile, 'tool_start', extractTool('tool_name'), directive]);
+    expect(readEvent().type).toBe('background_shell_end');
+  });
+
+  it('is shell-safe: a value containing ":" and spaces round-trips through the base64 payload', () => {
+    // The legacy colon-split remap forms could silently misparse a value with
+    // ':', and a value with spaces would be split by the shell. The base64
+    // payload makes the directive a single shell token, so any value survives.
+    const directive = setTypeWhen({ field: 'mode', equals: 'a:b c:d', to: EventType.Interrupted });
+    runBridge(JSON.stringify({ mode: 'a:b c:d' }), [outputFile, 'tool_end', directive]);
+    expect(readEvent().type).toBe('interrupted');
+  });
+
+  it('is a no-op when the addressed field does not equal the value', () => {
+    const directive = setTypeWhen({ whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: EventType.BackgroundShellStart });
+    runBridge(JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls' } }), [outputFile, 'tool_start', extractTool('tool_name'), directive]);
+    expect(readEvent().type).toBe('tool_start');
+  });
+});
+
+describe('event-bridge setTypeWhenDetailContains (substring classification on extracted detail)', () => {
   // The exact directive set the Claude adapter wires for the Notification
   // hook. The Claude-specific substring lives here / in the adapter, never in
   // the engine. The match runs on the already-extracted detail, so it is
   // robust to which payload field carried the text.
   const NOTIFICATION_DIRECTIVES = [
-    'detail:message,notification',
-    'remap-detail-includes:waiting for your input:idle_hint',
+    extractDetail(['message', 'notification']),
+    setTypeWhenDetailContains('waiting for your input', EventType.IdleHint),
   ];
 
   it('retypes a "waiting for your input" notification to idle_hint and keeps the text', () => {

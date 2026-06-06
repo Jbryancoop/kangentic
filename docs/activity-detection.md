@@ -77,7 +77,7 @@ Surrounding infrastructure:
 | `src/main/pty/activity/background-shell/process-tree.ts` | Cross-platform descendant enumeration; `listAllProcesses` shared once per cycle |
 | `src/main/pty/activity/background-shell/resume.ts` | Resume-time orphan adoption |
 | `src/main/pty/activity/background-shell/looks-like-shell-id.ts` | Shell-id shape gate |
-| `src/main/agent/event-bridge.js` | Generic hook-to-JSONL bridge with directive language (tool, tool-id, detail, remap, ...) |
+| `src/main/agent/event-bridge.js` | Generic hook-to-JSONL bridge; decodes typed `<kind>:<base64(JSON)>` directives (extractTool, extractDetail, setTypeWhen, ...) built by `src/main/agent/shared/directive-builders.ts` |
 | `src/main/agent/adapters/claude/hook-manager.ts` | Claude Code hook configuration |
 | `src/shared/types.ts` | `ActivityState`, `ActivityReason`, `EventType`, `SessionEvent.toolId` |
 
@@ -146,7 +146,7 @@ The 22 `EventType` values written to `events.jsonl` by `event-bridge.js`, define
 
 Some turns end without a `Stop`/`Idle` hook ever reaching the main agent - most commonly when the whole turn was delegated to a subagent. When the subagent stops, `subagentDepth → 0` but `turnActive` is still `true`, and the only thing that arrives is a `Notification` ("Claude is waiting for your input"). Because `Notification` is log-only, nothing clears `turnActive`, and the session stays `thinking` until the 180s stale-thinking watchdog fires - the user sees the spinner spin ~3 minutes after the agent is actually done.
 
-`idle_hint` closes that gap. The classification happens **at the source, not in the engine**: the Claude adapter's `Notification` hook carries a generic `remap-detail-includes:waiting for your input:idle_hint` directive (the only Claude-specific string), so `event-bridge.js` rewrites the matching notification's `type` to `idle_hint`. The match runs on the already-extracted `detail` text (empirically "Claude is waiting for your input"), so it does not depend on which payload field carried the message. The engine never string-matches notification text and never branches on agent name.
+`idle_hint` closes that gap. The classification happens **at the source, not in the engine**: the Claude adapter's `Notification` hook carries a generic `setTypeWhenDetailContains('waiting for your input', EventType.IdleHint)` directive (the only Claude-specific string), so `event-bridge.js` rewrites the matching notification's `type` to `idle_hint`. The match runs on the already-extracted `detail` text (empirically "Claude is waiting for your input"), so it does not depend on which payload field carried the message. The engine never string-matches notification text and never branches on agent name.
 
 The engine treats `idle_hint` as **conditionally** turn-ending (`idleHintEndsTurn` in `predicate.ts`): it clears `turnActive` only when `turnActive && pendingToolCount === 0 && subagentDepth === 0 && bgShellCount === 0 && !permissionPending`. When the guard passes, the predicate flips to idle through the normal 400ms stability window (near-instant for the user). When it fails - tools, subagents, or background shells still outstanding, or a permission pending - `idle_hint` is a pure no-op, so a notification that fires mid-turn never short-circuits genuine work, and the 180s stale-thinking watchdog remains the ultimate backstop. `idle_hint` is in `LOG_ONLY_EVENTS`, so it never resets `lastSignalAt` (a failed guard leaves the genuine work's watchdog anchor untouched).
 
@@ -154,7 +154,7 @@ The engine treats `idle_hint` as **conditionally** turn-ending (`idleHintEndsTur
 
 Only the Claude adapter wires this today, because Claude is the only agent for which we have captured evidence (a real session) of both the notification text and the dropped-Stop failure mode (a turn fully delegated to a subagent). The engine path is generic: any adapter that classifies a notification into `idle_hint` gets the same behavior.
 
-To extend it to another hook-based agent, capture a real session that exhibits the stall, read the notification's extracted `detail`, then add a `remap-detail-includes:<observed substring>:idle_hint` directive to that adapter's Notification hook. Do not guess the string. Current status of the other agents:
+To extend it to another hook-based agent, capture a real session that exhibits the stall, read the notification's extracted `detail`, then add a `setTypeWhenDetailContains('<observed substring>', EventType.IdleHint)` directive (built via the typed builder in that adapter's hook-manager, never hand-authored) to that adapter's Notification hook. Do not guess the string. Current status of the other agents:
 
 - **Gemini / Qwen Code** share the same hook shape (`AfterAgent` -> `idle` stop-equivalent, `Notification` -> `notification`), so they could be susceptible. But they wire no `SubagentStart`/`SubagentStop` hooks, so the subagent-delegation failure mode is not modeled, and we have no captured session to confirm their notification text. Wire only after capturing evidence.
 - **Kimi** does not need this: its wire protocol emits an explicit `TurnEnd -> Idle`, and none of its `Notification`-mapped messages mean "waiting for input."
@@ -221,13 +221,13 @@ Subagent-tool events at depth>0 do NOT clear permission (the permission belonged
 `pendingToolStack: Array<{ id?: string; name: string }>` records in-flight tools in start order. `currentTool` always reflects the top of the stack and is exposed via `ActivityReason` for the TaskCard hover tooltip ("Running Bash").
 
 ToolEnd matching priority:
-1. **By correlation id** - when both events carry `event.toolId` (Claude's `tool_use_id` extracted via the `tool-id` / `tool-id-nested` directives), exact removal regardless of stack position. Solves the duplicate-name and out-of-order cases.
+1. **By correlation id** - when both events carry `event.toolId` (Claude's `tool_use_id` extracted via the `extractToolId` directives, top-level and nested), exact removal regardless of stack position. Solves the duplicate-name and out-of-order cases.
 2. **LIFO-by-name** - fallback when an event has no toolId or the id didn't match (drift recovery from hook drop or version skew).
 3. **Raw pop** - fallback for `Interrupted` (no tool name carried).
 
 Hard reset on `pendingToolCount === 0`: the stack is cleared even if name desync left dangling entries. Idle events also clear the stack (see "Idle clamp" below).
 
-Adapters opt into ID correlation by adding `tool-id:<field>` and `tool-id-nested:<parent>:<field>` directives to their hook config. Adapters without correlation IDs leave `event.toolId` undefined and the engine falls back to LIFO-by-name automatically - no breaking change.
+Adapters opt into ID correlation by adding `extractToolId(['<field>'])` and `extractToolId(['<field>'], { nested: '<parent>' })` directives to their hook config. Adapters without correlation IDs leave `event.toolId` undefined and the engine falls back to LIFO-by-name automatically - no breaking change.
 
 ### Idle clamp
 
@@ -310,6 +310,12 @@ The watcher polls every 2 seconds. For each session with `activeShellCount > 0`:
 3. **Tier A (PID-aware):** for shells registered via `registerShellPid(shellId, pid)`, check `isAlive(pid)`. If dead, fire `onShellPidExited(shellId)` → engine removes by id.
 4. **Tier B (count heuristic):** filter descendants to "shell-like" basenames (bash, sh, cmd, pwsh, node, npm, npx, python, etc.). If the count dropped below the snapshot taken at the last `background_shell_start` AND the engine reports tracked shells, fire `onNaturalExit(delta)`. Engine drains anonymous count by delta.
 
+### Identity tracking and unattributable ends
+
+A backgrounded Bash is tracked by id where possible. `PreToolUse` fires `background_shell_start` before Claude has assigned a shell id, so it counts anonymously (detail falls through to the command string). `PostToolUse` then re-emits `background_shell_start` carrying the assigned id from `tool_response` (field `shellId`, with `shell_id` / `backgroundTaskId` / `bash_id` as version fallbacks). The engine treats that as a **promotion**: it swaps one anonymous slot for a named slot keyed by the id, keeping the total count constant. A single backgrounded Bash is therefore tracked once, by id - not double-counted.
+
+`background_shell_end` from `KillBash` carries the id and drains the matching named slot; without an id it drains the anonymous count. An **unattributable** end - one that matches no named slot AND has no anonymous slot to drain - is treated as a no-op that bumps the `unmatchedBgShellEnd` compensation counter, rather than draining an arbitrary named shell. This bounds the blast radius of any input-layer mistake: a spurious end (for example, a tool-blind remap that mislabels a foreground tool completion) can never silently decrement a real, id-tracked shell and trigger a premature idle. Remaps are tool-scoped at the source via the typed `setTypeWhen` builder (`whenTool`), so a foreground Agent/Task completion is never mapped to a bg-shell event in the first place.
+
 ### Lazy polling
 
 The watcher only polls when at least one session has `getActiveShellCount() > 0`. Idle Kangentic = zero polls.
@@ -339,7 +345,7 @@ The activity icon on each task card is wrapped in a tooltip rendering `ActivityR
 A per-project setting under **Developer → Activity Engine Debug Overlay** enables a floating panel showing live engine state:
 - Current activity + reason for each running session
 - Raw counters (tools, subagents, bg shells)
-- **Compensation counters** (`staleThinking`, `bgShellHatch`, `stuckPendingTools`, `forceThinking`, `forceIdle`) - monotonic tallies of silent recovery events. In a clean session all five read 0; any non-zero value flags a watchdog / forced transition that did not visibly flip the activity pill.
+- **Compensation counters** (`staleThinking`, `bgShellHatch`, `stuckPendingTools`, `forceThinking`, `forceIdle`, `unmatchedBgShellEnd`) - monotonic tallies of silent recovery events. In a clean session all six read 0; any non-zero value flags a watchdog / forced transition / unattributable event that did not visibly flip the activity pill.
 - Ring buffer of last 10 transitions
 - **PTY chunk timeline** - bucketed PTY arrivals over the last ~120 seconds (100ms buckets) from `ActivityStatsSnapshot.recentPtyChunks`, rendered by `ActivityTimeline` alongside the watchdog deadline (`lastSignalAt + thresholdMs`). Empty in production builds where the trace recorder is dead-code-eliminated.
 

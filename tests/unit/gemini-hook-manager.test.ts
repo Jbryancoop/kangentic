@@ -6,6 +6,7 @@ import {
   buildHooks,
   removeHooks,
 } from '../../src/main/agent/adapters/gemini';
+import { extractDetail } from '../../src/main/agent/shared/directive-builders';
 
 let tmpDir: string;
 const EVENT_BRIDGE = '/fake/.kangentic/event-bridge.js';
@@ -71,12 +72,12 @@ describe('gemini-hook-manager', () => {
       // BeforeModel: model_start, model name extracted from llm_request.model
       expect(hooks.BeforeModel).toHaveLength(1);
       expect(hooks.BeforeModel[0].hooks[0].command).toContain('model_start');
-      expect(hooks.BeforeModel[0].hooks[0].command).toContain('nested-detail:llm_request:model');
+      expect(hooks.BeforeModel[0].hooks[0].command).toContain(extractDetail(['model'], { nested: 'llm_request' }));
 
       // AfterModel: model_end, model name extracted from llm_request.model
       expect(hooks.AfterModel).toHaveLength(1);
       expect(hooks.AfterModel[0].hooks[0].command).toContain('model_end');
-      expect(hooks.AfterModel[0].hooks[0].command).toContain('nested-detail:llm_request:model');
+      expect(hooks.AfterModel[0].hooks[0].command).toContain(extractDetail(['model'], { nested: 'llm_request' }));
 
       // BeforeToolSelection: tool_selection_start
       expect(hooks.BeforeToolSelection).toHaveLength(1);

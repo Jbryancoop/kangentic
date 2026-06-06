@@ -369,6 +369,7 @@ interface FuzzReal {
     stuckPendingTools: number;
     forceThinking: number;
     forceIdle: number;
+    unmatchedBgShellEnd: number;
   };
 }
 
@@ -692,6 +693,7 @@ describe('ActivityEngine invariants (model-based)', () => {
                 stuckPendingTools: 0,
                 forceThinking: 0,
                 forceIdle: 0,
+                unmatchedBgShellEnd: 0,
               },
             },
           };

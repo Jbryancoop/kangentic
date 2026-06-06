@@ -117,7 +117,7 @@ export interface PendingTool {
  * Increments live for the lifetime of the session - never decremented.
  * Surfaced via `ActivityStatsSnapshot` so the debug overlay can render
  * a "click into the timeline to see what happened" cue when the
- * counters go non-zero. In a clean session, all five read zero.
+ * counters go non-zero. In a clean session, all six read zero.
  *
  * Reset only on `initSession()` (fresh state) or `dispose()`.
  */
@@ -132,6 +132,14 @@ export interface CompensationCounters {
   forceThinking: number;
   /** PTY-silence / shutdown forced idle transitions. */
   forceIdle: number;
+  /**
+   * A `background_shell_end` arrived that matched no tracked shell (no id
+   * match AND no anonymous count to drain). Rather than corrupt an
+   * attributable named shell with an unmatchable end, the engine treats it
+   * as a no-op and bumps this counter. Non-zero means the input layer
+   * emitted a spurious bg-shell end (e.g. a tool-blind remap leaked one).
+   */
+  unmatchedBgShellEnd: number;
 }
 
 /**

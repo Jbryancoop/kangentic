@@ -26,6 +26,7 @@ export function createSessionEngineState(): SessionEngineState {
       stuckPendingTools: 0,
       forceThinking: 0,
       forceIdle: 0,
+      unmatchedBgShellEnd: 0,
     },
     recentPtyChunks: [],
   };

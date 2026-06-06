@@ -41,6 +41,9 @@ interface ReplayResult {
   staleThinkingCompensations: number;
   /** PTY-tracker / heartbeat forced-thinking transitions (the safety net). */
   forceThinkingCompensations: number;
+  /** Unattributable `background_shell_end` events made no-ops by the engine
+   *  invariant (a spurious end that matched no tracked shell). */
+  unmatchedBgShellEndCompensations: number;
   /** Trigger of the last committed thinking->idle transition, or null. */
   lastThinkingToIdleTrigger: string | null;
 }
@@ -89,6 +92,7 @@ function replay(events: SessionEvent[]): ReplayResult {
     },
     staleThinkingCompensations: snapshot.compensationCounters.staleThinking,
     forceThinkingCompensations: snapshot.compensationCounters.forceThinking,
+    unmatchedBgShellEndCompensations: snapshot.compensationCounters.unmatchedBgShellEnd,
     lastThinkingToIdleTrigger: lastThinkingToIdle?.trigger ?? null,
   };
   engine.dispose();
@@ -349,6 +353,84 @@ describe('ActivityEngine replay tests', () => {
     });
   });
 
+  // ───────────────────────────────────────────────────────────────────
+  // The coupled tool-blind-remap bug (foreground Agent completion was
+  // mis-mapped to background_shell_end). The two input-layer bugs
+  // (over-decrement via the Agent mis-remap, over-increment via the failed
+  // shell-id promotion) PARTIALLY CANCEL, so replaying the raw capture
+  // looks fine. These three fixtures encode the bridge's output under the
+  // full fix and under each deliberately-partial fix, so the harm and the
+  // coupling are pinned at the engine level.
+  // ───────────────────────────────────────────────────────────────────
+  describe('session-008: coupled bg-shell / Agent-remap fix (GREEN, both fixes)', () => {
+    const FIXTURE = 'session-008-coupled-bg-shell-corrected.jsonl';
+
+    it('tracks the single backgrounded Bash with count 1 (named, not double-counted)', () => {
+      // Replay up to (not including) the KillBash that ends the shell.
+      const events = loadFixture(FIXTURE);
+      const beforeKill = events.slice(0, -1);
+      const result = replay(beforeKill);
+      // The Pre+Post pair promoted the anonymous slot to a named slot:
+      // exactly one shell, tracked by id, no anonymous double-count.
+      expect(result.finalState.activeBackgroundShellIds).toEqual(['bash_1']);
+      expect(result.finalState.anonymousBackgroundShellCount).toBe(0);
+      // The Agent completion was a plain tool_end, so nothing decremented
+      // the bg-shell count: no spurious end.
+      expect(result.unmatchedBgShellEndCompensations).toBe(0);
+    });
+
+    it('stays thinking after the main Stop while the real shell runs', () => {
+      const events = loadFixture(FIXTURE);
+      const beforeKill = events.slice(0, -1);
+      const result = replay(beforeKill);
+      // turnActive cleared by the Idle, but the named shell holds thinking.
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.turnActive).toBe(false);
+    });
+
+    it('idles only once the real shell actually exits, via the bg-shell-end trigger', () => {
+      const result = replay(loadFixture(FIXTURE));
+      expect(result.finalActivity).toBe('idle');
+      expect(result.finalState.activeBackgroundShellIds).toEqual([]);
+      expect(result.finalState.anonymousBackgroundShellCount).toBe(0);
+      expect(result.unmatchedBgShellEndCompensations).toBe(0);
+      expect(result.lastThinkingToIdleTrigger).toMatch(/^event:background_shell_end/);
+    });
+  });
+
+  describe('session-008: RED, fix-1-only (status remaps removed, shell-id field still wrong)', () => {
+    // With the field name still wrong, the PostToolUse promotion re-emit is
+    // detail-less, so the single real shell is double-counted as anonymous.
+    // Removing the Agent mis-remap ALONE leaves this over-count, which keeps
+    // the session thinking for the WRONG reason (phantom shells). This is why
+    // fix #2 must land with fix #1.
+    it('over-counts the bg shell (anon=2) when the shell-id field is not fixed', () => {
+      const result = replay(loadFixture('session-008-coupled-bg-shell-red-fix1-only.jsonl'));
+      expect(result.finalState.anonymousBackgroundShellCount).toBe(2);
+      expect(result.finalState.activeBackgroundShellIds).toEqual([]);
+      expect(result.finalActivity).toBe('thinking');
+    });
+  });
+
+  describe('session-008: RED, fix-2-only (promotion works, Agent mis-remap still present)', () => {
+    // With promotion fixed, the real shell is tracked by id (bash_1). The
+    // Agent completion still leaks as a spurious, detail-less
+    // background_shell_end. WITHOUT the engine invariant (#6) the old
+    // last-resort drain would have removed bash_1 -> bgShell 0 -> premature
+    // idle / false "task done" while playwright still ran. WITH #6 the
+    // unattributable end is a no-op that bumps a counter, so the real shell
+    // survives. This fixture is the red-green for both fix #1 and the
+    // engine invariant.
+    it('makes the spurious Agent end a no-op (counter bumps) and keeps the real shell', () => {
+      const result = replay(loadFixture('session-008-coupled-bg-shell-red-fix2-only.jsonl'));
+      expect(result.unmatchedBgShellEndCompensations).toBe(1);
+      expect(result.finalState.activeBackgroundShellIds).toEqual(['bash_1']);
+      expect(result.finalState.anonymousBackgroundShellCount).toBe(0);
+      // The real shell survives -> still thinking, NOT a premature idle.
+      expect(result.finalActivity).toBe('thinking');
+    });
+  });
+
   describe('cross-fixture invariants', () => {
     it('all fixtures produce a deterministic outcome (no flakiness)', () => {
       const fixtures = [
@@ -358,6 +440,9 @@ describe('ActivityEngine replay tests', () => {
         'session-004-large-22-bg-shells.jsonl',
         'session-006-ask-user-question-resume.jsonl',
         'session-007-exit-plan-mode-resume.jsonl',
+        'session-008-coupled-bg-shell-corrected.jsonl',
+        'session-008-coupled-bg-shell-red-fix1-only.jsonl',
+        'session-008-coupled-bg-shell-red-fix2-only.jsonl',
       ];
       for (const name of fixtures) {
         const events = loadFixture(name);

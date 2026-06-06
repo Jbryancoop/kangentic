@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
+import { extractTool, extractDetail } from '../../src/main/agent/shared/directive-builders';
 import { CodexAdapter } from '../../src/main/agent/adapters/codex';
 import { GeminiAdapter } from '../../src/main/agent/adapters/gemini';
 import { WarpAdapter } from '../../src/main/agent/adapters/warp';
@@ -844,14 +845,14 @@ describe('Agent hook bridge (real CLI invocation)', () => {
       expect(typeof events[0].ts).toBe('number');
     });
 
-    it('extracts tool name via tool: directive (Codex PreToolUse format)', () => {
+    it('extracts tool name via extractTool directive (Codex PreToolUse format)', () => {
       const stdin = JSON.stringify({ tool_name: 'shell', tool_input: { command: 'ls' } });
-      const events = invokeBridge('tool_start', stdin, 'tool:tool_name');
+      const events = invokeBridge('tool_start', stdin, extractTool('tool_name'));
       expect(events.length).toBe(1);
       expect(events[0].tool).toBe('shell');
     });
 
-    it('extracts nested detail via nested-detail: directive (Gemini BeforeTool format)', () => {
+    it('extracts nested detail via extractDetail directive (Gemini BeforeTool format)', () => {
       const stdin = JSON.stringify({
         tool_name: 'edit_file',
         tool_input: { file_path: '/some/file.ts', content: 'unused' },
@@ -859,34 +860,24 @@ describe('Agent hook bridge (real CLI invocation)', () => {
       const events = invokeBridge(
         'tool_start',
         stdin,
-        'tool:tool_name',
-        'nested-detail:tool_input:file_path,command,query',
+        extractTool('tool_name'),
+        extractDetail(['file_path', 'command', 'query'], { nested: 'tool_input' }),
       );
       expect(events.length).toBe(1);
       expect(events[0].tool).toBe('edit_file');
       expect(events[0].detail).toBe('/some/file.ts');
     });
 
-    it('captures env var via env: directive (Codex thread_id capture)', () => {
-      const stdin = JSON.stringify({});
-      // The bridge reads from process.env, so set the var on the spawn.
-      const eventsPath = path.join(tempDir, 'events.jsonl');
-      const bridgeScript = locateEventBridge();
-      const result = spawnSync(
-        process.execPath,
-        [bridgeScript, eventsPath, 'session_start', 'env:thread_id=CODEX_THREAD_ID'],
-        {
-          input: stdin,
-          encoding: 'utf-8',
-          env: { ...process.env, CODEX_THREAD_ID: 'thr_test_12345' },
-        },
+    it('captures the agent session id from the full stdin hookContext on session_start', () => {
+      // The legacy `env:` directive (which read CODEX_THREAD_ID from process.env)
+      // was removed. event-bridge now captures the entire stdin JSON as
+      // hookContext on session_start, so an adapter (e.g. Codex) extracts its
+      // assigned thread/session id from the hook payload itself.
+      const events = invokeBridge(
+        'session_start',
+        JSON.stringify({ thread_id: 'thr_test_12345' }),
       );
-      expect(result.status).toBe(0);
-      const events = readEventsFile(eventsPath);
       expect(events.length).toBe(1);
-      // env: directive captures into hookContext, not directly onto event.
-      // The exact field name depends on event-bridge's implementation -
-      // verify it landed somewhere.
       const serialized = JSON.stringify(events[0]);
       expect(serialized).toContain('thr_test_12345');
     });
@@ -905,8 +896,8 @@ describe('Agent hook bridge (real CLI invocation)', () => {
       // mirrors that exact pattern to make sure no bridge output trips
       // it up (e.g. multi-line JSON, BOM, trailing commas).
       invokeBridge('session_start', JSON.stringify({ session_id: 'a' }));
-      invokeBridge('tool_start', JSON.stringify({ tool_name: 'Read' }), 'tool:tool_name');
-      invokeBridge('tool_end', JSON.stringify({ tool_name: 'Read' }), 'tool:tool_name');
+      invokeBridge('tool_start', JSON.stringify({ tool_name: 'Read' }), extractTool('tool_name'));
+      invokeBridge('tool_end', JSON.stringify({ tool_name: 'Read' }), extractTool('tool_name'));
       invokeBridge('idle', JSON.stringify({}));
 
       const raw = fs.readFileSync(path.join(tempDir, 'events.jsonl'), 'utf-8');

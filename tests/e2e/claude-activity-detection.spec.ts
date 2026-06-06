@@ -24,6 +24,7 @@ import type { ElectronApplication, Page } from '@playwright/test';
 import path from 'node:path';
 import fs from 'node:fs';
 import { execSync } from 'node:child_process';
+import { extractTool, extractDetail } from '../../src/main/agent/shared/directive-builders';
 
 const TEST_NAME = 'activity-detection';
 const runId = Date.now();
@@ -216,8 +217,13 @@ test.describe('Claude Agent -- Event Bridge Script', () => {
 
     // event-bridge.js is directive-based: each adapter's hook-manager passes
     // field-extraction directives on the command line. Mirror the directives
-    // that claude/hook-manager.ts uses for the PreToolUse hook.
-    execSync(`node "${bridgePath}" "${outFile}" tool_start tool:tool_name nested-detail:tool_input:file_path,command,query,pattern,url,description < "${stdinFile}"`, {
+    // that claude/hook-manager.ts uses for the PreToolUse hook, built via the
+    // typed builders (their base64 wire form is a single shell-safe token).
+    const directives = [
+      extractTool('tool_name'),
+      extractDetail(['file_path', 'command', 'query', 'pattern', 'url', 'description'], { nested: 'tool_input' }),
+    ].join(' ');
+    execSync(`node "${bridgePath}" "${outFile}" tool_start ${directives} < "${stdinFile}"`, {
       encoding: 'utf-8',
       timeout: 5000,
     });

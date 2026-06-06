@@ -1,0 +1,9 @@
+{"ts":1780000000000,"type":"session_start"}
+{"ts":1780000001000,"type":"prompt"}
+{"ts":1780000002000,"type":"background_shell_start","tool":"Bash","detail":"npx playwright test --project=electron"}
+{"ts":1780000002100,"type":"background_shell_start","tool":"Bash","detail":"bash_1"}
+{"ts":1780000003000,"type":"tool_start","tool":"Agent","detail":"Write missing tests for changes"}
+{"ts":1780000003100,"type":"subagent_start","detail":"test-builder"}
+{"ts":1780000060000,"type":"subagent_stop"}
+{"ts":1780000060100,"type":"background_shell_end","tool":"Agent"}
+{"ts":1780000061000,"type":"idle"}

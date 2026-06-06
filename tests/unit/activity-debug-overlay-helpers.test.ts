@@ -58,6 +58,7 @@ const EMPTY_COMPENSATION_COUNTERS: ActivityStatsSnapshot['compensationCounters']
   stuckPendingTools: 0,
   forceThinking: 0,
   forceIdle: 0,
+  unmatchedBgShellEnd: 0,
 };
 
 function makeSnapshot(overrides: Partial<ActivityStatsSnapshot> = {}): ActivityStatsSnapshot {

@@ -156,19 +156,25 @@ export function updateCounters(state: SessionEngineState, event: SessionEvent): 
     }
     case EventType.BackgroundShellEnd: {
       // KillBash's hook fires this with detail = tool_input.shell_id.
-      // If we tracked the start under that id, decrement the named
-      // set. Otherwise (start was anonymous, or shell_id is unknown),
-      // fall through to drain anonymous, then drain named set as a
-      // last resort - the agent told us a shell ended, so SOMETHING
-      // should decrement.
+      // If we tracked the start under that id, decrement the named set.
+      // Otherwise (KillBash without a shell_id, or an anonymous shell)
+      // drain the anonymous count.
+      //
+      // If neither matches, the end is UNATTRIBUTABLE: there is no id to
+      // match and no anonymous slot to drain. We do NOT drain an arbitrary
+      // named shell as a last resort - that would let a spurious end (e.g.
+      // a tool-blind remap leaking an Agent completion) corrupt a real,
+      // id-tracked shell and trigger a premature idle. Instead it is a
+      // no-op that bumps a compensation counter, bounding the blast radius
+      // of any input-layer mistake. Real orphans are still reclaimed by the
+      // process-tree watcher and the bg-shell escape hatch.
       const shellId = event.detail;
       if (shellId !== undefined && state.activeBackgroundShellIds.has(shellId)) {
         state.activeBackgroundShellIds.delete(shellId);
       } else if (state.anonymousBackgroundShellCount > 0) {
         state.anonymousBackgroundShellCount -= 1;
-      } else if (state.activeBackgroundShellIds.size > 0) {
-        const firstId = state.activeBackgroundShellIds.values().next().value;
-        if (firstId !== undefined) state.activeBackgroundShellIds.delete(firstId);
+      } else {
+        state.compensationCounters.unmatchedBgShellEnd += 1;
       }
       break;
     }

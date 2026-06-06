@@ -1,6 +1,6 @@
 ---
-description: Review git changes for quality and conventions (auto-scales to a multi-agent pass on large diffs)
-allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git:*), Bash(npm:*), Bash(npx:*), Agent, Workflow
+description: Review git changes for quality and conventions via parallel reviewer subagents synthesized in the main agent (auto-fixes findings by default)
+allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git:*), Bash(npm:*), Bash(npx:*), Agent
 argument-hint: [base-ref] [review-only]
 ---
 
@@ -19,15 +19,15 @@ The skill reads `$ARGUMENTS`, which may carry up to two independent tokens in an
 
 **User-provided arguments (if any):** $ARGUMENTS
 
-**Auto-scaling (small vs large diffs).** This skill runs as a thin **driver** in the main loop. It measures the diff, then dispatches: small diffs get a single-pass review delegated to one fresh reviewer subagent (today's behavior, unchanged); large diffs auto-scale to the in-session multi-agent **Heavy Path** (see below). Both modes (default and `review-only`) work on both paths. The mechanism is identical in spirit to today: the actual review judgment always runs in a **fresh context window** that did not generate the code - the driver itself only runs mechanical pre-flight (typecheck, the HMR vitest, `git diff`) and orchestration.
+**One uniform path.** This skill runs as a thin **driver** in the main loop. Every run - regardless of diff size - does the same thing: mechanical pre-flight, gather the diff, **fan out independent reviewer subagents in parallel** (via the `Agent` tool), then **synthesize and verify their findings in the main agent**, and (default mode) apply every safely-fixable finding. There is no size gate and no separate "heavy" path. The fan-out scales naturally with the change: the universal dimension finders always run, and the domain auditors are gated by changed-file type, so a one-file change fires few finders and a broad refactor fires many. This mirrors the recommended orchestrator-worker pattern (a lead agent fans out parallel review subagents and synthesizes their results).
 
 ### Reviewer independence
 
-This review may run in the **same session that produced the code under review**, or in a **separate one that did not** - treat both the same. Judge the diff strictly on its own merits - correctness, conventions, and the criteria below - and do **not** assume the author's (or your own prior) intent was correct. That a change was just made is not evidence it is right. The driver delegates every finding to a fresh subagent that receives the diff as input but not the generation reasoning, so it can re-derive expected behavior independently even in the same-session case. Adversarial verifiers treat "the author clearly meant X" as inadmissible: verify X is actually present and correct in the code, and when uncertain, **refute** (drop) the finding rather than wave it through on assumed intent.
+`/code-review` always runs in a **fresh, isolated session** with no prior conversation or generation history (the board spawns the review session `isolated` + `always_spawn_new`; see `.claude/rules/board-config-parity.md`). The reviewing agent therefore did not write the code under review and has no memory of intending anything by it, so it is an independent reviewer **by construction**. Judge the diff strictly on its own merits - correctness, conventions, and the criteria below - and do **not** assume the author's intent was correct; that a change exists is not evidence it is right. The parallel finder subagents each receive only the diff (not any generation reasoning) and re-derive expected behavior independently. The main agent then **verifies each finding against the actual code**: it reads the cited lines, confirms the issue is real, treats "the author clearly meant X" as inadmissible, and when uncertain **refutes** (drops) the finding rather than waving it through on assumed intent.
 
 ### Not the same as `/code-review ultra`
 
-`ultra` is a Claude Code **built-in** that launches a multi-agent review in the **cloud** - user-initiated, billed, and not self-launchable by this skill. This project skill (`/code-review`) is an **in-session, local** reviewer: small diffs get the single-pass review, large diffs auto-scale to the in-session `Workflow` Heavy Path described here. Use `ultra` for a deep cloud audit on demand; this skill for the automatic, auto-fixing local pass. They are complementary, not unified - there is no attempt to share code between them.
+`ultra` is a Claude Code **built-in** that launches a multi-agent review in the **cloud** - user-initiated, billed, and not self-launchable by this skill. This project skill (`/code-review`) is an **in-session, local** reviewer: it fans out parallel read-only subagents via the `Agent` tool and synthesizes their findings in the main loop. Use `ultra` for a deep cloud audit on demand; this skill for the automatic, auto-fixing local pass. They are complementary, not unified - there is no attempt to share code between them.
 
 ## Instructions (driver)
 
@@ -40,25 +40,45 @@ The skill is a thin driver that runs in the main loop. All commands below run fr
    2. The repo default branch: `git symbolic-ref --short refs/remotes/origin/HEAD` (yields e.g. `origin/main`).
    3. Fallback locals: `git rev-parse --verify --quiet refs/heads/main`, then (if that fails) `git rev-parse --verify --quiet refs/heads/master`.
    If none resolve (no remote, no `main`/`master`), set base to empty and review the working tree only - note "base branch undetermined; reviewed working-tree changes only" in the Summary.
-4. **Gather + measure the diff (union; each command its own Bash call).** Capture all three layers - they are disjoint, so concatenating never double-counts:
+4. **Gather the diff (union; each command its own Bash call).** Capture all three layers - they are disjoint, so concatenating never double-counts:
    - **Committed-vs-base:** `git diff <base>...HEAD` and `git diff <base>...HEAD --stat` (three-dot = changes since the branch diverged from base). Skip when base is empty; an empty result otherwise just means no committed divergence, not an error.
    - **Uncommitted (staged + unstaged):** `git diff HEAD` and `git diff HEAD --stat` (`git diff HEAD` captures index + working tree in one command).
-   - **Untracked new files:** `git ls-files --others --exclude-standard`. No diff shows these, but they are part of the change - `Read` each listed file in full and append it to `diffText` as a synthetic added-file block (`+++ b/<path>` header followed by the full contents) so both review paths see it.
-   If the committed diff, the uncommitted diff, **and** the untracked list are all empty, emit "No changes to review." and stop. Otherwise `diffText` = committed diff + uncommitted diff + the synthetic untracked blocks. Derive the size from the union: `changedFiles` = the deduped union of file paths across the committed `--stat`, the uncommitted `--stat`, and the untracked list; `changedLines` = total insertions + deletions across both `--stat` outputs plus the line count of each untracked file.
-5. **Size gate.** Compute `isSmall = changedFiles <= 8 && changedLines <= 400` (AND, so a 3-file / 900-line refactor still takes the heavy path).
-6. **Dispatch:**
-   - **`isSmall` (default - behavior identical to today):** delegate the single-pass review procedure below to **one fresh `Agent`** (the general-purpose agent; read-write in default mode, read-only in `review-only`). Spawn it with `model: "sonnet"` (the review judgment does not need the session's top-tier model; see "## Model selection"). Pass it: the captured diff, `$ARGUMENTS`, and the pre-flight results from steps 1-2 (so it does not re-run them). The agent runs the **single-pass review procedure** end to end (read files -> analyze -> findings table -> Apply Phase -> Re-typecheck -> emit Output Format) and returns the finished report. The driver relays it. **No Workflow is spawned below threshold.**
-   - **large (`!isSmall`):** invoke the **`Workflow`** Heavy Path (see "## Heavy Path"). It returns a **verified findings array**. The driver then folds in the pre-flight signals (step 1 type errors as Critical rows; a step 2 vitest failure as a Critical row with the assertion message verbatim), runs the existing **Apply Phase** over the findings (skip in `review-only`), runs **Re-typecheck** (skip in `review-only`; also re-run the step 2 vitest if an HMR fix landed), and emits the **Output Format**. The Heavy Path agents are read-only; only the driver mutates, so auto-fix-by-default is preserved.
+   - **Untracked new files:** `git ls-files --others --exclude-standard`. No diff shows these, but they are part of the change - `Read` each listed file in full and append it to `diffText` as a synthetic added-file block (`+++ b/<path>` header followed by the full contents) so the finders see it.
+   If the committed diff, the uncommitted diff, **and** the untracked list are all empty, emit "No changes to review." and stop. Otherwise `diffText` = committed diff + uncommitted diff + the synthetic untracked blocks, and `changedFiles` = the deduped union of file paths across the committed `--stat`, the uncommitted `--stat`, and the untracked list. Also compute the compact **signature delta** from the diff alone (the integration finder consumes it; see "## Finders").
+5. **Fan out reviewer subagents (the `Agent` tool, ALL in ONE message so they run concurrently).** Every finder is a **read-only** subagent in its own fresh context window; only the driver (main loop) mutates the working tree, in the Apply Phase. Give each finder the diff (or, when it is very large, the Step 4 gather commands so it reproduces the diff itself) plus the changed-file list, and instruct it to read the full changed files for surrounding context. See "## Finders" for the exact set, the gates, the per-finder criteria, and the required return shape. The universal dimension finders always run; the domain auditors run only when their changed-file glob matches.
+6. **Synthesize + verify (main agent).** Collect every finder's findings. For each, **verify it against the actual code** - read the cited `file:line`, confirm the issue is real, and refute (drop) anything the code does not substantiate or that cannot be stated falsifiably (judge the code, not assumed intent). Dedup findings the same issue surfaced from multiple dimensions (e.g. an `any` flagged by both correctness and conventions), keeping the highest severity and clearest recommendation. Fold in the pre-flight signals: Step 1 type errors as Critical rows; a Step 2 vitest failure as a Critical row with the assertion message verbatim. Sort by severity. If a finder returned nothing usable (it errored or came back empty), note the dropped dimension in the Summary.
+7. **Apply Phase + Re-typecheck** (skip both in `review-only` mode). Apply every safely-fixable finding with `Edit`/`Write` (each fix is its own atomic unit - skip-with-reason on failure, keep the others), then re-run `npm run typecheck` (and the Step 2 vitest if an HMR fix landed). If a fix introduces a new type error, revert that specific edit and move the finding to `Skipped` with reason `"Fix introduced type error: <message>"`; do not roll back unrelated fixes. See "## Apply Phase".
+8. Emit the **Output Format** below.
 
-### Single-pass review procedure (small path; also defines Apply + Output for both paths)
+## Finders
 
-Whichever path runs, the review judgment is produced in a fresh context window that did not generate the code (see "Reviewer independence").
+The driver spawns all finders as **read-only** `Agent` subagents **in a single message** so they run in parallel (the orchestrator-worker fan-out). The universal dimension finders always run; the domain auditors are **gated by changed-file globs** and each is its own registered auditor agent, spawned via `subagent_type` - it loads its own domain skill and runs its checklist, so do not duplicate that checklist in the prompt. Findings come back as **text** (the `Agent` tool returns the subagent's final message, so there is no enforced schema): each finder MUST return a structured list, one block per finding with `severity`, `category`, `location` (`file:line`), `finding`, and `recommendation`, plus the falsifiable triple (`triggeringInput`, `codePath`, `testGap`) for every Correctness/Critical finding.
 
-1. For each changed file, read the full file to understand the surrounding context.
-2. Analyze every change against the criteria below and build the findings table.
-3. **Apply Phase** (skip in `review-only` mode): for every finding, attempt the recommended fix using `Edit`/`Write`. Each fix is its own atomic unit - if one fails or is unsafe, skip it with a reason but keep the others. See "What gets auto-fixed" below.
-4. **Re-typecheck** (skip in `review-only` mode): run `npm run typecheck` again. If a fix introduces a new type error, revert that specific edit and move the finding to `Skipped` with reason `"Fix introduced type error: <message>"`. Do not roll back unrelated fixes.
-5. Emit the output format below.
+| Finder | `subagent_type` | Run | Gate (changed-file glob / hunk) |
+|---|---|---|---|
+| Correctness / Performance / Maintainability / Best-Practices+Conventions | `general-purpose` (seed with the matching Review Criteria slice, incl. the "no agent-specific code outside `adapters/`" rule, `any`, shorthand, external-parser fixture) | ALWAYS (one finder per dimension) | - |
+| Cross-file integration (signatures only) | `general-purpose` (special prompt below) | ALWAYS when `changedFiles > 1` | - |
+| IPC consistency | `ipc-auditor` | GATED | `ipc-channels.ts`, `types.ts`, `preload.ts`, `src/main/ipc/handlers/**`, `tests/ui/mock-electron-api.js`, `src/renderer/stores/*-store.ts` |
+| HMR parity | `hmr-parity` | GATED | `src/renderer/stores/**`, `src/renderer/utils/**`, `src/renderer/App.tsx`, or any hunk with `<DndContext`/`import.meta.hot`/a new top-level renderer `let` |
+| Cross-platform | `platform-guard` | GATED | `src/main/pty/**`, `src/main/agent/**`, `src/main/git/**`, `shell-resolver.ts`, `command-builder.ts`, `worktree-manager.ts`, `paths.ts`, `useTerminal.ts`, or any hunk using `path.join`/`fs.rmSync`/`child_process`/an em-dash |
+| Session/PTY lifecycle | `session-debugger` | GATED | `session-manager.ts`, `session-queue.ts`, `transition-engine.ts`, `tasks.ts` (handleTaskMove), `session-store.ts`, `TerminalPanel.tsx`, `TaskDetailDialog.tsx` |
+| Migration/schema | `migration-safety` | GATED | `src/main/db/migrations.ts`, `src/main/db/repositories/**`, `src/shared/types.ts` (schema interfaces), `src/main/db/database.ts` |
+
+**Explicit, falsifiable criteria (this is the point of splitting).** Each finder prompt must enumerate concrete, falsifiable criteria - never a vague lens like "review for performance." Embed the matching Review Criteria sub-bullets verbatim for the universal finders; the gated finders inherit their auditor's explicit checklist. Every finding must carry a specific `location` (`file:line`) and a concrete `recommendation`. **Correctness / Critical findings must supply the falsifiable triple:** `triggeringInput` (the specific input that triggers the failure), `codePath` (the failing path), and `testGap` (why existing tests miss it). A finding that cannot be stated falsifiably should not be raised.
+
+**Cross-file integration pass - signatures only (stays cheap).** The single-file finders cannot see interactions. The driver computes a compact "diff interface delta" from the gathered union diff alone (Step 4) - **no file bodies** - and passes only that to the integration finder:
+
+- `changedExports` - added/changed/removed exported signatures
+- `typeDeltas` - interface/type member changes (e.g. a field becoming required)
+- `newIpcChannels` - new channel constants in `ipc-channels.ts`
+- `importChanges` - added/removed import edges between changed files
+- `storeShapeMutations` - new/removed Zustand store fields
+
+It answers questions the per-file finders structurally cannot: a new IPC channel constant with no handler/preload/mock layer touched (7-layer drift); `Task` gained a required field but no migration changed; an export's signature changed but a caller in another changed file still passes the old shape. Input is O(signatures) - a few hundred tokens regardless of diff size - so this pass is roughly constant cost and does not reintroduce long-context degradation.
+
+**Removed / renamed surface (correctness + integration finders).** When the diff **deletes or renames** an exported symbol, a string constant, a wire-format token, an enum member, or a config key, a repo-wide search is the only way to catch survivors: the type checker cannot see string-keyed contracts, references in non-typechecked `.js`, or test files that reconstruct the old form as string literals. So for each removed/renamed identifier in the signature delta, the correctness and integration finders must `Grep` the **whole repo (including `tests/`, `docs/`, and `.js`)** and flag any surviving reference outside the diff as a finding. (This class produced the only blocking findings in a recent review - two test files outside the diff still emitted a removed directive format that `tsc` happily passed.)
+
+If a finder errors or returns nothing usable, the review proceeds on the surviving dimensions; note any dropped dimension in the Summary.
 
 ## Review Criteria
 
@@ -101,25 +121,25 @@ These are summarized for review convenience; the authoritative, enforced version
 
 ### Domain-Specific Checks
 
-After identifying changed files in Step 4 (Gather + measure the diff), read the relevant skill files to load domain context. Then apply the domain-specific checks below in addition to the general criteria.
+Each domain below is owned by a dedicated **gated auditor finder** (see "## Finders"): when a changed file matches the gate, the driver spawns that auditor as a `subagent_type`, and the auditor loads its own skill and runs the checklist. The detail is kept here for reference and so the driver knows what each gated finder covers - the auditor agent, not the driver, performs the check.
 
-**IPC files** (`ipc-channels.ts`, `types.ts`, `preload.ts`, `handlers/`, `mock-electron-api.js`):
-- Read `.claude/skills/ipc-bridge/SKILL.md` before reviewing these changes
+**IPC files** (`ipc-channels.ts`, `types.ts`, `preload.ts`, `handlers/`, `mock-electron-api.js`) -> `ipc-auditor`:
+- Reads `.claude/skills/ipc-bridge/SKILL.md` for these changes
 - Verify all 7 IPC layers are consistent: channel constant, types, preload, handler, service, store, mock
 - Check push event subscriptions return unsubscribe functions
 - Check push event callbacks filter by `projectId`
 - Check `!mainWindow.isDestroyed()` guard on broadcasts
 
-**Session/PTY/terminal files** (`session-manager.ts`, `session-queue.ts`, `transition-engine.ts`, `tasks.ts` handleTaskMove, `session-store.ts`, `TerminalPanel.tsx`):
-- Read `.claude/skills/session-lifecycle/SKILL.md` before reviewing these changes
+**Session/PTY/terminal files** (`session-manager.ts`, `session-queue.ts`, `transition-engine.ts`, `tasks.ts` handleTaskMove, `session-store.ts`, `TerminalPanel.tsx`) -> `session-debugger`:
+- Reads `.claude/skills/session-lifecycle/SKILL.md` for these changes
 - Verify state transitions follow the legal state machine
 - Check `commandInjector.cancel()` is called before session state changes in handleTaskMove
 - Check generation counter / reference comparison guards are preserved
 - Check terminal ownership handoff: one xterm per session, `dialogSessionId` exclusion
 - Check `status` is not overwritten after suspend (exit handler must check current status)
 
-**Shell/agent/path files** (`shell-resolver.ts`, `command-builder.ts`, `worktree-manager.ts`, `paths.ts`, `useTerminal.ts`):
-- Read `.claude/skills/cross-platform/SKILL.md` before reviewing these changes
+**Shell/agent/path files** (`shell-resolver.ts`, `command-builder.ts`, `worktree-manager.ts`, `paths.ts`, `useTerminal.ts`) -> `platform-guard`:
+- Reads `.claude/skills/cross-platform/SKILL.md` for these changes
 - Check for em-dashes (U+2014) and `--` double-dashes used as punctuation (must use a single ASCII `-`); see `.claude/rules/text-formatting.md`
 - Check PowerShell quoting: prompts replace `"` with `'` before `quoteArg()`
 - Check Windows file ops use `{ force: true }` on `rmSync`
@@ -127,143 +147,19 @@ After identifying changed files in Step 4 (Gather + measure the diff), read the 
 - Check xterm WebGL context loss handling
 - Check PTY resize debouncing is preserved
 
-**HMR-sensitive files.** Trigger this check whenever the diff matches ANY of: a file under `src/renderer/stores/`, a file under `src/renderer/utils/`, `src/renderer/App.tsx`, or a hunk containing `<DndContext`, `import.meta.hot`, or a new top-level `let` declaration in the renderer:
-- Read `.claude/agents/hmr-parity.md` before reviewing these changes. That agent and `.claude/rules/hmr-patterns.md` are the source of truth for the four HMR primitives (A: Preserve, B: Re-sync, C: Re-key, D: Cleanup).
-- Apply the decision matrix from `hmr-parity.md`: classify what new HMR-sensitive surface was added (new `<DndContext>`, new IPC-backed store method, new module-scope mutable state, new IPC subscription, new imperative DOM mutation, new code in the `vite:afterUpdate` handler) and verify the correct pattern is used.
-- Flag anti-patterns: mixing A and C on the same state; a fifth ad-hoc HMR workaround; `process.env.NODE_ENV` gating around `import.meta.hot` (redundant, since `hot` is `undefined` in production); module-scope `addEventListener` registered at import time; reassigning `import.meta.hot.data = {...}` instead of mutating `data.x = value`.
-- The Step 2 vitest run already catches the mechanical violations (missing store re-sync, missing dispose block, missing DndContext key). Do not duplicate those checks here; focus on semantic mismatches the test cannot detect.
+**HMR-sensitive files** -> `hmr-parity`. Gate fires whenever the diff matches ANY of: a file under `src/renderer/stores/`, a file under `src/renderer/utils/`, `src/renderer/App.tsx`, or a hunk containing `<DndContext`, `import.meta.hot`, or a new top-level `let` declaration in the renderer:
+- The auditor reads `.claude/agents/hmr-parity.md` / `.claude/rules/hmr-patterns.md` - the source of truth for the four HMR primitives (A: Preserve, B: Re-sync, C: Re-key, D: Cleanup).
+- It classifies what new HMR-sensitive surface was added (new `<DndContext>`, new IPC-backed store method, new module-scope mutable state, new IPC subscription, new imperative DOM mutation, new code in the `vite:afterUpdate` handler) and verifies the correct pattern is used.
+- It flags anti-patterns: mixing A and C on the same state; a fifth ad-hoc HMR workaround; `process.env.NODE_ENV` gating around `import.meta.hot` (redundant, since `hot` is `undefined` in production); module-scope `addEventListener` registered at import time; reassigning `import.meta.hot.data = {...}` instead of mutating `data.x = value`.
+- The Step 2 vitest run already catches the mechanical violations (missing store re-sync, missing dispose block, missing DndContext key); it focuses on semantic mismatches the test cannot detect.
 - A missing HMR pattern is a **High**-severity finding (visible dogfooding regression). An anti-pattern is **Medium**. A redundant `NODE_ENV` guard is **Low**.
 
 ## Model selection
 
-The review's depth and safety come from the **structure** - independent dimension finders,
-adversarial verifiers that default to *refute*, and a dedup pass - not from each individual
-agent being a frontier reasoner. So the fan-out runs on cheaper, faster models without
-weakening the review:
+- **Finders** (every parallel subagent, universal and gated): **Sonnet** (`model: "sonnet"`). Sonnet is the analysis workhorse; the review's depth and safety come from the **structure** - many independent finders plus main-agent verification and dedup - not from each finder being a frontier reasoner. The gated auditor agents already carry `model: sonnet` in their own frontmatter; pass `model: "sonnet"` on the universal finders too.
+- **Synthesis + verification + Apply Phase** (the driver / main loop): the **session model at its configured effort** - the most capable agent in the system. Findings are verified against the code, deduped, and turned into edits here, so the strong model is spent on the one bounded synthesis context rather than across the fan-out. Because `/code-review` runs in a fresh isolated session, this synthesis agent is an independent reviewer (see "Reviewer independence").
 
-- **Driver** (this main loop): the session model. It only orchestrates (pre-flight, dispatch)
-  and owns the Apply Phase edits; it is one bounded context, not a fan-out.
-- **Finders + verifiers** (small-path reviewer, all Heavy Path finders, gated auditors, the
-  integration pass, every skeptic): **Sonnet** (`model: "sonnet"`). Sonnet is the coding /
-  analysis workhorse and is ~0.6x the per-token cost of Opus and faster, which compounds across
-  6-9 finders plus one verifier per finding.
-- **Dedup / synthesis**: **Haiku** (`model: "haiku"`). A mechanical merge of structured JSON.
-
-This is the model lever the skill controls. Reasoning **effort** is a session-level setting the
-driver inherits - run `/code-review` at medium effort; the fan-out does not benefit from high
-effort, and high effort across dozens of agents is the main cost multiplier. For a deep,
-no-expense-spared audit, use the `ultra` cloud built-in instead (see "Not the same as
-`/code-review ultra`"). The gated auditor agents also carry `model: sonnet` in their own
-frontmatter, so a direct (non-Workflow) spawn stays off Opus too; the `opts.model` above
-overrides that for the Heavy Path and is authoritative there.
-
-## Heavy Path (large diffs)
-
-Runs only when the size gate selects the heavy path (`changedFiles > 8` OR `changedLines > 400`). The driver invokes the in-session `Workflow` tool with the script below. **No `claude -p` or any headless `claude` shell invocation - ever.** Every finder and verifier is a **read-only** subagent in its own fresh context window; only the driver (main loop) mutates the working tree, in the existing Apply Phase. The Workflow returns a `findings[]` array whose objects map 1:1 onto the Findings Table columns, so the rest of the pipeline (Apply Phase, Re-typecheck, Output Format) is identical to the small path - the heavy-path findings table is indistinguishable from today's.
-
-### Dimension finders
-
-The universal finders always run. The domain finders are **gated by changed-file globs** - the same gates the Domain-Specific Checks section uses - and each delegates to its existing read-only auditor agent via `agentType` (the auditor already loads its own domain skill, so do not duplicate its checklist).
-
-| Finder | `agentType` | Run | Gate (changed-file glob / hunk) |
-|---|---|---|---|
-| Correctness / Performance / Maintainability / Best-Practices+Conventions | none (general-purpose; seed with the matching Review Criteria slice, incl. the "no agent-specific code outside `adapters/`" rule, `any`, shorthand, external-parser fixture) | ALWAYS | - |
-| Cross-file integration (signatures only) | none (general-purpose; special prompt below) | ALWAYS when `changedFiles > 1` | - |
-| IPC consistency | `ipc-auditor` | GATED | `ipc-channels.ts`, `types.ts`, `preload.ts`, `src/main/ipc/handlers/**`, `tests/ui/mock-electron-api.js`, `src/renderer/stores/*-store.ts` |
-| HMR parity | `hmr-parity` | GATED | `src/renderer/stores/**`, `src/renderer/utils/**`, `src/renderer/App.tsx`, or any hunk with `<DndContext`/`import.meta.hot`/a new top-level renderer `let` |
-| Cross-platform | `platform-guard` | GATED | `src/main/pty/**`, `src/main/agent/**`, `src/main/git/**`, `shell-resolver.ts`, `command-builder.ts`, `worktree-manager.ts`, `paths.ts`, `useTerminal.ts`, or any hunk using `path.join`/`fs.rmSync`/`child_process`/an em-dash |
-| Session/PTY lifecycle | `session-debugger` | GATED | `session-manager.ts`, `session-queue.ts`, `transition-engine.ts`, `tasks.ts` (handleTaskMove), `session-store.ts`, `TerminalPanel.tsx`, `TaskDetailDialog.tsx` |
-| Migration/schema | `migration-safety` | GATED | `src/main/db/migrations.ts`, `src/main/db/repositories/**`, `src/shared/types.ts` (schema interfaces), `src/main/db/database.ts` |
-
-**Explicit, falsifiable criteria (this is the point of splitting).** Each finder prompt must enumerate concrete, falsifiable criteria - never a vague lens like "review for performance." Embed the matching Review Criteria sub-bullets verbatim for the universal finders; the gated finders inherit their auditor's explicit checklist. Every finding must carry a specific `location` (`file:line`) and a concrete `recommendation`. **Correctness / Critical findings must supply the falsifiable triple:** `triggeringInput` (the specific input that triggers the failure), `codePath` (the failing path), and `testGap` (why existing tests miss it). A finding that cannot be stated falsifiably should not be raised.
-
-**Cross-file integration pass - signatures only (stays cheap).** The single-file finders cannot see interactions. The driver computes a compact "diff interface delta" from the gathered union diff alone (Step 4) - **no file bodies** - and passes only that to the integration finder:
-
-- `changedExports` - added/changed/removed exported signatures
-- `typeDeltas` - interface/type member changes (e.g. a field becoming required)
-- `newIpcChannels` - new channel constants in `ipc-channels.ts`
-- `importChanges` - added/removed import edges between changed files
-- `storeShapeMutations` - new/removed Zustand store fields
-
-It answers questions the per-file finders structurally cannot: a new IPC channel constant with no handler/preload/mock layer touched (7-layer drift); `Task` gained a required field but no migration changed; an export's signature changed but a caller in another changed file still passes the old shape. Input is O(signatures) - a few hundred tokens regardless of diff size - so this pass is roughly constant cost and does not reintroduce long-context degradation.
-
-### Workflow script
-
-The driver passes this script to the `Workflow` tool. `gate(changedFiles, GLOBS, diffText)` returns true when any changed file matches a glob (or the diff text matches a hunk pattern). The prompt builders (`correctnessPrompt`, `ipcPrompt`, ...) embed the explicit criteria above.
-
-```javascript
-export const meta = {
-  name: "code-review-heavy",
-  description: "Parallel multi-dimension review for large diffs: gated finders + cross-file integration -> adversarial verification -> dedup",
-  phases: ["finders", "verify", "synthesize"],
-};
-
-const findingSchema = {
-  type: "object",
-  required: ["severity", "category", "location", "finding", "recommendation"],
-  properties: {
-    severity: { enum: ["Critical", "High", "Medium", "Low"] },
-    category: { enum: ["Correctness","Performance","Maintainability","Best Practices",
-                        "Project Conventions","IPC","HMR","Cross-platform","Session","Migration","Integration"] },
-    location: { type: "string" },          // file:line (matches the Findings Table)
-    finding: { type: "string" },
-    recommendation: { type: "string" },    // "**Must fix** - ..." phrasing
-    autoFixable: { type: "boolean" },       // hint for the Apply Phase
-    triggeringInput: { type: "string" },    // falsifiable triple (required for Correctness/Critical)
-    codePath: { type: "string" },
-    testGap: { type: "string" },
-  },
-};
-const findingsSchema = { type: "object", required: ["findings"],
-  properties: { findings: { type: "array", items: findingSchema } } };
-const verdictSchema = { type: "object", required: ["verdict", "confidence", "reason"],
-  properties: {
-    verdict: { enum: ["confirmed", "refuted", "uncertain"] },
-    confidence: { enum: ["high", "medium", "low"] },
-    reason: { type: "string" },
-    revisedSeverity: { enum: ["Critical","High","Medium","Low"] },
-  },
-};
-
-// Inputs the driver passes in: diffText, changedFiles[], signatureDelta{}, ARGUMENTS
-phase("finders");
-// Model selection (see "### Model selection"): the fan-out runs on Sonnet, not the
-// session's top-tier model. The review's safety comes from the structure (independent
-// finders + adversarial verify + dedup), not from each agent being a frontier reasoner.
-const always = [
-  () => agent(correctnessPrompt(diffText),     { label: "correctness",     phase: "finders", model: "sonnet", schema: findingsSchema }),
-  () => agent(performancePrompt(diffText),      { label: "performance",     phase: "finders", model: "sonnet", schema: findingsSchema }),
-  () => agent(maintainabilityPrompt(diffText),  { label: "maintainability", phase: "finders", model: "sonnet", schema: findingsSchema }),
-  () => agent(conventionsPrompt(diffText),      { label: "conventions",     phase: "finders", model: "sonnet", schema: findingsSchema }),
-];
-const gated = [];
-if (gate(changedFiles, IPC_GLOBS))             gated.push(() => agent(ipcPrompt(changedFiles),      { label: "ipc",       phase: "finders", agentType: "ipc-auditor",      model: "sonnet", schema: findingsSchema }));
-if (gate(changedFiles, HMR_GLOBS, diffText))   gated.push(() => agent(hmrPrompt(changedFiles),       { label: "hmr",       phase: "finders", agentType: "hmr-parity",       model: "sonnet", schema: findingsSchema }));
-if (gate(changedFiles, PLATFORM_GLOBS, diffText)) gated.push(() => agent(platformPrompt(changedFiles), { label: "platform", phase: "finders", agentType: "platform-guard",  model: "sonnet", schema: findingsSchema }));
-if (gate(changedFiles, SESSION_GLOBS))         gated.push(() => agent(sessionPrompt(changedFiles),   { label: "session",   phase: "finders", agentType: "session-debugger", model: "sonnet", schema: findingsSchema }));
-if (gate(changedFiles, MIGRATION_GLOBS))       gated.push(() => agent(migrationPrompt(changedFiles), { label: "migration", phase: "finders", agentType: "migration-safety", model: "sonnet", schema: findingsSchema }));
-const integration = changedFiles.length > 1
-  ? [() => agent(integrationPrompt(signatureDelta), { label: "integration", phase: "finders", model: "sonnet", schema: findingsSchema })]
-  : [];
-
-const finderResults = await parallel([...always, ...gated, ...integration]);  // barrier
-const rawFindings = finderResults.filter(Boolean).flatMap((r) => r.findings);
-
-phase("verify");  // one skeptic per finding; DEFAULTS TO REFUTING when uncertain
-const verified = await parallel(rawFindings.map((f) => async () => {
-  const v = await agent(skepticPrompt(f, diffText), { label: "verify", phase: "verify", model: "sonnet", schema: verdictSchema });
-  if (!v || v.verdict === "refuted") return null;
-  if (v.verdict === "uncertain" && v.confidence !== "high") return null;
-  return v.revisedSeverity ? { ...f, severity: v.revisedSeverity } : f;
-}));
-
-phase("synthesize");  // dedup needs ALL survivors -> barrier
-// dedup is a mechanical merge of structured JSON; run it on Haiku (cheapest/fastest).
-const deduped = await agent(dedupPrompt(verified.filter(Boolean)), { label: "dedup", phase: "synthesize", model: "haiku", schema: findingsSchema });
-return deduped.findings;  // -> driver runs the existing Apply Phase + Re-typecheck + Output Format
-```
-
-The skeptic prompt instructs each verifier to independently re-derive the finding from the diff and to **refute when uncertain** (reviewer independence). Dedup collapses the same issue surfaced by multiple dimensions (e.g. an `any` cast flagged by both `correctness` and `conventions`). If a finder agent fails, `parallel` resolves it to `null` and `.filter(Boolean)` drops it - the review completes on the surviving dimensions; note any dropped dimension in the Summary.
+For a deep, no-expense-spared cloud audit, use the `ultra` built-in instead (see "Not the same as `/code-review ultra`").
 
 ## Apply Phase
 
@@ -369,9 +265,9 @@ When `review-only` is in `$ARGUMENTS`, skip the Apply Phase and emit the legacy 
 
 ## Allowed Tools
 
-The driver uses `Bash` (git/npm/npx only) for pre-flight + diff measurement, `Agent` to delegate the small-path single-pass review, and `Workflow` to run the Heavy Path. It owns `Read`, `Edit`, `Write`, `Glob`, `Grep` for the Apply Phase. `review-only` mode performs no edits (the delegated agent and all Heavy Path agents stay read-only). Always run commands from the project root - no chained commands (`&&`, `||`, `|`, `;`).
+The driver uses `Bash` (git/npm/npx only) for pre-flight + diff gathering, the `Agent` tool to fan out the read-only finder subagents, and owns `Read`, `Edit`, `Write`, `Glob`, `Grep` for verification and the Apply Phase. `review-only` mode performs no edits (the finders are read-only regardless). Always run commands from the project root - no chained commands (`&&`, `||`, `|`, `;`).
 
-**No headless `claude`.** All orchestration is in-session via `Agent` and `Workflow`. Never invoke `claude -p`, `claude --print`, `git diff | claude ...`, or any other headless `claude` shell pipeline.
+**No headless `claude`, no `Workflow`.** All orchestration is in-session via the `Agent` tool. Never invoke `claude -p`, `claude --print`, `git diff | claude ...`, or any other headless `claude` shell pipeline, and do not use the `Workflow` tool - the finders are spawned directly as parallel `Agent` subagents and synthesized in the main loop.
 
 **CRITICAL: Use `git -C <path>` for all git commands in other directories.** Never use `cd <path> && git ...` - the `cd && git` pattern triggers an unbypasable Claude Code security prompt.
 

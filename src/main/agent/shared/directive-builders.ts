@@ -1,0 +1,98 @@
+import type { EventType } from '../../../shared/types';
+
+/**
+ * Typed builders for event-bridge directives.
+ *
+ * Naming follows the OpenTelemetry transform (OTTL) convention of a clear
+ * action verb plus an explicit condition: `extract*` reads a value from the
+ * hook payload, `set*` assigns directly, and `setTypeWhen*` changes the
+ * emitted event's type when a condition holds.
+ *
+ * Each agent CLI runs its hook `command` in SHELL form: the whole command
+ * string is handed to a shell, which tokenizes on whitespace. So a directive
+ * must always be a single shell token. To make the wire robust AND the
+ * authoring type-safe, every directive is encoded as
+ * `<kind>:<base64(JSON(payload))>`. base64 contains no whitespace and no shell
+ * metacharacters, so the directive survives any shell unchanged regardless of
+ * the values it carries (spaces, quotes, ':' , unicode). The bridge decodes
+ * with the inverse. These builders are the ONLY way directives are authored -
+ * never hand-write the wire string. The wire is opaque on purpose; read the
+ * builder calls in each adapter's hook-manager, not the encoded command.
+ */
+
+/** Encode a directive of `kind` carrying `payload` into its wire form. */
+function encodeDirective(kind: string, payload: unknown): string {
+  const json = JSON.stringify(payload);
+  return `${kind}:${Buffer.from(json, 'utf8').toString('base64')}`;
+}
+
+/** Extract `event.tool` from the top-level stdin field `field`. */
+export function extractTool(field: string): string {
+  return encodeDirective('extractTool', { field });
+}
+
+/**
+ * Extract `event.toolId` from the first non-null of `fields`, read from the
+ * top-level stdin object or - when `nested` is given - from `ctx[nested]`.
+ * The first directive (in list order) to resolve a value wins.
+ */
+export function extractToolId(fields: string[], options: { nested?: string } = {}): string {
+  if (fields.length === 0) throw new Error('extractToolId requires at least one field');
+  return encodeDirective('extractToolId', options.nested ? { fields, nested: options.nested } : { fields });
+}
+
+/**
+ * Extract `event.detail` from the first non-null of `fields`, read from the
+ * top-level stdin object or - when `nested` is given - from `ctx[nested]`.
+ */
+export function extractDetail(fields: string[], options: { nested?: string } = {}): string {
+  if (fields.length === 0) throw new Error('extractDetail requires at least one field');
+  return encodeDirective('extractDetail', options.nested ? { fields, nested: options.nested } : { fields });
+}
+
+/** Set `event.detail` to a fixed value (no stdin lookup). */
+export function setDetail(value: string): string {
+  return encodeDirective('setDetail', { value });
+}
+
+/**
+ * A tool-scopable type change. When `ctx.tool_name === whenTool` (or `whenTool`
+ * is omitted) AND the addressed field stringifies to `equals`, the emitted
+ * event's `type` becomes `to`.
+ *
+ * Carrying `whenTool` makes tool-scoping the default and prevents the
+ * cross-tool collision that mis-mapped foreground Agent/Task completions
+ * (which also report `status: "completed"`) to `background_shell_end`.
+ */
+export interface TypeWhenRule {
+  /** Apply only when the top-level `tool_name` equals this. Omit for any tool. */
+  whenTool?: string;
+  /** Address a nested field as `[parent, field]`. Mutually exclusive with `field`. */
+  nested?: [parent: string, field: string];
+  /** Address a top-level field by name. Mutually exclusive with `nested`. */
+  field?: string;
+  /** The stringified value the addressed field must equal to trigger the change. */
+  equals: string;
+  /** The event type to set when the rule matches. */
+  to: EventType;
+}
+
+/** Change `event.type` to `rule.to` when the rule's field condition holds. */
+export function setTypeWhen(rule: TypeWhenRule): string {
+  // `nested` and `field` are mutually exclusive; the decoder prefers `nested`
+  // and silently ignores `field`, so catch the authoring mistake at build time.
+  if (rule.nested && rule.field !== undefined) {
+    throw new Error('setTypeWhen: `nested` and `field` are mutually exclusive');
+  }
+  return encodeDirective('setTypeWhen', rule);
+}
+
+/**
+ * Change `event.type` to `to` when the ALREADY-EXTRACTED `event.detail`
+ * contains `contains` (case-insensitive substring). Must be listed AFTER an
+ * extractDetail directive. Classifying on the resolved detail (not a source
+ * field) makes it robust to which payload field carried the text.
+ */
+export function setTypeWhenDetailContains(contains: string, to: EventType): string {
+  return encodeDirective('setTypeWhenDetailContains', { contains, to });
+}

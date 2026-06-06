@@ -6,6 +6,8 @@ import {
   buildHooks,
   removeHooks,
 } from '../../src/main/agent/adapters/claude';
+import { EventType } from '../../src/shared/types';
+import { extractDetail, setTypeWhen, setTypeWhenDetailContains } from '../../src/main/agent/shared/directive-builders';
 
 let tmpDir: string;
 const EVENT_BRIDGE = '/fake/.kangentic/event-bridge.js';
@@ -38,17 +40,35 @@ describe('hook-manager', () => {
       expect(hooks.PreToolUse[0].matcher).toBe('');
       expect(hooks.PreToolUse[0].hooks[0].command).toContain('event-bridge');
       expect(hooks.PreToolUse[0].hooks[0].command).toContain('tool_start');
+      // ...and the background-shell remaps: Bash(run_in_background) -> start,
+      // KillBash -> end. Asserted against the builder output so a drift
+      // between the adapter and the bridge-level remap tests is caught here.
+      expect(hooks.PreToolUse[0].hooks[0].command).toContain(
+        setTypeWhen({ whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: EventType.BackgroundShellStart }),
+      );
+      expect(hooks.PreToolUse[0].hooks[0].command).toContain(
+        setTypeWhen({ field: 'tool_name', equals: 'KillBash', to: EventType.BackgroundShellEnd }),
+      );
 
-      // PostToolUse: tool_end
+      // PostToolUse: tool_end, plus the backgrounded-Bash promotion (shell id
+      // extracted from tool_response, re-emitted as background_shell_start).
       expect(hooks.PostToolUse).toHaveLength(1);
       expect(hooks.PostToolUse[0].matcher).toBe('');
       expect(hooks.PostToolUse[0].hooks[0].command).toContain('tool_end');
+      expect(hooks.PostToolUse[0].hooks[0].command).toContain(
+        extractDetail(['shellId', 'shell_id', 'backgroundTaskId', 'bash_id'], { nested: 'tool_response' }),
+      );
+      expect(hooks.PostToolUse[0].hooks[0].command).toContain(
+        setTypeWhen({ whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: EventType.BackgroundShellStart }),
+      );
 
-      // PostToolUseFailure: tool_end with remap directive for interrupts
+      // PostToolUseFailure: tool_end with a setTypeWhen directive for interrupts
       expect(hooks.PostToolUseFailure).toHaveLength(1);
       expect(hooks.PostToolUseFailure[0].matcher).toBe('');
       expect(hooks.PostToolUseFailure[0].hooks[0].command).toContain('tool_end');
-      expect(hooks.PostToolUseFailure[0].hooks[0].command).toContain('remap:is_interrupt:true:interrupted');
+      expect(hooks.PostToolUseFailure[0].hooks[0].command).toContain(
+        setTypeWhen({ field: 'is_interrupt', equals: 'true', to: EventType.Interrupted }),
+      );
 
       // UserPromptSubmit: prompt
       expect(hooks.UserPromptSubmit).toHaveLength(1);
@@ -82,7 +102,9 @@ describe('hook-manager', () => {
       // classification directive (Claude-specific string lives here, not the engine)
       expect(hooks.Notification).toHaveLength(1);
       expect(hooks.Notification[0].hooks[0].command).toContain('notification');
-      expect(hooks.Notification[0].hooks[0].command).toContain('remap-detail-includes:waiting for your input:idle_hint');
+      expect(hooks.Notification[0].hooks[0].command).toContain(
+        setTypeWhenDetailContains('waiting for your input', EventType.IdleHint),
+      );
 
       // PreCompact: compact
       expect(hooks.PreCompact).toHaveLength(1);

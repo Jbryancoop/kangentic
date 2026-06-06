@@ -5,6 +5,7 @@ import { toForwardSlash } from '../../../../shared/paths';
 import { EventType } from '../../../../shared/types';
 import { resolveBridgeScript } from '../../shared/bridge-utils';
 import { buildBridgeCommand } from '../../shared/hook-utils';
+import { extractTool, extractDetail } from '../../shared/directive-builders';
 
 /**
  * A single hook entry in Copilot's config.json `hooks` object.
@@ -45,17 +46,17 @@ export const COPILOT_HOOK_EVENTS: Array<{
   {
     event: 'preToolUse',
     bridgeEventType: EventType.ToolStart,
-    directives: ['tool:toolName'],
+    directives: [extractTool('toolName')],
   },
   {
     event: 'postToolUse',
     bridgeEventType: EventType.ToolEnd,
-    directives: ['tool:toolName'],
+    directives: [extractTool('toolName')],
   },
   {
     event: 'agentStop',
     bridgeEventType: EventType.Idle,
-    directives: ['detail:stopReason'],
+    directives: [extractDetail(['stopReason'])],
   },
   {
     event: 'preCompact',

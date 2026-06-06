@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { EventType } from '../../../../shared/types';
 import { filterKangenticHooks, buildBridgeCommand, safelyUpdateSettingsFile } from '../../shared/hook-utils';
+import { extractTool, extractDetail } from '../../shared/directive-builders';
 
 /** Hook entry in Qwen Code's settings.json (inherited from gemini-cli). */
 export interface QwenHookEntry {
@@ -71,11 +72,11 @@ export function buildHooks(
     [H.BeforeTool]: [
       ...filterOurHooks(existingHooks[H.BeforeTool]),
       bridgeEntry(eventBridge, eventsPath, E.ToolStart,
-        'tool:tool_name', 'nested-detail:tool_input:file_path,command,query'),
+        extractTool('tool_name'), extractDetail(['file_path', 'command', 'query'], { nested: 'tool_input' })),
     ],
     [H.AfterTool]: [
       ...filterOurHooks(existingHooks[H.AfterTool]),
-      bridgeEntry(eventBridge, eventsPath, E.ToolEnd, 'tool:tool_name'),
+      bridgeEntry(eventBridge, eventsPath, E.ToolEnd, extractTool('tool_name')),
     ],
     [H.SessionStart]: [
       ...filterOurHooks(existingHooks[H.SessionStart]),
@@ -95,7 +96,7 @@ export function buildHooks(
     ],
     [H.Notification]: [
       ...filterOurHooks(existingHooks[H.Notification]),
-      bridgeEntry(eventBridge, eventsPath, E.Notification, 'detail:message,notification'),
+      bridgeEntry(eventBridge, eventsPath, E.Notification, extractDetail(['message', 'notification'])),
     ],
     [H.PreCompress]: [
       ...filterOurHooks(existingHooks[H.PreCompress]),
@@ -103,11 +104,11 @@ export function buildHooks(
     ],
     [H.BeforeModel]: [
       ...filterOurHooks(existingHooks[H.BeforeModel]),
-      bridgeEntry(eventBridge, eventsPath, E.ModelStart, 'nested-detail:llm_request:model'),
+      bridgeEntry(eventBridge, eventsPath, E.ModelStart, extractDetail(['model'], { nested: 'llm_request' })),
     ],
     [H.AfterModel]: [
       ...filterOurHooks(existingHooks[H.AfterModel]),
-      bridgeEntry(eventBridge, eventsPath, E.ModelEnd, 'nested-detail:llm_request:model'),
+      bridgeEntry(eventBridge, eventsPath, E.ModelEnd, extractDetail(['model'], { nested: 'llm_request' })),
     ],
     [H.BeforeToolSelection]: [
       ...filterOurHooks(existingHooks[H.BeforeToolSelection]),

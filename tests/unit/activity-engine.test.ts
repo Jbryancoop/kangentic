@@ -1055,15 +1055,34 @@ describe('ActivityEngine', () => {
       expect(state.activity).toBe('thinking');
     });
 
-    it('BackgroundShellEnd event with unknown shellId drains named set as last resort', () => {
-      // KillBash fires this with detail=tool_input.shell_id. If the
-      // start was anonymous (because PreToolUse used command as
-      // detail), the shellId won't match the named set. Falls through
-      // to anonymous, then to named-set drain - SOMETHING ended.
+    it('BackgroundShellEnd event with an unmatchable shellId is a no-op (preserves named state, bumps counter)', () => {
+      // Engine invariant: an end that matches no named id AND has no
+      // anonymous slot to drain must NOT drain an arbitrary named shell.
+      // That last-resort drain let a spurious end (e.g. a tool-blind
+      // remap mislabeling a foreground Agent completion as a bg-shell
+      // end) corrupt a real, id-tracked shell and trigger a premature
+      // idle. It is now a no-op that bumps the unmatchedBgShellEnd
+      // compensation counter. This matches the watcher path's contract
+      // above (markBackgroundShellEnded preserves named entries).
       const state = engine.getState(SESSION_ID)!;
       state.activeBackgroundShellIds.add('legacy-key');
       engine.processEvent(SESSION_ID, event(EventType.BackgroundShellEnd, { detail: 'bash_assigned_id' }));
-      expect(state.activeBackgroundShellIds.size).toBe(0);
+      expect(state.activeBackgroundShellIds.size).toBe(1);
+      expect(state.activeBackgroundShellIds.has('legacy-key')).toBe(true);
+      expect(state.compensationCounters.unmatchedBgShellEnd).toBe(1);
+    });
+
+    it('BackgroundShellEnd event without a shellId still drains an anonymous shell (legit KillBash)', () => {
+      // The legit KillBash-without-shell_id decrement is preserved: when
+      // the start was anonymous (PreToolUse fell back to the command
+      // string), a no-detail end drains the anonymous count, not a named
+      // shell, and does not bump the unmatched counter.
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { detail: 'npm run build' }));
+      const state = engine.getState(SESSION_ID)!;
+      expect(state.anonymousBackgroundShellCount).toBe(1);
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellEnd));
+      expect(state.anonymousBackgroundShellCount).toBe(0);
+      expect(state.compensationCounters.unmatchedBgShellEnd).toBe(0);
     });
   });
 
