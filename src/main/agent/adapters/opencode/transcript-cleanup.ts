@@ -177,7 +177,7 @@ export function cleanOpenCodeTranscript(rawText: string): string | null {
       if (!line) return false;
       // Pure punctuation / box residue (input is already trimmed, so the
       // character class doesn't need \s).
-      if (/^[\-_=•·●⬝■□◇◆⬖⬗▣▢▪▫]+$/.test(line)) return false;
+      if (/^[-_=•·●⬝■□◇◆⬖⬗▣▢▪▫]+$/.test(line)) return false;
       // Lines shorter than 3 chars are almost always TUI residue.
       if (line.length < 3) return false;
       return true;

@@ -19,6 +19,7 @@ function loadBetterSqlite3(): typeof DatabaseType | null {
   if (cachedDatabaseConstructor) return cachedDatabaseConstructor;
   try {
     const moduleName = 'better-sqlite3';
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const nativeModule = require(moduleName) as unknown;
     const databaseConstructor = (nativeModule as { default?: typeof DatabaseType }).default ?? nativeModule;
     cachedDatabaseConstructor = databaseConstructor as typeof DatabaseType;

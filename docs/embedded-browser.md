@@ -33,7 +33,7 @@ The webview runs in its own renderer process. The host renderer cannot reach int
 `src/main/ipc/handlers/browser.ts` (`BROWSER_CAPTURE_SEND`):
 
 1. Validates `sessionId` is a UUID (defense-in-depth against malformed IPC).
-2. Writes the composited PNG to `<projectRoot>/.kangentic/sessions/<sessionId>/captures/capture-<timestamp>.png` via `fs.promises.writeFile` (async so libuv flushes before the agent's Read tool opens the file — avoids Windows AV sharing-violation races).
+2. Writes the composited PNG to `<projectRoot>/.kangentic/sessions/<sessionId>/captures/capture-<timestamp>.png` via `fs.promises.writeFile` (async so libuv flushes before the agent's Read tool opens the file - avoids Windows AV sharing-violation races).
 3. Computes the @-mention path with `path.relative(cwd, absolutePngPath)`. Worktree-cwd tasks see `../../sessions/<sid>/captures/foo.png`; project-cwd tasks see the in-tree relative path. Cross-drive on Windows falls back to the absolute path with a console warning.
 4. Builds an XML-tagged prompt: top-level `Screenshot: @<path>` for bare-token @-parsers (Claude Code, Gemini CLI), then a `<browser_context>` envelope with `<url>`, optional `<picked_element>` (selector, role, testid, accessibleName, rect, computedStyles, ancestors, outerHTML), and optional `<selected_text>`.
 5. Submits via `pasteEngine.pasteAndSubmit` with `bracketed: true, source: 'browser-capture'`.
@@ -47,8 +47,8 @@ Captures live under the session directory so they're cleaned up by existing life
 1. **Chunked atomic write** with `setImmediate` yields between 1KB chunks, sized so Windows ConPTY's child-side ReadFile reliably gets the whole chunk in one read.
 2. **Output settle** with a 250ms idle window after first data, capped per-byte, floored at 1000ms for React's commit cycle.
 3. **`\r` through the queue** (not `writeRaw`). Routing through `sessionManager.write` matches user keystroke delivery, which empirically lands on Claude Code's TUI; `writeRaw` skips the queue and gets misrouted.
-4. **Submission verification** — after `\r`, wait up to 3s for any of three signals racing in parallel: the adapter's `getSubmissionVerifier('paste')` callback resolves `true`, an `activity` event with non-idle state fires, or post-`\r` data bytes cross a 50-byte cursor-blip floor. The signals OR-combine — a verifier resolving `false` does NOT short-circuit the activity / data fallbacks. On timeout, retry `\r` once with a 2s window. Both timeouts → `PasteSubmitError('no-submission-evidence')` → toast.
-5. **Bracketed-paste-mode tracking** — if the agent emits `\e[?2004l` (mode off, indicating a permission prompt or modal took focus) during the call, the retry path is skipped to avoid `\r` confirming a destructive action. Surfaced as a different toast: "Agent has a permission prompt or modal open."
+4. **Submission verification** - after `\r`, wait up to 3s for any of three signals racing in parallel: the adapter's `getSubmissionVerifier('paste')` callback resolves `true`, an `activity` event with non-idle state fires, or post-`\r` data bytes cross a 50-byte cursor-blip floor. The signals OR-combine - a verifier resolving `false` does NOT short-circuit the activity / data fallbacks. On timeout, retry `\r` once with a 2s window. Both timeouts → `PasteSubmitError('no-submission-evidence')` → toast.
+5. **Bracketed-paste-mode tracking** - if the agent emits `\e[?2004l` (mode off, indicating a permission prompt or modal took focus) during the call, the retry path is skipped to avoid `\r` confirming a destructive action. Surfaced as a different toast: "Agent has a permission prompt or modal open."
 
 Per-adapter verification is exposed via each `AgentAdapter`'s `getSubmissionVerifier(contextType: 'paste' | 'command-injection')` method. `BROWSER_CAPTURE_SEND` calls `TerminalSubmit.submitContent` (paste path) which looks up the session's adapter via `agentRegistry.get(sessionManager.getSessionAgentName(sessionId))` and passes `getSubmissionVerifier('paste')` to `pasteAndSubmit` as the optional `verifier` callback. Slash-command bursts route through `TerminalSubmit.submitKeystrokes` and use `getSubmissionVerifier('command-injection')` for the JSONL polling path. Adapters may return `null` to fall back to the activity/data-byte signals. Engine code itself never branches on agent name.
 
@@ -56,9 +56,9 @@ Per-adapter verification is exposed via each `AgentAdapter`'s `getSubmissionVeri
 
 ### Capture and Drawing
 
-- `src/renderer/components/browser/captureComposite.ts` — calls `webview.capturePage()` (returns NativeImage; macOS includes alpha, Windows/Linux are RGB), draws onto an offscreen canvas, scales overlay strokes from CSS px to native px, returns base64 PNG.
-- `src/renderer/components/browser/useDrawingOverlay.ts` — pointer-events to capture strokes. Captures the stroke array at schedule time to avoid a fast-drag race where `pointerLeave`/`pointerUp` reset the ref between schedule and flush, blanking the visible drawing.
-- `src/renderer/components/browser/inspectScript.ts` — element-picker injected via `webview.executeJavaScript`. The picked element gets a persistent blue overlay that tracks scroll/resize (window scroll capture, `ResizeObserver`, viewport resize) until cleared. If the element is removed from the DOM (SPA route, re-render), the overlay is auto-disposed.
+- `src/renderer/components/browser/captureComposite.ts` - calls `webview.capturePage()` (returns NativeImage; macOS includes alpha, Windows/Linux are RGB), draws onto an offscreen canvas, scales overlay strokes from CSS px to native px, returns base64 PNG.
+- `src/renderer/components/browser/useDrawingOverlay.ts` - pointer-events to capture strokes. Captures the stroke array at schedule time to avoid a fast-drag race where `pointerLeave`/`pointerUp` reset the ref between schedule and flush, blanking the visible drawing.
+- `src/renderer/components/browser/inspectScript.ts` - element-picker injected via `webview.executeJavaScript`. The picked element gets a persistent blue overlay that tracks scroll/resize (window scroll capture, `ResizeObserver`, viewport resize) until cleared. If the element is removed from the DOM (SPA route, re-render), the overlay is auto-disposed.
 
 ### URL persistence
 
@@ -88,9 +88,9 @@ The webview is a regular Chromium browser context. WebSocket, ES modules, fetch 
 
 ## Settings
 
-- `AppConfig.browser.defaultUrl` (project-overridable) — fallback URL when the task has no override.
-- `AppConfig.browser.enabled` (project-overridable) — when `false`, the Browser pill in `TaskDetailHeader` is hidden. Default `true`.
-- **Clear Browser Data** — destructive action backed by `IPC.BROWSER_CLEAR_STORAGE` (`src/main/ipc/handlers/browser.ts`). Calls `session.fromPartition(BROWSER_PARTITION).clearStorageData(...)` for cookies, localStorage, IndexedDB, shadercache, cachestorage, and serviceworkers, then `clearCache()` and `clearAuthCache()`. Wrapped in a danger-variant `ConfirmDialog` with `showDontAskAgain: false` (a one-shot destructive action should not be suppressible). Per-task URL overrides (`.kangentic/browser-urls.json`) and the project default URL are intentionally left alone. Those are workflow state, not browsing identity. The success toast prompts the user to reload any open browser pane to apply the cleared state, since `clearStorageData` does not refresh in-flight documents.
+- `AppConfig.browser.defaultUrl` (project-overridable) - fallback URL when the task has no override.
+- `AppConfig.browser.enabled` (project-overridable) - when `false`, the Browser pill in `TaskDetailHeader` is hidden. Default `true`.
+- **Clear Browser Data** - destructive action backed by `IPC.BROWSER_CLEAR_STORAGE` (`src/main/ipc/handlers/browser.ts`). Calls `session.fromPartition(BROWSER_PARTITION).clearStorageData(...)` for cookies, localStorage, IndexedDB, shadercache, cachestorage, and serviceworkers, then `clearCache()` and `clearAuthCache()`. Wrapped in a danger-variant `ConfirmDialog` with `showDontAskAgain: false` (a one-shot destructive action should not be suppressible). Per-task URL overrides (`.kangentic/browser-urls.json`) and the project default URL are intentionally left alone. Those are workflow state, not browsing identity. The success toast prompts the user to reload any open browser pane to apply the cleared state, since `clearStorageData` does not refresh in-flight documents.
 
 The Browser tab in `AppSettingsPanel` (per-project, above the separator) exposes all three. Future additions (per-task draw color, capture history) belong here.
 
@@ -110,9 +110,9 @@ The Browser tab in `AppSettingsPanel` (per-project, above the separator) exposes
 
 ## Test coverage
 
-- **Unit** — `tests/unit/terminal-submit.test.ts` covers the byte-level engine for both `submitContent` (paste) and `submitKeystrokes` (slash-command burst), including settle/cap/floor, verifier + retry, bracketed-paste-mode tracking, abort, timeout, and per-adapter verifier paths. `tests/unit/write-queue.test.ts` (17 cases) covers bracketed-paste-aware chunking. `tests/unit/terminal-submit-scheduler.test.ts` covers task-keyed scheduling: drag-burst coalesce, freshlySpawned waits, cancel/cancelAll. `tests/unit/agent-submission-verifier-shape.test.ts` confirms each adapter implements `getSubmissionVerifier`.
-- **UI** — pending. Should cover URL bar, draw/inspect toggles, attachment chips, send disable-on-pending. The mock electron API needs `browser.captureAndSend`, `browser.getUrls`, etc.
-- **E2E** — pending. Should cover Send → paste-engine → mock-claude submission round-trip.
+- **Unit** - `tests/unit/terminal-submit.test.ts` covers the byte-level engine for both `submitContent` (paste) and `submitKeystrokes` (slash-command burst), including settle/cap/floor, verifier + retry, bracketed-paste-mode tracking, abort, timeout, and per-adapter verifier paths. `tests/unit/write-queue.test.ts` (17 cases) covers bracketed-paste-aware chunking. `tests/unit/terminal-submit-scheduler.test.ts` covers task-keyed scheduling: drag-burst coalesce, freshlySpawned waits, cancel/cancelAll. `tests/unit/agent-submission-verifier-shape.test.ts` confirms each adapter implements `getSubmissionVerifier`.
+- **UI** - pending. Should cover URL bar, draw/inspect toggles, attachment chips, send disable-on-pending. The mock electron API needs `browser.captureAndSend`, `browser.getUrls`, etc.
+- **E2E** - pending. Should cover Send → paste-engine → mock-claude submission round-trip.
 
 ## Decision log
 

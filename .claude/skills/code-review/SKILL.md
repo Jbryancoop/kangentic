@@ -47,7 +47,7 @@ The skill is a thin driver that runs in the main loop. All commands below run fr
    If the committed diff, the uncommitted diff, **and** the untracked list are all empty, emit "No changes to review." and stop. Otherwise `diffText` = committed diff + uncommitted diff + the synthetic untracked blocks. Derive the size from the union: `changedFiles` = the deduped union of file paths across the committed `--stat`, the uncommitted `--stat`, and the untracked list; `changedLines` = total insertions + deletions across both `--stat` outputs plus the line count of each untracked file.
 5. **Size gate.** Compute `isSmall = changedFiles <= 8 && changedLines <= 400` (AND, so a 3-file / 900-line refactor still takes the heavy path).
 6. **Dispatch:**
-   - **`isSmall` (default - behavior identical to today):** delegate the single-pass review procedure below to **one fresh `Agent`** (the general-purpose agent; read-write in default mode, read-only in `review-only`). Pass it: the captured diff, `$ARGUMENTS`, and the pre-flight results from steps 1-2 (so it does not re-run them). The agent runs the **single-pass review procedure** end to end (read files -> analyze -> findings table -> Apply Phase -> Re-typecheck -> emit Output Format) and returns the finished report. The driver relays it. **No Workflow is spawned below threshold.**
+   - **`isSmall` (default - behavior identical to today):** delegate the single-pass review procedure below to **one fresh `Agent`** (the general-purpose agent; read-write in default mode, read-only in `review-only`). Spawn it with `model: "sonnet"` (the review judgment does not need the session's top-tier model; see "## Model selection"). Pass it: the captured diff, `$ARGUMENTS`, and the pre-flight results from steps 1-2 (so it does not re-run them). The agent runs the **single-pass review procedure** end to end (read files -> analyze -> findings table -> Apply Phase -> Re-typecheck -> emit Output Format) and returns the finished report. The driver relays it. **No Workflow is spawned below threshold.**
    - **large (`!isSmall`):** invoke the **`Workflow`** Heavy Path (see "## Heavy Path"). It returns a **verified findings array**. The driver then folds in the pre-flight signals (step 1 type errors as Critical rows; a step 2 vitest failure as a Critical row with the assertion message verbatim), runs the existing **Apply Phase** over the findings (skip in `review-only`), runs **Re-typecheck** (skip in `review-only`; also re-run the step 2 vitest if an HMR fix landed), and emits the **Output Format**. The Heavy Path agents are read-only; only the driver mutates, so auto-fix-by-default is preserved.
 
 ### Single-pass review procedure (small path; also defines Apply + Output for both paths)
@@ -84,13 +84,19 @@ Whichever path runs, the review judgment is produced in a fresh context window t
 - Security: injection risks, unsanitized input
 - Proper error handling at system boundaries
 
-### Project Conventions (from CLAUDE.md)
-- Single-command bash calls only (no `&&`, `||`, `|`, `;` chaining)
+### Project Conventions (source of truth: `.claude/rules/`)
+
+These are summarized for review convenience; the authoritative, enforced versions live in `.claude/rules/*.md` (each names its test and/or auditor agent).
+
+- Single-command bash calls only (no `&&`, `||`, `|`, `;` chaining) - see `.claude/rules/bash-single-command.md`
 - Lucide React icons only (no inline SVGs)
 - `data-testid` and `data-swimlane-name` attributes for test selectors
 - Zustand stores with IPC bridge pattern
 - IPC channels defined in `src/shared/ipc-channels.ts`
 - All dialogs use global `useEffect` Escape key listener
+- Shared UI primitives: use `Select` (no raw `<select>`), `CountBadge` for counts, `ConfirmDialog` for confirmations; min font `text-[11px]`; avoid hover-only controls - see `.claude/rules/ui-conventions.md`
+- No personal info / machine paths in committed code (repo is public) - see `.claude/rules/no-personal-info.md`
+- Dev tooling build-time excluded via `__KANGENTIC_DEV__`, not runtime-toggled - see `.claude/rules/dev-tooling-build-exclusion.md`
 - **No agent-specific code outside `src/main/agent/adapters/`.** Flag any branch on agent name (`agent === 'claude'`, `agent === 'droid'`, `taskAgent === '<x>'`, `switch (adapter.name)`, etc.) found in renderer code, IPC handlers, shared utilities, stores, or tests outside the `adapters/` tree. Adapter-specific copy, tooltips, capability decisions, and behavior must live with the adapter and surface through generic capability fields (e.g. `AgentAdapter.liveTelemetryUnsupported`, `AdapterRuntimeStrategy`, `AgentDetectionInfo` extensions). Suggested grep: `agent === '|taskAgent ===|adapter\.name ===` under `src/renderer/`, `src/shared/`, and `src/main/ipc/`.
 
 ### Domain-Specific Checks
@@ -114,7 +120,7 @@ After identifying changed files in Step 4 (Gather + measure the diff), read the 
 
 **Shell/agent/path files** (`shell-resolver.ts`, `command-builder.ts`, `worktree-manager.ts`, `paths.ts`, `useTerminal.ts`):
 - Read `.claude/skills/cross-platform/SKILL.md` before reviewing these changes
-- Check for Unicode em-dashes (must use ASCII `--`)
+- Check for em-dashes (U+2014) and `--` double-dashes used as punctuation (must use a single ASCII `-`); see `.claude/rules/text-formatting.md`
 - Check PowerShell quoting: prompts replace `"` with `'` before `quoteArg()`
 - Check Windows file ops use `{ force: true }` on `rmSync`
 - Check `git -C <path>` instead of `cd && git`
@@ -122,11 +128,34 @@ After identifying changed files in Step 4 (Gather + measure the diff), read the 
 - Check PTY resize debouncing is preserved
 
 **HMR-sensitive files.** Trigger this check whenever the diff matches ANY of: a file under `src/renderer/stores/`, a file under `src/renderer/utils/`, `src/renderer/App.tsx`, or a hunk containing `<DndContext`, `import.meta.hot`, or a new top-level `let` declaration in the renderer:
-- Read `.claude/agents/hmr-parity.md` before reviewing these changes. That file is the source of truth for the four HMR primitives (A: Preserve, B: Re-sync, C: Re-key, D: Cleanup) documented in `CLAUDE.md`'s "HMR patterns" section.
+- Read `.claude/agents/hmr-parity.md` before reviewing these changes. That agent and `.claude/rules/hmr-patterns.md` are the source of truth for the four HMR primitives (A: Preserve, B: Re-sync, C: Re-key, D: Cleanup).
 - Apply the decision matrix from `hmr-parity.md`: classify what new HMR-sensitive surface was added (new `<DndContext>`, new IPC-backed store method, new module-scope mutable state, new IPC subscription, new imperative DOM mutation, new code in the `vite:afterUpdate` handler) and verify the correct pattern is used.
 - Flag anti-patterns: mixing A and C on the same state; a fifth ad-hoc HMR workaround; `process.env.NODE_ENV` gating around `import.meta.hot` (redundant, since `hot` is `undefined` in production); module-scope `addEventListener` registered at import time; reassigning `import.meta.hot.data = {...}` instead of mutating `data.x = value`.
 - The Step 2 vitest run already catches the mechanical violations (missing store re-sync, missing dispose block, missing DndContext key). Do not duplicate those checks here; focus on semantic mismatches the test cannot detect.
 - A missing HMR pattern is a **High**-severity finding (visible dogfooding regression). An anti-pattern is **Medium**. A redundant `NODE_ENV` guard is **Low**.
+
+## Model selection
+
+The review's depth and safety come from the **structure** - independent dimension finders,
+adversarial verifiers that default to *refute*, and a dedup pass - not from each individual
+agent being a frontier reasoner. So the fan-out runs on cheaper, faster models without
+weakening the review:
+
+- **Driver** (this main loop): the session model. It only orchestrates (pre-flight, dispatch)
+  and owns the Apply Phase edits; it is one bounded context, not a fan-out.
+- **Finders + verifiers** (small-path reviewer, all Heavy Path finders, gated auditors, the
+  integration pass, every skeptic): **Sonnet** (`model: "sonnet"`). Sonnet is the coding /
+  analysis workhorse and is ~0.6x the per-token cost of Opus and faster, which compounds across
+  6-9 finders plus one verifier per finding.
+- **Dedup / synthesis**: **Haiku** (`model: "haiku"`). A mechanical merge of structured JSON.
+
+This is the model lever the skill controls. Reasoning **effort** is a session-level setting the
+driver inherits - run `/code-review` at medium effort; the fan-out does not benefit from high
+effort, and high effort across dozens of agents is the main cost multiplier. For a deep,
+no-expense-spared audit, use the `ultra` cloud built-in instead (see "Not the same as
+`/code-review ultra`"). The gated auditor agents also carry `model: sonnet` in their own
+frontmatter, so a direct (non-Workflow) spawn stays off Opus too; the `opts.model` above
+overrides that for the Heavy Path and is authoritative there.
 
 ## Heavy Path (large diffs)
 
@@ -198,20 +227,23 @@ const verdictSchema = { type: "object", required: ["verdict", "confidence", "rea
 
 // Inputs the driver passes in: diffText, changedFiles[], signatureDelta{}, ARGUMENTS
 phase("finders");
+// Model selection (see "### Model selection"): the fan-out runs on Sonnet, not the
+// session's top-tier model. The review's safety comes from the structure (independent
+// finders + adversarial verify + dedup), not from each agent being a frontier reasoner.
 const always = [
-  () => agent(correctnessPrompt(diffText),     { label: "correctness",     phase: "finders", schema: findingsSchema }),
-  () => agent(performancePrompt(diffText),      { label: "performance",     phase: "finders", schema: findingsSchema }),
-  () => agent(maintainabilityPrompt(diffText),  { label: "maintainability", phase: "finders", schema: findingsSchema }),
-  () => agent(conventionsPrompt(diffText),      { label: "conventions",     phase: "finders", schema: findingsSchema }),
+  () => agent(correctnessPrompt(diffText),     { label: "correctness",     phase: "finders", model: "sonnet", schema: findingsSchema }),
+  () => agent(performancePrompt(diffText),      { label: "performance",     phase: "finders", model: "sonnet", schema: findingsSchema }),
+  () => agent(maintainabilityPrompt(diffText),  { label: "maintainability", phase: "finders", model: "sonnet", schema: findingsSchema }),
+  () => agent(conventionsPrompt(diffText),      { label: "conventions",     phase: "finders", model: "sonnet", schema: findingsSchema }),
 ];
 const gated = [];
-if (gate(changedFiles, IPC_GLOBS))             gated.push(() => agent(ipcPrompt(changedFiles),      { label: "ipc",       phase: "finders", agentType: "ipc-auditor",      schema: findingsSchema }));
-if (gate(changedFiles, HMR_GLOBS, diffText))   gated.push(() => agent(hmrPrompt(changedFiles),       { label: "hmr",       phase: "finders", agentType: "hmr-parity",       schema: findingsSchema }));
-if (gate(changedFiles, PLATFORM_GLOBS, diffText)) gated.push(() => agent(platformPrompt(changedFiles), { label: "platform", phase: "finders", agentType: "platform-guard",  schema: findingsSchema }));
-if (gate(changedFiles, SESSION_GLOBS))         gated.push(() => agent(sessionPrompt(changedFiles),   { label: "session",   phase: "finders", agentType: "session-debugger", schema: findingsSchema }));
-if (gate(changedFiles, MIGRATION_GLOBS))       gated.push(() => agent(migrationPrompt(changedFiles), { label: "migration", phase: "finders", agentType: "migration-safety", schema: findingsSchema }));
+if (gate(changedFiles, IPC_GLOBS))             gated.push(() => agent(ipcPrompt(changedFiles),      { label: "ipc",       phase: "finders", agentType: "ipc-auditor",      model: "sonnet", schema: findingsSchema }));
+if (gate(changedFiles, HMR_GLOBS, diffText))   gated.push(() => agent(hmrPrompt(changedFiles),       { label: "hmr",       phase: "finders", agentType: "hmr-parity",       model: "sonnet", schema: findingsSchema }));
+if (gate(changedFiles, PLATFORM_GLOBS, diffText)) gated.push(() => agent(platformPrompt(changedFiles), { label: "platform", phase: "finders", agentType: "platform-guard",  model: "sonnet", schema: findingsSchema }));
+if (gate(changedFiles, SESSION_GLOBS))         gated.push(() => agent(sessionPrompt(changedFiles),   { label: "session",   phase: "finders", agentType: "session-debugger", model: "sonnet", schema: findingsSchema }));
+if (gate(changedFiles, MIGRATION_GLOBS))       gated.push(() => agent(migrationPrompt(changedFiles), { label: "migration", phase: "finders", agentType: "migration-safety", model: "sonnet", schema: findingsSchema }));
 const integration = changedFiles.length > 1
-  ? [() => agent(integrationPrompt(signatureDelta), { label: "integration", phase: "finders", schema: findingsSchema })]
+  ? [() => agent(integrationPrompt(signatureDelta), { label: "integration", phase: "finders", model: "sonnet", schema: findingsSchema })]
   : [];
 
 const finderResults = await parallel([...always, ...gated, ...integration]);  // barrier
@@ -219,14 +251,15 @@ const rawFindings = finderResults.filter(Boolean).flatMap((r) => r.findings);
 
 phase("verify");  // one skeptic per finding; DEFAULTS TO REFUTING when uncertain
 const verified = await parallel(rawFindings.map((f) => async () => {
-  const v = await agent(skepticPrompt(f, diffText), { label: "verify", phase: "verify", schema: verdictSchema });
+  const v = await agent(skepticPrompt(f, diffText), { label: "verify", phase: "verify", model: "sonnet", schema: verdictSchema });
   if (!v || v.verdict === "refuted") return null;
   if (v.verdict === "uncertain" && v.confidence !== "high") return null;
   return v.revisedSeverity ? { ...f, severity: v.revisedSeverity } : f;
 }));
 
 phase("synthesize");  // dedup needs ALL survivors -> barrier
-const deduped = await agent(dedupPrompt(verified.filter(Boolean)), { label: "dedup", phase: "synthesize", schema: findingsSchema });
+// dedup is a mechanical merge of structured JSON; run it on Haiku (cheapest/fastest).
+const deduped = await agent(dedupPrompt(verified.filter(Boolean)), { label: "dedup", phase: "synthesize", model: "haiku", schema: findingsSchema });
 return deduped.findings;  // -> driver runs the existing Apply Phase + Re-typecheck + Output Format
 ```
 

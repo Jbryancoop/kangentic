@@ -32,10 +32,11 @@ All git commands below run from the **current working directory** — never use 
 
 Report the mode, branch name, source branch, and working tree status before proceeding.
 
-## Step 0 — Install Dependencies and Type Check
+## Step 0 — Install Dependencies, Type Check, and Lint
 
 1. Run `npm ci`. This ensures `node_modules` matches the lockfile exactly, preventing typecheck failures from stale or missing packages. The `postinstall` script automatically rebuilds native modules for Electron. If it fails with EBUSY, stop with: "A file in node_modules is locked by a running process. Close the Kangentic dev server (`npm start`) and retry."
 2. Run `npm run typecheck`. If it fails, report the type errors and stop — do not proceed with the merge. Type errors must be fixed before merging back.
+3. Run `npm run lint`. ESLint runs in CI (`.github/workflows/ci.yml`), so a lint error will fail the push you are about to make. If it reports any errors, report them and stop - fix them before merging back. Warnings (e.g. `react-hooks/exhaustive-deps`) do not fail lint and do not block the merge.
 
 ## Step 1 — Commit Changes
 

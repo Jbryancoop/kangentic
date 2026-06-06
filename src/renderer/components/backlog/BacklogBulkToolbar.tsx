@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { SquareArrowRight, Trash2 } from 'lucide-react';
 import { PromotePopover } from './PromotePopover';
 import type { Swimlane } from '../../../shared/types';

@@ -70,8 +70,8 @@ const CODEX_NOISE_PATTERNS: RegExp[] = [
   /^•\s+Here[''\u2019]s what\b/,
 
   // ── Tool output (indented content from tool execution) ──
-  /^\s+['"]?[A-Z]:[\\\/]/,       // Windows absolute paths
-  /^\s+.*\.git['"\/\\\s]/,        // .git references
+  /^\s+['"]?[A-Z]:[\\/]/,        // Windows absolute paths
+  /^\s+.*\.git['"/\\\s]/,         // .git references
   /^\s+.*safe\.directory/,        // Git safe directory config
   /^\s+.*Permission denied/,      // Permission errors
   /^\s+.*warning:\s/i,            // Git warnings
@@ -81,7 +81,7 @@ const CODEX_NOISE_PATTERNS: RegExp[] = [
   /^\s*<\/?\w+>\s*$/,             // Standalone XML tags (</handoff> etc.)
   /^\s+"[a-z_]+"\s*:/,            // JSON keys
   /^\s+[{}]\s*$/,                 // JSON braces
-  /^\s+tests[\/\\]/,              // Test file paths
+  /^\s+tests[/\\]/,               // Test file paths
   /^\s+M\s+\.\w/,                 // Git modified files (  M .file)
   /^\s+\?\?\s+\w/,                // Git untracked files (?? file)
 ];

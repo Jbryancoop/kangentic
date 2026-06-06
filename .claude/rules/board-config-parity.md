@@ -1,3 +1,8 @@
+---
+paths:
+  - "src/shared/types.ts"
+  - "src/main/config/board-config/**"
+---
 # Rule: board-config parity for swimlane (column) fields
 
 Team board state is shared through `kangentic.json` (committed) + `kangentic.local.json` (gitignored local override). These do NOT mirror the `swimlanes` row - they serialize a **curated** `BoardColumnConfig`. A column field that exists in the DB/UI but isn't wired into that round-trip persists only to the per-machine project DB and never reaches teammates.

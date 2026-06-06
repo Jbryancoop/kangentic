@@ -31,9 +31,9 @@ This directory implements Kangentic's activity-detection engine. The full archit
 
 For background shells (the highest-stakes case), the engine has THREE mechanisms in priority order:
 
-1. **Tier A: bash_id status (instant)** — when `BashOutput` PostToolUse reports `status: completed`, the engine removes that shell_id from the Set. Currently inert — depends on the empirical capture step (see plan).
-2. **Tier B: process-tree count (seconds)** — `BgShellWatcher` polls every 2s. When the count of "shell-like" descendants drops below the snapshot taken at last `background_shell_start`, the watcher synthesizes a `background_shell_end`.
-3. **Tier C: escape hatch (5 min)** — final fallback. If the watcher couldn't run (probe failure) or the heuristic missed (e.g. a non-shell-like process spawned by the bg shell), the engine force-clears the counters after 5 minutes of no signals.
+1. **Tier A: bash_id status (instant)** - when `BashOutput` PostToolUse reports `status: completed`, the engine removes that shell_id from the Set. Currently inert - depends on the empirical capture step (see plan).
+2. **Tier B: process-tree count (seconds)** - `BgShellWatcher` polls every 2s. When the count of "shell-like" descendants drops below the snapshot taken at last `background_shell_start`, the watcher synthesizes a `background_shell_end`.
+3. **Tier C: escape hatch (5 min)** - final fallback. If the watcher couldn't run (probe failure) or the heuristic missed (e.g. a non-shell-like process spawned by the bg shell), the engine force-clears the counters after 5 minutes of no signals.
 
 Empirical data: Tier B catches 95%+ of cases in production sessions.
 

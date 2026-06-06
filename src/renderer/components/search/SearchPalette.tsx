@@ -18,7 +18,7 @@ interface SearchPaletteProps {
   onClose: () => void;
 }
 
-/** Render order — projects float above tasks for fast nav. Each label is
+/** Render order - projects float above tasks for fast nav. Each label is
  *  shown exactly once even if there are zero hits in that group. */
 const KIND_ORDER: SearchHitKind[] = ['project', 'task', 'backlog', 'session_event'];
 

@@ -89,9 +89,9 @@ type ActivityState = 'thinking' | 'idle' | 'permission';
 
 Three top-level states:
 
-- **`thinking`** — agent is working. Spinner shown on task card. Notifications NOT fired.
-- **`idle`** — agent is truly done. Notification fires. Auto-focus / auto-suspend can act.
-- **`permission`** — agent paused awaiting user approval. Distinct from `idle` so the UI can render a different affordance (lock icon vs idle dot).
+- **`thinking`** - agent is working. Spinner shown on task card. Notifications NOT fired.
+- **`idle`** - agent is truly done. Notification fires. Auto-focus / auto-suspend can act.
+- **`permission`** - agent paused awaiting user approval. Distinct from `idle` so the UI can render a different affordance (lock icon vs idle dot).
 
 ## ActivityReason (discriminated union)
 
@@ -109,7 +109,7 @@ type ActivityReason =
 
 The renderer uses `reason.kind` to pick a Lucide icon (Wrench / Users / Terminal / Lock / Loader2 / Mail) and inline label for the TaskCard hover tooltip.
 
-Priority ladder: `permission > tool > subagent > background-shell > turn-active > idle`. Anchored to `state.activity` for consistency — when forced paths (Interrupted, forceIdle) commit a transition that diverges from the bare predicate (e.g. clearing all counters on Esc), the reason follows the committed state.
+Priority ladder: `permission > tool > subagent > background-shell > turn-active > idle`. Anchored to `state.activity` for consistency - when forced paths (Interrupted, forceIdle) commit a transition that diverges from the bare predicate (e.g. clearing all counters on Esc), the reason follows the committed state.
 
 ## EventType reference
 
@@ -198,8 +198,8 @@ Tracks nested subagent invocations. SubagentStop decrements (clamped to 0). When
 
 Two storage modes:
 
-- **`activeBackgroundShellIds: Set<string>`** — when the hook directive extracted a `shell_id` (today: KillBash events), the engine tracks shells by id. `markBackgroundShellEnded(sessionId, shellId)` removes the matching id.
-- **`anonymousBackgroundShellCount: number`** — fallback for shells whose start-event lacked a shell_id (the common case today; production hooks emit the command string as detail, not a shell_id). The watcher's count-based heuristic decrements this.
+- **`activeBackgroundShellIds: Set<string>`** - when the hook directive extracted a `shell_id` (today: KillBash events), the engine tracks shells by id. `markBackgroundShellEnded(sessionId, shellId)` removes the matching id.
+- **`anonymousBackgroundShellCount: number`** - fallback for shells whose start-event lacked a shell_id (the common case today; production hooks emit the command string as detail, not a shell_id). The watcher's count-based heuristic decrements this.
 
 The predicate uses `set.size + anonymousCount > 0` so both modes coexist.
 
@@ -221,9 +221,9 @@ Subagent-tool events at depth>0 do NOT clear permission (the permission belonged
 `pendingToolStack: Array<{ id?: string; name: string }>` records in-flight tools in start order. `currentTool` always reflects the top of the stack and is exposed via `ActivityReason` for the TaskCard hover tooltip ("Running Bash").
 
 ToolEnd matching priority:
-1. **By correlation id** — when both events carry `event.toolId` (Claude's `tool_use_id` extracted via the `tool-id` / `tool-id-nested` directives), exact removal regardless of stack position. Solves the duplicate-name and out-of-order cases.
-2. **LIFO-by-name** — fallback when an event has no toolId or the id didn't match (drift recovery from hook drop or version skew).
-3. **Raw pop** — fallback for `Interrupted` (no tool name carried).
+1. **By correlation id** - when both events carry `event.toolId` (Claude's `tool_use_id` extracted via the `tool-id` / `tool-id-nested` directives), exact removal regardless of stack position. Solves the duplicate-name and out-of-order cases.
+2. **LIFO-by-name** - fallback when an event has no toolId or the id didn't match (drift recovery from hook drop or version skew).
+3. **Raw pop** - fallback for `Interrupted` (no tool name carried).
 
 Hard reset on `pendingToolCount === 0`: the stack is cleared even if name desync left dangling entries. Idle events also clear the stack (see "Idle clamp" below).
 
@@ -240,7 +240,7 @@ Permission idles bypass the clamp because the agent paused awaiting approval and
 When the predicate flips from `thinking` to `idle` due to a Stop event or a counter clearing, the engine waits 400ms before emitting the transition. If a thinking signal arrives during the window, the pending idle is cancelled. Prevents `idle → thinking → idle` flicker from out-of-order hook arrivals.
 
 Bypassed by:
-- `Interrupted` (Esc — instant, no flicker concern)
+- `Interrupted` (Esc - instant, no flicker concern)
 - `forceIdle` (PTY-driven; already debounced 3s in PtyActivityTracker)
 - Stale-thinking watchdog (already 180s)
 
@@ -343,7 +343,7 @@ A per-project setting under **Developer → Activity Engine Debug Overlay** enab
 - Ring buffer of last 10 transitions
 - **PTY chunk timeline** - bucketed PTY arrivals over the last ~120 seconds (100ms buckets) from `ActivityStatsSnapshot.recentPtyChunks`, rendered by `ActivityTimeline` alongside the watchdog deadline (`lastSignalAt + thresholdMs`). Empty in production builds where the trace recorder is dead-code-eliminated.
 
-Polls `getActivityStats(sessionId)` every 2 seconds. Hidden by default — power users discover via Developer settings; bug reporters can enable + screenshot.
+Polls `getActivityStats(sessionId)` every 2 seconds. Hidden by default - power users discover via Developer settings; bug reporters can enable + screenshot.
 
 ### Trace capture and replay (dev only)
 
@@ -399,12 +399,12 @@ Plumbed through `SessionManagerOptions.activityEngineOptions` for tests.
 
 ### Per-project setting
 
-`developer.activityDebugOverlay: boolean` — enables the debug overlay for the current project. Default false.
+`developer.activityDebugOverlay: boolean` - enables the debug overlay for the current project. Default false.
 
 ### Environment variables
 
-- `KANGENTIC_BG_SHELL_WATCHER=0` — disables the bg-shell process-tree watcher (fallback to escape hatch only).
-- `SKIP_PROCESS_TREE_PROBE=1` — skips real-OS probe smoke tests in CI environments without `ps`/`pwsh`.
+- `KANGENTIC_BG_SHELL_WATCHER=0` - disables the bg-shell process-tree watcher (fallback to escape hatch only).
+- `SKIP_PROCESS_TREE_PROBE=1` - skips real-OS probe smoke tests in CI environments without `ps`/`pwsh`.
 
 ## History
 

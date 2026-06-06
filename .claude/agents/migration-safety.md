@@ -1,5 +1,6 @@
 ---
 name: migration-safety
+model: sonnet
 description: |
   Database migration and schema validator. Checks that SQLite migrations are idempotent, schema types align with TypeScript interfaces, and repository queries cover all columns correctly.
 

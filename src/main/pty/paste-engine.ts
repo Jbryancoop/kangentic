@@ -1,5 +1,5 @@
 import type { SessionManager } from './session-manager';
-import type { SessionEvent, SubmissionContext, SubmissionVerifier } from '../../shared/types';
+import type { SubmissionVerifier } from '../../shared/types';
 
 /**
  * PasteEngine: deterministic paste-and-submit for TUI agents. Private
@@ -117,7 +117,6 @@ export function sanitizeForPaste(text: string): string {
   return text
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x08\x0b-\x1f]/g, '');
 }
 

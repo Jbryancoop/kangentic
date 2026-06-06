@@ -2,7 +2,6 @@
 // importing Electron (ipcMain) or any I/O. The handler module re-exports
 // nothing from here publicly - the functions are imported directly.
 
-import path from 'node:path';
 import type { BrowserCaptureInput, BrowserPickedElement } from '../../../shared/types';
 import { escapeXml } from '../../agent/shared';
 

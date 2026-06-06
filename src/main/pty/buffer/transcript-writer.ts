@@ -51,13 +51,11 @@ export function stripAnsiEscapes(text: string): string {
   // 4. Standalone 8-bit C1 control codes (U+0080-U+009F).
   //    These are single-byte equivalents of ESC-initiated sequences.
   //    Rarely emitted by modern terminals but must be handled for robustness.
-  // eslint-disable-next-line no-control-regex
   result = result.replace(/[\x80-\x9f]/g, '');
 
   // 5. C0 control characters except \t (0x09), \n (0x0a), \r (0x0d).
   //    Strips NUL, BEL, BS, VT, FF, SO, SI, DLE, DC1-DC4, NAK, SYN,
   //    ETB, CAN, EM, SUB, ESC (orphaned), FS, GS, RS, US, DEL.
-  // eslint-disable-next-line no-control-regex
   result = result.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
 
   // 6. Normalize line endings: \r\n -> \n, standalone \r -> \n

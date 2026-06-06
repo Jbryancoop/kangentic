@@ -1,5 +1,3 @@
-import React from 'react';
-
 interface ButtonGroupOption<T extends string> {
   value: T;
   label: string;

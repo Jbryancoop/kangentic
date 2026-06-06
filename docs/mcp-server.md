@@ -321,13 +321,13 @@ Get the most recent handoff record for a task. Returns metadata about the cross-
 
 ### kangentic_get_transcript
 
-Get a session transcript for a task or session. At least one of `taskId` or `sessionId` must be provided. Defaults to the structured Claude conversation parsed from `~/.claude/projects/<slug>/<sessionId>.jsonl` and rendered as markdown — ideal for cross-agent context handoff. Pass `format="raw"` for the ANSI-stripped PTY scrollback (works for any agent).
+Get a session transcript for a task or session. At least one of `taskId` or `sessionId` must be provided. Defaults to the structured Claude conversation parsed from `~/.claude/projects/<slug>/<sessionId>.jsonl` and rendered as markdown - ideal for cross-agent context handoff. Pass `format="raw"` for the ANSI-stripped PTY scrollback (works for any agent).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `taskId` | string | No | Task ID (returns transcript for the task's latest session) |
 | `sessionId` | string | No | Session ID (returns transcript for a specific session) |
-| `format` | `'structured'` \| `'raw'` | No | `structured` (default) returns the parsed Claude conversation as markdown — Claude sessions only. `raw` returns the ANSI-stripped terminal scrollback for any agent. |
+| `format` | `'structured'` \| `'raw'` | No | `structured` (default) returns the parsed Claude conversation as markdown - Claude sessions only. `raw` returns the ANSI-stripped terminal scrollback for any agent. |
 
 ### kangentic_query_db
 

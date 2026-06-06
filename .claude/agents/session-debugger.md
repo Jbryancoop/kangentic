@@ -1,5 +1,6 @@
 ---
 name: session-debugger
+model: sonnet
 description: |
   Session state machine debugger for diagnosing terminal, PTY, and session lifecycle issues. Use when debugging symptoms like: terminal not showing output, session didn't resume, task stuck in a state, terminal blank after dialog close, duplicate sessions, or generation counter mismatches.
 

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { KanbanSquare, ExternalLink, Loader2, Eye, EyeOff } from 'lucide-react';
 import { BaseDialog } from '../dialogs/BaseDialog';
 

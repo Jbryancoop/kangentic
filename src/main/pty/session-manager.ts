@@ -822,8 +822,8 @@ export class SessionManager extends EventEmitter {
   /**
    * Synchronously kill every PTY and clean up. Runs from Electron's
    * `before-quit` handler. Must NOT become async - see
-   * session-shutdown.killAllSessions and the "Shutdown (CRITICAL)"
-   * section in CLAUDE.md.
+   * session-shutdown.killAllSessions and
+   * .claude/rules/synchronous-shutdown.md.
    */
   killAll(): void {
     killAllSessions(this.shutdownContext());

@@ -1,5 +1,6 @@
 ---
 name: ipc-auditor
+model: sonnet
 description: |
   IPC layer consistency auditor. Verifies all 7 layers of the IPC bridge are in sync: channel constants, types, preload, handlers, services, stores, and mocks.
 

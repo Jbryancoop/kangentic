@@ -23,7 +23,7 @@ import type {
   SubmissionVerifier,
   SubmissionContext,
 } from '../../../../shared/types';
-import { ActivityDetection, EventType } from '../../../../shared/types';
+import { ActivityDetection } from '../../../../shared/types';
 
 /**
  * Claude Code adapter - wraps ClaudeDetector, CommandBuilder,

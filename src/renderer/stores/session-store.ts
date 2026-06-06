@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { ACTIVITY_TAB, type Session, type SessionUsage, type ActivityState, type SessionEvent } from '../../shared/types';
+import { ACTIVITY_TAB, type Session, type SessionUsage, type SessionEvent } from '../../shared/types';
 import { useProjectStore } from './project-store';
 import { useConfigStore } from './config-store';
 import type { SessionStore } from './session-store/types';

@@ -32,12 +32,12 @@ import { cleanOpenCodeTranscript } from '../adapters/opencode/transcript-cleanup
 /** Cross-agent TUI noise patterns - never contain conversation content. */
 const SHARED_NOISE_PATTERNS: RegExp[] = [
   // Separator bars (horizontal rules)
-  /^[─━═╌╍┄┅┈┉\-]{10,}/,
+  /^[─━═╌╍┄┅┈┉-]{10,}/,
   // Shell prompts (PS/bash/zsh with full path)
   /^PS\s+[A-Z]:\\/,
   /^\$\s+.*\.(EXE|exe|cmd)\s+--/,
   // Shell commands invoking agent CLIs (leaks internal paths)
-  /^\s*&?\s*"?[A-Za-z]:[\\\/].*\.(EXE|exe|cmd)"\s+--/,
+  /^\s*&?\s*"?[A-Za-z]:[\\/].*\.(EXE|exe|cmd)"\s+--/,
   // Session exit hints (all agents)
   /Press Ctrl.?C again to exit/,
   /^Resume this session with:/,

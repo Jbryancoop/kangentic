@@ -18,7 +18,7 @@ import('@electron/rebuild').then(({ rebuild }) => {
 }).then(() => {
   console.log('[rebuild] better-sqlite3 rebuilt for Electron', electronVersion);
 }).catch((err) => {
-  // When run via postinstall, don't fail the entire install — the user can
+  // When run via postinstall, don't fail the entire install - the user can
   // run `npm run rebuild` manually after closing Electron. When run directly
   // via `npm run rebuild` (used by package/make scripts), fail hard.
   const isPostInstall = process.env.npm_lifecycle_event === 'postinstall';

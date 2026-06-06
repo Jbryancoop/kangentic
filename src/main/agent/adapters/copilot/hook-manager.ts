@@ -4,7 +4,7 @@ import path from 'node:path';
 import { toForwardSlash } from '../../../../shared/paths';
 import { EventType } from '../../../../shared/types';
 import { resolveBridgeScript } from '../../shared/bridge-utils';
-import { isKangenticHookCommand, buildBridgeCommand } from '../../shared/hook-utils';
+import { buildBridgeCommand } from '../../shared/hook-utils';
 
 /**
  * A single hook entry in Copilot's config.json `hooks` object.

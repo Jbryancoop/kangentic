@@ -75,7 +75,6 @@ export function isDirty(draft: Swimlane, original: Swimlane | undefined): boolea
 // Kept exported (always returns false) so the unit-test contract stays
 // stable if we want to revive a meaningful override indicator later
 // (e.g. for Agent only).
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function hasOverride(_draft: Swimlane, _section: SectionId): boolean {
   return false;
 }
@@ -424,7 +423,6 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
 
   // ── Derived ────────────────────────────────────────────────────────
   const draft = drafts[activeId];
-  const original = originals[activeId];
   const isNewDraft = newDraftIds.has(activeId);
   const draftRole: SwimlaneRole | null = draft?.role ?? null;
   const isTodoOrDone = draftRole === 'todo' || draftRole === 'done';

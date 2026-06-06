@@ -25,7 +25,7 @@ import type { IpcContext } from '../main/ipc/ipc-context';
  *     `developer.previewInspectionServer` starts or stops the bridge
  *     live without restart.
  *   - Shutdown: synchronous `before-quit` removes the lockfile + closes
- *     the server (per the CLAUDE.md shutdown contract - no async work
+ *     the server (per .claude/rules/synchronous-shutdown.md - no async work
  *     in the quit path).
  */
 
@@ -57,7 +57,7 @@ export function installDevtools(context: DevtoolsContext): void {
   if (installedContext) return;
   installedContext = context;
 
-  // Synchronous before-quit per the CLAUDE.md shutdown contract. Removes
+  // Synchronous before-quit per .claude/rules/synchronous-shutdown.md. Removes
   // the lockfile, detaches CDP, closes the HTTP server. No async work in
   // the quit path.
   app.on('before-quit', () => {

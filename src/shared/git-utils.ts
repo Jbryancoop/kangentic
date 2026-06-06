@@ -10,7 +10,6 @@ export function isValidGitBranchName(name: string): boolean {
   if (!name || !name.trim()) return false;
 
   // No ASCII control characters or space, DEL
-  // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f\x7f ]/.test(name)) return false;
 
   // Forbidden characters: ~ ^ : * ? [ \

@@ -12,7 +12,7 @@ The session-history subsystem is split into four layers with strict separation o
 |---|---|---|
 | Adapter parser | `adapters/<agent>/session-history-parser.ts` | Agent-specific file format knowledge. Implements `locate()` + `parse()`. |
 | Reader (dispatcher) | `src/main/pty/readers/session-history-reader.ts` | Generic file watching, cursor tracking, parse dispatch. Owns all session-history-specific runtime logic. |
-| Consumer primitives | `src/main/pty/activity/session-telemetry.ts` | Generic primitives (`setSessionUsage`, `ingestEvents`, `forceActivity`, `notifyPtyData`, `processStatusUpdate`, `captureHookSessionIds`) — no telemetry-source-specific vocabulary. |
+| Consumer primitives | `src/main/pty/activity/session-telemetry.ts` | Generic primitives (`setSessionUsage`, `ingestEvents`, `forceActivity`, `notifyPtyData`, `processStatusUpdate`, `captureHookSessionIds`) - no telemetry-source-specific vocabulary. |
 | Session lifecycle | `src/main/pty/session-manager.ts` | Calls `reader.attach()` on agent-session-id capture, `reader.detach()` on removal. Composes both telemetry readers symmetrically. Knows nothing else about session history. |
 
 **Symmetric pipeline**: `StatusFileReader` (`src/main/pty/readers/status-file-reader.ts`) handles Claude's hook-based telemetry (status.json + events.jsonl) using the exact same pattern. Both readers own their own `FileWatcher` instances and dispatch through generic `SessionTelemetry` primitives. Neither reader mentions a specific agent name. See the "Claude status-file pipeline" section below for details.
@@ -36,7 +36,7 @@ Runtime flow:
 
 The PtyActivityTracker keeps running in parallel until suppressed, so the boot window (before the history file materializes) is still covered by the existing spinner + silence-timer mechanism.
 
-**SessionTelemetry has zero session-history awareness.** Its generic primitives (`ingestEvents`, `forceActivity`, plus the existing `setSessionUsage`) are useful for any telemetry source — session history is just one caller. A future hypothetical telemetry source (WebSocket stream, API poll, etc.) would use the same primitives without any SessionTelemetry changes.
+**SessionTelemetry has zero session-history awareness.** Its generic primitives (`ingestEvents`, `forceActivity`, plus the existing `setSessionUsage`) are useful for any telemetry source - session history is just one caller. A future hypothetical telemetry source (WebSocket stream, API poll, etc.) would use the same primitives without any SessionTelemetry changes.
 
 ### `SessionHistoryParseResult`
 
@@ -48,7 +48,7 @@ The PtyActivityTracker keeps running in parallel until suppressed, so the boot w
 | `events` | `SessionEvent[]` | New events to append to the session event log. Empty array when there are none. The reader pushes them through `SessionTelemetry.ingestEvents`, which runs each event through the activity engine plus the per-event detectors (PTY suppression, ExitPlanMode, PR command). |
 | `activity` | `Activity \| null` | Explicit activity transition hint (`Activity.Thinking`, `Activity.Idle`, or `null`). Set when a log entry maps directly to a state change (e.g. Codex `task_started` → `Thinking`, `task_complete` → `Idle`) rather than relying on the event stream alone. Null when events alone imply the transition. |
 
-All three fields are optional in the sense that any combination is valid — parsers can return partial results (e.g. a token-only update yields `usage` populated and `events: []`).
+All three fields are optional in the sense that any combination is valid - parsers can return partial results (e.g. a token-only update yields `usage` populated and `events: []`).
 
 ## Key design principles
 

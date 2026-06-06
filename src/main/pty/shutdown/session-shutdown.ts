@@ -118,8 +118,8 @@ export async function suspendAllSessions<S extends ShutdownSession>(
  * `before-quit` handler, which cannot await. If it ever does, the
  * main process stays alive while Chromium child processes (GPU,
  * utility, crashpad) survive as zombies - on Windows installed
- * builds this also causes the app to auto-reopen. See the
- * "Shutdown (CRITICAL)" section in CLAUDE.md.
+ * builds this also causes the app to auto-reopen. See
+ * .claude/rules/synchronous-shutdown.md.
  *
  * Best-effort graceful exit: each PTY gets the exit sequence written
  * to it before kill() lands. The write buffer may or may not flush

@@ -290,16 +290,19 @@ const gapVerdictSchema = { type: "object", required: ["worthTesting", "confidenc
 // Inputs the driver passes in: diffText, changedFiles[], testResults, writeMode (bool)
 phase("audit");
 const TIERS = ["Unit", "UI", "E2E"];
+// Model selection (see "## Rules"): auditors, skeptics, and the writer run on Sonnet, not
+// the session's top-tier model. Test authoring and gap judgment are well within Sonnet's
+// range; the saving compounds across per-tier auditors plus one skeptic per gap.
 const audits = await parallel(TIERS.map((tier) => () =>
   agent(auditPromptForTier(tier, diffText, changedFiles), {
-    label: `audit:${tier}`, phase: "audit", agentType: "test-builder", schema: gapsSchema,
+    label: `audit:${tier}`, phase: "audit", agentType: "test-builder", model: "sonnet", schema: gapsSchema,
   })
 ));
 const rawGaps = dedupeGaps(audits.filter(Boolean).flatMap((a) => a.gaps));  // barrier: needs all audits
 
 phase("verify");  // one skeptic per gap; DEFAULTS to "not worth it" when uncertain
 const verified = await parallel(rawGaps.map((g) => async () => {
-  const v = await agent(gapSkepticPrompt(g, diffText), { label: "verify", phase: "verify", schema: gapVerdictSchema });
+  const v = await agent(gapSkepticPrompt(g, diffText), { label: "verify", phase: "verify", model: "sonnet", schema: gapVerdictSchema });
   if (!v || !v.worthTesting) return null;
   if (v.confidence === "low") return null;
   return g;
@@ -310,7 +313,7 @@ if (!writeMode) return { gaps };   // /test audit + Smart Run Step 5 stop here
 
 phase("write");  // SERIAL through one test-builder: owns shared-file edits, red-green, suite validation
 const writeReport = await agent(writePrompt(gaps, diffText), {
-  label: "write", phase: "write", agentType: "test-builder",
+  label: "write", phase: "write", agentType: "test-builder", model: "sonnet",
 });
 return { gaps, writeReport };
 ```
@@ -444,6 +447,7 @@ When `broadenOnUnmapped` fires repeatedly for the same source path, that's the s
 
 ## Rules
 
+- **Model selection.** The `test-builder` agent and the Heavy Path fan-out run on **Sonnet** (`model: sonnet` in `.claude/agents/test-builder.md` frontmatter and in the workflow `agent()` calls), not the session's top-tier model. Test authoring, gap auditing, and the skeptic verification are well within Sonnet's range, and the saving compounds across per-tier auditors plus one skeptic per gap. Run `/test` at medium reasoning effort. Test **execution** is model-independent. For a no-expense-spared pass on genuinely hard test design, override the spawn with `model: opus`.
 - **Test implementation is delegated to the `test-builder` agent.** This skill runs tests and presents results. It does not write tests inline. The only exception is trivial, single-line additions to *existing* passing tests (e.g. an extra `expect` assertion in a stable spec). Any new file, new describe block, or >3-line change MUST go through the agent so the tier rules, anti-flake patterns, and 10-second gate are applied consistently.
 - **Coverage gap analysis is delegated to the `test-builder` agent.** In Smart Run Step 5 and in `/test audit` mode, the skill's job is to gather git diff context and pass it to the agent. The skill does not duplicate the agent's tier decision tree.
 - **No chained commands.** Do not use `&&`, `||`, `|`, `;`, or stderr redirection. Each command runs in its own Bash tool call.

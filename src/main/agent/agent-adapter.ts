@@ -6,7 +6,6 @@ import type {
   SessionContext,
   SessionAttachment,
   AgentLiveTelemetryUnsupported,
-  SubmissionContext,
   SubmissionContextType,
   SubmissionVerifier,
   AgentCapabilities,

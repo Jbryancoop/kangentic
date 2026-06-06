@@ -20,6 +20,10 @@ export default tseslint.config(
     rules: {
       // TypeScript strict
       '@typescript-eslint/no-explicit-any': 'error',
+      // Terminal/PTY/ANSI parsers legitimately match control chars (\x1b, \x07, ...) in
+      // regexes. no-control-regex targets accidental control chars; here they are
+      // intentional, so it is off for the TypeScript source and tests.
+      'no-control-regex': 'off',
       '@typescript-eslint/no-unused-vars': ['error', {
         argsIgnorePattern: '^_',
         varsIgnorePattern: '^_',
@@ -48,6 +52,13 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
       'no-undef': 'off',
+    },
+  },
+  {
+    // ESM plugin files injected into agent CLIs; they run in Node.
+    files: ['src/main/agent/**/*.mjs'],
+    languageOptions: {
+      globals: { ...globals.node },
     },
   },
 );

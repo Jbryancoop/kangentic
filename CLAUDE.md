@@ -2,45 +2,6 @@
 
 Cross-platform desktop Kanban for Claude Code agents.
 
-## CRITICAL: Single-Command Bash Calls Only
-
-**THIS IS THE #1 RULE. Every Bash tool call MUST contain exactly ONE command.**
-
-Claude Code does not support chained, piped, or redirected-stderr commands. Violations **will** produce errors or silent data loss.
-
-**Forbidden operators:** `&&`, `||`, `|`, `;`, `2>/dev/null`, `2>&1`
-
-**Forbidden patterns — NEVER do this:**
-```
-cd /some/path && git status          # WRONG — chained commands
-git diff | head -20                  # WRONG — pipe
-npm run build && npm test            # WRONG — chained commands
-cat file.json | grep "key"          # WRONG — pipe
-find . -name "*.ts" -type f         # WRONG — use Glob tool instead
-find /path -name "types.ts" | head  # WRONG — pipe + find
-command1 ; command2                  # WRONG — semicolon
-some-command 2>/dev/null            # WRONG — stderr redirection
-```
-
-**ALWAYS use dedicated tools instead of shell commands:**
-- **`Read`** tool (with `offset`/`limit`) — replaces `cat`, `head`, `tail`, `less`
-- **`Grep`** tool — replaces `grep`, `rg`, and piping into `grep`
-- **`Glob`** tool — replaces `find`, `ls` for file discovery
-- **`Write`** tool — replaces `echo` redirection, `cat <<EOF`
-- **Bash `timeout` parameter** — replaces `sleep`
-- Run commands separately in individual Bash tool calls — replaces `&&`, `;`, `||`
-
-**Correct alternatives:**
-```
-git -C /some/path status             # CORRECT — git -C for git commands in other dirs
-git -C /some/path log --oneline -5   # CORRECT — never cd && git
-npm run typecheck                    # CORRECT — run from cwd, or use --prefix
-```
-
-**Git specifically: ALWAYS use `git -C <path>` instead of `cd <path> && git ...`.** The `cd && git` pattern triggers a Claude Code security prompt that cannot be bypassed. `git -C` is the only correct way to run git in another directory.
-
-**This rule applies everywhere: main sessions, subagents, worktree agents, commands, and skills. No exceptions.**
-
 ## Tech Stack
 
 - **Runtime:** Electron 41 + Node 24
@@ -56,7 +17,7 @@ npm run typecheck                    # CORRECT — run from cwd, or use --prefix
 build/            # Platform-specific signing & entitlement files
 config/           # Vite configs (renderer, used by scripts/dev.js)
 packages/
-  launcher/       # Public npm package ("kangentic") -- thin npx installer
+  launcher/       # Public npm package ("kangentic") - thin npx installer
     bin/          # kangentic.js launcher script
 src/
   main/           # Electron main process
@@ -86,14 +47,17 @@ scripts/          # Build and dev scripts
 
 ## Commands
 
-- `npm start` — Start in development mode (Vite HMR + esbuild watch)
-- `npm run build` — Production build to `.vite/build/`
-- `npm test` — Run all Playwright E2E tests
+- `npm start` - Start in development mode (Vite HMR + esbuild watch)
+- `npm run build` - Production build to `.vite/build/`
+- `npm test` - Run all Playwright E2E tests
 
-- `npm run package` — Package for distribution (unpacked directory)
-- `npm run make` — Build installer (NSIS on Windows, DMG on macOS, deb/rpm on Linux)
+- `npm run package` - Package for distribution (unpacked directory)
+- `npm run make` - Build installer (NSIS on Windows, DMG on macOS, deb/rpm on Linux)
 
-**Worktrees need `npm install`:** Git worktrees do not share `node_modules/` with the main repo. Always run `npm install` in a worktree before running any npm scripts (`npm run typecheck`, `npm run build`, `npx playwright test`, etc.). Without it, binaries like `tsc` won't be found.
+**Worktrees need `npm install`:** Git worktrees do not share `node_modules/` with the main
+repo. Always run `npm install` in a worktree before running any npm scripts (`npm run
+typecheck`, `npm run build`, `npx playwright test`, etc.). Without it, binaries like `tsc`
+won't be found.
 
 ## Architecture
 
@@ -105,102 +69,57 @@ scripts/          # Build and dev scripts
 5. Terminal output streams to renderer via IPC
 
 ### Key Patterns
-- **IPC channels** defined in `src/shared/ipc-channels.ts` — single source of truth
-- **Stores** use Zustand with IPC bridge: renderer store calls `window.electronAPI.*`, main process handles via `ipcMain.handle`
-- **Icons** use Lucide React — no inline SVGs
-- **PTY sessions** handle cross-platform shells (PowerShell needs `& ` prefix, WSL splits into exe + args, fish/nushell skip `--login`)
-- **Claude CLI** is invoked with `cwd` set to the project directory (or worktree path) so that `.claude/`, `CLAUDE.md`, and commands are loaded into context
-- **HMR / dev-mode parity** - The team dogfoods Kangentic from `npm start` daily, so dev mode must be visually and behaviourally indistinguishable from a production boot. See the "HMR patterns" subsection below for the four primitives and which one to reach for when adding a feature.
-- **Command Terminal** - Ctrl+Shift+P opens an ephemeral "transient" session with no DB persistence. The `transientSessions` map in `session-store.ts` tracks per-project transient sessions (keyed by project ID). Unlike task-bound sessions, transient sessions are NOT restored by `syncSessions()` - they rely entirely on the in-memory map. The map is preserved across HMR via `import.meta.hot.data`. Closing the overlay keeps the PTY alive in the background; reopening reattaches to the existing session. Project switching stashes/restores transient session pointers.
-- **Settings tab separator** — In `AppSettingsPanel`, tabs above the `separator: true` marker are per-project settings (saved to `.kangentic/config.json`). Tabs below the separator (Behavior, Notifications, Privacy) are shared settings that apply across all projects (saved to global config). When a project is open, all 7 tabs are shown. When no project is selected, only the 3 shared tabs appear. There is no Global/Project scope toggle. When adding new settings, decide if they are per-project or shared and place the tab accordingly.
-
-### HMR patterns (CRITICAL for dev-mode parity)
-
-The team uses Kangentic itself while building it, so a Vite Fast Refresh during a real session must not regress UX. Four primitives cover every HMR-sensitive surface; mixing them up causes flaky behaviour that only surfaces in dev, which is exactly the failure mode this project cannot tolerate. When adding a feature, pick the right pattern up front rather than reaching for ad-hoc fixes later.
-
-| Pattern | When to reach for it | How to apply | Example sites |
-|---|---|---|---|
-| **A. Preserve** | Module-scope state (timers, AbortControllers, caches, counters, scroll positions) that must survive a module reload | `let x = import.meta.hot?.data?.x ?? <default>;` plus `import.meta.hot?.dispose((d) => { d.x = x; })` | `task-slice.ts` (`moveGeneration`), `session-store.ts` (`syncController`, transient sessions), `useTerminal.ts` (`savedScrollPositions`), `toast-store.ts` (`toasts`), `hmr-generation.ts` (`generation`), `auto-name-scheduler.ts` (timer maps) |
-| **B. Re-sync** | Zustand stores whose truth lives in the main process (IPC-backed) | Add a `load*` / `sync*` call to the `vite:afterUpdate` handler in `App.tsx`. Enforced by `tests/unit/hmr-resync.test.ts` | `loadBoard()`, `loadBacklog()`, `loadConfig()`, `loadProjects()`, `syncSessions()` |
-| **C. Re-key remount** | Stateful third-party React subtrees whose internal subscriptions go stale across Fast Refresh (currently: every `<DndContext>`) | `const hmrGeneration = useHmrGeneration();` then `<DndContext key={hmrGeneration}>`. Enforced by `tests/unit/hmr-resync.test.ts` | All 5 `<DndContext>` sites: `KanbanBoard`, `BacklogView`, `PrioritiesPopover`, `ProjectSidebar`, `ShortcutsTab` |
-| **D. Cleanup** | Imperative DOM/global state no React component owns (e.g. classes toggled via `querySelector`) | Add the clear to the top of the `vite:afterUpdate` handler | `.drop-highlight` class removal in `App.tsx` |
-
-**Picking the pattern (decision tree):**
-
-1. Are you adding a new IPC-backed Zustand store, or a new `load*` / `sync*` method on an existing one? → **Pattern B**: add a call in `App.tsx`'s `vite:afterUpdate` handler. `hmr-resync.test.ts` will fail until you do.
-2. Are you adding a new `<DndContext>` or other React component that wraps a third-party library with internal subscription state? → **Pattern C**: pair it with `useHmrGeneration()` and `key={hmrGeneration}`. The HMR enforcement test will catch a missing key.
-3. Are you adding module-scope `let`/`const` mutable state (Maps, Sets, AbortControllers, counters) under `src/renderer/stores/` or `src/renderer/utils/`? → **Pattern A**: preserve it via `import.meta.hot.data`, or annotate the declaration with `// hmr-safe: <reason>` if reset-on-HMR is intentional. `hmr-resync.test.ts` enforces one or the other.
-4. Are you imperatively setting a class, attribute, or global handle that React won't tear down? → **Pattern D**: add the clear to the existing `vite:afterUpdate` handler.
-
-**Anti-patterns:**
-
-- Don't combine A and C on the same state. Either preserve it across HMR (A) or accept that the component remounts and re-derives it (C).
-- Don't add a fifth ad-hoc HMR workaround. If something doesn't fit A/B/C/D, that's a signal to surface the gap and extend the catalog deliberately, not to add a one-off.
-- Don't gate Pattern A behind `process.env.NODE_ENV` checks. `import.meta.hot` is `undefined` in production builds, so the guards already collapse to no-ops.
-
-**Verification:** the `hmr-parity` agent (`.claude/agents/hmr-parity.md`) audits this catalog after changes that touch HMR-sensitive surfaces. Run it during code review for any feature that adds stores, DndContext sites, module-scope state, or imperative DOM mutation.
-
-### Shutdown (CRITICAL)
-
-The `before-quit` handler in `src/main/index.ts` **must be fully synchronous**. Never use `event.preventDefault()` + async shutdown + `process.exit()`. That pattern cancels Electron's normal quit flow, which means Electron never reaches its own cleanup -- all Chromium child processes (GPU, utility, crashpad) survive as zombies. If the async chain stalls for any reason (network call, PTY wait, uncaught error), the main process also survives, and on Windows installed builds the app can auto-reopen.
-
-The correct pattern:
-1. Do all cleanup synchronously in `before-quit` (mark DB records, kill PTYs, close DBs)
-2. **Do not** call `event.preventDefault()` -- let Electron's normal quit proceed
-3. Fire-and-forget analytics (never await network calls during shutdown)
-4. Set a hard failsafe timer (`taskkill /T /F` on Windows) as a backstop
-
-This means we lose the 2-second graceful Claude CLI exit window (`suspendAll`). Sessions are still resumable because the DB records are marked `suspended` before PTYs are killed, and `--resume <id>` works from the saved session ID.
+- **IPC channels** defined in `src/shared/ipc-channels.ts` - single source of truth. Wiring an
+  endpoint through all 7 layers: see `.claude/rules/ipc-7-layer-parity.md`.
+- **Stores** use Zustand with IPC bridge: renderer store calls `window.electronAPI.*`, main
+  process handles via `ipcMain.handle`
+- **PTY sessions** handle cross-platform shells (PowerShell needs `& ` prefix, WSL splits into
+  exe + args, fish/nushell skip `--login`)
+- **Claude CLI** is invoked with `cwd` set to the project directory (or worktree path) so that
+  `.claude/`, `CLAUDE.md`, and commands are loaded into context
+- **HMR / dev-mode parity** - The team dogfoods Kangentic from `npm start` daily, so dev mode
+  must be visually and behaviourally indistinguishable from a production boot. Patterns A
+  through D and their enforcement: `.claude/rules/hmr-patterns.md`.
+- **Command Terminal** - Ctrl+Shift+P opens an ephemeral "transient" session with no DB
+  persistence. The `transientSessions` map in `session-store.ts` tracks per-project transient
+  sessions (keyed by project ID). Unlike task-bound sessions, transient sessions are NOT
+  restored by `syncSessions()`; they rely entirely on the in-memory map. The map is preserved
+  across HMR via `import.meta.hot.data`. Closing the overlay keeps the PTY alive in the
+  background; reopening reattaches to the existing session. Project switching stashes/restores
+  transient session pointers.
+- **Settings tab separator** - In `AppSettingsPanel`, tabs above the `separator: true` marker
+  are per-project settings (saved to `.kangentic/config.json`). Tabs below the separator
+  (Behavior, Notifications, Privacy) are shared settings that apply across all projects (saved
+  to global config). When a project is open, all 7 tabs are shown. When no project is selected,
+  only the 3 shared tabs appear. There is no Global/Project scope toggle. When adding new
+  settings, decide if they are per-project or shared and place the tab accordingly.
 
 ### Per-Project Directory
-All runtime data lives under `<project>/.kangentic/` (auto-added to `.gitignore` on project open):
-- `config.json` — project config overrides
-- `sessions/<claudeSessionId>/` — per-session files (`settings.json`, `status.json`, `activity.json`)
-- `worktrees/<slug>/` — git worktree checkouts
+All runtime data lives under `<project>/.kangentic/` (auto-added to `.gitignore` on project
+open):
+- `config.json` - project config overrides
+- `sessions/<claudeSessionId>/` - per-session files (`settings.json`, `status.json`, `activity.json`)
+- `worktrees/<slug>/` - git worktree checkouts
 
 ### Database
-- Global DB (`<configDir>/index.db`) for projects list — configDir is `%APPDATA%/kangentic/` (Win), `~/Library/Application Support/kangentic/` (Mac), `~/.config/kangentic/` (Linux)
+- Global DB (`<configDir>/index.db`) for projects list. configDir is `%APPDATA%/kangentic/`
+  (Win), `~/Library/Application Support/kangentic/` (Mac), `~/.config/kangentic/` (Linux)
 - Per-project DB (`<configDir>/projects/<projectId>.db`) for tasks, swimlanes, actions, sessions
 - Migrations run automatically on open
-- **Timestamps are stored as UTC ISO 8601 strings** (`TEXT` columns like `created_at`, `updated_at`, `archived_at`, `started_at`, `exited_at`). Always write via `new Date().toISOString()` - never use SQLite's `DEFAULT CURRENT_TIMESTAMP` (emits `YYYY-MM-DD HH:MM:SS` with no `Z` suffix; JS parses that as local time, not UTC) or naive strings like `new Date().toString()`. Display formatting is the renderer's job (`src/renderer/lib/datetime.ts`) - the DB only holds UTC instants.
+- **Timestamps** are UTC ISO 8601 strings written via `new Date().toISOString()` (never SQLite
+  `DEFAULT CURRENT_TIMESTAMP` or naive strings). Display formatting is the renderer's job
+  (`src/renderer/lib/datetime.ts`). See `.claude/rules/utc-timestamps.md`.
 
 ### Testing
 
-Three test tiers — prefer **unit tests** for pure logic, **UI tests** for anything that doesn't need the real Electron backend.
-
-#### Unit tests (`tests/unit/`) — fast, no browser
-- Run with `npm run test:unit` (vitest)
-- Covers: event-bridge script, hook-manager inject/strip logic, session suspend state
-- No build step, no browser — runs directly against source
-
-#### UI tests (`tests/ui/`) — headless, fast, no windows
-- Run with `npx playwright test --project=ui`
-- Uses headless Chromium against the Vite dev server (auto-started by Playwright)
-- `mock-electron-api.js` injects a full in-memory mock of `window.electronAPI` via `addInitScript()`
-- Covers: app launch, project CRUD, task CRUD, drag-and-drop, column management
-- No build step needed — runs against Vite HMR directly
-- ~13 seconds for 72 tests
-
-#### E2E tests (`tests/e2e/`) — real Electron, opens windows
-- Run with `npx playwright test --project=electron`
-- Uses Playwright's `_electron.launch()` — always opens a real window on Windows (no headless mode)
-- Required for: PTY sessions, terminal rendering, session lifecycle, config persistence, shell detection
-- Build required first: `npm run build`
-- Shell-parameterized tests run for all detected terminals (WSL, PowerShell, bash, cmd, etc.)
-
-#### Run both
-- `npx playwright test` runs UI + Electron projects
-- `npx playwright test --project=ui` for quick headless-only validation
-
-#### Adding new tests
-- Pure logic (parsers, filters, state machines) → add to `tests/unit/`
-- Pure UI interactions (clicks, forms, dialogs, drag-and-drop) → add to `tests/ui/`
-- Needs real IPC, PTY, or session spawning → add to `tests/e2e/`
-- The mock in `tests/ui/mock-electron-api.js` supports full CRUD — extend it if new API methods are added
+Three test tiers (unit / UI / E2E). Setup, commands, the headless mock, and tier-selection
+guidance live in [docs/developer-guide.md](docs/developer-guide.md). The scoped-run discipline
+below is the part that must stay in context.
 
 #### When to test
 
-Full-tier runs are reserved for the `/test` command or explicit user request. While working on a task, stay scoped to what you changed.
+Full-tier runs are reserved for the `/test` command or explicit user request. While working on
+a task, stay scoped to what you changed.
 
 **Always fine:**
 - `npm run typecheck` - run freely at any point.
@@ -215,69 +134,88 @@ Full-tier runs are reserved for the `/test` command or explicit user request. Wh
 - `npx vitest run` (no file path)
 - `npx playwright test` and `npx playwright test --project=ui` (no spec path)
 
-If a run would execute tests you did not add or modify, it is a full-tier run. Stop and let `/test` handle it.
+If a run would execute tests you did not add or modify, it is a full-tier run. Stop and let
+`/test` handle it.
 
-**Pre-commit:** `/merge-back` runs typecheck automatically. Full-tier validation is the `/test` command's job.
-
-### Auto-Name Tasks from Prompt
-
-Always-on feature that suggests task titles from the description. Two surfaces:
-
-- **`<NameFromPromptButton>`** in `src/renderer/components/NameFromPromptButton.tsx` - square Sparkles icon button placed alongside the title input (NOT inside it). Reusable; exposes a `useNameFromPromptAvailable(description)` hook. Used by `NewTaskDialog` and `TaskDetailEditForm`. Visibility gated on: project's default agent has `supportsSummarize`, the agent CLI is detected, and description is non-empty.
-- **30-second rename toast** wired in `App.tsx` - fires once per task per app run for placeholder-titled tasks (`fix`, `wip`, etc., or empty). Persisted via `AppConfig.autoNameAskedTaskIds` (drained on task delete) so a dismissed suggestion does not re-appear after restart.
-
-The capability is exposed by adapters via the optional `summarize?(prompt, cliPath, cwd)` method on `AgentAdapter`. Implementations live next to each adapter and use the shared `runCliPrintSummarize` helper in `src/main/agent/shared/auto-name.ts`. Capability matrix:
-
-| Agent | Invocation | Prompt delivery |
-|---|---|---|
-| Claude | `claude --print --permission-mode plan` | stdin |
-| Codex | `codex exec --skip-git-repo-check` | stdin |
-| Gemini | `gemini --output-format text` | stdin (non-TTY headless) |
-| Qwen Code | `qwen --output-format text` | stdin (non-TTY headless) |
-| OpenCode | `opencode run -q` | stdin |
-| Kimi | `kimi --print --quiet` | stdin |
-| Cursor | `agent --output-format text -p "<prompt>"` | positional arg |
-| Droid | `droid exec -o text "<prompt>"` | positional arg |
-| Copilot | `copilot --silent -p "<prompt>"` | positional arg |
-| Aider, Warp | (no clean plain-text headless mode yet) | n/a |
-
-Adapters that omit `summarize` are gated out automatically: the renderer hides the button and never schedules the 30s toast.
-
-**Production knobs:**
-- `AppConfig.autoNameAskedTaskIds: string[]` - persisted "don't re-ask" set, drained when a task is deleted (single + bulk delete in `task-crud.ts`)
-- `AppConfig.autoNameRateLimitPerHour: number` (default 60, 0 disables) - sliding-window cap on summarize CLI calls per hour, enforced in the IPC handler
-
-**Verification:** `node scripts/probe-summarize.js` runs each detected adapter's `summarize()` against a sample description and reports success/timeout/format issues. Run after installing or upgrading any agent CLI to verify Kangentic's invocation still produces a sane title.
-
-**Adding a new adapter's summarize:** import `runCliPrintSummarize` and `buildSummarizePrompt` from `../../shared/auto-name`, then add a `summarize()` method that picks the right `args`, `promptVia`, and (if needed) `extractRaw`. Mirror the pattern in `tests/unit/agent-summarize-shape.test.ts`. Update `tests/ui/mock-electron-api.js` to set `supportsSummarize: true` on the agent's mock entry.
+**Pre-commit:** `/merge-back` runs typecheck and lint automatically. Full-tier validation is the
+`/test` command's job.
 
 ### Performance
 
-- **Terminal ownership handoff:** Each PTY session spawns exactly one Claude Code CLI process. The bottom panel and task detail dialog share that single process but never render simultaneously — when the dialog opens, it claims the session via `dialogSessionId` and the panel unmounts its xterm instance. On close, the panel recreates its xterm from the PTY scrollback buffer. This prevents duplicate xterm instances from sending conflicting resize calls (different container widths garble TUI output) and ensures one CLI process per task regardless of which view is active.
-- **Activity log replaces aggregate terminal:** The "Activity" tab shows structured events (tool calls, idle state) from Claude Code hooks instead of raw terminal output. Uses a plain DOM list — no xterm/WebGL overhead. Events flow: hook → event-bridge.js → JSONL file → fs.watch → IPC → Zustand store → ActivityLog component.
-- **WebGL renderer:** xterm instances attempt WebGL acceleration first, with automatic fallback to canvas on context loss or unavailability.
-- **Resize debouncing:** PTY resize calls are debounced (200ms) and suppressed entirely during panel drag operations to prevent scrollback eviction from rapid row-count changes.
+Terminal ownership handoff (one xterm per session, enforced via `dialogSessionId`), the
+activity-log event pipeline (hook -> event-bridge.js -> JSONL -> store, replacing an aggregate
+terminal), WebGL rendering with automatic canvas fallback, and 200ms PTY resize debouncing.
+Details: [docs/session-lifecycle.md](docs/session-lifecycle.md) and
+[docs/architecture.md](docs/architecture.md).
 
 ## Conventions
 
-- TypeScript strict mode
-- Prefer editing existing files over creating new ones
-- Use `data-testid` and `data-swimlane-name` attributes for test selectors
-- All dialogs use global `useEffect` Escape key listener
-- When adding or updating tests, use the `/test` command to ensure correct tier classification
-- **No `any` types** — never use `any` in new code. Use proper types from `src/shared/types.ts`, `unknown` with type guards, or generic constraints. The `/code-review` command will flag `any` usage. Existing `any` casts should be replaced when touching the file.
-- **Git commit/push workflow:** When asked to "commit and push", "commit changes", or similar — use `/merge-back`. It handles commit, typecheck, rebase, and push safely. Works from both worktrees and the main repo. Use `/pull-request` instead when a PR audit trail is desired — it shares the same commit/rebase flow but creates a PR and admin-merges it instead of pushing directly.
-- **No shorthand variable names** — use full, descriptive names. `currentIndex` not `curIdx`, `previousValue` not `prev`, `session` not `sess`. Applies to all code: variables, refs, parameters, callback args, etc.
-- **No em-dashes or double-dashes** — never use em-dashes (U+2014), `&mdash;`, or `--` as sentence or list separators. Use a single dash `-` for inline separators (e.g. `**Bold** - description`) or restructure with periods. Em-dashes render as garbled characters on Windows console code pages; double-dashes look awkward in UI text. Applies to source code, comments, tests, docs, scripts, and JSX.
-- **Confirmation dialogs:** Use `ConfirmDialog` for all yes/no prompts. Set `showDontAskAgain` when the confirmation should be suppressible. Never create one-off modal components for simple confirmations.
-- **Per-task lifecycle locks:** Any IPC handler or helper that crosses an `await` boundary AND mutates per-task state (`task.session_id`, PTY sessions via `sessionManager.spawn`/`kill`/`suspend`, worktrees via `ensureTaskWorktree`/`cleanupTaskResources`, or calls `spawnAgent`/`autoSpawnForTask`) MUST wrap its async region in `withTaskLock(taskId, async () => { ... })` from `src/main/ipc/task-lifecycle-lock.ts`. This serializes concurrent operations on the same task while leaving different tasks fully parallel. Two rules: (1) cancellation (`AbortController.abort()`) goes OUTSIDE the lock so the in-flight holder can observe its abort and release; (2) the lock is NOT reentrant - never call another `withTaskLock` for the same `taskId` from inside a locked block. Pure read-only handlers and synchronous-only paths do not need the lock - if you never `await`, you cannot race. See the JSDoc on `withTaskLock` and existing usage in `handlers/sessions.ts` for the canonical pattern. Contract is locked in by `tests/unit/task-lifecycle-lock.test.ts`.
-- **Documentation maintenance:** `/sync-docs` reviews and updates `docs/` to match source code. Runs automatically during `/merge-back`. See `.claude/skills/sync-docs/SKILL.md` for the source-to-doc mapping.
+Enforceable standards live as focused, auto-loaded rules in `.claude/rules/`. Claude Code loads
+them into context the way it loads this file: rules without a `paths:` header load every
+session; rules with one load when you touch matching files. Each rule names its enforcement (a
+`tests/unit/` test that runs in CI, and/or an auditor agent invoked during `/code-review`).
 
-### Skill context: when to fork
+**Always-on rules:**
+- `bash-single-command.md` - one command per Bash tool call; no `&&` `||` `|` `;` or redirects.
+- `text-formatting.md` - no em-dashes (U+2014) or `--` as punctuation in authored text.
+- `typescript-style.md` - TypeScript strict mode; no `any` types; full descriptive names.
+- `no-personal-info.md` - no usernames, emails, or machine paths in committed code (repo is public).
 
-Claude Code's `context: fork` skill-frontmatter field runs a skill in an isolated subagent: it gets no prior conversation history, receives its SKILL.md as the prompt, and returns only a final summary to the main loop. This gives fresh, unbiased context and keeps heavy intermediate output out of the main session. Use it deliberately:
+**Path-scoped rules (load with their subsystem):**
+- `task-lifecycle-lock.md` - wrap per-task async mutation in `withTaskLock` (`src/main/ipc/`).
+- `hmr-patterns.md` - dev-mode HMR parity patterns A through D (`src/renderer/`).
+- `ui-conventions.md` - shared UI primitives, selectors, font floor, no hover-only controls (`src/renderer/`).
+- `synchronous-shutdown.md` - the `before-quit` path must be synchronous (`src/main/` shutdown).
+- `utc-timestamps.md` - DB writes use `new Date().toISOString()` (`src/main/db/`).
+- `ipc-7-layer-parity.md` - wire an IPC endpoint through all 7 layers.
+- `esbuild-cjs-imports.md` - ES `import`, not bare `require()`, in bundled main/preload code.
+- `agent-adapters-boundary.md` - no agent-name branching outside `src/main/agent/adapters/`.
+- `cli-features-over-custom-layers.md` - do not shadow an agent CLI's native controls (`src/main/agent/`).
+- `dev-tooling-build-exclusion.md` - dev tooling build-excluded via `__KANGENTIC_DEV__` (`src/devtools/`).
+- `docs-stay-in-sync.md` - update docs when changing anchor source files (types, IPC, migrations, adapters, settings).
+- `skill-authoring.md` - when to fork a skill and how to route agents (`.claude/`).
+- `board-config-parity.md` - team-shared swimlane fields must round-trip to `kangentic.json`.
 
-- **Fork** (`context: fork`, no `agent:` so it routes to the default general-purpose agent) when ALL hold: the skill is self-contained (derives everything from git, files, and args), produces heavy or noisy intermediate output, benefits from fresh/unbiased context, ends in a digestible summary, and has no mid-run user gate. No skill currently forks: `code-review` previously did, but moved to a main-loop driver + delegation when it gained the size-gated `Workflow` path (a forked driver calling `Workflow` would nest subagents - see the "Do NOT fork" rule below). Its fresh-context independence is preserved by delegating the review judgment to fresh subagents instead.
-- **Do NOT fork** when ANY hold: the skill is a gated, mutating workflow (commit, rebase, push, tag, admin-merge) that needs main-loop visibility and confirmations; it is a knowledge-injection skill whose whole purpose is to enrich the MAIN context (`session-lifecycle`, `cross-platform`, `ipc-bridge`); it is active implementation tied to the current conversation; or it already delegates heavy work to a subagent (forking the driver risks subagent nesting, which is undocumented). `test` and `sync-docs` stay inline for this reason.
-- **Active-implementation skills** verify by auto-spawning their auditor agent (delegation), not by forking. Example targets: `add-ipc-endpoint` to `ipc-auditor`, `add-migration` to `migration-safety`, and `code-review` to its dimension auditors (`ipc-auditor`, `hmr-parity`, `platform-guard`, `session-debugger`, `migration-safety`) via the in-session `Workflow` orchestrator on large diffs. `test` delegates likewise (`test-builder`), fanning out per-tier coverage auditors via `Workflow` on sprawling changes.
-- **Never route a fixing or mutating skill to `agent: Explore` or `agent: Plan`** - those built-in agents are read-only and skip CLAUDE.md, so they would drop our conventions (single-command Bash, no em-dashes, no `any`). The default general-purpose fork loads CLAUDE.md and keeps the skill's `allowed-tools`.
+**Local overrides:** there is no per-rule local file. Put machine-specific instruction
+overrides in a gitignored `CLAUDE.local.md` at the project root.
+
+**Other conventions (workflow, not extracted to rules):**
+- Prefer editing existing files over creating new ones.
+- When adding or updating tests, use the `/test` command to ensure correct tier classification.
+- Git commit/push goes through `/merge-back` (or `/pull-request` when a PR audit trail is
+  wanted). It handles commit, typecheck, rebase, and push from both worktrees and the main repo.
+- `/sync-docs` keeps `docs/` aligned with source and runs during `/merge-back`.
+
+### Authoring a rule
+
+When you codify a new convention, add it as a `.claude/rules/*.md` file following the existing
+ones (e.g. `board-config-parity.md`):
+
+1. **One concern per file**, with a descriptive kebab-case filename.
+2. **Decide loading, and keep always-on rules few.** Always-on rules (no frontmatter) load every
+   session and cost context every session, so reserve them for universal, file-independent
+   conventions (tool use, house style, security). Everything subsystem-specific gets `paths:`
+   frontmatter so it loads only when a matching file enters context. We run ~4 always-on; treat
+   that as a soft ceiling.
+3. **Mind the read-trigger gap.** A path-scoped rule loads when a matching file is *read into
+   context*, not when Claude *creates* a new file in that path. So (a) any convention that must
+   hold at file-creation time (universal style, security) belongs in an always-on rule, a lint
+   rule, or a hook, never path-scoped-only; and (b) every path-scoped rule should have a CI
+   backstop (a `tests/unit/` test, an ESLint rule, or a review-time auditor agent) so a missed
+   load is still caught.
+4. **Structure:** a one-paragraph context (the problem / the bug it prevents), `## The rule`
+   (prescriptive), `## Enforcement (self-maintaining)`, and `## Scope`.
+5. **Name an enforcement, strongest available.** A `PreToolUse` hook blocks 100%; a `tests/unit/`
+   check or ESLint rule both run in CI; a review-time auditor agent or `/code-review` is the
+   probabilistic fallback. Flag explicitly where mechanical coverage is missing. Do not stack
+   three redundant enforcers on one rule.
+6. **Update the index above** with a one-line pointer, and add a backlink from the enforcing
+   agent or skill so the rule stays the single source of truth.
+7. **Scaling.** Rules are discovered recursively, so when the flat list grows large, group them
+   into `.claude/rules/<subsystem>/` subdirectories (e.g. `frontend/`, `backend/`). There is no
+   per-rule local override; machine-specific overrides go in `CLAUDE.local.md`.
+
+**Linting:** `npm run lint` runs in CI (`.github/workflows/ci.yml`), so ESLint rules
+(`no-explicit-any`, `no-require-imports`, etc.) are enforced on every push.
+`react-hooks/exhaustive-deps` is intentionally `warn` and does not fail CI. Use a `tests/unit/`
+check for conventions ESLint cannot express (em-dashes, IPC and board-config parity, ...).

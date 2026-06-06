@@ -3,8 +3,8 @@
  *
  * Droid is a TUI-first agent with interactive controls for model selection,
  * autonomy cycling (Tab key), and other settings. The design intent
- * (per user preference from CLAUDE.md) is to NOT shadow the TUI with
- * per-spawn CLI flags or Kangentic settings injection.
+ * (see .claude/rules/cli-features-over-custom-layers.md) is to NOT shadow the
+ * TUI with per-spawn CLI flags or Kangentic settings injection.
  *
  * This adapter returns supportsModelOverride: false to hide the model/effort
  * dropdowns in the UI, leaving model selection entirely to the Droid TUI.

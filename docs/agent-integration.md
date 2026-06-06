@@ -61,7 +61,7 @@ Adapter-discovered capabilities surfaced to the renderer (returned by `discoverC
 | `supportsModelOverride?` | `boolean` | True when the CLI accepts a model override flag (e.g. Claude `--model <alias>`). When true and `models` has entries, the renderer shows a dropdown; when true and `models` is empty/undefined, the renderer falls back to a free-form text input. |
 | `models?` | `string[]` | Model identifiers the user can pick from. Discovered from agent-specific sources (Claude scans `~/.claude/projects/<slug>/<sessionId>.jsonl` for assistant `message.model` values). Absent when no curated list is available - the renderer falls back to a free-form text input. |
 
-`AgentDetectionInfo.capabilities?: AgentCapabilities` — populated at detection time; absent for adapters that do not implement `discoverCapabilities`.
+`AgentDetectionInfo.capabilities?: AgentCapabilities` - populated at detection time; absent for adapters that do not implement `discoverCapabilities`.
 
 ### `CommandOptions` - new spawn knobs
 
@@ -191,6 +191,45 @@ During cross-agent handoff, each adapter's `locateSessionHistoryFile()` finds th
 | Kimi Code | `~/.kimi/sessions/<work_dir_hash>/<sessionId>/wire.jsonl` | Glob across all hash dirs (work_dir hash is opaque) and match on session UUID |
 | OpenCode | `~/.local/share/opencode/opencode.db` (SQLite `session` table) | Read-only WAL handle; match `directory == cwd` and `time_created` within spawn window |
 | Droid | N/A | Returns null (no native session history file; activity flows through PTY-only detection) |
+
+## Auto-Name (Summarize)
+
+Always-on feature that suggests a task title from the task description, via each adapter's optional `summarize?(prompt, cliPath, cwd)` method. Adapters without a clean plain-text headless mode (Aider, Warp) omit `summarize` and are gated out automatically: the renderer hides the button and never schedules the rename toast.
+
+### Surfaces
+
+- **`<NameFromPromptButton>`** (`src/renderer/components/NameFromPromptButton.tsx`) is a square Sparkles icon button placed alongside the title input (not inside it). It exposes a `useNameFromPromptAvailable(description)` hook and is used by `NewTaskDialog` and `TaskDetailEditForm`. The button shows only when the project's default agent declares `supportsSummarize`, the agent CLI is detected, and the description is non-empty.
+- **30-second rename toast** (wired in `App.tsx`) fires once per task per app run for placeholder-titled tasks (`fix`, `wip`, etc., or empty). The "don't re-ask" set is persisted in `AppConfig.autoNameAskedTaskIds` (drained on task delete) so a dismissed suggestion does not reappear after restart.
+
+### Implementation
+
+Implementations live next to each adapter and call the shared `runCliPrintSummarize` helper in `src/main/agent/shared/auto-name.ts`. Each adapter picks the right `args`, `promptVia`, and (if needed) `extractRaw`:
+
+| Agent | Invocation | Prompt delivery |
+|-------|-----------|-----------------|
+| Claude | `claude --print --permission-mode plan` | stdin |
+| Codex | `codex exec --skip-git-repo-check` | stdin |
+| Gemini | `gemini --output-format text` | stdin (non-TTY headless) |
+| Qwen Code | `qwen --output-format text` | stdin (non-TTY headless) |
+| OpenCode | `opencode run -q` | stdin |
+| Kimi | `kimi --print --quiet` | stdin |
+| Cursor | `agent --output-format text -p "<prompt>"` | positional arg |
+| Droid | `droid exec -o text "<prompt>"` | positional arg |
+| Copilot | `copilot --silent -p "<prompt>"` | positional arg |
+| Aider, Warp | (no clean plain-text headless mode yet) | n/a |
+
+### Configuration knobs
+
+- `AppConfig.autoNameAskedTaskIds: string[]` - persisted "don't re-ask" set, drained when a task is deleted (single and bulk delete in `task-crud.ts`).
+- `AppConfig.autoNameRateLimitPerHour: number` (default 60, 0 disables) - sliding-window cap on summarize CLI calls per hour, enforced in the IPC handler.
+
+### Verification
+
+`node scripts/probe-summarize.js` runs each detected adapter's `summarize()` against a sample description and reports success / timeout / format issues. Run it after installing or upgrading an agent CLI to confirm Kangentic's invocation still produces a sane title.
+
+### Adding summarize to a new adapter
+
+Import `runCliPrintSummarize` and `buildSummarizePrompt` from `../../shared/auto-name`, then add a `summarize()` method choosing the right `args`, `promptVia`, and (if needed) `extractRaw`. Mirror the pattern in `tests/unit/agent-summarize-shape.test.ts`, and set `supportsSummarize: true` on the agent's entry in `tests/ui/mock-electron-api.js`.
 
 ## Claude Code
 
@@ -866,8 +905,8 @@ Actions of type `spawn_agent` can define a `promptTemplate` with placeholders:
 
 | Variable | Value |
 |----------|-------|
-| `{{task_xml}}` | `<task><title>...</title><description>...</description></task>` envelope (escaped) — preferred for default templates |
-| `{{title}}` | Task title (PTY-sanitized) — kept for backward compat with custom prose templates |
+| `{{task_xml}}` | `<task><title>...</title><description>...</description></task>` envelope (escaped) - preferred for default templates |
+| `{{title}}` | Task title (PTY-sanitized) - kept for backward compat with custom prose templates |
 | `{{description}}` | Task description with `: ` prefix when non-empty, empty string otherwise |
 | `{{taskId}}` | Task UUID |
 | `{{worktreePath}}` | Worktree directory path (empty if no worktree) |

@@ -70,7 +70,6 @@ async function detectModelFlagSupport(cliPath: string): Promise<boolean> {
  * {"type":"system","subtype":"init","session_id":"uuid","model":"display name",...}
  */
 function scanCursorSessionHistory(): string[] {
-  const models: string[] = [];
   const modelSet = new Set<string>();
 
   try {

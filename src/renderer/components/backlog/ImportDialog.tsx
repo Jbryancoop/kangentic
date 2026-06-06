@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, useDeferredValue } from 'react';
-import { Check, Loader2, Paperclip, Search, AlertCircle, X, RefreshCw, EyeOff, Eye } from 'lucide-react';
+import { Check, Loader2, Paperclip, Search, AlertCircle, RefreshCw, EyeOff, Eye } from 'lucide-react';
 import { formatRelativeTime } from '../../lib/datetime';
 import { BaseDialog } from '../dialogs/BaseDialog';
 import { Pill } from '../Pill';

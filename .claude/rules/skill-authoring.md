@@ -1,0 +1,46 @@
+---
+paths:
+  - ".claude/skills/**"
+  - ".claude/agents/**"
+---
+# Rule: skill context (when to fork) and agent routing
+
+Claude Code's `context: fork` skill-frontmatter field runs a skill in an isolated subagent: no
+prior conversation history, the SKILL.md as its prompt, and only a final summary back to the main
+loop. This gives fresh, unbiased context and keeps heavy intermediate output out of the main
+session. Choosing it (or its alternatives) wrong makes skills slow, lossy, or unsafe.
+
+## The rule
+
+- **Fork** (`context: fork`, no `agent:` so it routes to the default general-purpose agent) when
+  ALL hold: the skill is self-contained (derives everything from git, files, and args), produces
+  heavy or noisy intermediate output, benefits from fresh / unbiased context, ends in a
+  digestible summary, and has no mid-run user gate. No skill currently forks: `code-review`
+  previously did, but moved to a main-loop driver + delegation when it gained the size-gated
+  `Workflow` path (a forked driver calling `Workflow` would nest subagents). Its fresh-context
+  independence is preserved by delegating review judgment to fresh subagents instead.
+- **Do NOT fork** when ANY hold: it is a gated, mutating workflow (commit, rebase, push, tag,
+  admin-merge) that needs main-loop visibility and confirmations; it is a knowledge-injection
+  skill whose whole purpose is to enrich the MAIN context (`session-lifecycle`, `cross-platform`,
+  `ipc-bridge`); it is active implementation tied to the current conversation; or it already
+  delegates heavy work to a subagent (forking the driver risks subagent nesting, which is
+  undocumented). `test` and `sync-docs` stay inline for this reason.
+- **Active-implementation skills** verify by auto-spawning their auditor agent (delegation), not
+  by forking: `add-ipc-endpoint` to `ipc-auditor`, `add-migration` to `migration-safety`, and
+  `code-review` to its dimension auditors (`ipc-auditor`, `hmr-parity`, `platform-guard`,
+  `session-debugger`, `migration-safety`) via the in-session `Workflow` orchestrator on large
+  diffs. `test` delegates to `test-builder`, fanning out per-tier coverage auditors via
+  `Workflow` on sprawling changes.
+- **Never route a fixing or mutating skill to `agent: Explore` or `agent: Plan`** - those
+  built-in agents are read-only and skip CLAUDE.md, so they would drop our conventions
+  (single-command Bash, no em-dashes, no `any`). The default general-purpose fork loads CLAUDE.md
+  and keeps the skill's `allowed-tools`.
+
+## Enforcement (self-maintaining)
+
+- **Review:** judgment-based, applied when authoring or editing a skill or agent. No mechanical
+  test - skill routing is a design decision, not a code shape.
+
+## Scope
+
+Skill and agent authoring under `.claude/`. Does not govern product code.

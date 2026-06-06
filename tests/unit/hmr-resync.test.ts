@@ -232,7 +232,7 @@ describe('HMR store re-sync', () => {
       violations,
       `<DndContext> sites missing the HMR generation key.\n` +
       `Add: const hmrGeneration = useHmrGeneration(); ... <DndContext key={hmrGeneration} ...>\n` +
-      `See src/renderer/utils/hmr-generation.ts and the "HMR patterns" section in CLAUDE.md:\n` +
+      `See src/renderer/utils/hmr-generation.ts and .claude/rules/hmr-patterns.md:\n` +
       violations.map((v) => `  - ${v}`).join('\n'),
     ).toHaveLength(0);
   });

@@ -1,5 +1,6 @@
 ---
 name: platform-guard
+model: sonnet
 description: |
   Cross-platform safety checker. Scans code for platform-specific pitfalls that cause Windows-only bugs, path handling errors, shell escaping issues, and other cross-platform problems that CI (Linux-only) can't catch.
 
@@ -43,9 +44,9 @@ Read the cross-platform skill for the full pitfall catalog:
 Scan the changed files (or the full codebase if no specific scope is given) for each of these categories:
 
 ### 1. Unicode Em-Dashes
-- Search for `\u2014` (em-dash) in all source files, comments, tests, and docs
-- Must use ASCII `--` instead -- em-dashes render as garbled characters on Windows console code pages
-- **Severity: High** -- causes visible corruption in terminal output
+- Search for `\u2014` (em-dash) and `--` double-dashes used as punctuation in source, comments, tests, docs, and scripts. See `.claude/rules/text-formatting.md`.
+- Must use a single ASCII `-` instead. Em-dashes render as garbled characters on Windows console code pages.
+- **Severity: High**. Causes visible corruption in terminal output.
 
 ### 2. Path Handling
 - `path.join()` / `path.normalize()` must not be used on strings that mix platforms (e.g., a Git Bash path fed to a Windows API)
@@ -86,7 +87,7 @@ Scan the changed files (or the full codebase if no specific scope is given) for 
 | # | Severity | Category | Location | Issue | Fix |
 |---|----------|----------|----------|-------|-----|
 | 1 | Critical | Shell Command | `src/main/agent/adapters/claude/command-builder.ts:42` | Missing `& ` prefix for PowerShell | Add PowerShell detection and prefix |
-| 2 | High | Em-Dash | `src/main/pty/session-manager.ts:15` | Unicode em-dash in comment | Replace with ASCII `--` |
+| 2 | High | Em-Dash | `src/main/pty/session-manager.ts:15` | Unicode em-dash in comment | Replace with ASCII `-` |
 
 ### Summary
 

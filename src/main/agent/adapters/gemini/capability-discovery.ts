@@ -65,7 +65,6 @@ async function detectModelFlagSupport(cliPath: string): Promise<boolean> {
  * Each JSON file contains chat history and metadata including model selection.
  */
 function scanGeminiSessionHistory(): string[] {
-  const models: string[] = [];
   const modelSet = new Set<string>();
 
   try {

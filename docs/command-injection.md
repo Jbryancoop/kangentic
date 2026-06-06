@@ -26,7 +26,7 @@ type SubmissionContext =
 type SubmissionVerifier = (context: SubmissionContext) => Promise<boolean>;
 ```
 
-For the `'command-injection'` context, the verifier receives the literal command text plus session metadata (the captured `agent_session_id`, the session `cwd`, and `sentAt` — the wall-clock timestamp of the most recent Enter the verifier should match against) and returns `true` once it confirms the command was processed. `sentAt` advances on each retry-Enter so stale transcript entries from previous attempts cannot satisfy the current verification.
+For the `'command-injection'` context, the verifier receives the literal command text plus session metadata (the captured `agent_session_id`, the session `cwd`, and `sentAt` - the wall-clock timestamp of the most recent Enter the verifier should match against) and returns `true` once it confirms the command was processed. `sentAt` advances on each retry-Enter so stale transcript entries from previous attempts cannot satisfy the current verification.
 
 ## Claude's JSONL-polling implementation
 
@@ -65,7 +65,7 @@ The two contexts solve different problems: `'paste'` confirms one-shot paste sub
 
 **OR-combine vs poll-and-retry.** The two contexts also differ in how the engine consumes the verifier:
 
-- `'paste'` runs the verifier **in parallel** with the activity-event listener and post-`\r` data path. The first signal to resolve wins. A verifier resolving `false` does not short-circuit the fallbacks — they remain active for the rest of the wait window. This matches the "best-effort confirmation" model: a verifier strengthens evidence but cannot weaken the existing fallback path.
+- `'paste'` runs the verifier **in parallel** with the activity-event listener and post-`\r` data path. The first signal to resolve wins. A verifier resolving `false` does not short-circuit the fallbacks - they remain active for the rest of the wait window. This matches the "best-effort confirmation" model: a verifier strengthens evidence but cannot weaken the existing fallback path.
 - `'command-injection'` runs the verifier in a **tight poll loop** inside `TerminalSubmit.pollWithRetries`. On each iteration the verifier is invoked with the current `sentAt`; if it returns `false`, the loop sleeps `pollMs` and retries. Past the retry interval (with no confirmation), Enter is re-fired and `sentAt` advances. This matches the "deterministic chain" model: each command must be confirmed before the next.
 
 ## Per-adapter support matrix

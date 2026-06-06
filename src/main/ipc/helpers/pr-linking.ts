@@ -111,7 +111,7 @@ async function resolvePRViaLadder(args: {
 /**
  * Resolve a task's PR and persist it - the single backbone all triggers funnel
  * through. Wrapped in `withTaskLock` because it crosses an await boundary and
- * mutates per-task state (CLAUDE.md per-task lock rule). Writes only on change.
+ * mutates per-task state (see .claude/rules/task-lifecycle-lock.md). Writes only on change.
  *
  * Also opportunistically persists the worktree HEAD SHA so the commit anchor is
  * available later, after the worktree is reclaimed on Done.
