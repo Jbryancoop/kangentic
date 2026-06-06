@@ -395,7 +395,7 @@ Transitions only fire for case 5. The action chain runs in `execution_order`: ty
 | `create_pr` | Reserved. Not yet implemented. |
 | `webhook` | POST to URL with interpolated body |
 
-Template variables available: `{{title}}`, `{{description}}`, `{{task_xml}}`, `{{taskId}}`, `{{worktreePath}}`, `{{branchName}}`, `{{prUrl}}`, `{{prNumber}}`, `{{attachments}}`.
+Template variables available: `{{title}}`, `{{description}}`, `{{task_xml}}`, `{{taskId}}`, `{{worktreePath}}`, `{{branchName}}`, `{{baseBranch}}`, `{{prUrl}}`, `{{prNumber}}`, `{{attachments}}`.
 
 ## PTY Session Manager
 

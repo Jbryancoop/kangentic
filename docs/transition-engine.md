@@ -143,6 +143,7 @@ All action types that accept templates can use these placeholders:
 | `{{taskId}}` | Task UUID |
 | `{{worktreePath}}` | Worktree directory path (empty if none) |
 | `{{branchName}}` | Git branch name (empty if none) |
+| `{{baseBranch}}` | Base branch the task forked from (empty if unset) |
 | `{{prUrl}}` | Pull request URL (empty if none) |
 | `{{prNumber}}` | Pull request number as string (empty if none) |
 | `{{attachments}}` | Bare file paths (one per line) when present |

@@ -138,11 +138,13 @@ function makeRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
 function makeDeps(args: {
   manualPauseRecord: SessionRecord | null;
   resumeRecord: SessionRecord | undefined;
+  /** Extra task fields applied to the getById returns the auto_command interpolation reads. */
+  taskFields?: Partial<Task>;
 }) {
   const getById = vi.fn();
   getById
-    .mockReturnValueOnce(makeTask({ session_id: null }))
-    .mockReturnValue(makeTask({ session_id: FRESH_PTY_SESSION_ID }));
+    .mockReturnValueOnce(makeTask({ session_id: null, ...args.taskFields }))
+    .mockReturnValue(makeTask({ session_id: FRESH_PTY_SESSION_ID, ...args.taskFields }));
 
   const tasks = { getById };
   const sessionRepo = {
@@ -203,6 +205,27 @@ describe('spawnAgent auto_command injection (isolation-scoped resume check)', ()
       .toHaveBeenCalledWith(TASK_ID, 'claude_agent', ISOLATED_LANE_ID);
     // Delivered as the initial prompt - no 30s keystroke fallback.
     expect(resumePromptArg(deps.engine)).toBe('/code-review');
+    expect(deps.scheduleKeystrokes).not.toHaveBeenCalled();
+  });
+
+  it('ISOLATED + fresh: a {{baseBranch}} placeholder in the auto_command interpolates the task base branch into the initial prompt', async () => {
+    // The isolated Code Review column ships `/code-review {{baseBranch}}` so the
+    // review is scoped against the branch the task actually forked from, not a
+    // guessed default. Verifies buildAutoCommandVars + interpolateTemplate wire
+    // task.base_branch through to the delivered command.
+    const isolatedLane = makeSwimlane(ISOLATED_LANE_ID, {
+      session_target: 'isolated',
+      auto_command: '/code-review {{baseBranch}}',
+    });
+    const deps = makeDeps({
+      manualPauseRecord: null,
+      resumeRecord: undefined,
+      taskFields: { base_branch: 'develop' },
+    });
+
+    await runSpawn(isolatedLane, deps, true);
+
+    expect(resumePromptArg(deps.engine)).toBe('/code-review develop');
     expect(deps.scheduleKeystrokes).not.toHaveBeenCalled();
   });
 

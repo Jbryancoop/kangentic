@@ -30,6 +30,7 @@ export function buildAutoCommandVars(task: Task): Record<string, string> {
     taskId: task.id,
     worktreePath: task.worktree_path || '',
     branchName: task.branch_name || '',
+    baseBranch: task.base_branch || '',
   };
 }
 

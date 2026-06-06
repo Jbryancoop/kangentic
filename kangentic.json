@@ -29,7 +29,9 @@
       "icon": "code",
       "color": "#f59e0b",
       "autoSpawn": true,
-      "autoCommand": "/code-review"
+      "autoCommand": "/code-review {{baseBranch}}",
+      "sessionTarget": "isolated",
+      "sessionSpawnStrategy": "always_spawn_new"
     },
     {
       "id": "1da886f1-804b-42ea-960e-2109f776d451",

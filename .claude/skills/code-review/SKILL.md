@@ -1,19 +1,21 @@
 ---
 description: Review git changes for quality and conventions (auto-scales to a multi-agent pass on large diffs)
 allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git:*), Bash(npm:*), Bash(npx:*), Agent, Workflow
-argument-hint: [review-only]
+argument-hint: [base-ref] [review-only]
 ---
 
 # Code Review
 
-Review the current git changes (staged and unstaged) for quality, correctness, and project conventions, then apply every safely-fixable finding.
+Review the changes that make up this branch's work - commits on the branch **plus** staged, unstaged, and new untracked files in the working tree (the diff from the base branch through the working tree) - for quality, correctness, and project conventions, then apply every safely-fixable finding.
 
 ## Modes
 
 - **Default** (`/code-review`) - review, then immediately apply every safely-fixable finding, re-run typecheck, and report `Changes Applied` + `Skipped (with reason)`.
 - **Review-only** (`/code-review review-only`) - findings table + Verdict footer only, no edits applied.
 
-The skill reads `$ARGUMENTS`. If the literal token `review-only` is present, skip the Apply Phase and Re-typecheck steps and emit the legacy Verdict footer instead of the Changes/Skipped report.
+The skill reads `$ARGUMENTS`, which may carry up to two independent tokens in any order:
+- `review-only` - skip the Apply Phase and Re-typecheck steps and emit the legacy Verdict footer instead of the Changes/Skipped report.
+- a **base ref** (any token that is not `review-only`, e.g. `origin/main`, `develop`, or a commit SHA) - overrides the auto-detected base branch the diff is scoped against (see Step 3). Mirrors `claude ultrareview origin/main`. A base ref is diff-*scoping* metadata, not author intent - it never tells the reviewer what the change was "supposed" to do (see "Reviewer independence").
 
 **User-provided arguments (if any):** $ARGUMENTS
 
@@ -33,9 +35,18 @@ The skill is a thin driver that runs in the main loop. All commands below run fr
 
 1. **Pre-flight typecheck.** Run `npm run typecheck` to check for type errors. Any type errors are **highest-priority findings** - they represent potential runtime crashes. Include them in the review output even if they are in files not touched by the current diff.
 2. **Pre-flight HMR vitest.** Run `npx vitest run tests/unit/hmr-resync.test.ts` (fast, ~150ms). This enforces the three mechanical HMR-parity invariants: every IPC-backed store has its `load*` / `sync*` registered in `App.tsx`'s `vite:afterUpdate` handler; every top-level mutable module state under `src/renderer/stores/` or `src/renderer/utils/` either preserves itself via `import.meta.hot.dispose(` or carries a `// hmr-safe:` directive; every `<DndContext>` has `key={...HmrGeneration}`. A failure here is a **Critical** finding (dev-mode regression that production users won't see but dogfooders will mistake for a real bug).
-3. **Gather + measure the diff.** Run `git diff` and `git diff --staged` (each its own Bash call) to capture all changed files and hunks. If both are empty, emit "No changes to review." and stop. Then derive the size from `git diff --stat` and `git diff --staged --stat`: `changedFiles` = the deduped union of file paths across staged + unstaged; `changedLines` = total insertions + deletions.
-4. **Size gate.** Compute `isSmall = changedFiles <= 8 && changedLines <= 400` (AND, so a 3-file / 900-line refactor still takes the heavy path).
-5. **Dispatch:**
+3. **Resolve the base branch.** Agents in this workflow sometimes commit during the working session, sometimes leave changes in the working tree, sometimes both - so the review scope is the full delta from the base branch through the working tree, the same surface `claude ultrareview` reviews. Resolve the base ref in this order, each its own Bash call, first hit wins:
+   1. An explicit ref in `$ARGUMENTS` (the token that is not `review-only`), e.g. `origin/main` or a branch/SHA. Authoritative - use it verbatim.
+   2. The repo default branch: `git symbolic-ref --short refs/remotes/origin/HEAD` (yields e.g. `origin/main`).
+   3. Fallback locals: `git rev-parse --verify --quiet refs/heads/main`, then (if that fails) `git rev-parse --verify --quiet refs/heads/master`.
+   If none resolve (no remote, no `main`/`master`), set base to empty and review the working tree only - note "base branch undetermined; reviewed working-tree changes only" in the Summary.
+4. **Gather + measure the diff (union; each command its own Bash call).** Capture all three layers - they are disjoint, so concatenating never double-counts:
+   - **Committed-vs-base:** `git diff <base>...HEAD` and `git diff <base>...HEAD --stat` (three-dot = changes since the branch diverged from base). Skip when base is empty; an empty result otherwise just means no committed divergence, not an error.
+   - **Uncommitted (staged + unstaged):** `git diff HEAD` and `git diff HEAD --stat` (`git diff HEAD` captures index + working tree in one command).
+   - **Untracked new files:** `git ls-files --others --exclude-standard`. No diff shows these, but they are part of the change - `Read` each listed file in full and append it to `diffText` as a synthetic added-file block (`+++ b/<path>` header followed by the full contents) so both review paths see it.
+   If the committed diff, the uncommitted diff, **and** the untracked list are all empty, emit "No changes to review." and stop. Otherwise `diffText` = committed diff + uncommitted diff + the synthetic untracked blocks. Derive the size from the union: `changedFiles` = the deduped union of file paths across the committed `--stat`, the uncommitted `--stat`, and the untracked list; `changedLines` = total insertions + deletions across both `--stat` outputs plus the line count of each untracked file.
+5. **Size gate.** Compute `isSmall = changedFiles <= 8 && changedLines <= 400` (AND, so a 3-file / 900-line refactor still takes the heavy path).
+6. **Dispatch:**
    - **`isSmall` (default - behavior identical to today):** delegate the single-pass review procedure below to **one fresh `Agent`** (the general-purpose agent; read-write in default mode, read-only in `review-only`). Pass it: the captured diff, `$ARGUMENTS`, and the pre-flight results from steps 1-2 (so it does not re-run them). The agent runs the **single-pass review procedure** end to end (read files -> analyze -> findings table -> Apply Phase -> Re-typecheck -> emit Output Format) and returns the finished report. The driver relays it. **No Workflow is spawned below threshold.**
    - **large (`!isSmall`):** invoke the **`Workflow`** Heavy Path (see "## Heavy Path"). It returns a **verified findings array**. The driver then folds in the pre-flight signals (step 1 type errors as Critical rows; a step 2 vitest failure as a Critical row with the assertion message verbatim), runs the existing **Apply Phase** over the findings (skip in `review-only`), runs **Re-typecheck** (skip in `review-only`; also re-run the step 2 vitest if an HMR fix landed), and emits the **Output Format**. The Heavy Path agents are read-only; only the driver mutates, so auto-fix-by-default is preserved.
 
@@ -84,7 +95,7 @@ Whichever path runs, the review judgment is produced in a fresh context window t
 
 ### Domain-Specific Checks
 
-After identifying changed files in Step 3 (Gather + measure the diff), read the relevant skill files to load domain context. Then apply the domain-specific checks below in addition to the general criteria.
+After identifying changed files in Step 4 (Gather + measure the diff), read the relevant skill files to load domain context. Then apply the domain-specific checks below in addition to the general criteria.
 
 **IPC files** (`ipc-channels.ts`, `types.ts`, `preload.ts`, `handlers/`, `mock-electron-api.js`):
 - Read `.claude/skills/ipc-bridge/SKILL.md` before reviewing these changes
@@ -137,7 +148,7 @@ The universal finders always run. The domain finders are **gated by changed-file
 
 **Explicit, falsifiable criteria (this is the point of splitting).** Each finder prompt must enumerate concrete, falsifiable criteria - never a vague lens like "review for performance." Embed the matching Review Criteria sub-bullets verbatim for the universal finders; the gated finders inherit their auditor's explicit checklist. Every finding must carry a specific `location` (`file:line`) and a concrete `recommendation`. **Correctness / Critical findings must supply the falsifiable triple:** `triggeringInput` (the specific input that triggers the failure), `codePath` (the failing path), and `testGap` (why existing tests miss it). A finding that cannot be stated falsifiably should not be raised.
 
-**Cross-file integration pass - signatures only (stays cheap).** The single-file finders cannot see interactions. The driver computes a compact "diff interface delta" from `git diff` alone - **no file bodies** - and passes only that to the integration finder:
+**Cross-file integration pass - signatures only (stays cheap).** The single-file finders cannot see interactions. The driver computes a compact "diff interface delta" from the gathered union diff alone (Step 4) - **no file bodies** - and passes only that to the integration finder:
 
 - `changedExports` - added/changed/removed exported signatures
 - `typeDeltas` - interface/type member changes (e.g. a field becoming required)
@@ -307,7 +318,7 @@ Re-typecheck: PASS
 ```
 
 Edge cases the footer must handle cleanly:
-- No diff at all -> short-circuit at the `git diff` step (Step 3) with `"No changes to review."`
+- No diff at all (committed-vs-base, uncommitted, and untracked all empty) -> short-circuit at the diff-gather step (Step 4) with `"No changes to review."`
 - Diff exists, zero findings -> `"No findings, nothing to fix."` and skip the Apply Phase
 - Re-typecheck FAILS -> show the error block, list which fix was reverted, mark Verdict as **Needs revision**
 - Step 2 hmr-resync vitest FAILS -> the failure output is itself a Critical finding. Include the failing assertion's message verbatim in the findings table, attempt the auto-fix in the Apply Phase (e.g. add the missing store re-sync call to `App.tsx`, add the missing `key={hmrGeneration}` to the new `<DndContext>`, add a `// hmr-safe:` directive or `dispose` block to the new module-scope state), then re-run the vitest in addition to typecheck during the Re-typecheck step. If the test still fails after the fix attempt, mark Verdict as **Needs revision**.
