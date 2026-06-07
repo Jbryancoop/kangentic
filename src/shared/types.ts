@@ -789,6 +789,15 @@ export interface SessionUsage {
     totalCostUsd: number;
     totalDurationMs: number;
   };
+  /**
+   * Cumulative count of completed tool calls for the session. Stamped onto the
+   * usage payload by the orchestrator just before it is pushed to the renderer:
+   * the authoritative count lives in the main-process accumulator and survives
+   * the bounded event cache, so the renderer cannot derive it from
+   * `sessionEvents`. Optional because older main builds and non-stamping code
+   * paths may omit it; read it with `?? 0`.
+   */
+  toolCallCount?: number;
   model: {
     id: string;
     displayName: string;
@@ -1026,11 +1035,17 @@ export interface AppConfig {
   contextBar: {
     showShell: boolean;
     showVersion: boolean;
+    /** Ticking wall-clock elapsed time since the session started. */
+    showElapsed: boolean;
     // `showModel` / `showEffort` removed: those pills double as the
     // model/effort picker triggers. Hiding them via toggle would silently
     // disable a feature, not just minimize chrome. The other toggles below
     // are pure cosmetic noise filters and keep their toggles.
     showCost: boolean;
+    /** Cumulative count of completed tool calls (live). */
+    showToolCalls: boolean;
+    /** Agent active time reported by the CLI (usage.cost.totalDurationMs). */
+    showAgentActive: boolean;
     showTokens: boolean;
     showContextFraction: boolean;
     showProgressBar: boolean;
@@ -1174,7 +1189,12 @@ export const DEFAULT_CONFIG: AppConfig = {
   contextBar: {
     showShell: true,
     showVersion: true,
+    showElapsed: true,
     showCost: true,
+    showToolCalls: true,
+    // Agent active-time overlaps conceptually with elapsed time, so it is
+    // opt-in by default to keep the bar lean (one row in the common case).
+    showAgentActive: false,
     showTokens: true,
     showContextFraction: true,
     showProgressBar: true,
@@ -2188,6 +2208,8 @@ export interface ElectronAPI {
     onIdleTimeout: (callback: (sessionId: string, taskId: string, timeoutMinutes: number, projectId?: string) => void) => () => void;
     getSummary: (taskId: string) => Promise<SessionSummary | null>;
     listSummaries: () => Promise<Record<string, SessionSummary>>;
+    /** Live per-tool breakdown for an active session (from the in-memory accumulator, not the DB). */
+    getToolBreakdown: (sessionId: string) => Promise<PerToolStat[]>;
     spawnTransient: (input: SpawnTransientSessionInput) => Promise<{ session: Session; branch: string; checkoutError?: string }>;
     killTransient: (sessionId: string) => Promise<void>;
     getPeriodStats: (period: UsageTimePeriod) => Promise<PeriodUsageStats>;

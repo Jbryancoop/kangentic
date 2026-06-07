@@ -1,4 +1,5 @@
-import { ArrowUp, ArrowDown, Loader2, Clock, Calendar } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { ArrowUp, ArrowDown, Loader2, Clock, Calendar, Wrench, Hourglass, ChevronDown } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { RateLimitWindow } from '../../../shared/types';
 import { useBoardStore } from '../../stores/board-store';
@@ -12,6 +13,8 @@ import { agentDisplayName } from '../../utils/agent-display-name';
 import { shellDisplayName } from '../../utils/shell-display-name';
 import { useValuePulse } from '../../hooks/useValuePulse';
 import { ModelEffortPicker } from './ModelEffortPicker';
+import { ElapsedTime } from './ElapsedTime';
+import { ToolBreakdownPopover } from './ToolBreakdownPopover';
 
 interface ContextBarProps {
   sessionId: string;
@@ -72,6 +75,7 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
 
   // Pulse hooks -- always called unconditionally (hooks rules)
   const costRef = useValuePulse(usage?.cost.totalCostUsd);
+  const toolCallRef = useValuePulse(usage?.toolCallCount);
   const inputTokens = usage?.contextWindow.totalInputTokens;
   const outputTokens = usage?.contextWindow.totalOutputTokens;
   const tokenKey = `${inputTokens}-${outputTokens}`;
@@ -82,6 +86,12 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
     ? latestRateLimits.rateLimits.map((limitWindow) => `${limitWindow.id}:${Math.round(limitWindow.usedPercentage)}`).join('|')
     : '';
   const rateLimitsRef = useValuePulse(rateLimitsKey);
+
+  // Tool-call breakdown popover. This pill lives directly in ContextBar, so it
+  // owns its own open state (unlike the model/effort popovers, which live in the
+  // child ModelEffortPicker).
+  const [openToolBreakdown, setOpenToolBreakdown] = useState(false);
+  const toolCallTriggerRef = useRef<HTMLButtonElement>(null);
 
   // Model is "resolved" only when the CLI status line has reported a real
   // displayName. Until then we show a single spinner pill instead of flashing
@@ -164,6 +174,9 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
   // them get the same info in both places (feature parity).
   const showShell = !!sessionShell && contextBarConfig.showShell;
   const showVersion = contextBarConfig.showVersion;
+  const showElapsed = contextBarConfig.showElapsed;
+  const showToolCalls = contextBarConfig.showToolCalls;
+  const showAgentActive = contextBarConfig.showAgentActive;
   // Model + Effort are always shown when usage is present - they double as
   // the in-place model/effort picker triggers, so a "hide" toggle would
   // silently disable a feature, not just declutter chrome.
@@ -269,6 +282,48 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
       })()}
       {showCost && <span ref={costRef} className={`${pill} text-fg-muted tabular-nums`} title="Session API cost">{formatCost(usage.cost.totalCostUsd)}</span>}
 
+      {/* Activity stats sit directly to the left of the token counts. Tool
+          calls is the live cumulative count stamped onto the usage payload
+          (the renderer's own event cache is bounded, so it cannot count past
+          500 events itself). */}
+      {showToolCalls && (
+        <span className="relative inline-flex">
+          <button
+            ref={toolCallTriggerRef}
+            type="button"
+            onClick={() => setOpenToolBreakdown((previous) => !previous)}
+            className={`${pill} text-fg-muted tabular-nums inline-flex items-center gap-1 cursor-pointer hover:bg-surface-hover`}
+            title="Tool calls this session - click for the per-tool breakdown"
+            aria-expanded={openToolBreakdown}
+            data-testid="context-bar-tool-calls-trigger"
+          >
+            <Wrench size={11} className="text-fg-faint" />
+            <span ref={toolCallRef}>{usage.toolCallCount ?? 0}</span>
+            <ChevronDown size={11} className="text-fg-faint flex-shrink-0" />
+          </button>
+          {openToolBreakdown && (
+            <ToolBreakdownPopover
+              triggerRef={toolCallTriggerRef}
+              sessionId={sessionId}
+              refreshSignal={usage.toolCallCount ?? 0}
+              onClose={() => setOpenToolBreakdown(false)}
+              testId="context-bar-tool-breakdown-popover"
+            />
+          )}
+        </span>
+      )}
+
+      {showAgentActive && usage.cost.totalDurationMs > 0 && (
+        <span
+          className={`${pill} text-fg-muted tabular-nums flex items-center gap-1`}
+          title="Agent active time"
+          data-testid="context-agent-active"
+        >
+          <Hourglass size={11} className="text-fg-faint" />
+          {formatDuration(usage.cost.totalDurationMs)}
+        </span>
+      )}
+
       {showTokens && (
         <span ref={tokenRef} className={`${pill} text-fg-muted tabular-nums flex items-center gap-3`} title="Input / output tokens">
           <span className="flex items-center gap-1">
@@ -282,22 +337,55 @@ export function ContextBar({ sessionId, agentFallback = null }: ContextBarProps)
         </span>
       )}
 
-      {showFraction && (
-        <span ref={fractionRef} className={`${pill} text-fg-muted tabular-nums`} title="Context tokens used / total window size">
-          {formatTokenCount(usedTokens)} / {formatTokenCount(contextWindowSize)}
-        </span>
-      )}
+      {/* Context usage: the absolute fraction (used / total) sits to the LEFT of
+          the bar inside one pill; the bar grows to fill, the percent trails it.
+          When only the fraction is enabled (bar off), it renders as a minimal
+          pill so the toggle stays meaningful. */}
+      {(() => {
+        // Shared so the bar-embedded fraction and the bare-fraction pill render
+        // the identical "used / total" string from one source.
+        const fractionLabel = `${formatTokenCount(usedTokens)} / ${formatTokenCount(contextWindowSize)}`;
+        if (showProgressBar) {
+          return (
+            <div className={`${pill} text-fg-muted flex items-center gap-2 flex-1 basis-0 min-w-[160px]`}>
+              {showFraction && (
+                <span ref={fractionRef} className="tabular-nums text-fg-faint whitespace-nowrap" title="Context tokens used / total window size">
+                  {fractionLabel}
+                </span>
+              )}
+              <div className="flex-1 h-1.5 bg-surface-hover rounded-full overflow-hidden" title={barTooltip}>
+                <div
+                  className="h-full rounded-full transition-[width,background-color] duration-300"
+                  style={{ width: `${Math.min(pct, 100)}%`, backgroundColor: progressColor }}
+                />
+              </div>
+              <span ref={pctRef} className="tabular-nums text-fg-faint whitespace-nowrap transition-colors duration-300" title={`${100 - pct}% remaining`}>{pct}%{!showFraction && ' context'}</span>
+            </div>
+          );
+        }
+        if (showFraction) {
+          return (
+            <span ref={fractionRef} className={`${pill} text-fg-muted tabular-nums`} title="Context tokens used / total window size">
+              {fractionLabel}
+            </span>
+          );
+        }
+        return null;
+      })()}
 
-      {showProgressBar && (
-        <div className={`${pill} text-fg-muted flex items-center gap-2 flex-1 basis-0 min-w-[160px]`}>
-          <div className="flex-1 h-1.5 bg-surface-hover rounded-full overflow-hidden" title={barTooltip}>
-            <div
-              className="h-full rounded-full transition-[width,background-color] duration-300"
-              style={{ width: `${Math.min(pct, 100)}%`, backgroundColor: progressColor }}
-            />
-          </div>
-          <span ref={pctRef} className="tabular-nums text-fg-faint whitespace-nowrap transition-colors duration-300" title={`${100 - pct}% remaining`}>{pct}% context</span>
-        </div>
+      {/* Elapsed wall-clock sits at the far right (after the progress bar), with
+          auto width. Placed last, its per-second growth is absorbed by the
+          flex-1 progress pill to its left and never reflows the other cells, so
+          no fixed-width reservation is needed. */}
+      {showElapsed && session?.startedAt && (
+        <span
+          className={`${pill} text-fg-muted tabular-nums flex items-center gap-1`}
+          title="Elapsed session time"
+          data-testid="context-elapsed"
+        >
+          <Clock size={11} className="text-fg-faint" />
+          <ElapsedTime startedAt={session.startedAt} />
+        </span>
       )}
     </div>
   );

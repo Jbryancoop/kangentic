@@ -71,7 +71,10 @@
     contextBar: {
       showShell: true,
       showVersion: true,
+      showElapsed: true,
       showCost: true,
+      showToolCalls: true,
+      showAgentActive: false,
       showTokens: true,
       showContextFraction: true,
       showProgressBar: true,
@@ -1239,6 +1242,11 @@
       },
       listSummaries: async function () {
         return Object.assign({}, summaryCache);
+      },
+      getToolBreakdown: async function (_sessionId) {
+        // Live telemetry is not captured in UI tests; specs that need a
+        // breakdown override this stub per-test.
+        return [];
       },
       spawnTransient: async function (input) {
         var id = crypto.randomUUID();

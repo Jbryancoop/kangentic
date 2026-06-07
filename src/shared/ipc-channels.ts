@@ -98,6 +98,7 @@ export const IPC = {
   SESSION_IDLE_TIMEOUT: 'session:idleTimeout',
   SESSION_GET_SUMMARY: 'session:getSummary',
   SESSION_LIST_SUMMARIES: 'session:listSummaries',
+  SESSION_GET_TOOL_BREAKDOWN: 'session:getToolBreakdown',
   SESSION_SPAWN_TRANSIENT: 'session:spawnTransient',
   SESSION_KILL_TRANSIENT: 'session:killTransient',
   SESSION_GET_PERIOD_STATS: 'session:getPeriodStats',

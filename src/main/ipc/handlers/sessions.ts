@@ -271,6 +271,13 @@ export function registerSessionHandlers(context: IpcContext): void {
     return sessionRepo.listAllSummaries();
   });
 
+  // Live per-tool breakdown for an active session. Unlike the summary handlers
+  // above, this reads the in-memory accumulator (no DB / project lookup), so it
+  // works mid-session and survives the bounded event cache.
+  ipcMain.handle(IPC.SESSION_GET_TOOL_BREAKDOWN, (_, sessionId: string) => {
+    return context.sessionManager.getToolBreakdown(sessionId);
+  });
+
   ipcMain.handle(IPC.SESSION_GET_PERIOD_STATS, (_, period: UsageTimePeriod) => {
     if (!context.currentProjectId) return { totalCostUsd: 0, totalInputTokens: 0, totalOutputTokens: 0 };
     const db = getProjectDb(context.currentProjectId);

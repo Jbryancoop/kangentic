@@ -290,6 +290,11 @@ export class SessionTelemetry {
 
     const previousUsage = this.usage.getSessionUsage(sessionId);
 
+    // Stamp the authoritative cumulative tool-call count onto the payload.
+    // It lives in the accumulator and survives the bounded event cache, so the
+    // renderer cannot derive it from `sessionEvents`. Stamping before the cache
+    // write means snapshot reads (getUsageCache) carry it too.
+    usage.toolCallCount = this.usage.getToolCallCount(sessionId);
     this.usage.replaceSessionUsage(sessionId, usage);
     this.callbacks.onUsageChange(sessionId, usage);
 
@@ -507,6 +512,10 @@ export class SessionTelemetry {
    */
   setSessionUsage(sessionId: string, partial: Partial<SessionUsage>): void {
     const merged = this.usage.setSessionUsage(sessionId, partial);
+    // `merged` is the cached object, so stamping the live tool-call count here
+    // keeps both the renderer push and snapshot reads consistent (see
+    // processStatusUpdate).
+    merged.toolCallCount = this.usage.getToolCallCount(sessionId);
     this.callbacks.onUsageChange(sessionId, merged);
   }
 

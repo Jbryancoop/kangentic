@@ -170,7 +170,10 @@ IPC channels for shortcuts are in the Board Config group: `boardConfig:getShortc
 |-----|------|---------|-------------|
 | `contextBar.showShell` | boolean | `true` | Show the shell name (e.g., pwsh, bash) in the context bar |
 | `contextBar.showVersion` | boolean | `true` | Show the agent CLI version |
+| `contextBar.showElapsed` | boolean | `true` | Show the ticking wall-clock elapsed time since the session started |
 | `contextBar.showCost` | boolean | `true` | Show the cumulative session cost in dollars |
+| `contextBar.showToolCalls` | boolean | `true` | Show the live cumulative tool-call count (click for the per-tool breakdown) |
+| `contextBar.showAgentActive` | boolean | `false` | Show the agent active time reported by the CLI |
 | `contextBar.showTokens` | boolean | `true` | Show token usage (input + output) |
 | `contextBar.showContextFraction` | boolean | `true` | Show the context window usage percentage |
 | `contextBar.showProgressBar` | boolean | `true` | Show the context window progress bar |

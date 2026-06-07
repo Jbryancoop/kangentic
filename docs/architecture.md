@@ -155,7 +155,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `transition:set` | invoke | Set action chain for lane A→B |
 | `transition:getFor` | invoke | Get transitions for lane pair (exact match, then wildcard) |
 
-### Sessions (34 channels)
+### Sessions (35 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `session:spawn` | invoke | Spawn PTY session (may queue) |
@@ -188,6 +188,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `session:idleTimeout` | on | Session idle timeout fired |
 | `session:getSummary` | invoke | Get summary of a single session |
 | `session:listSummaries` | invoke | Get summaries of multiple sessions |
+| `session:getToolBreakdown` | invoke | Fetch live per-tool call breakdown for an active session (from the in-memory accumulator, not the DB) |
 | `session:spawnTransient` | invoke | Spawn ephemeral command terminal session (no task, no DB) |
 | `session:killTransient` | invoke | Kill a transient session and clean up session directory |
 | `session:injectSettings` | invoke | Inject a model/effort change into a live transient session's PTY via slash commands. Session-keyed (no task row, no DB persistence); backs the command-terminal context bar picker. |
