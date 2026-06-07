@@ -1,5 +1,5 @@
 ---
-description: Commit, rebase, and push changes to source branch
+description: Push / land / merge back changes - commit, rebase, and push to the source branch. Use only when the user explicitly asks to push, land, or merge back. NOT for a plain local commit (use /commit for that).
 allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git:*), Bash(npm:*), Agent
 argument-hint: [commit message]
 ---

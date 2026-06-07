@@ -182,8 +182,14 @@ overrides in a gitignored `CLAUDE.local.md` at the project root.
 **Other conventions (workflow, not extracted to rules):**
 - Prefer editing existing files over creating new ones.
 - When adding or updating tests, use the `/test` command to ensure correct tier classification.
-- Git commit/push goes through `/merge-back` (or `/pull-request` when a PR audit trail is
-  wanted). It handles commit, typecheck, rebase, and push from both worktrees and the main repo.
+- A plain **local commit** (snapshot work in progress, protect changes before `/preview`) goes
+  through `/commit`: it stages and commits on the current branch only, with no push and no
+  rebase. A bare request to "commit" / "commit changes" means `/commit`, never `/merge-back`.
+- **Pushing / landing / merging back** changes goes through `/merge-back` (or `/pull-request`
+  when a PR audit trail is wanted). It handles commit, typecheck, lint, rebase, and push to the
+  source branch from both worktrees and the main repo. Only use it when the user explicitly asks
+  to push, land, or merge back.
+- Both `/commit` and `/merge-back` write conventional-commit messages.
 - `/sync-docs` keeps `docs/` aligned with source and runs during `/merge-back`.
 
 ### Authoring a rule
