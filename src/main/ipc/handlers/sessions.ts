@@ -9,7 +9,8 @@ import { getProjectRepos, ensureTaskWorktree, createTransitionEngine, resolveSpa
 import { handleTaskMove } from './task-move';
 import { trackEvent } from '../../analytics/analytics';
 import { captureSessionMetrics } from './session-metrics';
-import { markRecordExited, promoteRecord, recoverStaleSessionId } from '../../engine/session-lifecycle';
+import { markRecordExited, markRecordSuspended, promoteRecord, recoverStaleSessionId } from '../../engine/session-lifecycle';
+import { isShuttingDown } from '../../shutdown-state';
 import { applySuspendDbWrites, reconcileTaskSessionRef } from './session-reconcile';
 import type { Session, UsageTimePeriod, TaskResolvePrResult } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
@@ -501,6 +502,19 @@ export function registerSessionHandlers(context: IpcContext): void {
         // Atomically mark 'running' or 'queued' records as 'exited'.
         // compareAndUpdateStatus guards against overwriting 'suspended',
         // which is set by TASK_MOVE before the async onExit fires.
+        //
+        // Shutdown-race hardening: during app quit a PTY exit is NOT a natural
+        // exit - the app is tearing down sessions we want resumed next launch.
+        // syncShutdownCleanup normally marks running records 'suspended' before
+        // killAll, but a PTY can die first and reach this listener before that
+        // runs. Recording an abnormal 'exited' here would force startup recovery
+        // to reinterpret it via the interrupted-exited gather; marking
+        // 'suspended' keeps it on the clean resume path. Only RUNNING records
+        // are redirected - queued never started a CLI (mark exited, matching
+        // syncShutdownCleanup), and suspended/exited rows CAS-no-op either way.
+        // (Power loss / SIGKILL leaves isShuttingDown() false; startup recovery
+        // is the real fix there.)
+        const shuttingDown = isShuttingDown();
         let updated = false;
         const session = context.sessionManager.getSession(sessionId);
         if (session) {
@@ -513,22 +527,28 @@ export function registerSessionHandlers(context: IpcContext): void {
           // record.
           const record = sessionRepo.findByAnyId(sessionId);
           if (record) {
-            updated = markRecordExited(sessionRepo, record.id, {
-              exit_code: exitCode,
-              exited_at: new Date().toISOString(),
-            });
+            updated = shuttingDown && record.status === 'running'
+              ? markRecordSuspended(sessionRepo, record.id, 'system')
+              : markRecordExited(sessionRepo, record.id, {
+                  exit_code: exitCode,
+                  exited_at: new Date().toISOString(),
+                });
           }
         }
         // Fallback: try matching by agent_session_id only if taskId lookup didn't find it
         if (!updated) {
           const byAgentId = db.prepare(
-            `SELECT id FROM sessions WHERE agent_session_id = ? AND status IN ('running', 'queued') LIMIT 1`
-          ).get(sessionId) as { id: string } | undefined;
+            `SELECT id, status FROM sessions WHERE agent_session_id = ? AND status IN ('running', 'queued') LIMIT 1`
+          ).get(sessionId) as { id: string; status: string } | undefined;
           if (byAgentId) {
-            markRecordExited(sessionRepo, byAgentId.id, {
-              exit_code: exitCode,
-              exited_at: new Date().toISOString(),
-            });
+            if (shuttingDown && byAgentId.status === 'running') {
+              markRecordSuspended(sessionRepo, byAgentId.id, 'system');
+            } else {
+              markRecordExited(sessionRepo, byAgentId.id, {
+                exit_code: exitCode,
+                exited_at: new Date().toISOString(),
+              });
+            }
           }
         }
 

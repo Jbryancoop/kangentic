@@ -52,7 +52,13 @@ The in-memory `SessionStatus` does not include `orphaned` (that is a DB-only con
 | `running` | `orphaned` | App crashes, leftover `running` DB record found on next launch |
 | `queued` | `orphaned` | App crashes, leftover `queued` DB record found on next launch |
 | `suspended` | `running` | Task moved to active column, resumed via `--resume` |
+| `suspended` | `exited` | Replaced by a new session on resume (`retireRecord`) |
 | `orphaned` | `running` | Session recovery on project open |
+| `orphaned` | `exited` | Recovery dedup, or failed recovery (`retireRecord`) |
+| `orphaned` | `suspended` | Pause-on-restart setting upgrades a crashed session (`markRecordSuspended`) |
+| `exited` | `running` | OS-killed (abnormal `exit_code`) session resumed by recovery on project open (`getInterruptedExited`) |
+| `exited` | `suspended` | Interrupted-exited record CAS-upgraded by recovery (non-target / non-auto-spawn / auto-resume-off), or a PTY exit during app shutdown (onExit hardening) |
+| `running` | `suspended` | App shutdown race: PTY exits while `isShuttingDown()` (onExit hardening keeps it resumable) |
 
 ## Spawn Flow
 
@@ -133,12 +139,12 @@ On project open (`session-recovery.ts`):
 
 1. **Prune orphaned worktrees** -- delete tasks whose worktree directories were removed externally
 2. **Mark crash recovery** -- leftover `running` DB records become `orphaned` (skip records with live PTYs to handle re-entrant calls)
-3. **Collect candidates** -- all `suspended` + `orphaned` agent records (any `session_type` except `run_script`)
+3. **Collect candidates** -- all `suspended` + `orphaned` agent records, plus OS-killed **interrupted-exited** records (any `session_type` except `run_script`). An interrupted-exited record is `status='exited'` with an *abnormal* code (`exit_code != 0`, cross-platform: Windows `1073807364`, Unix `137`/`143`/`130`), a captured `agent_session_id`, that is the latest record for its `(task, session_type, isolation)` group (`getInterruptedExited`). This catches a hard shutdown (OS restart, power loss, SIGKILL) where the PTY died and the onExit handler recorded `exited` before the clean-quit path could mark it `suspended`. Clean exit 0 is excluded so a deliberate `/exit` is never resurrected on startup.
 4. **Deduplicate per `(task_id, isolated_swimlane_id)`** -- keep only the latest record for each parallel session (see [Isolated Sessions](#isolated-sessions-per-column-session-model)), mark older same-session duplicates as `exited`. A task may hold multiple sessions; only same-session duplicates are retired.
-5. **Select the current session** -- per task, recover ONLY the session matching the task's current column strategy (`resolveIsolatedSwimlaneId`). Non-target sessions are preserved (an orphaned one is CAS-upgraded to `suspended`) so re-entering their column later continues their own conversation.
-6. **Filter** -- skip tasks in non-auto-spawn columns, skip user-paused sessions (`suspended_by = 'user'`), skip missing CWD, skip deleted/archived tasks
+5. **Select the current session** -- per task, recover ONLY the session matching the task's current column strategy (`resolveIsolatedSwimlaneId`). Non-target sessions are preserved (an orphaned or interrupted-exited one is CAS-upgraded to `suspended`) so re-entering their column later continues their own conversation.
+6. **Filter** -- skip tasks in non-auto-spawn columns (an interrupted-exited record there is CAS-upgraded to `suspended` for future resume, mirroring move-to-Done), skip user-paused sessions (`suspended_by = 'user'`), skip missing CWD, skip deleted/archived tasks
 7. **Resume or respawn** (isolation-scoped via `getLatestForTaskByTypeAndIsolation`):
-   - Suspended/orphaned with `agent_session_id` -- use `--resume` (attempts to restore conversation)
+   - Suspended/orphaned/interrupted-exited with `agent_session_id` -- use `--resume` (attempts to restore conversation)
    - No session ID -- fresh `--session-id` with prompt from matching `spawn_agent` action
 8. **Reconcile** -- spawn fresh agents for tasks in auto_spawn columns with no session at all (skips user-paused tasks); fresh rows are tagged with the column's `isolated_swimlane_id`
 

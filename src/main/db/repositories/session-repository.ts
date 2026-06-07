@@ -187,6 +187,46 @@ export class SessionRepository {
     ).all() as SessionRecord[];
   }
 
+  /**
+   * Get OS-killed ("interrupted") agent sessions: status='exited' with an
+   * ABNORMAL exit code, still resumable, that are the LATEST record for their
+   * (task, session_type, isolation) group.
+   *
+   * A hard shutdown (OS restart, power loss, SIGKILL) kills the PTY before the
+   * clean-quit path can mark the record 'suspended', so the onExit handler
+   * records it 'exited' with an abnormal code (Windows 1073807364, Unix
+   * 137/143/130). Those rows are invisible to getResumable()/getOrphaned(), so
+   * startup recovery would otherwise abandon the conversation and spawn a fresh
+   * empty session. This gather routes them through the same recovery pipeline.
+   *
+   * The abnormal predicate is the cross-platform `exit_code != 0` (treats every
+   * OS's kill code uniformly; deliberately not keyed to any specific code). A
+   * null code and a clean exit 0 are excluded: startup resumes interrupted
+   * agents only, never ones the user deliberately /exit-ed. The latest-in-group
+   * subquery prevents resurrecting an older abnormal session that a newer record
+   * of any status (e.g. a later clean exit) has shadowed. `IS` is SQLite
+   * null-safe equality, so the isolation match folds NULL (main) correctly.
+   *
+   * On the rare tie where two same-group records share an identical started_at,
+   * both are returned; the startup dedup keeps one per track downstream.
+   */
+  getInterruptedExited(): SessionRecord[] {
+    return this.db.prepare(
+      `SELECT * FROM sessions AS s
+       WHERE s.status = 'exited'
+         AND s.session_type != 'run_script'
+         AND s.agent_session_id IS NOT NULL
+         AND s.exit_code IS NOT NULL
+         AND s.exit_code != 0
+         AND s.started_at = (
+           SELECT MAX(s2.started_at) FROM sessions AS s2
+           WHERE s2.task_id = s.task_id
+             AND s2.session_type = s.session_type
+             AND s2.isolated_swimlane_id IS s.isolated_swimlane_id
+         )`
+    ).all() as SessionRecord[];
+  }
+
   /** Delete all session records for a given task */
   deleteByTaskId(taskId: string): void {
     this.db.prepare('DELETE FROM sessions WHERE task_id = ?').run(taskId);

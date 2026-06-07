@@ -22,10 +22,14 @@ import { startStartupTimer } from './timing';
  *
  * Steps:
  *  1. Mark any leftover 'running' DB records as 'orphaned' (crash recovery).
- *  2. Collect all suspended + orphaned session records.
- *  3. Deduplicate: keep only the LATEST record per task_id.
+ *  2. Collect all suspended + orphaned records, plus OS-killed "interrupted"
+ *     records: status='exited' with an abnormal code (hard shutdown beat the
+ *     clean-quit suspend; see getInterruptedExited). All three feed the same
+ *     dedup/resume pipeline so autoSpawnTasks stays the pure-fresh fallback.
+ *  3. Deduplicate: keep only the LATEST record per (task_id, isolated_swimlane_id).
  *  4. For each candidate, verify the task exists AND is NOT in a Backlog/Done
- *     column. Skip and mark exited otherwise.
+ *     column. Skip otherwise: retire the record, or preserve an OS-killed
+ *     interrupted-exited record as suspended for future resume.
  *  5. Detect the agent CLI, build the command, and spawn a new PTY.
  *  6. Mark old records as exited; insert fresh records for the new PTYs.
  */
@@ -59,10 +63,14 @@ export async function resumeSuspendedSessions(
     sessionRepo.markAllRunningAsOrphaned();
   }
 
-  // 2. Gather ALL recoverable session records
+  // 2. Gather ALL recoverable session records. Interrupted-exited records are
+  //    OS-killed sessions the clean-quit path never marked 'suspended'; they
+  //    flow through the same pipeline below so they resume instead of being
+  //    abandoned for a fresh empty session.
   const suspended = sessionRepo.getResumable();
   const orphaned = sessionRepo.getOrphaned();
-  const allRecords = [...suspended, ...orphaned];
+  const interruptedExited = sessionRepo.getInterruptedExited();
+  const allRecords = [...suspended, ...orphaned, ...interruptedExited];
   if (allRecords.length === 0) {
     done(0);
     return;
@@ -104,11 +112,12 @@ export async function resumeSuspendedSessions(
 
   // 3b. Per task, recover ONLY the session matching the task's CURRENT column
   //     strategy. Non-target sessions are PRESERVED (never retired) so re-entering
-  //     their column later continues their own conversation; an orphaned
-  //     non-target session (live at crash) is CAS-upgraded to 'suspended' so it is
-  //     not reprocessed on the next startup but stays resumable. One PTY per task
-  //     means at most one session was live at crash, and the task cannot move
-  //     while the app is down, so that session IS the current column's target.
+  //     their column later continues their own conversation; an orphaned (live at
+  //     crash) or interrupted-exited (OS-killed) non-target session is
+  //     CAS-upgraded to 'suspended' so it is not reprocessed on the next startup
+  //     but stays resumable. One PTY per task means at most one session was live
+  //     at crash, and the task cannot move while the app is down, so that session
+  //     IS the current column's target.
   const toRecover: SessionRecord[] = [];
   let preservedSessions = 0;
   for (const record of latestByTaskSession.values()) {
@@ -122,7 +131,7 @@ export async function resumeSuspendedSessions(
     if (record.isolated_swimlane_id === targetIsolatedSwimlaneId) {
       toRecover.push(record);
     } else {
-      if (record.status === 'orphaned') {
+      if (record.status === 'orphaned' || record.status === 'exited') {
         markRecordSuspended(sessionRepo, record.id, 'system');
       }
       preservedSessions++;
@@ -158,7 +167,15 @@ export async function resumeSuspendedSessions(
     }
 
     if (excludedLaneIds.has(task.swimlane_id)) {
-      if (record.status !== 'suspended') {
+      if (record.status === 'exited') {
+        // OS-killed session whose task sits in a non-auto-spawn column (To Do /
+        // Done): preserve it as 'suspended' for future resume, mirroring the
+        // move-to-Done path, rather than leaving an abnormal 'exited' row that
+        // gets re-gathered every startup.
+        markRecordSuspended(sessionRepo, record.id, 'system');
+      } else if (record.status !== 'suspended') {
+        // orphaned (crashed) records keep the pre-existing retire behavior here;
+        // only the OS-killed exited carve-out above is preserved for resume.
         retireRecord(sessionRepo, record.id);
       }
       skipped++;
@@ -171,11 +188,11 @@ export async function resumeSuspendedSessions(
     // still resumes normally - the 'user' marker is reserved for explicit
     // pauses via the Pause button (see spawnAgent's user-pause guard).
     //
-    // For crashed (orphaned) records we atomically transition to 'suspended'
-    // so we don't re-process them on next startup. If the CAS fails
-    // (concurrent retire), skip quietly.
+    // For crashed (orphaned) or OS-killed (interrupted-exited) records we
+    // atomically transition to 'suspended' so we don't re-process them on next
+    // startup. If the CAS fails (concurrent retire), skip quietly.
     if (!autoResumeSessionsOnRestart) {
-      if (record.status === 'orphaned') {
+      if (record.status === 'orphaned' || record.status === 'exited') {
         const upgraded = markRecordSuspended(sessionRepo, record.id, 'system');
         if (!upgraded) {
           skipped++;

@@ -65,6 +65,8 @@ vi.mock('../../src/main/db/repositories/session-repository', () => {
   class FakeSessionRepository {
     getResumable = () => sessionRepoGetResumable();
     getOrphaned = () => sessionRepoGetOrphaned();
+    // OS-killed gather: no interrupted-exited records in these tests.
+    getInterruptedExited = () => [] as SessionRecord[];
     markAllRunningAsOrphaned = () => sessionRepoMarkAllRunningAsOrphaned();
     markRunningAsOrphanedExcluding = (...args: unknown[]) =>
       sessionRepoMarkRunningAsOrphanedExcluding(...args);

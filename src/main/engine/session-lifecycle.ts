@@ -11,12 +11,15 @@ import type { SuspendedBy } from '../../shared/types';
 // Valid transitions:
 //   queued     → running    (slot opened)
 //   queued     → exited     (cancelled before start)
-//   running    → suspended  (user pause, move to Done, auto_spawn=false)
+//   running    → suspended  (user pause, move to Done, auto_spawn=false, or a
+//                            PTY exit during app shutdown via onExit hardening)
 //   running    → exited     (Claude exits naturally, crash, killed)
 //   suspended  → exited     (replaced by new session on resume)
 //   orphaned   → exited     (recovery dedup, or failed recovery)
 //   orphaned   → suspended  (pause-on-restart setting upgrades crashed sessions)
-//   exited     → suspended  (preserve for future resume on move to Done)
+//   exited     → suspended  (preserve for future resume on move to Done; also
+//                            startup recovery upgrading an OS-killed
+//                            interrupted-exited record)
 // ---------------------------------------------------------------------------
 
 /**
@@ -39,8 +42,10 @@ export function markRecordExited(
 
 /**
  * Atomically mark a session record as suspended. Accepts 'running', 'exited',
- * or 'orphaned' as the source status. 'exited' covers Claude natural exit;
- * 'orphaned' covers the pause-on-restart upgrade for crash-recovered records.
+ * or 'orphaned' as the source status. 'running' covers user pause, move to Done,
+ * and the onExit shutdown-race hardening; 'exited' covers preserving a stopped
+ * or OS-killed (interrupted-exited) record for future resume; 'orphaned' covers
+ * the pause-on-restart upgrade for crash-recovered records.
  */
 export function markRecordSuspended(
   sessionRepo: SessionRepository,
