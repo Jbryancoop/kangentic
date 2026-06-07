@@ -18,9 +18,9 @@ import { ActivityDetection } from '../../../../shared/types';
 /**
  * Factory Droid CLI adapter.
  *
- * Empirically validated against Droid 0.109.1 -- see
- * `scripts/probe-droid.js` for the full battery and
- * `.droid-probe-report.md` for the latest run output. The probe
+ * Empirically validated against Droid 0.109.1. Run
+ * `scripts/probe-droid.js` to regenerate the full probe report
+ * locally (its output is gitignored, not committed). The probe
  * confirms:
  *   - Detection via `droid` on PATH (`droid --version` -> bare semver)
  *   - BYOK auth via `customModels[]` in `~/.factory/settings.json`

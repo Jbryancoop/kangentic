@@ -159,7 +159,9 @@ kangentic.local.json
 tests/captures/fixtures/scrollback-*.json
 
 # Ad-hoc empirical capture traces (e.g. PTY output, parser probes). These
-# are written by scripts/verify-*.js / scripts/capture-*.js for local
-# bug-reproduction work and are not checked in.
+# are written by scripts/verify-*.js / scripts/capture-*.js / scripts/probe-*.js
+# for local bug-reproduction work and are not checked in. Probe reports carry
+# machine-specific paths, so they must never enter this public repo.
 /debug-traces/
+*-probe-report.md
 .opencode/plugins/kangentic-activity.mjs
