@@ -175,6 +175,7 @@ session; rules with one load when you touch matching files. Each rule names its 
 - `docs-stay-in-sync.md` - update docs when changing anchor source files (types, IPC, migrations, adapters, settings).
 - `skill-authoring.md` - when to fork a skill and how to route agents (`.claude/`).
 - `board-config-parity.md` - team-shared swimlane fields must round-trip to `kangentic.json`.
+- `external-scripts-parity.md` - unbundled bridge/plugin scripts must register in `EXTERNAL_SCRIPTS` and be copied by both `build.js` and `dev.js`.
 
 **Local overrides:** there is no per-rule local file. Put machine-specific instruction
 overrides in a gitignored `CLAUDE.local.md` at the project root.

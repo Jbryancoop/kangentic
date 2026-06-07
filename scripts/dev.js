@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const esbuild = require('esbuild');
 const rendererOptimizeDeps = require('./renderer-optimize-deps.json');
+const { copyExternalScripts } = require('./copy-external-scripts');
 
 const projectDir = path.resolve(__dirname, '..');
 
@@ -110,6 +111,14 @@ async function start() {
   ]);
   console.timeEnd('[dev] esbuild');
   console.log('[dev] Main + preload built');
+
+  // Copy external scripts (bridges + adapter plugins) next to the bundle, the
+  // same step scripts/build.js runs. Without this, dev runs whatever stale copy
+  // a prior `npm run build` left in `.vite/build/`, silently shadowing live
+  // source. Shared copy list keeps dev and prod identical. See
+  // .claude/rules/external-scripts-parity.md.
+  copyExternalScripts(projectDir);
+  console.log('[dev] Copied external scripts (bridges + adapter plugins)');
 
   // The MCP server is now hosted in-process by Electron main (see
   // src/main/agent/mcp-http-server.ts), so we no longer need to bundle a

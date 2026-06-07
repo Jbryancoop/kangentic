@@ -2,6 +2,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const esbuild = require('esbuild');
+const { copyExternalScripts } = require('./copy-external-scripts');
 
 const projectDir = path.resolve(__dirname, '..');
 
@@ -78,28 +79,13 @@ async function build() {
   ]);
   console.log('[build] Main + preload built');
 
-  // Copy bridge scripts (external scripts invoked by Claude Code, not bundled)
-  fs.copyFileSync(
-    path.join(projectDir, 'src/main/agent/status-bridge.js'),
-    path.join(projectDir, '.vite/build/status-bridge.js'),
-  );
-  fs.copyFileSync(
-    path.join(projectDir, 'src/main/agent/event-bridge.js'),
-    path.join(projectDir, '.vite/build/event-bridge.js'),
-  );
-  console.log('[build] Copied status-bridge.js + event-bridge.js');
-
-  // Copy adapter-owned plugin files. These ship as raw .mjs sources so
-  // Kangentic can copy them into the user's project at spawn time
-  // (e.g. OpenCode auto-loads plugins from `.opencode/plugins/`).
-  // resolvePluginScript() looks for them under `<bundle>/plugins/<adapter>/`.
-  const pluginsOutputDir = path.join(projectDir, '.vite/build/plugins/opencode');
-  fs.mkdirSync(pluginsOutputDir, { recursive: true });
-  fs.copyFileSync(
-    path.join(projectDir, 'src/main/agent/adapters/opencode/plugin/kangentic-activity.mjs'),
-    path.join(pluginsOutputDir, 'kangentic-activity.mjs'),
-  );
-  console.log('[build] Copied adapter plugin scripts');
+  // Copy external scripts (bridges + adapter plugins) that run outside the
+  // esbuild bundle as raw .js/.mjs and must sit next to the bundle. The copy
+  // list is the single source of truth in scripts/copy-external-scripts.js,
+  // shared with scripts/dev.js so the two can never drift. See
+  // .claude/rules/external-scripts-parity.md.
+  copyExternalScripts(projectDir);
+  console.log('[build] Copied external scripts (bridges + adapter plugins)');
 
   // The kangentic MCP server now runs in-process inside Electron main
   // (see src/main/agent/mcp-http-server.ts), so we no longer bundle a
