@@ -258,7 +258,7 @@ The coverage **audit** and **write** operations normally run as a single `test-b
 
 ### Workflow script
 
-The driver passes this script to the `Workflow` tool. `auditPromptForTier`, `gapSkepticPrompt`, and `writePrompt` embed the criteria above; `dedupeGaps` is plain JS.
+The driver passes this script to the `Workflow` tool. It **inlines** the gathered context (changed files, diff, test results, write-mode flag) as literal `const`s when authoring the script, or reads them **defensively** from `args` as shown below - never a bare injected global. `auditPromptForTier`, `gapSkepticPrompt`, and `writePrompt` embed the criteria above; `dedupeGaps` is plain JS.
 
 ```javascript
 export const meta = {
@@ -287,7 +287,23 @@ const gapVerdictSchema = { type: "object", required: ["worthTesting", "confidenc
   },
 };
 
-// Inputs the driver passes in: diffText, changedFiles[], testResults, writeMode (bool)
+// --- Inputs (defensive: a dynamic workflow must NEVER fail on input plumbing) ---
+// PREFER inlining the driver-gathered context as literal consts when authoring this
+// script (deterministic, the pattern that survives). A structured object passed via the
+// Workflow `args` input does NOT reliably reach the script's `args` global, and a
+// top-level `args.foo.join(...)` throws BEFORE any phase runs, failing the whole run.
+// So never call a method on an injected field at top level: read `args` only behind a
+// guard, default every field, and bail soft when there is nothing to audit.
+const input = (typeof args === "object" && args !== null) ? args : {};
+const changedFiles = Array.isArray(input.changedFiles) ? input.changedFiles : [];
+const diffText = typeof input.diffText === "string" ? input.diffText : "";
+const testResults = typeof input.testResults === "string" ? input.testResults : "";
+const writeMode = input.writeMode === true;
+if (changedFiles.length === 0 && diffText === "") {
+  log("test-coverage-heavy: no changed files or diff to audit; returning no gaps.");
+  return { gaps: [] };
+}
+
 phase("audit");
 const TIERS = ["Unit", "UI", "E2E"];
 // Model selection (see "## Rules"): auditors, skeptics, and the writer run on Sonnet, not
@@ -456,6 +472,7 @@ When `broadenOnUnmapped` fires repeatedly for the same source path, that's the s
 - **Build only when needed.** Only run `npm run build` when E2E tests are selected.
 - **Typecheck is a gate.** Always typecheck first. If it fails, stop immediately.
 - **Domain map is best-effort, not a safety contract.** CI runs the full suite as the backstop. If you suspect a missed mapping, run `/test broad` or `/test all`.
+- **A dynamic workflow must never fail on input plumbing.** The Heavy Path script must not perform top-level work that can throw on missing or misshaped input - that aborts the whole run before any phase executes (a structured object passed via the `Workflow` `args` input does not reliably reach the script's `args` global, so a top-level `args.foo.join(...)` throws). Inline the driver-gathered context as literal `const`s, or read `args` only behind a `typeof`/`Array.isArray` guard with a default for every field, and `log()` + early-`return { gaps: [] }` when there is nothing to audit. A coverage audit is advisory; it degrades to "no gaps", it never crashes the run.
 - **Use dedicated tools.** Use `Read`, `Glob`, `Grep` for file operations. Reserve `Bash` for `npm`, `npx`, and `git` commands only.
 
 ## Allowed Tools

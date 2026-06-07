@@ -196,4 +196,40 @@ describe('resolveAutoFocusTarget', () => {
       })).toBe('C');
     });
   });
+
+  // ── Permission is treated like idle (requires user interaction) ──
+  describe('when a session needs permission', () => {
+    it('switches to the permission session when viewing a thinking session', () => {
+      expect(resolveAutoFocusTarget({
+        sessionId: 'B',
+        newState: 'permission',
+        currentActiveSessionId: 'A',
+        dialogSessionId: null,
+        sessionActivity: { A: 'thinking', B: 'permission' },
+        sessions: [makeSession('A'), makeSession('B')],
+      })).toBe('B');
+    });
+
+    it('does NOT switch when already viewing a permission session', () => {
+      expect(resolveAutoFocusTarget({
+        sessionId: 'B',
+        newState: 'idle',
+        currentActiveSessionId: 'A',
+        dialogSessionId: null,
+        sessionActivity: { A: 'permission', B: 'idle' },
+        sessions: [makeSession('A'), makeSession('B')],
+      })).toBeNull();
+    });
+
+    it('switches to a permission session when the viewed session goes thinking', () => {
+      expect(resolveAutoFocusTarget({
+        sessionId: 'A',
+        newState: 'thinking',
+        currentActiveSessionId: 'A',
+        dialogSessionId: null,
+        sessionActivity: { A: 'thinking', B: 'permission' },
+        sessions: [makeSession('A'), makeSession('B')],
+      })).toBe('B');
+    });
+  });
 });

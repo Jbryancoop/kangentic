@@ -277,6 +277,32 @@ describe('derivePanelSessionId', () => {
     expect(result).toBe('sess-idle');
   });
 
+  it('prefers a permission-blocked session (awaiting user) over a thinking one when activeSessionId is stale', () => {
+    // permission, like idle, requires user interaction, so it is a focus target.
+    const permissionSession = makeSession({
+      id: 'sess-permission',
+      status: 'running',
+      projectId: 'proj-default',
+    });
+    const thinkingSession = makeSession({
+      id: 'sess-thinking',
+      status: 'running',
+      projectId: 'proj-default',
+    });
+    const result = derivePanelSessionId(
+      makePanelInput({
+        activeSessionId: 'sess-stale',
+        sessions: [thinkingSession, permissionSession],
+        currentProjectId: 'proj-default',
+        sessionActivity: {
+          'sess-thinking': 'thinking',
+          'sess-permission': 'permission',
+        },
+      }),
+    );
+    expect(result).toBe('sess-permission');
+  });
+
   it('falls back to first running session when no idle session exists', () => {
     const sessionA = makeSession({
       id: 'sess-a',

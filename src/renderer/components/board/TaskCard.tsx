@@ -15,6 +15,7 @@ import { useBacklogStore } from '../../stores/backlog-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useToastStore } from '../../stores/toast-store';
 import { useTaskProgress } from '../../utils/task-progress';
+import { requiresUserInteraction, isActive } from '../../../shared/activity-state';
 import { getProgressColor } from '../../utils/color-lerp';
 import { LabelPills } from '../Pill';
 import type { Task } from '../../../shared/types';
@@ -229,11 +230,11 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
   }
 
   // A running session is in one of three states (idle, thinking, permission).
-  // See task-progress.ts for how the fallback is resolved. Permission is
-  // grouped with idle for the "agent is paused, needs attention" indicator.
-  const isIdle = displayState.kind === 'running'
-    && (displayState.activity === 'idle' || displayState.activity === 'permission');
-  const isThinking = displayState.kind === 'running' && displayState.activity === 'thinking';
+  // See task-progress.ts for how the fallback is resolved. The idle-vs-active
+  // bucketing (permission grouped with idle as "needs attention") lives in
+  // shared/activity-state.ts so every consumer agrees.
+  const isIdle = displayState.kind === 'running' && requiresUserInteraction(displayState.activity);
+  const isThinking = displayState.kind === 'running' && isActive(displayState.activity);
 
   // Board-level density: compact prop (from backlog) takes precedence, otherwise use config
   const boardDensity = compact ? 'compact' : cardDensity;

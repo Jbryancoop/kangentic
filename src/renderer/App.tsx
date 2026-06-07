@@ -12,6 +12,7 @@ import { useProjectSwitchEffect } from './hooks/useProjectSwitchEffect';
 import { useAgentDrivenInvalidation } from './hooks/useAgentDrivenInvalidation';
 import { invalidateProject } from './stores/project-cache';
 import { resolveAutoFocusTarget } from './utils/auto-focus';
+import { requiresUserInteraction } from '../shared/activity-state';
 import { bumpHmrGeneration } from './utils/hmr-generation';
 import {
   autoNameTimers,
@@ -395,8 +396,11 @@ export function App() {
             }
           }
 
-          // OS notification + taskbar flash for idle/permission sessions not visible to the user
-          if (state === 'idle' || state === 'permission') {
+          // OS notification + taskbar flash for sessions awaiting the user
+          // (idle or permission) that are not visible. Bucketing via
+          // shared/activity-state.ts; the permission-specific message text below
+          // still keys off the granular state.
+          if (requiresUserInteraction(state)) {
             const notifyConfig = useConfigStore.getState().config.notifications;
             if (notifyConfig.desktop.onAgentIdle) {
               const session = sessionStore.sessions.find((s) => s.id === sessionId);
@@ -406,6 +410,7 @@ export function App() {
                   const project = useProjectStore.getState().projects.find((p) => p.id === session.projectId);
                   const projectName = project?.name ?? 'A project';
                   const label = session.transient ? 'Command Terminal' : (taskTitle ?? 'A task');
+                  // activity-state-ok: granular permission-vs-idle message text, not an idle-vs-active bucket
                   const body = state === 'permission' ? `Needs permission: ${projectName}` : projectName;
                   const clickTaskId = session.transient ? COMMAND_TERMINAL_NOTIFICATION_TASK_ID : (taskId ?? '');
                   sendNotification(sessionId, label, body, session.projectId, clickTaskId);

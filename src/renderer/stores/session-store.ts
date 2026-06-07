@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { ACTIVITY_TAB, type Session, type SessionUsage, type SessionEvent } from '../../shared/types';
+import { requiresUserInteraction, isActive } from '../../shared/activity-state';
 import { useProjectStore } from './project-store';
 import { useConfigStore } from './config-store';
 import type { SessionStore } from './session-store/types';
@@ -596,8 +597,9 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
       if (reason !== undefined) {
         updates.sessionActivityReason = { ...s.sessionActivityReason, [sessionId]: reason };
       }
-      // When session resumes thinking, remove from seen so next idle is fresh
-      if (state === 'thinking') {
+      // When the session resumes active work, remove from seen so the next
+      // idle/permission pause notifies fresh.
+      if (isActive(state)) {
         const { [sessionId]: _removed, ...rest } = s.seenIdleSessions;
         updates.seenIdleSessions = rest;
       }
@@ -684,7 +686,7 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
   markIdleSessionsSeen: (projectId) => {
     const { sessions, sessionActivity, seenIdleSessions } = get();
     const idleSessionIds = sessions
-      .filter((s) => s.projectId === projectId && s.status === 'running' && sessionActivity[s.id] === 'idle')
+      .filter((s) => s.projectId === projectId && s.status === 'running' && requiresUserInteraction(sessionActivity[s.id]))
       .map((s) => s.id);
     if (idleSessionIds.length === 0) return;
     const updated = { ...seenIdleSessions };
@@ -696,7 +698,7 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
 
   markSingleIdleSessionSeen: (sessionId) => {
     const { sessionActivity, seenIdleSessions } = get();
-    if (sessionActivity[sessionId] === 'idle' && !seenIdleSessions[sessionId]) {
+    if (requiresUserInteraction(sessionActivity[sessionId]) && !seenIdleSessions[sessionId]) {
       set({ seenIdleSessions: { ...seenIdleSessions, [sessionId]: true } });
     }
   },

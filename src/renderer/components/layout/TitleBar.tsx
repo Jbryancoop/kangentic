@@ -4,6 +4,7 @@ import { useProjectStore } from '../../stores/project-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useSessionStore } from '../../stores/session-store';
 import { isWorktreePath } from '../../../shared/git-utils';
+import { requiresUserInteraction } from '../../../shared/activity-state';
 import logoSrc from '../../assets/logo-32.png';
 
 const isMac = window.electronAPI.platform === 'darwin';
@@ -25,7 +26,7 @@ export function TitleBar({ onQuickSession, onOpenSearch, commandBarOpen }: Title
   );
 
   const hasBackgroundSession = !!transientSessionId && !commandBarOpen;
-  const transientIsIdle = hasBackgroundSession && transientActivity === 'idle';
+  const transientIsIdle = hasBackgroundSession && requiresUserInteraction(transientActivity);
 
   const isWorktree = currentProject?.path ? isWorktreePath(currentProject.path) : false;
 

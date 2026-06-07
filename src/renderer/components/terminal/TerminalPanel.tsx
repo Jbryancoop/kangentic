@@ -12,6 +12,7 @@ import { slugify } from '../../utils/slugify';
 import { shellDisplayName } from '../../utils/shell-display-name';
 import { ACTIVITY_TAB } from '../../../shared/types';
 import type { ActivityState } from '../../../shared/types';
+import { requiresUserInteraction, isActive } from '../../../shared/activity-state';
 
 interface TerminalPanelProps {
   collapsed?: boolean;
@@ -78,7 +79,7 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
       : activeSessions.some((s) => s.id === activeSessionId)
         ? activeSessionId
         : activeSessions.length > 0
-          ? (activeSessions.find((s) => sessionActivity[s.id] === 'idle')?.id
+          ? (activeSessions.find((s) => requiresUserInteraction(sessionActivity[s.id]))?.id
               ?? activeSessions[0].id)
           : null;
 
@@ -91,7 +92,7 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
 
   // Mark the active session as seen when it becomes the selected tab
   useEffect(() => {
-    if (effectiveActiveId && effectiveActiveId !== ACTIVITY_TAB && sessionActivity[effectiveActiveId] === 'idle') {
+    if (effectiveActiveId && effectiveActiveId !== ACTIVITY_TAB && requiresUserInteraction(sessionActivity[effectiveActiveId])) {
       markSingleIdleSessionSeen(effectiveActiveId);
     }
   }, [effectiveActiveId, sessionActivity, markSingleIdleSessionSeen]);
@@ -160,9 +161,9 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
                     : 'text-fg-faint hover:text-fg-tertiary hover:bg-surface-raised/50'
                 }`}
               >
-                {session.status === 'running' && sessionActivity[session.id] === 'thinking' ? (
+                {session.status === 'running' && isActive(sessionActivity[session.id]) ? (
                   <Loader2 size={8} className="text-green-400 animate-spin" />
-                ) : session.status === 'running' && (sessionActivity[session.id] === 'idle' || sessionActivity[session.id] === 'permission') ? (
+                ) : session.status === 'running' && requiresUserInteraction(sessionActivity[session.id]) ? (
                   <div className={`w-1.5 h-1.5 rounded-full bg-amber-400${
                     effectiveActiveId !== session.id && !seenIdleSessions[session.id] ? ' animate-pulse' : ''
                   }`} />
@@ -229,9 +230,9 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
                 instances from N to 1, eliminating WebGL context exhaustion. */}
             {activeSessions
               .filter((session) => {
-                const isActive = effectiveActiveId === session.id;
+                const isActiveTab = effectiveActiveId === session.id;
                 const ownedByDialog = dialogSessionId === session.id;
-                return isActive && !ownedByDialog;
+                return isActiveTab && !ownedByDialog;
               })
               .map((session) => (
                 <div

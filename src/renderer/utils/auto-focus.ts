@@ -1,5 +1,6 @@
 import { ACTIVITY_TAB } from '../../shared/types';
 import type { ActivityState, SessionStatus } from '../../shared/types';
+import { requiresUserInteraction } from '../../shared/activity-state';
 
 interface AutoFocusInput {
   sessionId: string;
@@ -29,16 +30,15 @@ export function resolveAutoFocusTarget(input: AutoFocusInput): string | null {
     return null;
   }
 
-  // Treat 'permission' like 'idle' for focus purposes - the agent is paused
-  // and the user should see it. The renderer differentiates the two visually
-  // (lock icon vs idle dot) but both qualify as "ready for user attention".
-  const isPaused = (state: ActivityState) => state === 'idle' || state === 'permission';
-
-  if (isPaused(newState)) {
+  // "Paused" (requires user interaction) groups 'idle' and 'permission' - the
+  // agent is waiting on the human and the user should see it. The single source
+  // of truth for that bucketing is shared/activity-state.ts; the renderer still
+  // differentiates the two visually (lock icon vs idle dot) elsewhere.
+  if (requiresUserInteraction(newState)) {
     // Don't switch if user is already viewing a running paused session
     const isViewingPausedSession =
       currentActiveSessionId !== null &&
-      isPaused(sessionActivity[currentActiveSessionId] ?? 'idle') &&
+      requiresUserInteraction(sessionActivity[currentActiveSessionId] ?? 'idle') &&
       sessions.some((s) => s.id === currentActiveSessionId && s.status === 'running');
     if (!isViewingPausedSession) {
       return sessionId;
@@ -46,10 +46,10 @@ export function resolveAutoFocusTarget(input: AutoFocusInput): string | null {
     return null;
   }
 
-  // newState === 'thinking' -- only react if the viewed session went to thinking
+  // newState is active (thinking) -- only react if the viewed session went active
   if (currentActiveSessionId === sessionId) {
     const otherPaused = sessions.find(
-      (s) => s.id !== sessionId && s.status === 'running' && isPaused(sessionActivity[s.id] ?? 'idle'),
+      (s) => s.id !== sessionId && s.status === 'running' && requiresUserInteraction(sessionActivity[s.id] ?? 'idle'),
     );
     return otherPaused?.id ?? null;
   }

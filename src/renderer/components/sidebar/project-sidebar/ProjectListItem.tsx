@@ -5,6 +5,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { MoreHorizontal } from 'lucide-react';
 import { SidebarActivityCounts } from './SidebarActivityCounts';
 import { useSessionStore } from '../../../stores/session-store';
+import { requiresUserInteraction } from '../../../../shared/activity-state';
 import type { Project } from '../../../../shared/types';
 
 export interface ProjectListItemProps {
@@ -39,7 +40,7 @@ function ProjectListItemImpl({
       for (const session of store.sessions) {
         if (session.status !== 'running' || session.transient) continue;
         if (session.projectId !== project.id) continue;
-        if (store.sessionActivity[session.id] === 'idle') {
+        if (requiresUserInteraction(store.sessionActivity[session.id])) {
           idleSessionsCount += 1;
         } else {
           thinkingSessionsCount += 1;

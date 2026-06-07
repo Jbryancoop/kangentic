@@ -435,6 +435,48 @@ test.describe('Project Session Scope', () => {
     }
   });
 
+  test('permission-blocked sessions count as idle, not active, in the sidebar', async () => {
+    // Regression for the sidebar active/idle miscount: a session whose activity
+    // is 'permission' (paused on a permission / AskUserQuestion prompt) requires
+    // user interaction and must be bucketed with idle (amber), not active (green).
+    // Project Alpha's base config already has 1 idle session; adding a permission
+    // session must make the amber count read "2" with NO green active count.
+    const preConfig = twoProjectPreConfig() + `
+      window.__mockPreConfigure(function (state) {
+        var ts = new Date().toISOString();
+        state.sessions.push({
+          id: 'sess-permission-1',
+          taskId: 'task-permission-1',
+          projectId: '${PROJECT_A_ID}',
+          pid: 5001,
+          status: 'running',
+          shell: 'bash',
+          cwd: '/mock/project-alpha',
+          startedAt: ts,
+          exitCode: null,
+        });
+        state.activityCache['sess-permission-1'] = 'permission';
+      });
+    `;
+    const { browser, page } = await launchWithState(preConfig);
+
+    try {
+      await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
+
+      const alphaRow = page.locator('[role="button"]:has-text("Project Alpha")');
+
+      // Amber idle span counts both the base idle session and the permission one.
+      const idleCountSpan = alphaRow.locator('span.text-amber-400');
+      await expect(idleCountSpan).toBeVisible();
+      await expect(idleCountSpan).toContainText('2');
+
+      // The permission session must NOT be counted as active -- no green span.
+      await expect(alphaRow.locator('span.text-green-400')).toHaveCount(0);
+    } finally {
+      await browser.close();
+    }
+  });
+
   test('transient sessions are excluded from sidebar activity counts', async () => {
     // A session with transient=true must NOT contribute to the idle or thinking
     // count even if its activityCache entry says 'idle'.

@@ -1,5 +1,6 @@
-import type { Session } from '../../shared/types';
+import type { Session, ActivityState } from '../../shared/types';
 import { ACTIVITY_TAB } from '../../shared/types';
+import { requiresUserInteraction } from '../../shared/activity-state';
 
 export interface DeriveFocusedSessionIdsInput {
   activeView: string;
@@ -56,7 +57,7 @@ export interface DerivePanelSessionIdInput {
   activeSessionId: string | null;
   sessions: Session[];
   currentProjectId: string | null;
-  sessionActivity: Record<string, string>;
+  sessionActivity: Record<string, ActivityState>;
 }
 
 /**
@@ -88,7 +89,7 @@ export function derivePanelSessionId(input: DerivePanelSessionIdInput): string |
   if (runningSessions.length === 0) return null;
 
   return (
-    runningSessions.find((session) => input.sessionActivity[session.id] === 'idle')?.id ??
+    runningSessions.find((session) => requiresUserInteraction(input.sessionActivity[session.id]))?.id ??
     runningSessions[0].id
   );
 }
