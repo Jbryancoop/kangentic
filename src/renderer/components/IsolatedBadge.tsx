@@ -12,7 +12,7 @@ export const IsolatedBadge = React.memo(function IsolatedBadge({ className, titl
   return (
     <span
       title={title ?? 'Isolated session - separate context from the main conversation'}
-      className={`inline-flex items-center text-[11px] text-accent-fg bg-surface-hover/60 border border-edge/50 rounded px-1.5 py-0.5 leading-none flex-shrink-0 ${className ?? ''}`}
+      className={['inline-flex items-center text-[11px] text-accent-fg bg-surface-hover/60 border border-edge/50 rounded px-1.5 py-0.5 leading-none flex-shrink-0', className].filter(Boolean).join(' ')}
       {...rest}
     >
       Isolated
