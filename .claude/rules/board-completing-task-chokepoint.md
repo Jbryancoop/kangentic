@@ -1,6 +1,9 @@
 ---
 paths:
   - "src/renderer/components/board/**"
+  - "src/renderer/hooks/useBoardDragDrop.ts"
+  - "src/renderer/stores/board-store/done-drop-confirm-slice.ts"
+  - "src/renderer/stores/board-store/task-completion-slice.ts"
 ---
 # Rule: hide in-flight (completing) tasks at the single lane chokepoint
 
@@ -14,6 +17,14 @@ the card flashes back in its source column for a frame before vanishing into Don
 shipped and regressed 5+ times because the guard was applied per-lane (only `DoneSwimlane`
 filtered `completingTaskIds`, which protected the wrong lane) instead of at the one place every
 lane's task list is produced.
+
+There is a second, earlier flash window with the same shape: a worktree-backed task awaits
+`git.checkPendingChanges(...)` (~100ms) in `handleDragEnd` *before* `setCompletingTask` runs. On
+release dnd-kit restores the original sortable card to full opacity in its source lane, so during
+that await the card sits fully visible there. A task with no worktree skips the await and never
+flashed, which is why `/preview` fixtures (`worktree_path: null`) looked clean while real tasks
+janked. The guard therefore has to be populated the instant a Done drop is detected, not after
+the probe resolves.
 
 ## The rule
 
@@ -31,6 +42,12 @@ mid-flight reload.
 - The producer side is unaffected: the store actions `addCompletingTaskId` /
   `removeCompletingTaskId` and the `completingTaskIds` definition live in the board store
   (`src/renderer/stores/board-store/`) and are the source of truth the chokepoint reads.
+- Populate the guard synchronously the moment a Done drop is detected, BEFORE any `await` in
+  `handleDragEnd` (the `checkPendingChanges` probe). `handleDragEnd` calls `addCompletingTaskId`
+  immediately so the card is filtered out the same tick dnd-kit restores it; releasing happens in
+  `moveTask`'s `finally` (success) or `cancelPendingDone` (the user declines the worktree-delete
+  confirm). Adding it only at `setCompletingTask` (after the probe) is too late and reopens the
+  flash for worktree tasks.
 - Do not "fix" a recurrence by tuning the drop animation, the `DragOverlay` `dropAnimation`, or
   the `FlyingCard` again. Those are settled; the durable guard is the chokepoint filter.
 
@@ -42,13 +59,17 @@ mid-flight reload.
 - **Test (behavioral):** `tests/ui/move-to-done-reload-no-source-flash.spec.ts` drags a task to
   Done, fires a `loadBoard()` mid-flight, and asserts the card never reappears in its source
   lane (parametrized across multiple source columns). It goes red the moment the chokepoint
-  guard is removed.
+  guard is removed. `tests/ui/move-to-done-worktree-await-no-source-flash.spec.ts` covers the
+  second window: a worktree task with a slowed `checkPendingChanges` probe must never return to
+  full opacity in its source lane during the await. It goes red if the synchronous
+  `addCompletingTaskId` on drop is removed.
 - **Review:** `/code-review` flags per-lane completing-task filtering on board changes.
 
 ## Scope
 
-Board lane rendering under `src/renderer/components/board/`. The store slice that owns
-`completingTaskIds` (`src/renderer/stores/board-store/task-completion-slice.ts`,
-`task-slice.ts`) is the producer and is out of scope. The singular `completingTask` field (which
-drives the `FlyingCard` animation in `KanbanBoard`) is a different concern and is not governed
-by this rule.
+Board lane rendering under `src/renderer/components/board/`, plus the completing-task lifecycle in
+`useBoardDragDrop.ts` (where the guard is populated on drop) and `done-drop-confirm-slice.ts`
+(where it is released on cancel). The mechanical no-per-lane-filter scan is scoped to
+`src/renderer/components/board/`; the synchronous-hide timing is covered by the behavioral specs.
+The singular `completingTask` field (which drives the `FlyingCard` animation in `KanbanBoard`) is
+a different concern and is not governed by this rule.

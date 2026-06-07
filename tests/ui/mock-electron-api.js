@@ -1544,6 +1544,15 @@
       unsubscribeDiff: function () {},
       onDiffChanged: function () { return function () {}; },
       checkPendingChanges: async function () {
+        // Test hook: simulate a slow git probe so a test can observe the board
+        // during the await window (the real round-trip is ~100ms on a worktree).
+        // Set window.__mockCheckPendingChangesDelayMs before the drag.
+        var delay = (typeof window !== 'undefined' && window.__mockCheckPendingChangesDelayMs) || 0;
+        if (delay) await new Promise(function (resolve) { setTimeout(resolve, delay); });
+        // Test hook: override the result (e.g. to force the confirm dialog).
+        if (typeof window !== 'undefined' && window.__mockPendingChangesResult) {
+          return window.__mockPendingChangesResult;
+        }
         return { hasPendingChanges: false, uncommittedFileCount: 0, unpushedCommitCount: 0 };
       },
     },

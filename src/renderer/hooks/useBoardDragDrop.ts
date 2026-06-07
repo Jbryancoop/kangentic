@@ -85,6 +85,7 @@ function getInsertionIndex(
 export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDragDropParams): UseBoardDragDropResult {
   const moveTask = useBoardStore((s) => s.moveTask);
   const setCompletingTask = useBoardStore((s) => s.setCompletingTask);
+  const addCompletingTaskId = useBoardStore((s) => s.addCompletingTaskId);
   const requestDoneConfirmAnimated = useBoardStore((s) => s.requestDoneConfirmAnimated);
   const requestDoneConfirmDirect = useBoardStore((s) => s.requestDoneConfirmDirect);
   const reorderSwimlanes = useBoardStore((s) => s.reorderSwimlanes);
@@ -428,6 +429,18 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
       const task = state.tasks.find((candidate) => candidate.id === taskId);
       if (!task) return;
 
+      // Hide the card from its source column synchronously, before the async
+      // git probe below. On release dnd-kit restores the original sortable card
+      // to full opacity in its source lane; for a worktree-backed task it would
+      // otherwise sit fully visible there for the ~100ms checkPendingChanges
+      // round-trip (and any gap before setCompletingTask runs), reading as a
+      // flash back to the source column. tasksPerLane filters completingTaskIds,
+      // so adding it now drops the card from every lane this same tick. The
+      // guard is released after the move settles (moveTask's finally) or on
+      // cancel (cancelPendingDone). See
+      // .claude/rules/board-completing-task-chokepoint.md.
+      addCompletingTaskId(taskId);
+
       // Probe for unsaved work whenever a worktree exists. A missing
       // worktree means there is nothing destructive to confirm - the move is
       // purely an archive operation, and the dialog has nothing to warn about.
@@ -498,7 +511,7 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
         variant: 'error',
       });
     }
-  }, [moveTask, setCompletingTask, requestDoneConfirmAnimated, requestDoneConfirmDirect, findSwimlane, swimlanes, swimlaneIds, reorderSwimlanes, reorderTaskInColumn, updateDropHighlight]);
+  }, [moveTask, setCompletingTask, addCompletingTaskId, requestDoneConfirmAnimated, requestDoneConfirmDirect, findSwimlane, swimlanes, swimlaneIds, reorderSwimlanes, reorderTaskInColumn, updateDropHighlight]);
 
   const handleDragCancel = useCallback(() => {
     // Flush any updates that were held while the drag was active.

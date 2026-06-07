@@ -52,8 +52,12 @@ export const createDoneDropConfirmSlice: StateCreator<BoardStore, [], [], DoneDr
     }
   },
   cancelPendingDone: () => {
-    // Full no-op: the drag ended without ever committing the move, so the
-    // task is still in its original column in both the store and the DB.
+    const pending = get().pendingDoneConfirm;
     set({ pendingDoneConfirm: null });
+    // The card was hidden synchronously on drop (addCompletingTaskId in
+    // useBoardDragDrop) so it never flashed in its source column during the git
+    // probe. The move was never committed, so release the guard to restore the
+    // card to its original column.
+    if (pending) get().removeCompletingTaskId(pending.task.id);
   },
 });
