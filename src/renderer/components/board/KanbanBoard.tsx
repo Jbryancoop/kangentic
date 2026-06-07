@@ -248,6 +248,10 @@ export function KanbanBoard() {
   // also covers dropping a new task on Done while the previous one is still
   // flying (the id changes task1 -> task2 without settling at idle).
   const completingTaskId = useBoardStore((s) => s.completingTask?.taskId);
+  // Tasks mid-completion (dropped on Done, flying into the dropzone). Excluded
+  // from every lane below so a loadBoard() racing the ~700ms fly can't re-inject
+  // the task into its source column for a frame. See tasksPerLane.
+  const completingTaskIds = useBoardStore((s) => s.completingTaskIds);
   const priorities = useConfigStore((s) => s.config.backlog.priorities);
   const labelColors = useConfigStore((s) => s.config.backlog.labelColors);
 
@@ -295,6 +299,11 @@ export function KanbanBoard() {
     const fresh = new Map<string, Task[]>();
     for (const lane of swimlanes) fresh.set(lane.id, []);
     for (const task of tasks) {
+      // A completing task belongs to the FlyingCard, not any lane. Skipping it
+      // here (the single lane-bucketing chokepoint) keeps it out of both its
+      // source column and Done for the whole flight, even if a mid-flight
+      // loadBoard() re-injects it at its source swimlane_id from the DB.
+      if (completingTaskIds.has(task.id)) continue;
       if (priorityFilters.size > 0 && !priorityFilters.has(task.priority)) continue;
       if (labelFilters.size > 0 && !(task.labels ?? []).some((label) => labelFilters.has(label))) continue;
       const arr = fresh.get(task.swimlane_id);
@@ -318,7 +327,7 @@ export function KanbanBoard() {
     }
     stableLanesRef.current = stable;
     return stable;
-  }, [swimlanes, tasks, priorityFilters, labelFilters]);
+  }, [swimlanes, tasks, priorityFilters, labelFilters, completingTaskIds]);
 
   const filterButtonElement = (
     <div className="relative">

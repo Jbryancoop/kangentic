@@ -5,7 +5,8 @@
  * state.tasks and present in state.archivedTasks. A prior race between
  * task-move.ts's tasks.move() and tasks.archive() could leave the card
  * painted in the Done dropzone until the next board reload. See the
- * completingTaskIds filter in board-store / DoneSwimlane for the fix.
+ * completingTaskIds filter at KanbanBoard's tasksPerLane chokepoint
+ * (.claude/rules/board-completing-task-chokepoint.md) for the fix.
  */
 import { test, expect } from '@playwright/test';
 import { chromium, type Browser, type Page } from '@playwright/test';

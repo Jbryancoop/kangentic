@@ -187,9 +187,9 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
     // Moves into a Done-role lane archive the task on the backend. Extend the
     // completingTaskIds guard (originally scoped to the animated FlyingCard
     // path in setCompletingTask) to this direct path as well, so every
-    // moveTask-to-Done is covered by DoneSwimlane's filter. Also remove the
-    // task from state.tasks so it doesn't flash as an active card in the Done
-    // column while the IPC is in flight.
+    // moveTask-to-Done is covered by KanbanBoard's tasksPerLane chokepoint. Also
+    // remove the task from state.tasks so it doesn't flash as an active card
+    // while the IPC is in flight.
     const targetLane = get().swimlanes.find((lane) => lane.id === input.targetSwimlaneId);
     const isCrossColumnToDone = targetLane?.role === 'done' && prevTask?.swimlane_id !== input.targetSwimlaneId;
     if (isCrossColumnToDone) {
@@ -343,8 +343,8 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
       });
     } finally {
       // Release the completingTaskIds guard regardless of success/failure so
-      // DoneSwimlane's filter lets future reloads re-render the task if
-      // anything above bailed early.
+      // tasksPerLane lets future reloads re-render the task if anything above
+      // bailed early.
       if (isCrossColumnToDone) {
         get().removeCompletingTaskId(input.taskId);
       }

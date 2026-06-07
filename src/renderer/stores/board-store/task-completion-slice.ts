@@ -8,10 +8,12 @@ export interface TaskCompletionSlice {
   /** Task IDs currently being completed via a Done drop (from setCompletingTask
    *  until after moveTask's IPC+reload resolves). Superset of `completingTask`:
    *  the singular field drives the FlyingCard animation for the active drop,
-   *  while this Set lets DoneSwimlane filter out any task whose archive is
-   *  still in-flight. A racing loadBoard() between task-move.ts's tasks.move()
-   *  and tasks.archive() can otherwise re-inject the task into the dropzone
-   *  with swimlane_id = Done. */
+   *  while this Set is read by KanbanBoard's `tasksPerLane` chokepoint to keep
+   *  the task out of EVERY lane during the ~700ms fly. The backend still holds
+   *  the task at its source lane until moveTask archives it at the end, so a
+   *  racing loadBoard() would otherwise re-inject it at its source column for a
+   *  frame. Filter only at that single chokepoint, never per-lane. See
+   *  .claude/rules/board-completing-task-chokepoint.md. */
   completingTaskIds: Set<string>;
   setCompletingTask: (task: CompletingTask | null) => void;
   finalizeCompletion: () => Promise<void>;
@@ -32,9 +34,9 @@ export const createTaskCompletionSlice: StateCreator<BoardStore, [], [], TaskCom
       get().finalizeCompletion();
     }
     // Remove the task from the tasks array so no column renders it during flight.
-    // Also add to completingTaskIds so DoneSwimlane filters it out even if a
-    // racing loadBoard() re-injects it with swimlane_id = Done before
-    // tasks.archive() runs in the main process.
+    // Also add to completingTaskIds so KanbanBoard's tasksPerLane keeps it out of
+    // every lane even if a racing loadBoard() re-injects it at its source lane,
+    // which the backend still holds until tasks.archive() runs at finalize.
     set((s) => {
       if (!task) {
         return { completingTask: null };
@@ -57,9 +59,9 @@ export const createTaskCompletionSlice: StateCreator<BoardStore, [], [], TaskCom
     const taskTitle = completing.task.title;
 
     // Clear completingTask synchronously at entry so a subsequent drop can't
-    // be clobbered by this finalizer's later resolution. The DoneSwimlane
+    // be clobbered by this finalizer's later resolution. The tasksPerLane
     // filter relies on completingTaskIds (released in `finally`), not on
-    // completingTask, so the dropzone race is still covered end-to-end.
+    // completingTask, so the reconciliation race is still covered end-to-end.
     set({ completingTask: null });
 
     try {
