@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { TitleBar } from './TitleBar';
 import { StatusBar } from './StatusBar';
 import { ProjectSidebar } from '../sidebar/ProjectSidebar';
@@ -29,11 +30,19 @@ export function AppLayout() {
   const projects = useProjectStore((s) => s.projects);
   const hydrated = useProjectStore((s) => s.hydrated);
   const activeView = useBoardStore((s) => s.activeView);
+  const requestBoardSearchFocus = useBoardStore((s) => s.requestBoardSearchFocus);
 
   const sidebar = useSidebarResize(config);
   const terminal = useTerminalResize(config);
   const commandBar = useCommandBar();
-  const searchPalette = useSearchPalette();
+  // Plain Ctrl+F focuses the board search on the board view; otherwise it falls
+  // back to the global search palette (resolved inside useSearchPalette).
+  const handlePlainFindKey = useCallback(() => {
+    if (activeView !== 'board') return false;
+    requestBoardSearchFocus();
+    return true;
+  }, [activeView, requestBoardSearchFocus]);
+  const searchPalette = useSearchPalette({ onPlainFindKey: handlePlainFindKey });
   useViewToggle();
   useFocusedSessionsSync();
 

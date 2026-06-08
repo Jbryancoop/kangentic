@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, chromium, type Browser, type Page } from '@playwright/test';
 import { launchPage, createProject, waitForBoard } from './helpers';
 
 test.describe('Backlog View', () => {
@@ -478,5 +478,333 @@ test.describe('Backlog View', () => {
     await expect(page.locator('[data-testid="context-delete-item"]')).toHaveText('Delete');
 
     await browser.close();
+  });
+});
+
+/**
+ * Shared fixture for backlog search+filter tests (gaps 1-6).
+ * Uses a beforeAll/afterAll pattern (mirrors board-filter.spec.ts) to avoid
+ * spinning up a new browser per test - all tests here need the same seed data.
+ *
+ * Seed layout:
+ *   Item A - "Fix login bug"         description "auth service broken"  labels:['bug','auth']  priority:3 (High)
+ *   Item B - "Add dark mode"         description "theme switcher"       labels:['feature']     priority:2 (Medium)
+ *   Item C - "Refactor API routes"   description "clean up endpoints"   labels:['refactor']    priority:1 (Low)
+ *   Board task D - "Board task only" labels:['board-only']  (board task, NOT in backlog)
+ */
+test.describe('Backlog Search and Filter', () => {
+  let browser: Browser;
+  let page: Page;
+
+  test.beforeAll(async () => {
+    const result = await launchPage();
+    browser = result.browser;
+    page = result.page;
+
+    await createProject(page, `backlog-filter-test-${Date.now()}`);
+    await waitForBoard(page);
+
+    // Create a board task with a board-only label for gap 6.
+    // Done before switching to backlog so the task lands in the To Do swimlane.
+    await page.evaluate(async () => {
+      const api = (window as Record<string, unknown>).electronAPI as {
+        tasks: {
+          list: () => Promise<Array<{ id: string; title: string }>>;
+          create: (input: { title: string; description: string; swimlane_id: string; labels: string[] }) => Promise<{ id: string }>;
+        };
+        swimlanes: { list: () => Promise<Array<{ id: string; name: string }>> };
+      };
+      const swimlanes = await api.swimlanes.list();
+      const todoLane = swimlanes.find((swimlane) => swimlane.name === 'To Do');
+      if (!todoLane) throw new Error('To Do lane not found');
+      await api.tasks.create({
+        title: 'Board task only',
+        description: '',
+        swimlane_id: todoLane.id,
+        labels: ['board-only'],
+      });
+    });
+
+    // Switch to backlog view
+    await page.locator('[data-testid="view-toggle-backlog"]').click();
+    await expect(page.locator('[data-testid="backlog-view"]')).toBeVisible();
+
+    // Set up label colors so the labels render in the filter popover
+    await page.evaluate(async () => {
+      const api = (window as Record<string, unknown>).electronAPI as {
+        config: { set: (partial: Record<string, unknown>) => Promise<void> };
+      };
+      await api.config.set({
+        backlog: {
+          labelColors: {
+            bug: '#ef4444',
+            auth: '#f97316',
+            feature: '#3b82f6',
+            refactor: '#8b5cf6',
+            'board-only': '#06b6d4',
+          },
+        },
+      });
+    });
+
+    // Create three backlog items via UI
+    type BacklogItemInput = { title: string; description: string };
+    const backlogItems: BacklogItemInput[] = [
+      { title: 'Fix login bug', description: 'auth service broken' },
+      { title: 'Add dark mode', description: 'theme switcher' },
+      { title: 'Refactor API routes', description: 'clean up endpoints' },
+    ];
+
+    for (const item of backlogItems) {
+      await page.locator('[data-testid="new-backlog-task-btn"]').click();
+      await page.locator('[data-testid="backlog-task-title"]').fill(item.title);
+      await page.locator('[data-testid="backlog-task-description"]').fill(item.description);
+      await page.locator('[data-testid="create-backlog-task-btn"]').click();
+      await page.locator('[data-testid="new-backlog-task-dialog"]').waitFor({ state: 'hidden', timeout: 3000 });
+    }
+
+    // Verify all three rows are present before proceeding
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(3, { timeout: 5000 });
+
+    // Set labels and priorities via the IPC mock directly (avoids UI label-picker flow)
+    await page.evaluate(async () => {
+      const api = (window as Record<string, unknown>).electronAPI as {
+        backlog: {
+          list: () => Promise<Array<{ id: string; title: string }>>;
+          update: (input: { id: string; labels?: string[]; priority?: number }) => Promise<void>;
+        };
+      };
+      const items = await api.backlog.list();
+      const findItem = (title: string) => items.find((item) => item.title === title);
+
+      const fixLoginBug = findItem('Fix login bug');
+      const addDarkMode = findItem('Add dark mode');
+      const refactorApi = findItem('Refactor API routes');
+
+      if (fixLoginBug) await api.backlog.update({ id: fixLoginBug.id, labels: ['bug', 'auth'], priority: 3 });
+      if (addDarkMode) await api.backlog.update({ id: addDarkMode.id, labels: ['feature'], priority: 2 });
+      if (refactorApi) await api.backlog.update({ id: refactorApi.id, labels: ['refactor'], priority: 1 });
+    });
+
+    // Reload the backlog store to pick up the updated metadata
+    await page.evaluate(async () => {
+      const stores = (window as Record<string, unknown>).__zustandStores as {
+        backlog: { getState: () => { loadBacklog: () => Promise<void> } };
+        config: { getState: () => { loadConfig: () => Promise<void> } };
+      };
+      await stores.backlog.getState().loadBacklog();
+      await stores.config.getState().loadConfig();
+    });
+
+    // Wait for the data to stabilize (config reload is async)
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(3, { timeout: 5000 });
+  });
+
+  test.afterAll(async () => {
+    // Clear any leftover filter/search state so one test doesn't bleed into another
+    await page?.evaluate(() => {
+      const stores = (window as Record<string, unknown>).__zustandStores as {
+        backlog: {
+          setState: (state: Record<string, unknown>) => void;
+        };
+      };
+      stores.backlog.setState({
+        backlogSearchQuery: '',
+        backlogPriorityFilters: new Set<number>(),
+        backlogLabelFilters: new Set<string>(),
+      });
+    });
+    await browser?.close();
+  });
+
+  // After each test, reset search and filters so tests are independent.
+  test.afterEach(async () => {
+    await page.evaluate(() => {
+      const stores = (window as Record<string, unknown>).__zustandStores as {
+        backlog: {
+          setState: (state: Record<string, unknown>) => void;
+        };
+      };
+      stores.backlog.setState({
+        backlogSearchQuery: '',
+        backlogPriorityFilters: new Set<number>(),
+        backlogLabelFilters: new Set<string>(),
+      });
+    });
+    // Close the filter popover if it was left open. The popover is rendered
+    // inside the container that wraps the filter button (via ToolbarSearchFilter),
+    // so scope the check to avoid matching the column header in the data table.
+    const filterContainer = page.locator('[data-testid="backlog-filter-btn"]').locator('..');
+    const priorityInPopover = filterContainer.locator('text=Priority').first();
+    if (await priorityInPopover.isVisible()) {
+      await page.locator('text=Kangentic').first().click();
+      // Intentional fixed wait (negative assertion budget): give React time to
+      // process the outside-click and close the popover.
+      await page.waitForTimeout(100);
+    }
+    // Also ensure the search input is cleared in the DOM (the store setState above
+    // drives the controlled input, but give React one tick to re-render).
+    await expect(page.locator('[data-testid="backlog-search"]')).toHaveValue('', { timeout: 2000 });
+  });
+
+  // ---------- Gap 1: search matches DESCRIPTION ---------------------------
+
+  test('backlog search matches description text and clear restores all rows', async () => {
+    // "auth service broken" is Item A's description; no title contains "auth service"
+    await page.locator('[data-testid="backlog-search"]').fill('auth service');
+
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(1);
+    await expect(page.locator('text=Fix login bug')).toBeVisible();
+    await expect(page.locator('text=Add dark mode')).not.toBeVisible();
+    await expect(page.locator('text=Refactor API routes')).not.toBeVisible();
+
+    // Filling with empty string clears via the onChange handler
+    await page.locator('[data-testid="backlog-search"]').fill('');
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(3);
+  });
+
+  // ---------- Gap 2: PRIORITY filter filters rows -------------------------
+
+  test('backlog priority filter shows matching rows and un-toggle restores all', async () => {
+    // filterContainer wraps the filter button and the popover; scope all popover
+    // locators to it so they don't match the Priority column in the data table.
+    const filterContainer = page.locator('[data-testid="backlog-filter-btn"]').locator('..');
+    const filterButton = page.locator('[data-testid="backlog-filter-btn"]');
+    await filterButton.click();
+    await expect(filterContainer.locator('text=Priority').first()).toBeVisible();
+
+    // Priority index 3 = "High" in the mock config (None=0, Low=1, Medium=2, High=3)
+    const highPill = filterContainer.locator('text=High');
+    await highPill.click();
+
+    // Only Item A has priority 3 (High)
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(1);
+    await expect(page.locator('text=Fix login bug')).toBeVisible();
+    await expect(page.locator('text=Add dark mode')).not.toBeVisible();
+    await expect(page.locator('text=Refactor API routes')).not.toBeVisible();
+
+    // Un-toggle High - all rows restored
+    await highPill.click();
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(3);
+
+    // Close the popover
+    await page.locator('text=Kangentic').first().click();
+    await page.waitForTimeout(100);
+  });
+
+  // ---------- Gap 3: LABEL filter filters rows ----------------------------
+
+  test('backlog label filter shows matching rows and un-toggle restores all', async () => {
+    const filterContainer = page.locator('[data-testid="backlog-filter-btn"]').locator('..');
+    const filterButton = page.locator('[data-testid="backlog-filter-btn"]');
+    await filterButton.click();
+    await expect(filterContainer.locator('text=Priority').first()).toBeVisible();
+
+    // "auth" label is on Item A (Fix login bug) only
+    const authPill = filterContainer.locator('text=auth');
+    await authPill.click();
+
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(1);
+    await expect(page.locator('text=Fix login bug')).toBeVisible();
+    await expect(page.locator('text=Add dark mode')).not.toBeVisible();
+    await expect(page.locator('text=Refactor API routes')).not.toBeVisible();
+
+    // Un-toggle auth - all rows restored
+    await authPill.click();
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(3);
+
+    // Close the popover
+    await page.locator('text=Kangentic').first().click();
+    await page.waitForTimeout(100);
+  });
+
+  // ---------- Gap 4: search + priority AND-compose ------------------------
+
+  test('backlog search and priority filter compose with AND logic', async () => {
+    const filterContainer = page.locator('[data-testid="backlog-filter-btn"]').locator('..');
+    const filterButton = page.locator('[data-testid="backlog-filter-btn"]');
+    await filterButton.click();
+    await expect(filterContainer.locator('text=Priority').first()).toBeVisible();
+
+    const highPill = filterContainer.locator('text=High');
+    await highPill.click();
+
+    // Close the popover before typing so it does not overlap the search input
+    await page.locator('text=Kangentic').first().click();
+    // Intentional fixed wait (negative assertion budget): give React time to
+    // process the outside-click and close the popover before typing.
+    await page.waitForTimeout(100);
+
+    // "refactor" matches Item C by title, but Item C is NOT High priority - must be hidden
+    await page.locator('[data-testid="backlog-search"]').fill('refactor');
+    await expect(page.locator('text=Refactor API routes')).not.toBeVisible();
+    await expect(page.locator('text=Fix login bug')).not.toBeVisible();
+
+    // "auth" matches Item A by label+description and Item A IS High - must be visible
+    await page.locator('[data-testid="backlog-search"]').fill('auth');
+    await expect(page.locator('text=Fix login bug')).toBeVisible();
+    await expect(page.locator('text=Refactor API routes')).not.toBeVisible();
+
+    // Clean up: clear search, then un-toggle High via the popover
+    await page.locator('[data-testid="backlog-search"]').fill('');
+    await filterButton.click();
+    await highPill.click();
+    await page.locator('text=Kangentic').first().click();
+    await page.waitForTimeout(100);
+  });
+
+  // ---------- Gap 5: backlog-search-clear button --------------------------
+
+  test('backlog-search-clear button clears the input and restores all rows', async () => {
+    await page.locator('[data-testid="backlog-search"]').fill('auth');
+
+    // Filter is active: only 1 row visible
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(1);
+
+    // Click the clear button (NOT fill(''))
+    await page.locator('[data-testid="backlog-search-clear"]').click();
+
+    // Input must be cleared
+    await expect(page.locator('[data-testid="backlog-search"]')).toHaveValue('');
+
+    // All three rows must be restored
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(3);
+  });
+
+  // ---------- Gap 6: backlogLabels includes board-task labels -------------
+
+  test('board-task label appears in backlog filter popover', async () => {
+    // The 'board-only' label exists ONLY on the board task created in beforeAll,
+    // not on any backlog item. ViewToggle builds backlogLabels from
+    // backlogItems + boardTasks, so 'board-only' must appear in the popover.
+    //
+    // First reload the board store so the board task's labels are in memory.
+    await page.evaluate(async () => {
+      const stores = (window as Record<string, unknown>).__zustandStores as {
+        board: { getState: () => { loadBoard: () => Promise<void> } };
+      };
+      await stores.board.getState().loadBoard();
+    });
+
+    const filterContainer = page.locator('[data-testid="backlog-filter-btn"]').locator('..');
+    const filterButton = page.locator('[data-testid="backlog-filter-btn"]');
+    await filterButton.click();
+    await expect(filterContainer.locator('text=Priority').first()).toBeVisible();
+
+    // The board-only label must appear as a toggleable pill in the label section
+    const boardOnlyPill = filterContainer.locator('text=board-only');
+    await expect(boardOnlyPill).toBeVisible({ timeout: 3000 });
+
+    // Toggling it should filter to 0 backlog rows (no backlog item has 'board-only')
+    await boardOnlyPill.click();
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(0);
+
+    // Un-toggle restores all rows
+    await boardOnlyPill.click();
+    await expect(page.locator('[data-testid="backlog-task-row"]')).toHaveCount(3);
+
+    // Close the popover
+    await page.locator('text=Kangentic').first().click();
+    await page.waitForTimeout(100);
   });
 });

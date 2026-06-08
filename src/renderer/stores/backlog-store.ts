@@ -25,6 +25,18 @@ interface BacklogState {
   pendingBulkDelete: boolean;
   importSource: ImportSource | null;
 
+  // Search + filter state. Lifted out of BacklogView so the controls (rendered
+  // in the shared ViewToggle toolbar) and the list (which filters on them) read
+  // one instance. Mirrors the board's board-filter-slice. Local UI truth, so it
+  // has no load*/sync* method and is absent from the App.tsx HMR re-sync block.
+  backlogSearchQuery: string;
+  backlogPriorityFilters: Set<number>;
+  backlogLabelFilters: Set<string>;
+  setBacklogSearchQuery: (query: string) => void;
+  toggleBacklogPriorityFilter: (value: number) => void;
+  toggleBacklogLabelFilter: (label: string) => void;
+  clearBacklogFilters: () => void;
+
   // Data actions
   loadBacklog: () => Promise<void>;
   createItem: (input: BacklogTaskCreateInput) => Promise<BacklogTask>;
@@ -68,6 +80,27 @@ export const useBacklogStore = create<BacklogState>((set, get) => ({
   pendingBulkDelete: false,
   importSource: null,
   scrollToBacklogId: null,
+
+  backlogSearchQuery: '',
+  backlogPriorityFilters: new Set<number>(),
+  backlogLabelFilters: new Set<string>(),
+
+  setBacklogSearchQuery: (query) => set({ backlogSearchQuery: query }),
+
+  toggleBacklogPriorityFilter: (value) => set((state) => {
+    const next = new Set(state.backlogPriorityFilters);
+    if (next.has(value)) { next.delete(value); } else { next.add(value); }
+    return { backlogPriorityFilters: next };
+  }),
+
+  toggleBacklogLabelFilter: (label) => set((state) => {
+    const next = new Set(state.backlogLabelFilters);
+    if (next.has(label)) { next.delete(label); } else { next.add(label); }
+    return { backlogLabelFilters: next };
+  }),
+
+  // Clears the priority/label sets only; the search box has its own clear.
+  clearBacklogFilters: () => set({ backlogPriorityFilters: new Set<number>(), backlogLabelFilters: new Set<string>() }),
 
   loadBacklog: async () => {
     set({ loading: true });

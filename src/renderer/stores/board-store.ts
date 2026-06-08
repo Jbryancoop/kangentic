@@ -10,6 +10,7 @@ import { createTaskMoveConfirmSlice } from './board-store/task-move-confirm-slic
 import { createDoneDropConfirmSlice } from './board-store/done-drop-confirm-slice';
 import { createActiveViewSlice } from './board-store/active-view-slice';
 import { createBoardManagerSlice } from './board-store/board-manager-slice';
+import { createBoardFilterSlice } from './board-store/board-filter-slice';
 
 /**
  * Board store composition. Slice interfaces and implementations live
@@ -39,4 +40,5 @@ export const useBoardStore = create<BoardStore>((...args) => ({
   ...createDoneDropConfirmSlice(...args),
   ...createActiveViewSlice(...args),
   ...createBoardManagerSlice(...args),
+  ...createBoardFilterSlice(...args),
 }));

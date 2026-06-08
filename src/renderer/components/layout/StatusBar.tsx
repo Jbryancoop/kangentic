@@ -205,7 +205,7 @@ export function StatusBar() {
           <span className="text-red-400">{agentDisplayName(currentProject?.default_agent ?? DEFAULT_AGENT)} not found</span>
         )}
         {appVersion && (
-          <Pill className="border border-edge text-fg-muted">v{appVersion}</Pill>
+          <Pill size="sm" className="border border-edge text-fg-muted">v{appVersion}</Pill>
         )}
       </div>
     </div>

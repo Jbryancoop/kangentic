@@ -1,27 +1,18 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
-import { Plus, Search, Inbox, Filter, X, GripVertical } from 'lucide-react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
+import { Plus, Inbox, GripVertical } from 'lucide-react';
 import { DndContext, DragOverlay } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { DataTable } from '../DataTable';
 import { BacklogContextMenu } from './BacklogContextMenu';
 import { BacklogBulkToolbar } from './BacklogBulkToolbar';
 import { ImportPopover } from './ImportPopover';
-import { CountBadge } from '../CountBadge';
-import { FilterPopover } from '../FilterPopover';
 import { useBacklogDragDrop } from '../../hooks/useBacklogDragDrop';
-import { useFilterPopover } from '../../hooks/useFilterPopover';
 import { useBacklogStore } from '../../stores/backlog-store';
 import { useBoardStore } from '../../stores/board-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useHmrGeneration } from '../../utils/hmr-generation';
 import type { BacklogTask } from '../../../shared/types';
 import { useBacklogColumns, type SortKey } from './view/useBacklogColumns';
-
-/** Debounce between keystroke and filter recompute. Keeps the input responsive
- *  while deferring the filtering pass (which walks all backlog items + tests
- *  title/description/labels) until the user pauses typing. Matches the board
- *  search debounce in BoardSearchBar. */
-const BACKLOG_SEARCH_DEBOUNCE_MS = 120;
 
 export function BacklogView() {
   const hydrated = useBacklogStore((state) => state.hydrated);
@@ -39,69 +30,23 @@ export function BacklogView() {
   const setPendingBulkDelete = useBacklogStore((state) => state.setPendingBulkDelete);
   const setImportSource = useBacklogStore((state) => state.setImportSource);
   const swimlanes = useBoardStore((state) => state.swimlanes);
-  const boardTasks = useBoardStore((state) => state.tasks);
   // Narrow config subscriptions: previously subscribed to the whole `config`
   // object, so any unrelated config change (notification toggle, theme,
-  // statusBarPeriod) re-rendered the whole backlog view. Split into the three
+  // statusBarPeriod) re-rendered the whole backlog view. Split into the
   // fields actually used here.
   const skipDeleteConfirm = useConfigStore((state) => state.config.skipDeleteConfirm);
-  const priorities = useConfigStore((state) => state.config.backlog.priorities);
   const labelColors = useConfigStore((state) => state.config.backlog.labelColors);
 
-  // `searchInput` is the immediate input value (updates per keystroke).
-  // `searchQuery` is the debounced value that drives filtering. Keeps typing
-  // smooth even when an import recently replaced `items`.
-  const [searchInput, setSearchInput] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
-  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Search + filter state lives in the backlog store so the shared ViewToggle
+  // toolbar (the controls) and this list (the consumer) read one instance. The
+  // filter popover UI and the search input render in ViewToggle.
+  const backlogSearchQuery = useBacklogStore((state) => state.backlogSearchQuery);
+  const setBacklogSearchQuery = useBacklogStore((state) => state.setBacklogSearchQuery);
+  const priorityFilters = useBacklogStore((state) => state.backlogPriorityFilters);
+  const labelFilters = useBacklogStore((state) => state.backlogLabelFilters);
+  const hasActiveFilters = priorityFilters.size > 0 || labelFilters.size > 0;
 
-  const handleSearchChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    const nextValue = event.target.value;
-    setSearchInput(nextValue);
-    if (searchDebounceRef.current !== null) {
-      clearTimeout(searchDebounceRef.current);
-    }
-    searchDebounceRef.current = setTimeout(() => {
-      searchDebounceRef.current = null;
-      setSearchQuery(nextValue);
-    }, BACKLOG_SEARCH_DEBOUNCE_MS);
-  }, []);
-
-  const handleSearchClear = useCallback(() => {
-    if (searchDebounceRef.current !== null) {
-      clearTimeout(searchDebounceRef.current);
-      searchDebounceRef.current = null;
-    }
-    setSearchInput('');
-    setSearchQuery('');
-  }, []);
-
-  useEffect(() => () => {
-    if (searchDebounceRef.current !== null) {
-      clearTimeout(searchDebounceRef.current);
-      searchDebounceRef.current = null;
-    }
-  }, []);
-
-  const {
-    priorityFilters, labelFilters, hasActiveFilters,
-    showFilterPopover, setShowFilterPopover,
-    togglePriorityFilter, toggleLabelFilter, clearAllFilters,
-    filterButtonRef, filterPopoverRef,
-  } = useFilterPopover();
   const [contextMenu, setContextMenu] = useState<{ position: { x: number; y: number }; item: BacklogTask } | null>(null);
-
-  // All unique labels across backlog tasks and board tasks
-  const allLabels = useMemo(() => {
-    const labelSet = new Set<string>();
-    for (const item of items) {
-      for (const label of item.labels) labelSet.add(label);
-    }
-    for (const task of boardTasks) {
-      for (const label of (task.labels ?? [])) labelSet.add(label);
-    }
-    return [...labelSet].sort();
-  }, [items, boardTasks]);
 
   // --- Sort state (column sort disables drag-to-reorder) ---
   const [isColumnSorted, setIsColumnSorted] = useState(false);
@@ -118,8 +63,8 @@ export function BacklogView() {
     if (!scrollToBacklogId) return;
     if (!hydrated) return;
     const matched = items.find((item) => item.id === scrollToBacklogId);
-    if (matched && searchQuery) {
-      handleSearchClear();
+    if (matched && backlogSearchQuery) {
+      setBacklogSearchQuery('');
     }
     const targetId = scrollToBacklogId;
     setScrollToBacklogId(null);
@@ -128,14 +73,14 @@ export function BacklogView() {
       const row = document.querySelector(`[data-row-id="${targetId}"]`) as HTMLElement | null;
       if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
     });
-  }, [scrollToBacklogId, hydrated, items, searchQuery, handleSearchClear, setScrollToBacklogId, setEditingItem]);
+  }, [scrollToBacklogId, hydrated, items, backlogSearchQuery, setBacklogSearchQuery, setScrollToBacklogId, setEditingItem]);
 
   // --- Filtered data ---
 
   const filteredItems = useMemo(() => {
     let filtered = items;
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
+    if (backlogSearchQuery.trim()) {
+      const query = backlogSearchQuery.trim().toLowerCase();
       filtered = filtered.filter(
         (item) =>
           item.title.toLowerCase().includes(query) ||
@@ -150,7 +95,7 @@ export function BacklogView() {
       filtered = filtered.filter((item) => item.labels.some((label) => labelFilters.has(label)));
     }
     return filtered;
-  }, [items, searchQuery, priorityFilters, labelFilters]);
+  }, [items, backlogSearchQuery, priorityFilters, labelFilters]);
 
   // --- Action handlers ---
 
@@ -227,7 +172,7 @@ export function BacklogView() {
   // Re-key DndContext on HMR; see src/renderer/utils/hmr-generation.ts.
   const hmrGeneration = useHmrGeneration();
 
-  const emptyMessage = searchQuery || hasActiveFilters
+  const emptyMessage = backlogSearchQuery || hasActiveFilters
     ? 'No items match your filters'
     : undefined;
 
@@ -235,85 +180,7 @@ export function BacklogView() {
 
   return (
     <div className="h-full flex flex-col" data-testid="backlog-view">
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-edge">
-        <button
-          type="button"
-          onClick={openNewDialog}
-          className="flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium bg-accent-emphasis hover:bg-accent text-accent-on rounded transition-colors"
-          data-testid="new-backlog-task-btn"
-        >
-          <Plus size={14} />
-          New Task
-        </button>
-
-        <ImportPopover onOpenImportDialog={setImportSource} />
-
-        <div className="flex-1" />
-
-        <div className="relative">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-disabled" />
-          <input
-            type="text"
-            value={searchInput}
-            onChange={handleSearchChange}
-            placeholder="Search backlog..."
-            className="w-56 bg-surface/50 border border-edge/50 rounded-md text-sm text-fg placeholder-fg-disabled pl-8 pr-8 py-1.5 outline-none focus:border-edge-input"
-            data-testid="backlog-search"
-          />
-          {searchInput && (
-            <button
-              type="button"
-              onClick={handleSearchClear}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-fg-disabled hover:text-fg-muted transition-colors"
-              data-testid="backlog-search-clear"
-            >
-              <X size={14} />
-            </button>
-          )}
-        </div>
-
-        <div className="relative">
-          <button
-            ref={filterButtonRef}
-            type="button"
-            onClick={() => setShowFilterPopover(!showFilterPopover)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded transition-colors ${
-              hasActiveFilters
-                ? 'text-accent-fg border-accent/50 bg-accent-bg/10'
-                : 'text-fg-muted hover:text-fg border-edge/50 hover:bg-surface-hover/40'
-            }`}
-            data-testid="backlog-filter-btn"
-          >
-            <Filter size={14} />
-            Filter
-            {hasActiveFilters && (
-              <CountBadge count={priorityFilters.size + labelFilters.size} variant="solid" />
-            )}
-          </button>
-
-          {showFilterPopover && (
-            <div
-              ref={filterPopoverRef}
-              className="absolute right-0 top-full mt-1 z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-2 w-[260px] max-h-[380px] overflow-y-auto"
-            >
-              <FilterPopover
-                priorities={priorities}
-                priorityFilters={priorityFilters}
-                onTogglePriority={togglePriorityFilter}
-                allLabels={allLabels}
-                labelColors={labelColors}
-                labelFilters={labelFilters}
-                onToggleLabel={toggleLabelFilter}
-                onClearAll={clearAllFilters}
-                hasActiveFilters={hasActiveFilters}
-              />
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Table */}
+      {/* Table (the search + filter + actions toolbar lives in ViewToggle) */}
       <div className="flex-1 min-h-0 relative flex flex-col">
         {items.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-fg-faint gap-4">

@@ -8,18 +8,14 @@ import {
   horizontalListSortingStrategy,
   useSortable,
 } from '@dnd-kit/sortable';
-import { AlertTriangle, Filter, X } from 'lucide-react';
+import { AlertTriangle, X } from 'lucide-react';
 import { Swimlane, type SwimlaneProps } from './Swimlane';
 import { DoneSwimlane } from './DoneSwimlane';
 import { TaskCard } from './TaskCard';
 import { BoardDialogs } from './BoardDialogs';
 import { WelcomeOverlay } from './WelcomeOverlay';
-import { FilterPopover } from '../FilterPopover';
-import { CountBadge } from '../CountBadge';
 import { useBoardStore } from '../../stores/board-store';
-import { useConfigStore } from '../../stores/config-store';
 import { useBoardDragDrop } from '../../hooks/useBoardDragDrop';
-import { useFilterPopover } from '../../hooks/useFilterPopover';
 import { useHmrGeneration } from '../../utils/hmr-generation';
 import type { Task } from '../../../shared/types';
 
@@ -252,24 +248,13 @@ export function KanbanBoard() {
   // from every lane below so a loadBoard() racing the ~700ms fly can't re-inject
   // the task into its source column for a frame. See tasksPerLane.
   const completingTaskIds = useBoardStore((s) => s.completingTaskIds);
-  const priorities = useConfigStore((s) => s.config.backlog.priorities);
-  const labelColors = useConfigStore((s) => s.config.backlog.labelColors);
-
-  // Filter state
-  const {
-    priorityFilters, labelFilters, hasActiveFilters,
-    showFilterPopover, setShowFilterPopover,
-    togglePriorityFilter, toggleLabelFilter, clearAllFilters,
-    filterButtonRef, filterPopoverRef,
-  } = useFilterPopover();
-
-  const allLabels = useMemo(() => {
-    const labelSet = new Set<string>();
-    for (const task of tasks) {
-      for (const label of (task.labels ?? [])) labelSet.add(label);
-    }
-    return [...labelSet].sort();
-  }, [tasks]);
+  // Board filter values live in the board store (board-filter-slice) so the
+  // toolbar controls in ViewToggle and this filtering chokepoint share one
+  // instance. The popover/search UI itself lives in ViewToggle.
+  const priorityFilters = useBoardStore((s) => s.priorityFilters);
+  const labelFilters = useBoardStore((s) => s.labelFilters);
+  const boardSearchQuery = useBoardStore((s) => s.boardSearchQuery);
+  const normalizedSearch = boardSearchQuery.trim().toLowerCase();
 
   const {
     sensors,
@@ -306,6 +291,11 @@ export function KanbanBoard() {
       if (completingTaskIds.has(task.id)) continue;
       if (priorityFilters.size > 0 && !priorityFilters.has(task.priority)) continue;
       if (labelFilters.size > 0 && !(task.labels ?? []).some((label) => labelFilters.has(label))) continue;
+      if (normalizedSearch) {
+        const title = task.title.toLowerCase();
+        const description = (task.description ?? '').toLowerCase();
+        if (!title.includes(normalizedSearch) && !description.includes(normalizedSearch)) continue;
+      }
       const arr = fresh.get(task.swimlane_id);
       if (arr) arr.push(task);
     }
@@ -327,57 +317,13 @@ export function KanbanBoard() {
     }
     stableLanesRef.current = stable;
     return stable;
-  }, [swimlanes, tasks, priorityFilters, labelFilters, completingTaskIds]);
-
-  const filterButtonElement = (
-    <div className="relative">
-      <button
-        ref={filterButtonRef}
-        type="button"
-        onClick={() => setShowFilterPopover(!showFilterPopover)}
-        className={`flex items-center gap-1 p-1 rounded transition-colors ${
-          hasActiveFilters
-            ? 'text-accent-fg'
-            : 'text-fg-muted hover:text-fg'
-        }`}
-        data-testid="board-filter-btn"
-        aria-label="Filter tasks"
-      >
-        <Filter size={14} />
-        {hasActiveFilters && (
-          <CountBadge count={priorityFilters.size + labelFilters.size} variant="solid" size="sm" />
-        )}
-      </button>
-
-      {showFilterPopover && (
-        <div
-          ref={filterPopoverRef}
-          className="absolute right-0 top-full mt-1 z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-2 w-[260px] max-h-[380px] overflow-y-auto"
-        >
-          <FilterPopover
-            priorities={priorities}
-            priorityFilters={priorityFilters}
-            onTogglePriority={togglePriorityFilter}
-            allLabels={allLabels}
-            labelColors={labelColors}
-            labelFilters={labelFilters}
-            onToggleLabel={toggleLabelFilter}
-            onClearAll={clearAllFilters}
-            hasActiveFilters={hasActiveFilters}
-          />
-        </div>
-      )}
-    </div>
-  );
+  }, [swimlanes, tasks, priorityFilters, labelFilters, normalizedSearch, completingTaskIds]);
 
   if (!hydrated) return null;
 
   return (
     <div className="relative h-full overflow-x-auto overflow-y-hidden flex flex-col">
       <ConfigWarningBanner />
-      <div className="absolute top-2 right-3 z-10">
-        {filterButtonElement}
-      </div>
       <div className="flex-1 overflow-x-auto overflow-y-hidden p-4">
       <WelcomeOverlay />
       <DndContext

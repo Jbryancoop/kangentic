@@ -153,13 +153,31 @@ test.describe('Search Palette', () => {
     }
   });
 
-  test('Ctrl+F also opens the palette when not in an input', async () => {
+  test('Ctrl+F focuses the board search on the board view', async () => {
     const { browser, page } = await launchWithState(preConfigWithSearchHits());
     try {
       await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
-      // Focus a non-editable element first to ensure the guard doesn't block us
+      // Focus a non-editable element so the keybind guard doesn't suppress the event
       await page.locator('body').click();
       await page.keyboard.press('Control+f');
+      // On the board view Ctrl+F routes to the board search input, not the global palette
+      await expect(page.getByTestId('board-search')).toBeFocused();
+      await expect(page.getByTestId('search-palette')).not.toBeVisible();
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('Ctrl+F opens the palette on the backlog view', async () => {
+    const { browser, page } = await launchWithState(preConfigWithSearchHits());
+    try {
+      await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
+      // Switch to backlog - no board-search input exists there
+      await page.getByTestId('view-toggle-backlog').click();
+      // Focus a non-editable element so the keybind guard doesn't suppress the event
+      await page.locator('body').click();
+      await page.keyboard.press('Control+f');
+      // On non-board views Ctrl+F falls through to the global search palette
       await expect(page.getByTestId('search-palette')).toBeVisible();
     } finally {
       await browser.close();
@@ -229,6 +247,53 @@ test.describe('Search Palette', () => {
       // Task detail dialog opens (its container has data-testid="task-detail-dialog" if present;
       // fall back to checking for the dialog title text)
       await expect(page.locator('text=Task with auth in title').first()).toBeVisible({ timeout: 5000 });
+    } finally {
+      await browser.close();
+    }
+  });
+
+  // ---------- Gap 7: boardSearchFocusNonce dedup guard --------------------
+
+  test('view toggle board->backlog->board does NOT re-steal board-search focus without new Ctrl+F', async () => {
+    // This test guards the `lastHandledFocusNonce` ref in ViewToggle.tsx (~lines 70-81).
+    // Without the guard, switching backlog->board would fire the useEffect with a stale
+    // nonce (still > 0) and re-focus board-search even though the user did not press Ctrl+F.
+    // The guard ensures focus is only stolen when the nonce itself ADVANCES.
+    const { browser, page } = await launchWithState(preConfigWithSearchHits());
+    try {
+      await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
+
+      // Step 1: Ctrl+F on board view - nonce advances from 0 to 1, board-search gets focus
+      await page.locator('body').click();
+      await page.keyboard.press('Control+f');
+      await expect(page.getByTestId('board-search')).toBeFocused();
+
+      // Step 2: Blur the search input (click somewhere neutral)
+      await page.locator('body').click();
+      await expect(page.getByTestId('board-search')).not.toBeFocused();
+
+      // Step 3: Switch to backlog via the view-toggle button
+      await page.getByTestId('view-toggle-backlog').click();
+      await expect(page.locator('[data-testid="backlog-view"]')).toBeVisible();
+
+      // Step 4: Switch back to board WITHOUT a new Ctrl+F
+      await page.getByTestId('view-toggle-board').click();
+      await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 5000 });
+
+      // Intentional fixed wait (negative assertion budget): give React one render
+      // cycle (and any pending useEffect) time to fire before we assert non-focus.
+      // We cannot poll for "not focused" - the poll would pass immediately if focus
+      // has not yet been stolen, hiding a race where it is stolen a tick later.
+      await page.waitForTimeout(300);
+
+      // board-search must NOT be focused: the nonce did not advance, so the guard
+      // suppressed the focus steal.
+      await expect(page.getByTestId('board-search')).not.toBeFocused();
+
+      // Step 5: A fresh Ctrl+F DOES advance the nonce and SHOULD focus board-search
+      await page.locator('body').click();
+      await page.keyboard.press('Control+f');
+      await expect(page.getByTestId('board-search')).toBeFocused();
     } finally {
       await browser.close();
     }

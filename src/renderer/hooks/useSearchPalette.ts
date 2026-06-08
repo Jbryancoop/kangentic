@@ -22,13 +22,24 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
+interface UseSearchPaletteOptions {
+  /**
+   * Handler for plain Ctrl/Cmd+F (no Shift) fired outside an editable element.
+   * Return true if it was handled (e.g. the board view focusing its inline
+   * search) so the global palette stays closed; return false to fall back to
+   * toggling the palette. Ctrl/Cmd+Shift+F always toggles the palette.
+   */
+  onPlainFindKey?: () => boolean;
+}
+
 /**
- * Registers Ctrl+Shift+F / Cmd+Shift+F (and plain Ctrl+F / Cmd+F when not
- * typing in an editable element) to toggle the global search palette.
- * The plain Ctrl+F binding is the recycled board-search shortcut now that
- * the inline board filter has been removed.
+ * Registers Ctrl+Shift+F / Cmd+Shift+F to toggle the global (cross-project)
+ * search palette. Plain Ctrl+F / Cmd+F (when not typing in an editable element)
+ * is offered to `onPlainFindKey` first: on the board view that focuses the
+ * inline board search; if unclaimed it falls back to toggling the palette.
  */
-export function useSearchPalette() {
+export function useSearchPalette(options: UseSearchPaletteOptions = {}) {
+  const { onPlainFindKey } = options;
   const [isOpen, setIsOpen] = useState(hmrSearchPaletteOpen);
 
   useEffect(() => {
@@ -50,19 +61,19 @@ export function useSearchPalette() {
         if (isOpen) close(); else open();
         return;
       }
-      // Plain Ctrl+F: only swallow when we're not in an editable region. This
-      // keeps in-input "find selection" muscle memory unbroken (browsers
-      // don't expose a built-in find inside an input, but textareas can
-      // benefit from native browser handling and xterm scrollback search
-      // is a future feature).
+      // Plain Ctrl+F: only act when not in an editable region, so in-input
+      // "find selection" muscle memory and a focused board search stay intact.
       if (isEditableTarget(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
+      // Let the host claim plain Ctrl+F first (board view focuses its inline
+      // search); if unclaimed, fall back to the global palette.
+      if (onPlainFindKey?.()) return;
       if (isOpen) close(); else open();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, open, close]);
+  }, [isOpen, open, close, onPlainFindKey]);
 
   return { isOpen, open, close };
 }

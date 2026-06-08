@@ -204,3 +204,81 @@ test.describe('Board Filters', () => {
     await expect(priorityHeaders).not.toBeVisible();
   });
 });
+
+test.describe('Board Search', () => {
+  test('search input is visible on the board view', async () => {
+    await expect(page.locator('[data-testid="board-search"]')).toBeVisible();
+  });
+
+  test('title match filters to matching task only', async () => {
+    await page.locator('[data-testid="board-search"]').fill('auth');
+    // "Auth bug fix" title contains "auth"; the other three do not
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=Auth bug fix')).toBeVisible();
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=Dashboard feature')).not.toBeVisible();
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=API refactor')).not.toBeVisible();
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=Docs update')).not.toBeVisible();
+    // Reset for subsequent tests
+    await page.locator('[data-testid="board-search"]').fill('');
+  });
+
+  test('description match filters to matching task only', async () => {
+    // "New chart component" is the description of "Dashboard feature";
+    // no task title contains "chart".
+    await page.locator('[data-testid="board-search"]').fill('chart');
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=Dashboard feature')).toBeVisible();
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=Auth bug fix')).not.toBeVisible();
+    // Reset for subsequent tests
+    await page.locator('[data-testid="board-search"]').fill('');
+  });
+
+  test('clear button resets input and restores all tasks', async () => {
+    await page.locator('[data-testid="board-search"]').fill('auth');
+    // Confirm the filter is active
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=Dashboard feature')).not.toBeVisible();
+
+    // Click the clear button
+    await page.locator('[data-testid="board-search-clear"]').click();
+
+    // Input must be cleared
+    await expect(page.locator('[data-testid="board-search"]')).toHaveValue('');
+
+    // All four tasks must be visible again
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=Auth bug fix')).toBeVisible();
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=Dashboard feature')).toBeVisible();
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=API refactor')).toBeVisible();
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=Docs update')).toBeVisible();
+  });
+
+  test('search and priority filter compose with AND logic', async () => {
+    // Open the filter popover and activate "High" priority
+    const filterButton = page.locator('[data-testid="board-filter-btn"]');
+    await filterButton.click();
+    await expect(page.locator('text=Priority').first()).toBeVisible();
+    const highPill = page.locator('[data-testid="board-filter-btn"]').locator('..').locator('text=High');
+    await highPill.click();
+
+    // Close the popover before typing so it does not overlap the search input
+    await page.locator('text=Kangentic').first().click();
+    // Intentional fixed wait (negative assertion budget): give React time to
+    // process the outside-click and close the popover before we type.
+    await page.waitForTimeout(100);
+
+    // "API refactor" matches "refactor" but is not High; "Auth bug fix" is High
+    // but does not match "refactor" - so nothing should be visible.
+    await page.locator('[data-testid="board-search"]').fill('refactor');
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=API refactor')).not.toBeVisible();
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=Auth bug fix')).not.toBeVisible();
+
+    // "auth" matches "Auth bug fix" which is also High - it should appear.
+    await page.locator('[data-testid="board-search"]').fill('auth');
+    await expect(page.locator('[data-testid="swimlane"]').locator('text=Auth bug fix')).toBeVisible();
+
+    // Clean up: clear search, then un-toggle High via the popover
+    await page.locator('[data-testid="board-search"]').fill('');
+    await filterButton.click();
+    await highPill.click();
+    // Close the popover
+    await page.locator('text=Kangentic').first().click();
+    await page.waitForTimeout(100);
+  });
+});
