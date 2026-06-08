@@ -1,16 +1,8 @@
 /**
- * Wiring tests for SessionTelemetry callbacks that were NOT covered by existing
- * unit tests. Targets two specific closures:
+ * Wiring test for a SessionTelemetry callback that was NOT covered by existing
+ * unit tests. Targets one specific closure:
  *
- *   Gap 4: onShellsObservedAlive -> markThinkingSignal wiring
- *     The BgShellWatcherCallbacks.onShellsObservedAlive closure (constructed in
- *     the SessionTelemetry constructor) calls
- *     this.activityEngine.markThinkingSignal(sessionId). Both ends are tested in
- *     isolation elsewhere but the closure itself was uncovered. Here we fire the
- *     callback via a mock probe that lets us drive pollNow(), and assert that
- *     `lastSignalAt` on the engine state advances.
- *
- *   Gap 5: clearSessionTracking -> bgShellWatcher.unregisterSession wiring
+ *   clearSessionTracking -> bgShellWatcher.unregisterSession wiring
  *     SessionTelemetry.clearSessionTracking() calls notifySessionEnded() which
  *     calls bgShellWatcher.unregisterSession(). After clearSessionTracking, the
  *     watcher must stop firing callbacks for that session. Verified by polling
@@ -119,101 +111,6 @@ function makeTelemetry(
 }
 
 // ==== Tests ====
-
-describe('SessionTelemetry: onShellsObservedAlive -> markThinkingSignal wiring', () => {
-  let probe: MockProcessTreeProbe;
-  let rootPids: Map<string, number>;
-  let log: CallbackLog;
-  let telemetry: SessionTelemetry;
-
-  beforeEach(() => {
-    vi.useFakeTimers();
-    probe = new MockProcessTreeProbe();
-    rootPids = new Map();
-    log = { activityChanges: [], events: [] };
-    telemetry = makeTelemetry(probe, rootPids, log);
-  });
-
-  afterEach(() => {
-    telemetry.dispose();
-    vi.useRealTimers();
-  });
-
-  it('onShellsObservedAlive fires markThinkingSignal: lastSignalAt advances after watcher poll cycle', async () => {
-    // Setup: register a session with a thinking-active state (bg shell running)
-    // so the watcher fires onShellsObservedAlive on each poll cycle where
-    // tracked > 0 AND shellLikeCount > 0.
-    const rootPid = 7777;
-    rootPids.set('s1', rootPid);
-    probe.alive.add(rootPid);
-    probe.trees.set(rootPid, [{ pid: 8001, ppid: rootPid, comm: 'bash' }]);
-
-    // initSession also calls bgShellWatcher.registerSession.
-    telemetry.initSession('s1');
-
-    // Inject a BackgroundShellStart event so the engine has tracked > 0.
-    // The watcher's onShellsObservedAlive guard requires tracked > 0.
-    telemetry.ingestEvents('s1', [{
-      ts: Date.now(),
-      type: EventType.BackgroundShellStart,
-    }]);
-
-    // Snapshot lastSignalAt before the first non-anchor poll cycle.
-    const engineState = telemetry.activityEngine.getState('s1');
-    expect(engineState).toBeDefined();
-    const signalAtBefore = engineState!.lastSignalAt;
-
-    // Advance time by 1ms so the updated lastSignalAt is distinguishable from
-    // the pre-poll value. Fake timers do not auto-advance; Date.now() under
-    // vi.useFakeTimers() returns the mocked clock value.
-    vi.advanceTimersByTime(1);
-
-    // Anchor cycle (first pollNow sets preExistingHelpers, no onShellsObservedAlive).
-    await telemetry.bgShellWatcher!.pollNow();
-
-    // Second cycle: watcher sees tracked=1 and shellLikeCount=1.
-    // onShellsObservedAlive fires -> markThinkingSignal -> lastSignalAt updated.
-    vi.advanceTimersByTime(1);
-    await telemetry.bgShellWatcher!.pollNow();
-
-    const signalAtAfter = engineState!.lastSignalAt;
-    // lastSignalAt must have advanced beyond the pre-poll snapshot.
-    expect(signalAtAfter).not.toBeNull();
-    expect(signalAtAfter).toBeGreaterThan(signalAtBefore ?? -1);
-  });
-
-  it('onShellsObservedAlive does NOT fire when engine has no tracked bg shells', async () => {
-    // Pre-existing helpers (MCP servers, statusline workers) in the process tree
-    // must NOT refresh lastSignalAt because they are not user-initiated bg work.
-    // The watcher's guard `trackedAtCycle > 0 && shellLikeCount > 0` prevents
-    // this. Consequently markThinkingSignal is not called and lastSignalAt stays
-    // at the value set during initSession.
-    const rootPid = 7778;
-    rootPids.set('s2', rootPid);
-    probe.alive.add(rootPid);
-    // One shell-like child (pre-existing helper), but engine has 0 tracked shells.
-    probe.trees.set(rootPid, [{ pid: 9001, ppid: rootPid, comm: 'bash' }]);
-
-    telemetry.initSession('s2');
-    // No BackgroundShellStart event -> engine.tracked = 0.
-
-    const engineState = telemetry.activityEngine.getState('s2');
-    expect(engineState).toBeDefined();
-
-    // Anchor cycle.
-    vi.advanceTimersByTime(1);
-    await telemetry.bgShellWatcher!.pollNow();
-    const signalAtAfterAnchor = engineState!.lastSignalAt;
-
-    // Post-anchor cycle: watcher observes shell-like descendant but tracked=0.
-    // onShellsObservedAlive must NOT fire.
-    vi.advanceTimersByTime(1);
-    await telemetry.bgShellWatcher!.pollNow();
-
-    // lastSignalAt must be unchanged from the anchor cycle.
-    expect(engineState!.lastSignalAt).toBe(signalAtAfterAnchor);
-  });
-});
 
 describe('SessionTelemetry: clearSessionTracking -> bgShellWatcher.unregisterSession wiring', () => {
   let probe: MockProcessTreeProbe;

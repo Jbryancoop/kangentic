@@ -23,9 +23,20 @@
  * mutates the engine timing constants.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { ActivityEngine, type ActivityEngineOptions } from '../../src/main/pty/activity/engine';
 import { EventType, IdleReason } from '../../src/shared/types';
 import type { ActivityState, ActivityReason, SessionEvent } from '../../src/shared/types';
+
+/** Load a sanitized real-capture replay fixture (one JSON event per line). */
+function loadReplayFixture(name: string): SessionEvent[] {
+  const filePath = path.join(__dirname, '..', 'fixtures', 'replay', name);
+  return fs.readFileSync(filePath, 'utf-8')
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as SessionEvent);
+}
 
 interface Transition {
   sessionId: string;
@@ -61,6 +72,10 @@ function makeEngine(options: Partial<ActivityEngineOptions> = {}): {
     },
     {
       bgShellEscapeHatchMs: TEST_BG_SHELL_HATCH_MS,
+      // The bg-shell hatch is now anchored to bgShellHoldSince; default its
+      // grace to the same test window so the hatch tests below fire on the
+      // same advanceTimersByTime they always used.
+      bgShellOnlyGraceMs: TEST_BG_SHELL_HATCH_MS,
       staleThinkingTimeoutMs: TEST_STALE_TIMEOUT_MS,
       idleStabilityWindowMs: TEST_STABILITY_WINDOW_MS,
       ...options,
@@ -1086,7 +1101,7 @@ describe('ActivityEngine', () => {
     });
   });
 
-  describe('5-min escape hatch for orphaned background shells', () => {
+  describe('bg-shell hatch: orphaned-shell sole-holder grace', () => {
     beforeEach(() => {
       engine.initSession(SESSION_ID);
       transitions.length = 0;
@@ -1137,6 +1152,91 @@ describe('ActivityEngine', () => {
 
       vi.advanceTimersByTime(TEST_BG_SHELL_HATCH_MS / 2 + 100);
       expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+    });
+
+    it('watcher keep-alive cannot pin a phantom shell: grace reclaims it (real #175 trace)', () => {
+      // Empirical red-green for the deadlock. Drive the real captured event
+      // stream (session 4632519c, task #175) to its stuck precondition: the
+      // worktree-setup `npm install` promoted to named bg shell `beg7osflu`,
+      // the turn ended (idle), and no background_shell_end ever arrived - so
+      // a single orphaned shell is the sole holder.
+      for (const captured of loadReplayFixture('session-009-phantom-bg-shell-no-end.jsonl')) {
+        engine.processEvent(SESSION_ID, captured);
+      }
+      const stuck = engine.getState(SESSION_ID)!;
+      expect(stuck.activity).toBe('thinking');
+      expect(stuck.turnActive).toBe(false);
+      expect(stuck.activeBackgroundShellIds.size + stuck.anonymousBackgroundShellCount).toBe(1);
+
+      transitions.length = 0;
+      syntheticEvents.length = 0;
+
+      // Simulate the old watcher keep-alive: onShellsObservedAlive (since
+      // removed) called markThinkingSignal every 2s. Pre-fix (hatch anchored
+      // to lastSignalAt) every pulse pushed the deadline out, pinning the
+      // session `thinking` forever. The grace is anchored to bgShellHoldSince,
+      // so the pulses cannot move it.
+      const keepAliveIntervalMs = 2_000;
+      const totalMs = TEST_BG_SHELL_HATCH_MS * 2 + TEST_STABILITY_WINDOW_MS + 100;
+      for (let elapsed = 0; elapsed < totalMs; elapsed += keepAliveIntervalMs) {
+        vi.advanceTimersByTime(keepAliveIntervalMs);
+        engine.markThinkingSignal(SESSION_ID);
+      }
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(engine.getState(SESSION_ID)?.activeBackgroundShellIds.size).toBe(0);
+      expect(engine.getState(SESSION_ID)?.compensationCounters.bgShellHatch).toBe(1);
+      const timeouts = syntheticEvents.filter(
+        (entry) => entry.event.type === EventType.Idle && entry.event.detail === IdleReason.Timeout,
+      );
+      expect(timeouts).toHaveLength(1);
+    });
+
+    it('reclaims MULTIPLE orphaned shells at the grace (mirrors #180)', () => {
+      // #180 was held by 2 phantom named shells (npm run build + playwright),
+      // both with dropped end hooks. The hatch reset clears the whole set, so
+      // count does not matter - 1 or 5 reclaim the same way.
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { detail: 'bhucfw82g' }));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { detail: 'bzdmmq3h8' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      expect(engine.getState(SESSION_ID)?.activeBackgroundShellIds.size).toBe(2);
+      transitions.length = 0;
+
+      const keepAliveIntervalMs = 2_000;
+      for (let elapsed = 0; elapsed < TEST_BG_SHELL_HATCH_MS * 2; elapsed += keepAliveIntervalMs) {
+        vi.advanceTimersByTime(keepAliveIntervalMs);
+        engine.markThinkingSignal(SESSION_ID);
+      }
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(engine.getState(SESSION_ID)?.activeBackgroundShellIds.size).toBe(0);
+      expect(engine.getState(SESSION_ID)?.compensationCounters.bgShellHatch).toBe(1);
+    });
+
+    it('grace stays put under keep-alive but a fresh bg-shell start re-arms it', () => {
+      // The anchor clears and re-stamps when bg work genuinely restarts, so a
+      // new background_shell_start mid-grace resets the clock (not stuck).
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart));
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      transitions.length = 0;
+
+      // Pulse past half the grace, then a real new bg shell starts.
+      vi.advanceTimersByTime(TEST_BG_SHELL_HATCH_MS / 2);
+      engine.markThinkingSignal(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart));
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+
+      // Less than a full grace since the re-arm: still thinking.
+      vi.advanceTimersByTime(TEST_BG_SHELL_HATCH_MS - 100);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+      // Past the grace from the re-arm: reclaimed.
+      vi.advanceTimersByTime(200 + TEST_STABILITY_WINDOW_MS + 10);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
     });
   });
 

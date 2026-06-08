@@ -210,12 +210,6 @@ export class SessionTelemetry {
           onRootProcessDied: (sessionId) => {
             this.activityEngine.forceIdle(sessionId);
           },
-          onShellsObservedAlive: (sessionId) => {
-            // OS-confirmed bg work is still in progress - keep the
-            // 5-min escape hatch from firing while the watcher is
-            // observing live shells. Does not flip activity state.
-            this.activityEngine.markThinkingSignal(sessionId);
-          },
         },
       });
     }

@@ -11,17 +11,43 @@ import type { ActivityState, ActivityReason, SessionEvent } from '../../../../sh
  */
 
 /**
- * Default escape hatch for orphaned background shells: when a
- * `Bash(run_in_background:true)` exits naturally Claude Code does NOT
- * fire any hook, so without external help the counter would over-count
- * forever. As a final fallback (the process-tree watcher in
- * Subsystem B is the primary fix), if the engine has been thinking
- * SOLELY because of bg shells AND no event has arrived for this long,
- * force-clear the counter and emit idle.
+ * Default escape hatch for the stuck-pending-tools watchdog: a turn
+ * whose `PostToolUse` was lost (e.g. Ctrl+C killed the bash) leaves
+ * `pendingToolCount > 0` with no further signal. Force-clear after this
+ * long of `lastSignalAt` silence.
  *
  * Default 5 minutes. Override via constructor option for tests.
+ *
+ * Note: this no longer drives the bg-shell hatch. That hatch is now
+ * anchored to `bgShellHoldSince` with the shorter, keep-alive-resistant
+ * `DEFAULT_BG_SHELL_ONLY_GRACE_MS` grace below.
  */
 export const DEFAULT_BG_SHELL_ESCAPE_HATCH_MS = 5 * 60_000;
+
+/**
+ * Grace before the bg-shell hatch reclaims an orphaned background shell
+ * that is the SOLE holder of `thinking`. Anchored to `bgShellHoldSince`
+ * (when bg shells first became the only holder), NOT to `lastSignalAt`.
+ *
+ * Why anchored, not signal-based: a `Bash(run_in_background:true)` that
+ * exits naturally fires no `BackgroundShellEnd` hook, so the engine over-
+ * counts until something reclaims it. The process-tree watcher polls
+ * every 2s and, while it sees ANY shell-like descendant, used to refresh
+ * `lastSignalAt` to keep the old 5-min hatch warm. For an ALREADY-exited
+ * (phantom) tracked shell whose exit the watcher could not attribute,
+ * that 2s pulse pushed the deadline out forever - the session stayed
+ * `active` indefinitely (empirically confirmed: `lastSignalAt` ~2s fresh
+ * 7+ minutes after turn end, with events and status both silent). Anchoring
+ * to `bgShellHoldSince` makes the deadline immovable by any keep-alive.
+ *
+ * Once the turn is over and only a bg shell holds, the agent is idle
+ * (waiting for input); a short grace flips the card to idle whether or not
+ * detached bg work is still running. The watcher's attributed drain
+ * (`onNaturalExit`, ~4s) still wins for clean exits; this is the backstop.
+ *
+ * Default 30 seconds. Override via constructor option for tests.
+ */
+export const DEFAULT_BG_SHELL_ONLY_GRACE_MS = 30_000;
 
 /**
  * Default stale-thinking safety net for hook loss. If a session is
@@ -90,8 +116,10 @@ export interface CountersSnapshot {
 }
 
 export interface ActivityEngineOptions {
-  /** Final-safety escape hatch when only bg shells are holding thinking. */
+  /** Stuck-pending-tools escape hatch (orphaned tool_start, lost PostToolUse). */
   bgShellEscapeHatchMs?: number;
+  /** Grace before reclaiming a bg shell that is the sole holder of thinking. */
+  bgShellOnlyGraceMs?: number;
   /** Stale-thinking watchdog when only turnActive is holding thinking. */
   staleThinkingTimeoutMs?: number;
   /** Stability window before emitting Stop-driven idle. Set to 0 to disable. */
@@ -124,7 +152,7 @@ export interface PendingTool {
 export interface CompensationCounters {
   /** `timer:stale-thinking` watchdog fires (turnActive held alone, hook lost). */
   staleThinking: number;
-  /** `timer:bg-shell-hatch` fires (orphan bg shell, watcher missed). */
+  /** `timer:bg-shell-hatch` fires (30s sole-holder grace reclaims an orphan bg shell the watcher missed; NOT the stuck-pending-tools hatch below). */
   bgShellHatch: number;
   /** `timer:stuck-pending-tools` fires (Ctrl+C dropped PostToolUse). */
   stuckPendingTools: number;
@@ -226,6 +254,16 @@ export interface SessionEngineState {
    */
   pendingIdleAt: number | null;
   /**
+   * Wall-clock ms when background shells first became the SOLE holder of
+   * `thinking` (the `timer:bg-shell-hatch` watchdog shape). Anchors that
+   * hatch's deadline so it cannot be pushed out by `markThinkingSignal`
+   * keep-alive pulses. Set lazily by `scheduleTimer` when the bg-shell
+   * hold becomes active; cleared the moment any other holder appears or
+   * the bg count reaches zero. `null` whenever bg shells are not the sole
+   * holder.
+   */
+  bgShellHoldSince: number | null;
+  /**
    * Ring buffer of recent transitions for the debug overlay. Mutated
    * only by `recordTransition`; external observers via `getState` /
    * `forEachState` see this through `Readonly<SessionEngineState>`,
@@ -254,8 +292,8 @@ export interface SessionEngineState {
  *   - `force-thinking`             - PTY tracker / heartbeat recovery
  *   - `force-idle`                 - PTY silence / Esc / shutdown
  *   - `timer:stability`            - 400ms idle stability window expired
- *   - `timer:bg-shell-hatch`       - 5-min orphan-bg-shell escape hatch
- *   - `timer:stale-thinking`       - 45s stale-thinking watchdog
+ *   - `timer:bg-shell-hatch`       - 30s sole-holder orphan-bg-shell grace
+ *   - `timer:stale-thinking`       - 180s stale-thinking watchdog
  *   - `timer:stuck-pending-tools`  - 5-min hatch for orphan tool_starts
  *   - `interrupted`                - Interrupted event reset everything
  */

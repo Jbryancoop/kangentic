@@ -254,11 +254,13 @@ The predicate handles the common case. Three timer-driven safety nets in `engine
 
 Held by `turnActive` alone (no tools, no subagent, no bg shells) for 180 seconds. The matching Idle/Stop hook never arrived. Emits synthetic `Idle/Timeout`, clears `turnActive`. Bypasses the stability window (the 180s already debounced any flicker).
 
-### 2. Bg-shell escape hatch (5 min)
+### 2. Bg-shell sole-holder grace (30s)
 
-Held by background shells alone for 5 minutes. The process-tree watcher couldn't observe the natural exit (probe failure, unusual platform, etc.). Force-clears the counters and emits idle through the stability window.
+Once the turn is over and a background shell is the ONLY holder of `thinking`, the engine flips to idle after a short grace (`timer:bg-shell-hatch`). Force-clears the bg-shell counters and emits idle through the stability window.
 
-In practice the watcher catches most cases within seconds; the 5-min hatch is a final safety net.
+Crucially, the deadline is anchored to when bg shells became the sole holder (`bgShellHoldSince`), NOT to `lastSignalAt`. A `Bash(run_in_background:true)` that exits naturally fires no `BackgroundShellEnd` hook (agents almost never end their shells - see the watcher section), so an orphan can linger in the counter. An earlier design had the watcher refresh `lastSignalAt` every 2s while it saw any shell-like descendant, to keep a then-5-min hatch warm; for an orphan whose exit the watcher could not attribute, that pulse pushed the deadline out forever and pinned the session `active` indefinitely (empirically confirmed on tasks #175/#180). Anchoring to the hold-start makes the deadline immovable by any keep-alive.
+
+Once the turn is over the agent is idle (waiting for input), so a short grace is correct whether or not detached bg work is still running. The watcher's attributed drain (`onNaturalExit`, ~4s) still wins for clean exits; the grace is the backstop for the unattributable case.
 
 ### 3. Stuck-pending-tools watchdog (5 min)
 
@@ -328,7 +330,7 @@ The watcher only polls when at least one session has `getActiveShellCount() > 0`
 
 ### Kill switch
 
-Set `KANGENTIC_BG_SHELL_WATCHER=0` to disable the watcher. The 5-min escape hatch remains as fallback.
+Set `KANGENTIC_BG_SHELL_WATCHER=0` to disable the watcher. The 30s sole-holder grace remains as fallback.
 
 ## Resume reconciliation
 
@@ -376,7 +378,7 @@ The fuzz tests complement the deterministic replay fixtures by exercising input 
 
 The engine itself emits synthetic events into the activity log via the `onSyntheticEvent` callback for two cases:
 
-- **Watchdog Idle/Timeout:** when the 180s stale-thinking watchdog or the 5-min bg-shell escape hatch fires. Pushed BEFORE the matching `onActivityChange` so the log entry appears before the state change.
+- **Watchdog Idle/Timeout:** when the 180s stale-thinking watchdog, the 30s bg-shell sole-holder grace, or the 5-min stuck-pending-tools hatch fires. Pushed BEFORE the matching `onActivityChange` so the log entry appears before the state change.
 - **Natural-exit `BackgroundShellEnd`:** when the watcher infers a bg shell exited naturally. Detail is `IdleReason.NaturalExit` for `onNaturalExit` (anonymous) or the shell_id for `onShellPidExited` (Tier A).
 
 ## Test infrastructure
@@ -394,7 +396,8 @@ Three test tiers:
 
 ```ts
 interface ActivityEngineOptions {
-  bgShellEscapeHatchMs?: number;     // default 5 * 60_000
+  bgShellEscapeHatchMs?: number;     // default 5 * 60_000 (stuck-pending-tools hatch)
+  bgShellOnlyGraceMs?: number;       // default 30_000 (bg-shell sole-holder grace)
   staleThinkingTimeoutMs?: number;   // default 180_000
   idleStabilityWindowMs?: number;    // default 400
   now?: () => number;                // testability
@@ -409,7 +412,7 @@ Plumbed through `SessionManagerOptions.activityEngineOptions` for tests.
 
 ### Environment variables
 
-- `KANGENTIC_BG_SHELL_WATCHER=0` - disables the bg-shell process-tree watcher (fallback to escape hatch only).
+- `KANGENTIC_BG_SHELL_WATCHER=0` - disables the bg-shell process-tree watcher (fallback to the sole-holder grace only).
 - `SKIP_PROCESS_TREE_PROBE=1` - skips real-OS probe smoke tests in CI environments without `ps`/`pwsh`.
 
 ## History

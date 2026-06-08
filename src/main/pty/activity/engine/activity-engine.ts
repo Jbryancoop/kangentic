@@ -2,6 +2,7 @@ import { EventType, IdleReason } from '../../../../shared/types';
 import type { ActivityState, ActivityReason, SessionEvent } from '../../../../shared/types';
 import {
   DEFAULT_BG_SHELL_ESCAPE_HATCH_MS,
+  DEFAULT_BG_SHELL_ONLY_GRACE_MS,
   DEFAULT_STALE_THINKING_TIMEOUT_MS,
   DEFAULT_IDLE_STABILITY_WINDOW_MS,
   RECENT_TRANSITIONS_RING_SIZE,
@@ -42,15 +43,18 @@ import type { WatchdogHold } from './watchdog';
  * stability window).
  *
  * Background shells that exit naturally without firing a hook are
- * caught by the bg-shell escape hatch (5 min). The process-tree
- * watcher (Subsystem B) reports natural exits much faster via
- * `markBackgroundShellEnded(sessionId, shellId?)`.
+ * reclaimed by the bg-shell sole-holder grace (30s, `timer:bg-shell-hatch`,
+ * anchored to `bgShellHoldSince`). The process-tree watcher (Subsystem B)
+ * reports natural exits much faster via
+ * `markBackgroundShellEnded(sessionId, shellId?)`. The 5-min
+ * `bgShellEscapeHatchMs` now backs only the stuck-pending-tools hatch.
  */
 export class ActivityEngine {
   private readonly states = new Map<string, SessionEngineState>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly callbacks: ActivityEngineCallbacks;
   private readonly idleStabilityWindowMs: number;
+  private readonly bgShellOnlyGraceMs: number;
   private readonly now: () => number;
   private readonly watchdogConfig: readonly WatchdogHold[];
   private disposed = false;
@@ -58,9 +62,11 @@ export class ActivityEngine {
   constructor(callbacks: ActivityEngineCallbacks, options: ActivityEngineOptions = {}) {
     this.callbacks = callbacks;
     this.idleStabilityWindowMs = options.idleStabilityWindowMs ?? DEFAULT_IDLE_STABILITY_WINDOW_MS;
+    this.bgShellOnlyGraceMs = options.bgShellOnlyGraceMs ?? DEFAULT_BG_SHELL_ONLY_GRACE_MS;
     this.now = options.now ?? Date.now;
     this.watchdogConfig = buildWatchdogHolds({
       bgShellEscapeHatchMs: options.bgShellEscapeHatchMs ?? DEFAULT_BG_SHELL_ESCAPE_HATCH_MS,
+      bgShellOnlyGraceMs: this.bgShellOnlyGraceMs,
       staleThinkingTimeoutMs: options.staleThinkingTimeoutMs ?? DEFAULT_STALE_THINKING_TIMEOUT_MS,
     });
   }
@@ -294,8 +300,10 @@ export class ActivityEngine {
   /**
    * Reset `lastSignalAt` without firing a transition. Used by paths
    * that observe the agent is alive but don't want to flip state
-   * (e.g. heartbeat keeping a thinking session warm so the bg-shell
-   * escape hatch doesn't false-fire).
+   * (e.g. the status-file heartbeat keeping a thinking session warm
+   * for the stale-thinking watchdog). Note: the bg-shell grace anchors
+   * to `bgShellHoldSince`, NOT `lastSignalAt`, so this signal
+   * deliberately cannot push that deadline out.
    */
   markThinkingSignal(sessionId: string): void {
     if (this.disposed) return;
@@ -516,11 +524,28 @@ export class ActivityEngine {
     }
   }
 
-  // ==== Timers: stability window, bg-shell escape hatch, stale-thinking watchdog ====
+  // ==== Timers: stability window, bg-shell sole-holder grace, stale-thinking watchdog ====
 
   private scheduleTimer(sessionId: string, state: SessionEngineState): void {
     this.clearTimer(sessionId);
     if (this.disposed) return;
+
+    const hold = state.activity === 'thinking'
+      ? findActiveWatchdogHold(state, this.watchdogConfig)
+      : undefined;
+
+    // Maintain the bg-shell anchor before any early return, so it clears the
+    // instant the bg-shell-only hold ends (another holder appears, or bg count
+    // hits zero). Stamped only when null, so the watcher's keep-alive pulses
+    // re-run scheduleTimer but never advance it - that immovability is the fix.
+    // A fresh BackgroundShellStart re-arms it: that event sets turnActive, so
+    // the hold predicate briefly goes false (clearing the anchor here), then
+    // the following Idle drops turnActive and the next scheduleTimer re-stamps.
+    if (hold?.trigger === 'timer:bg-shell-hatch') {
+      if (state.bgShellHoldSince === null) state.bgShellHoldSince = this.now();
+    } else {
+      state.bgShellHoldSince = null;
+    }
 
     // Priority 1: pending stability-window idle has the soonest deadline.
     if (state.pendingIdleAt !== null) {
@@ -529,14 +554,16 @@ export class ActivityEngine {
       return;
     }
 
-    if (state.activity !== 'thinking') return;
+    if (state.activity !== 'thinking' || !hold) return;
 
-    const hold = findActiveWatchdogHold(state, this.watchdogConfig);
-    if (hold) {
-      const baseTime = state.lastSignalAt ?? this.now();
-      const delay = Math.max(50, hold.thresholdMs - (this.now() - baseTime));
-      this.armTimer(sessionId, delay);
-    }
+    // The bg-shell hatch is anchored to `bgShellHoldSince` so keep-alive
+    // `markThinkingSignal` pulses cannot push it out; all other holds key
+    // off `lastSignalAt`.
+    const baseTime = hold.trigger === 'timer:bg-shell-hatch'
+      ? (state.bgShellHoldSince ?? this.now())
+      : (state.lastSignalAt ?? this.now());
+    const delay = Math.max(50, hold.thresholdMs - (this.now() - baseTime));
+    this.armTimer(sessionId, delay);
   }
 
   private armTimer(sessionId: string, delayMs: number): void {
@@ -574,9 +601,13 @@ export class ActivityEngine {
 
     if (state.activity !== 'thinking') return;
 
-    const baseTime = state.lastSignalAt ?? 0;
-    const sinceSignal = this.now() - baseTime;
     const hold = findActiveWatchdogHold(state, this.watchdogConfig);
+    // The bg-shell hatch is anchored to `bgShellHoldSince` so the watcher's
+    // keep-alive cannot push it out; every other hold uses `lastSignalAt`.
+    const baseTime = hold?.trigger === 'timer:bg-shell-hatch'
+      ? (state.bgShellHoldSince ?? this.now())
+      : (state.lastSignalAt ?? 0);
+    const sinceSignal = this.now() - baseTime;
 
     if (hold && sinceSignal >= hold.thresholdMs) {
       const before = snapshotCounters(state);

@@ -51,19 +51,6 @@ export interface BgShellWatcherCallbacks {
   /** Called when the Claude CLI itself dies. Engine should forceIdle. */
   onRootProcessDied(sessionId: string): void;
   /**
-   * Called once per successful poll cycle while the engine is tracking
-   * one or more bg shells. The engine should refresh its
-   * `lastSignalAt` so the 5-minute escape hatch doesn't fire while the
-   * watcher is genuinely observing live bg work in the OS.
-   *
-   * Without this, a session that goes "agent-idle but bg-work-busy"
-   * (e.g. agent fired `npm test` in background and stopped sending
-   * hooks) would have its bg shells force-cleared by the hatch even
-   * though the OS still shows them alive - the user-reported bug
-   * "engine shows 0 but 1 shell is still running".
-   */
-  onShellsObservedAlive(sessionId: string): void;
-  /**
    * Read accessors for the watcher to introspect engine state. The
    * watcher does not own counters - it observes them.
    */
@@ -311,17 +298,6 @@ export class BgShellWatcher {
       return;
     }
 
-    // ALIVE SIGNAL: every successful poll where the engine is tracking
-    // bg shells AND we observed shell-like descendants in the OS counts
-    // as a fresh "bg work is still in progress" signal. Refreshes the
-    // engine's `lastSignalAt` so the 5-min bg-shell escape hatch
-    // doesn't false-fire while the watcher is genuinely seeing the
-    // shells alive (e.g. agent stopped sending hooks but `npm test`
-    // is still running for 6 minutes).
-    if (trackedAtCycle > 0 && shellLikeCount > 0) {
-      this.callbacks.onShellsObservedAlive(sessionId);
-    }
-
     // Tier A: check tracked shell PIDs. Each Tier A exit corresponds
     // to a shell-like descendant disappearing. Engine.tracked drops
     // accordingly when onShellPidExited fires (engine deletes the id),
@@ -355,10 +331,8 @@ export class BgShellWatcher {
       // fire `background_shell_start` hooks which the engine ingests
       // via `processEvent`; anything not on disk is by definition not
       // user/agent-initiated background work. Pre-fix the watcher
-      // adopted these as anonymous bg shells, then the
-      // `onShellsObservedAlive` pulse refreshed `lastSignalAt` every
-      // 2 seconds and pinned the session in `thinking` indefinitely
-      // (the empirical "phantom counter" bug).
+      // adopted these as anonymous bg shells and pinned the session in
+      // `thinking` indefinitely (the empirical "phantom counter" bug).
       const surplus = shellLikeCount - expected;
       const pendingTools = this.callbacks.getPendingToolCount(sessionId);
       if (pendingTools > 0) {

@@ -6,7 +6,7 @@
  * engine that changes how it handles a real event sequence will diff
  * the expected outcome here.
  *
- * Fixtures live at `tests/fixtures/replay/*.jsonl` (sanitized — see
+ * Fixtures live at `tests/fixtures/replay/*.jsonl` (sanitized - see
  * `tests/fixtures/replay/_sanitize.mjs`). Expected outcomes are
  * embedded in this test file (one describe block per fixture).
  *
@@ -150,6 +150,34 @@ describe('ActivityEngine replay tests', () => {
       // reason. The bg-shell counts are independent and still gate
       // the predicate correctly.
       expect(result.finalState.pendingToolCount).toBe(0);
+    });
+  });
+
+  describe('session-009-phantom-bg-shell-no-end', () => {
+    // Real capture of the production bug (session 4632519c, task #175). The
+    // agent ran `npm install` (anonymous) which was promoted to the named bg
+    // shell `beg7osflu` as worktree setup, finished its turn (idle), and waited
+    // for input - but no background_shell_end ever fired for it. The engine is
+    // left holding one orphan: the exact precondition the timing-driven grace
+    // reclaims (that recovery is exercised in activity-engine.test.ts).
+    let result: ReplayResult;
+    beforeEach(() => {
+      const events = loadFixture('session-009-phantom-bg-shell-no-end.jsonl');
+      result = replay(events);
+    });
+
+    it('ends with exactly 1 orphaned bg shell tracked (start with no end)', () => {
+      const total =
+        result.finalState.activeBackgroundShellIds.length
+        + result.finalState.anonymousBackgroundShellCount;
+      expect(total).toBe(1);
+    });
+
+    it('ends thinking, held only by the orphan after the turn is over', () => {
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.turnActive).toBe(false);
+      expect(result.finalState.pendingToolCount).toBe(0);
+      expect(result.finalState.subagentDepth).toBe(0);
     });
   });
 

@@ -35,8 +35,15 @@ export interface WatchdogHold {
 }
 
 export interface WatchdogConfig {
-  /** ms threshold for the bg-shell hatch and the stuck-pending-tools hatch. */
+  /** ms threshold for the stuck-pending-tools hatch (measured off `lastSignalAt`). */
   bgShellEscapeHatchMs: number;
+  /**
+   * ms grace for the bg-shell hatch. Unlike the others, this hold is
+   * measured off `bgShellHoldSince` (when bg shells became the sole holder)
+   * in the engine, NOT off `lastSignalAt` - so keep-alive pulses cannot push
+   * it out. See `activity-engine.ts` scheduleTimer/onTick.
+   */
+  bgShellOnlyGraceMs: number;
   /** ms threshold for the stale-thinking hatch. */
   staleThinkingTimeoutMs: number;
 }
@@ -47,14 +54,16 @@ export interface WatchdogConfig {
 export function buildWatchdogHolds(config: WatchdogConfig): readonly WatchdogHold[] {
   return [
     {
-      // Held by bg shells alone.
+      // Held by bg shells alone. Measured off `bgShellHoldSince` (NOT
+      // `lastSignalAt`) in the engine, so the watcher's 2s keep-alive
+      // cannot push the deadline out for an orphaned/phantom shell.
       predicate: (state) =>
         !state.turnActive
         && state.pendingToolCount === 0
         && state.subagentDepth === 0
         && (state.activeBackgroundShellIds.size + state.anonymousBackgroundShellCount) > 0
         && !state.permissionPending,
-      thresholdMs: config.bgShellEscapeHatchMs,
+      thresholdMs: config.bgShellOnlyGraceMs,
       trigger: 'timer:bg-shell-hatch',
       reset: (state) => {
         state.activeBackgroundShellIds.clear();

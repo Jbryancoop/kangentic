@@ -19,6 +19,7 @@ export function createSessionEngineState(): SessionEngineState {
     pendingToolStack: [],
     idleTimestamp: null,
     pendingIdleAt: null,
+    bgShellHoldSince: null,
     recentTransitions: [],
     compensationCounters: {
       staleThinking: 0,

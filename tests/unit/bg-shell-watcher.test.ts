@@ -67,7 +67,6 @@ interface CallbackLog {
   naturalExits: Array<{ sessionId: string; exitedCount: number }>;
   shellPidExited: Array<{ sessionId: string; shellId: string }>;
   rootDied: string[];
-  shellsObservedAlive: string[];
 }
 
 function makeWatcher(opts?: {
@@ -77,7 +76,7 @@ function makeWatcher(opts?: {
   pendingToolMap?: Map<string, number>;
 }) {
   const probe = new MockProcessTreeProbe();
-  const log: CallbackLog = { naturalExits: [], shellPidExited: [], rootDied: [], shellsObservedAlive: [] };
+  const log: CallbackLog = { naturalExits: [], shellPidExited: [], rootDied: [] };
   const rootPids = opts?.rootPidMap ?? new Map<string, number>();
   const shellCounts = opts?.shellCountMap ?? new Map<string, number>();
   const pendingTools = opts?.pendingToolMap ?? new Map<string, number>();
@@ -91,9 +90,6 @@ function makeWatcher(opts?: {
     },
     onRootProcessDied(sessionId) {
       log.rootDied.push(sessionId);
-    },
-    onShellsObservedAlive(sessionId) {
-      log.shellsObservedAlive.push(sessionId);
     },
     getRootPid(sessionId) {
       return rootPids.get(sessionId);
@@ -437,11 +433,10 @@ describe('BgShellWatcher', () => {
   it('rebases helper baseline up when shell-like descendants appear post-anchor (no adoption)', async () => {
     // Empirical bug regression: agent's MCP server / statusline worker
     // restarts mid-session and spawns a persistent shell-like child.
-    // Pre-fix the watcher adopted it as anonymous bg work; the
-    // resulting phantom counter was then pinned by `onShellsObservedAlive`
-    // and the session stuck in `thinking` indefinitely. Post-fix the
-    // watcher silently rebases `preExistingHelpers` up so the helper
-    // is treated as part of the baseline, not as user-initiated bg work.
+    // Pre-fix the watcher adopted it as anonymous bg work; the resulting
+    // phantom counter stuck the session in `thinking` indefinitely.
+    // Post-fix the watcher silently rebases `preExistingHelpers` up so the
+    // helper is treated as part of the baseline, not user-initiated bg work.
     const { watcher, probe, rootPids, log } = makeWatcher();
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
@@ -854,45 +849,6 @@ describe('BgShellWatcher', () => {
     await watcher.pollNow();
 
     expect(log.naturalExits).toEqual([{ sessionId: 's1', exitedCount: 2 }]);
-    watcher.dispose();
-  });
-
-  it('alive signal: fires onShellsObservedAlive every cycle when shells are present and tracked', async () => {
-    // Regression: agent goes "agent-idle but bg-work-busy" (e.g.
-    // launched `npm test` in background and stopped sending hooks).
-    // Without this signal, the engine's 5-min escape hatch fires after
-    // `lastSignalAt + 300s` and force-clears the bg shell count even
-    // though the watcher is observing the shell alive every 2s.
-    const { watcher, probe, rootPids, log, shellCounts } = makeWatcher();
-    rootPids.set('s1', 1234);
-    probe.alive.add(1234);
-    probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
-    shellCounts.set('s1', 1);
-    watcher.registerSession('s1');
-    await watcher.pollNow(); // anchor cycle - no signal yet
-    expect(log.shellsObservedAlive).toHaveLength(0);
-
-    await watcher.pollNow();
-    expect(log.shellsObservedAlive).toEqual(['s1']);
-
-    await watcher.pollNow();
-    expect(log.shellsObservedAlive).toEqual(['s1', 's1']);
-    watcher.dispose();
-  });
-
-  it('alive signal: does NOT fire when no engine-tracked shells', async () => {
-    // The signal is for live BG WORK. Pre-existing helpers (MCP
-    // servers, statusline) shouldn't keep refreshing the engine's
-    // `lastSignalAt` - that would suppress the stale-thinking watchdog.
-    const { watcher, probe, rootPids, log } = makeWatcher();
-    rootPids.set('s1', 1234);
-    probe.alive.add(1234);
-    probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
-    watcher.registerSession('s1');
-    await watcher.pollNow(); // anchor: pre-existing = 1
-    await watcher.pollNow();
-    // Engine has 0 tracked, shell is pre-existing helper - no alive signal.
-    expect(log.shellsObservedAlive).toHaveLength(0);
     watcher.dispose();
   });
 
