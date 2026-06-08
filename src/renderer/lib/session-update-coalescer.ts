@@ -18,6 +18,16 @@
  *      only the high-frequency usage/event stream is coalesced when idle. The
  *      optimistic move/drop never routes through here (it lives in board-store),
  *      so drop responsiveness is unaffected.
+ *   3. Reload gate. Background-originated full reloads (`enqueueReload`) carry
+ *      the same drag hazard as session pushes: an agent-driven `loadBoard()` /
+ *      `loadBacklog()` / `loadConfig()` landing mid-drag reconciles the board
+ *      and re-renders the changed lane, clearing dnd-kit's measured rects on the
+ *      pointer-move thread (the reason `dragStartRectRef` exists). They are held
+ *      while a drag is active and flushed once on drag end, deduped by key so N
+ *      agent events that each requested a reload collapse to one. When idle they
+ *      run immediately (no behavior change). User-initiated reloads (drop,
+ *      detail-dialog actions, project switch, confirm dialogs, drag-cancel) do
+ *      NOT route through here - they already fire at/after drag end.
  *
  * Usage and events keep their dedicated batch store actions (`batchUpdateUsage`
  * / `batchAddEvents`) for efficient last-write-wins / append semantics. The
@@ -45,6 +55,16 @@ const pendingUsage = new Map<string, SessionUsage>();
 const pendingEvents: Array<{ sessionId: string; event: SessionEvent }> = [];
 // hmr-safe: transient in-flight buffer; see pendingUsage.
 const pendingThunks: Array<() => void> = [];
+/**
+ * The closed set of background reloads that route through the drag gate. The
+ * shared 'board' key (used by both auto-move in App.tsx and agent invalidation
+ * in useAgentDrivenInvalidation.ts) is what collapses their reloads to one.
+ */
+export type ReloadKey = 'board' | 'backlog' | 'config' | 'applyConfig';
+
+// hmr-safe: transient in-flight buffer; see pendingUsage. Keyed so repeated
+// reload requests during a drag (e.g. 'board') collapse to the last reload.
+const pendingReloads = new Map<ReloadKey, () => void>();
 
 // hmr-safe: a board drag never survives a module reload - every <DndContext>
 // re-keys via hmrGeneration, so dragActive correctly resets to false on reload.
@@ -77,6 +97,14 @@ function flush(): void {
     const thunksCopy = [...pendingThunks];
     pendingThunks.length = 0;
     for (const thunk of thunksCopy) thunk();
+  }
+
+  // Reloads drain last. They are independent full re-fetches (loadBoard etc.)
+  // with no ordering dependency on the session-push thunks above.
+  if (pendingReloads.size > 0) {
+    const reloadsCopy = [...pendingReloads.values()];
+    pendingReloads.clear();
+    for (const reload of reloadsCopy) reload();
   }
 }
 
@@ -115,6 +143,25 @@ export function enqueueSessionUpdate(thunk: () => void): void {
   thunk();
 }
 
+/**
+ * Run a background-originated full reload (`loadBoard` / `loadBacklog` /
+ * `loadConfig` / `applyConfigChange`). When no board drag is active it runs
+ * immediately, preserving the pre-existing behavior (callers keep their own
+ * upstream debounce). While a drag is active it is held, keyed by `ReloadKey`
+ * so repeated requests collapse to one reload, and flushed on drag end - so an
+ * agent-driven reconcile never re-renders a sortable lane mid-gesture. Only
+ * background pushes (agent invalidation, auto-move, kangentic.json / label-color
+ * file watches) route through here; user-initiated reloads already fire at or
+ * after drag end.
+ */
+export function enqueueReload(key: ReloadKey, thunk: () => void): void {
+  if (dragActive) {
+    pendingReloads.set(key, thunk);
+    return;
+  }
+  thunk();
+}
+
 /** Mark the start of a board drag. While active, all queued updates are held. */
 export function beginBoardDrag(): void {
   dragActive = true;
@@ -140,6 +187,7 @@ export function resetCoalescerForHmr(): void {
   pendingUsage.clear();
   pendingEvents.length = 0;
   pendingThunks.length = 0;
+  pendingReloads.clear();
   dragActive = false;
   flushScheduled = false;
 }

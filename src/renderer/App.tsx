@@ -23,6 +23,7 @@ import {
   enqueueUsage,
   enqueueEvent,
   enqueueSessionUpdate,
+  enqueueReload,
   resetCoalescerForHmr,
 } from './lib/session-update-coalescer';
 
@@ -481,7 +482,10 @@ export function App() {
       cleanups.push(boardConfig.onChanged((changedProjectId) => {
         if (useConfigStore.getState().config.skipBoardConfigConfirm) {
           useBoardStore.getState().setPendingConfigChange(changedProjectId);
-          useBoardStore.getState().applyConfigChange();
+          // Held until drag end if the kangentic.json watch fires mid-drag, so
+          // columns never reconfigure on the pointer-move thread. See the reload
+          // gate in session-update-coalescer.
+          enqueueReload('applyConfig', () => useBoardStore.getState().applyConfigChange());
         } else {
           useBoardStore.getState().setPendingConfigChange(changedProjectId);
         }
@@ -520,8 +524,11 @@ export function App() {
           invalidateProject(autoMoveProjectId);
         } else {
           // Current project: a single auto-move event (one task per plan
-          // completion) does not need debouncing; load directly.
-          useBoardStore.getState().loadBoard();
+          // completion) does not need debouncing. Routed through enqueueReload
+          // so it is held until drag end if it lands mid-drag, rather than
+          // reconciling a sortable lane on the pointer-move thread (see the
+          // reload gate in session-update-coalescer).
+          enqueueReload('board', () => useBoardStore.getState().loadBoard());
         }
 
         const notifyConfig = useConfigStore.getState().config.notifications;

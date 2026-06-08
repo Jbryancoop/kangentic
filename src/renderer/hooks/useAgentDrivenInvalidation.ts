@@ -34,6 +34,7 @@ import { useConfigStore } from '../stores/config-store';
 import { useProjectStore } from '../stores/project-store';
 import { useToastStore } from '../stores/toast-store';
 import { invalidateProject, invalidateAllProjects } from '../stores/project-cache';
+import { enqueueReload } from '../lib/session-update-coalescer';
 
 export function useAgentDrivenInvalidation(): void {
   useEffect(() => {
@@ -45,21 +46,24 @@ export function useAgentDrivenInvalidation(): void {
     // previously fired one full loadBoard() per event. 250ms coalesces rapid
     // bursts into a single reload while staying below the user-noticeable
     // threshold. Toasts are intentionally NOT debounced; they are the live
-    // user feedback.
+    // user feedback. The reload is routed through `enqueueReload` so a debounce
+    // that fires mid-drag is held until drag end (deduped by key) instead of
+    // reconciling the board and re-rendering a sortable lane on the pointer-move
+    // thread. See session-update-coalescer's reload gate.
     let pendingBoardReload: ReturnType<typeof setTimeout> | null = null;
     let pendingBacklogReload: ReturnType<typeof setTimeout> | null = null;
     const scheduleBoardReload = () => {
       if (pendingBoardReload !== null) clearTimeout(pendingBoardReload);
       pendingBoardReload = setTimeout(() => {
         pendingBoardReload = null;
-        useBoardStore.getState().loadBoard();
+        enqueueReload('board', () => useBoardStore.getState().loadBoard());
       }, 250);
     };
     const scheduleBacklogReload = () => {
       if (pendingBacklogReload !== null) clearTimeout(pendingBacklogReload);
       pendingBacklogReload = setTimeout(() => {
         pendingBacklogReload = null;
-        useBacklogStore.getState().loadBacklog();
+        enqueueReload('backlog', () => useBacklogStore.getState().loadBacklog());
       }, 250);
     };
     cleanups.push(() => {
@@ -153,7 +157,9 @@ export function useAgentDrivenInvalidation(): void {
     // Label colors changed by agent (MCP server created labels with colors)
     if (backlog?.onLabelColorsChanged) {
       cleanups.push(backlog.onLabelColorsChanged(() => {
-        useConfigStore.getState().loadConfig();
+        // Held until drag end if it lands mid-drag (label colors re-render
+        // cards that use them). See session-update-coalescer's reload gate.
+        enqueueReload('config', () => useConfigStore.getState().loadConfig());
         // Label colors live in the AppConfig shape, so every project's
         // effective config is now stale. Invalidate cached snapshots so
         // a future warm switch refetches instead of restoring old colors.
