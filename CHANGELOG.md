@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.21.0] - 2026-06-08
+
+### Features
+
+- Context bar: surface live session stats with expandable tool-call breakdown (2ada2e39)
+- UI: readable theme-adaptive Isolated badge on session tab and task detail (ae3f854c)
+- Code review: scope review against base branch through working tree (77609b07)
+- Board config: round-trip per-column session settings to kangentic.json (326d6324)
+- Sessions: split per-column sessions into target + spawn strategy (dd99f2ff)
+- Sessions: per-column isolated agent sessions (f91a47e2)
+- Diagnostics: tag project-specific main-process logs with [projectName] (89f00401)
+- Diagnostics: prefix main-process console logs with local-time timestamps (2513fa09)
+- Code review: size-gate /code-review and /test into a multi-agent heavy path (ad0af902)
+- PR linking: authoritative branch to PR resolver with confidence ladder (68bee0fa)
+
+### Fixes
+
+- Activity: reclaim sole-holder background shells via anchored grace (393085a5)
+- Board: hide drag-to-Done card before the worktree git probe (9591993c)
+- Board: stop drag-to-Done card flashing back to its source column (c81c0bba)
+- Activity: group permission with idle via shared activity-state classifier (c183f0b7)
+- Build: deploy bridge/plugin scripts in dev, not just prod (7a6bc02b)
+- Session: resume OS-killed agent sessions on startup (0c412dda)
+- Activity: stop tool-blind remap mis-mapping Agent completions (4f0ec66f)
+- Spawn: surface a waiting state and decouple the per-project git queue (2dc9460e)
+- Activity: stop false idle when a running session's directory is deleted (3119b06e)
+- Board: eliminate drag-to-Done snap-back flash with a race-free drop animation (a5ad0a26)
+- Board: restore drop-settle animation for non-Done column moves (8ae1564f)
+- Activity: restore turnActive when a permission pause resolves (dd32d929)
+- Board: smooth out drag-to-Done animation and fix repeat-completion flicker (11051ac1)
+- Activity: classify "waiting for input" notification as an idle hint (c1599c67)
+- Context bar: make model/effort picker interactive in Command Terminal and default-agent tasks (e42c49ac)
+
+### Other
+
+- Test: simplify /test to a predictable full-run gate (225a6a44)
+- Board: defer background reloads during a drag to prevent jitter (2ca1a0f8)
+- Test: cover the animated Done-confirm dialog fly path (19266f9a)
+- Repo: remove stray root scratch files (1c1ec487)
+- Style: normalize merge-back skill dashes and tidy IsolatedBadge className (c5227264)
+- Workflow: add /commit skill and split local commit from /merge-back (fe465a6d)
+- Board: remove redundant "worktree deleted" badge from completed cards (59b9deec)
+- Conventions: codify standards as .claude/rules and wire lint into CI (7cf486a5)
+- Startup: defer reconciliation prep and quiet no-op startup logs (299e4f97)
+- CI: pin CI and release back to Node 22 (e1e975d9)
+- Board: coalesce session pushes during drag to eliminate jank (e0092214)
+- Deps: upgrade dependencies to latest stable (e9c70124)
+
 ## [v0.20.0] - 2026-06-01
 
 ### Fixes

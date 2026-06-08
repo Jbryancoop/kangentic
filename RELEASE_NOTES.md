@@ -1,7 +1,16 @@
+## What's New
+
+- **Per-column session control.** Columns can now run their own isolated agent session, with separate settings for the session target and spawn strategy. These per-column settings round-trip to `kangentic.json` so they can be shared with your team.
+- **Live session stats in the context bar.** The context bar now surfaces live session stats with an expandable tool-call breakdown.
+- **Smarter code review.** Code review scopes against the base branch through your working tree, and larger reviews automatically fan out across multiple agents.
+- **More reliable PR linking.** Branches now resolve to their pull request through a confidence-ranked resolver.
+- **Clearer diagnostics.** Main-process logs are tagged with the project name and prefixed with local-time timestamps.
+- **Readable Isolated badge.** A theme-adaptive Isolated badge now appears on the session tab and task detail.
+
 ## Bug Fixes
 
-- Live session state now stays visible across hot reloads and when switching between projects.
-- Resuming a Claude session now survives moving a task to Done and back, thanks to stable worktree folder naming.
-- Backlog imports no longer re-add tasks that were already promoted to the board.
-- Creating a new project no longer inherits board import sources from other projects.
-- Claude agent capability detection is more robust and tolerates wrapped command output.
+- Smoother, flicker-free drag-to-Done animations: cards no longer snap back, flash back to their source column, or flicker on repeat completion.
+- More accurate activity tracking: no false idle when a running session's directory is deleted, active state restores after a permission pause, and "waiting for input" is treated as idle.
+- Agent sessions killed by the OS are now resumed on startup.
+- The model and effort picker is interactive in the Command Terminal and default-agent tasks.
+- Bridge and plugin scripts now deploy correctly in dev mode.
