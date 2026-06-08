@@ -1,3 +1,24 @@
+/**
+ * E2E tests for terminal rendering.
+ *
+ * NOT migrated to shared-app fixture: the "bottom terminal panel shows xterm"
+ * test asserts on a session tab appearing in the bottom panel using the
+ * "/term-panel/" text pattern. In the shared Electron instance, sessions from
+ * prior tests' projects can still appear as tabs in the bottom panel, making
+ * the tab locator match a stale tab or miss the expected one (2/10 failures).
+ * With its own Electron boot, the bottom panel starts empty and the first
+ * session tab is deterministically the one this test created. Keeping own boot.
+ *
+ * Deleted tests (not reproduced):
+ *  - "panel resize preserves scrollback" - deleted because design was
+ *    fundamentally racy: snapshotted PTY scrollback for equality while
+ *    mock-claude kept streaming. Fixed waits couldn't reliably distinguish
+ *    "stream paused" from "stream finished". Coverage of PTY ring-buffer
+ *    logic lives in unit tests; coverage of resize debouncing lives in the
+ *    PTY debouncer unit tests.
+ *  - Two other terminal snapshot tests - same racy PTY equality comparison
+ *    design.
+ */
 import { test, expect } from '@playwright/test';
 import {
   launchApp,

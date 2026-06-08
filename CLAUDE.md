@@ -112,14 +112,16 @@ open):
 
 ### Testing
 
-Three test tiers (unit / UI / E2E). Setup, commands, the headless mock, and tier-selection
+Three test tiers (unit / UI / E2E). Setup, commands, the headless mock, and tier
 guidance live in [docs/developer-guide.md](docs/developer-guide.md). The scoped-run discipline
 below is the part that must stay in context.
 
 #### When to test
 
-Full-tier runs are reserved for the `/test` command or explicit user request. While working on
-a task, stay scoped to what you changed.
+`/test` is the full gate (typecheck, build, then unit + UI + E2E, all tests, no selection
+heuristic); `/test quick` runs unit + UI only for the fast inner loop. Full-tier runs are
+reserved for the `/test` command or explicit user request. While working on a task, stay scoped
+to what you changed.
 
 **Always fine:**
 - `npm run typecheck` - run freely at any point.

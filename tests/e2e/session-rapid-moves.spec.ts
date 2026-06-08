@@ -12,6 +12,14 @@
  * Uses the mock Claude CLI (tests/fixtures/mock-claude) so no real agent runs.
  * All moves are performed via IPC (window.electronAPI.tasks.move) for speed
  * and determinism -- no drag-and-drop.
+ *
+ * NOT migrated to shared-app fixture: the "no running sessions" assertion
+ * uses SESSION_LIST which is unfiltered (returns all projects' sessions). In
+ * the shared Electron instance, rapid moves from THIS test spawn 3-4 sessions
+ * tagged to THIS project, and those sessions take longer than 13s to drain
+ * when the shared instance has accumulated activity from prior tests. The test
+ * passes 10/10 with its own dedicated Electron boot (session registry is empty
+ * at test start), but fails 10/10 when sharing a warm instance. Keeping own boot.
  */
 import { test, expect } from '@playwright/test';
 import {
@@ -89,8 +97,8 @@ test.describe('Claude Agent -- Rapid Task Moves', () => {
     // Resolve swimlane IDs
     const swimlaneIds = await page.evaluate(async () => {
       const swimlanes = await window.electronAPI.swimlanes.list();
-      const planning = swimlanes.find((s: any) => s.name === 'Planning');
-      const backlog = swimlanes.find((s: any) => s.name === 'To Do');
+      const planning = swimlanes.find((s: { name: string }) => s.name === 'Planning');
+      const backlog = swimlanes.find((s: { name: string }) => s.name === 'To Do');
       return { planning: planning?.id, backlog: backlog?.id };
     });
     expect(swimlaneIds.planning).toBeTruthy();
@@ -99,7 +107,7 @@ test.describe('Claude Agent -- Rapid Task Moves', () => {
     // Find the task ID
     const taskId = await page.evaluate(async (t) => {
       const tasks = await window.electronAPI.tasks.list();
-      const task = tasks.find((tk: any) => tk.title === t);
+      const task = tasks.find((tk: { title: string }) => tk.title === t);
       return task?.id;
     }, title);
     expect(taskId).toBeTruthy();
@@ -163,13 +171,13 @@ test.describe('Claude Agent -- Rapid Task Moves', () => {
     // --- Verify: task ended up in To Do ---
     const finalTask = await page.evaluate(async (tid) => {
       const tasks = await window.electronAPI.tasks.list();
-      return tasks.find((t: any) => t.id === tid);
+      return tasks.find((t: { id: string }) => t.id === tid);
     }, taskId!);
     expect(finalTask).toBeTruthy();
 
     const backlogSwimlane = await page.evaluate(async (blId) => {
       const swimlanes = await window.electronAPI.swimlanes.list();
-      return swimlanes.find((s: any) => s.id === blId);
+      return swimlanes.find((s: { id: string }) => s.id === blId);
     }, swimlaneIds.backlog!);
     expect(finalTask.swimlane_id).toBe(backlogSwimlane.id);
 
@@ -180,7 +188,7 @@ test.describe('Claude Agent -- Rapid Task Moves', () => {
       .poll(
         async () => page.evaluate(async () => {
           const sessions = await window.electronAPI.sessions.list();
-          return sessions.filter((s: any) => s.status === 'running').length;
+          return sessions.filter((s: { status: string }) => s.status === 'running').length;
         }),
         { timeout: 13_000, intervals: [200, 500] },
       )
@@ -189,7 +197,7 @@ test.describe('Claude Agent -- Rapid Task Moves', () => {
     // --- Verify: task has no active session_id ---
     const taskAfterSettle = await page.evaluate(async (tid) => {
       const tasks = await window.electronAPI.tasks.list();
-      return tasks.find((t: any) => t.id === tid);
+      return tasks.find((t: { id: string }) => t.id === tid);
     }, taskId!);
     expect(taskAfterSettle.session_id).toBeFalsy();
 
@@ -228,15 +236,15 @@ test.describe('Claude Agent -- Rapid Task Moves', () => {
 
     const swimlaneIds = await page.evaluate(async () => {
       const swimlanes = await window.electronAPI.swimlanes.list();
-      const planning = swimlanes.find((s: any) => s.name === 'Planning');
-      const backlog = swimlanes.find((s: any) => s.name === 'To Do');
+      const planning = swimlanes.find((s: { name: string }) => s.name === 'Planning');
+      const backlog = swimlanes.find((s: { name: string }) => s.name === 'To Do');
       return { planning: planning?.id, backlog: backlog?.id };
     });
     expect(swimlaneIds.planning).toBeTruthy();
 
     const taskId = await page.evaluate(async (t) => {
       const tasks = await window.electronAPI.tasks.list();
-      const task = tasks.find((tk: any) => tk.title === t);
+      const task = tasks.find((tk: { title: string }) => tk.title === t);
       return task?.id;
     }, title);
     expect(taskId).toBeTruthy();
@@ -244,7 +252,7 @@ test.describe('Claude Agent -- Rapid Task Moves', () => {
     // Verify task is currently in To Do (settled from previous test)
     const taskBefore = await page.evaluate(async (tid) => {
       const tasks = await window.electronAPI.tasks.list();
-      return tasks.find((t: any) => t.id === tid);
+      return tasks.find((t: { id: string }) => t.id === tid);
     }, taskId!);
     expect(taskBefore.swimlane_id).toBe(swimlaneIds.backlog);
 
@@ -259,23 +267,23 @@ test.describe('Claude Agent -- Rapid Task Moves', () => {
 
     // Wait for a running session to appear
     await page.waitForFunction(async (tid) => {
-      const sessions = await (window as any).electronAPI.sessions.list();
-      return sessions.some((s: any) => s.taskId === tid && s.status === 'running');
+      const sessions = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.list();
+      return sessions.some((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
     }, taskId!, { timeout: 15000 });
 
     // Verify scrollback contains a mock Claude marker (session actually started)
     await page.waitForFunction(async (tid) => {
-      const sessions = await (window as any).electronAPI.sessions.list();
-      const s = sessions.find((s: any) => s.taskId === tid && s.status === 'running');
+      const sessions = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.list();
+      const s = sessions.find((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
       if (!s) return false;
-      const sb = await (window as any).electronAPI.sessions.getScrollback(s.id);
+      const sb = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.getScrollback(s.id);
       return sb && sb.includes('MOCK_CLAUDE_');
     }, taskId!, { timeout: 15000 });
 
     // Final assertion: exactly one running session for this task
     const finalSession = await page.evaluate(async (tid) => {
       const sessions = await window.electronAPI.sessions.list();
-      return sessions.find((s: any) => s.taskId === tid && s.status === 'running');
+      return sessions.find((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
     }, taskId!);
     expect(finalSession).toBeTruthy();
     expect(finalSession.status).toBe('running');
@@ -283,7 +291,7 @@ test.describe('Claude Agent -- Rapid Task Moves', () => {
     // Verify the task record has a session_id set
     const taskAfter = await page.evaluate(async (tid) => {
       const tasks = await window.electronAPI.tasks.list();
-      return tasks.find((t: any) => t.id === tid);
+      return tasks.find((t: { id: string }) => t.id === tid);
     }, taskId!);
     expect(taskAfter.session_id).toBeTruthy();
   });

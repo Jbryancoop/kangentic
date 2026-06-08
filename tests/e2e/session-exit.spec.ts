@@ -9,6 +9,14 @@
  *
  * Uses the mock Claude CLI (tests/fixtures/mock-claude) and triggers exit
  * via the sessions.kill() IPC, which fires the PTY onExit handler.
+ *
+ * NOT migrated to shared-app fixture: the test asserts SESSION_LIST returns
+ * exactly 1 running session after a move. SESSION_LIST is unfiltered (returns
+ * all projects' sessions). In the shared Electron instance, a session from a
+ * prior test's project can still be transitioning from 'running' to 'exited'
+ * while this test's assert fires, causing "Expected: 1, Received: 2". With
+ * its own boot the registry is empty at start. 1/10 failure in shared mode;
+ * keeping own boot.
  */
 import { test, expect } from '@playwright/test';
 import {
@@ -86,8 +94,8 @@ test.describe('Claude Agent -- Session Exit Handling', () => {
     // Get swimlane IDs
     const swimlaneIds = await page.evaluate(async () => {
       const swimlanes = await window.electronAPI.swimlanes.list();
-      const planning = swimlanes.find((s: any) => s.name === 'Planning');
-      const backlog = swimlanes.find((s: any) => s.name === 'To Do');
+      const planning = swimlanes.find((s: { name: string }) => s.name === 'Planning');
+      const backlog = swimlanes.find((s: { name: string }) => s.name === 'To Do');
       return { planning: planning?.id, backlog: backlog?.id };
     });
     expect(swimlaneIds.planning).toBeTruthy();
@@ -95,7 +103,7 @@ test.describe('Claude Agent -- Session Exit Handling', () => {
 
     const taskId = await page.evaluate(async (t) => {
       const tasks = await window.electronAPI.tasks.list();
-      const task = tasks.find((tk: any) => tk.title === t);
+      const task = tasks.find((tk: { title: string }) => tk.title === t);
       return task?.id;
     }, title);
     expect(taskId).toBeTruthy();
@@ -111,14 +119,14 @@ test.describe('Claude Agent -- Session Exit Handling', () => {
 
     // Wait for session to be running
     await page.waitForFunction(async () => {
-      const sessions = await (window as any).electronAPI.sessions.list();
-      return sessions.some((s: any) => s.status === 'running');
+      const sessions = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.list();
+      return sessions.some((s: { status: string }) => s.status === 'running');
     }, null, { timeout: 15000 });
 
     // Verify we have exactly 1 running session
     const runningBefore = await page.evaluate(async () => {
       const sessions = await window.electronAPI.sessions.list();
-      return sessions.filter((s: any) => s.status === 'running').length;
+      return sessions.filter((s: { status: string }) => s.status === 'running').length;
     });
     expect(runningBefore).toBe(1);
 
@@ -132,18 +140,15 @@ test.describe('Claude Agent -- Session Exit Handling', () => {
     }, { taskId: taskId!, swimlaneId: swimlaneIds.backlog! });
 
     // Wait for the session to no longer be running.
-    // Poll with manual delays to avoid timing races.
-    let runningAfter = 1;
-    for (let i = 0; i < 20; i++) {
-      await page.waitForTimeout(500);
-      const sessions = await page.evaluate(async () => {
-        const sessions = await window.electronAPI.sessions.list();
-        return sessions.map((s: any) => ({ id: s.id, taskId: s.taskId, status: s.status }));
-      });
-      runningAfter = sessions.filter((s: any) => s.status === 'running').length;
-      if (runningAfter === 0) break;
-    }
-    expect(runningAfter).toBe(0);
+    await expect
+      .poll(
+        async () => page.evaluate(async () => {
+          const sessions = await window.electronAPI.sessions.list();
+          return sessions.filter((s: { status: string }) => s.status === 'running').length;
+        }),
+        { timeout: 13_000, intervals: [200, 500] },
+      )
+      .toBe(0);
   });
 
   test('moving task back to agent column after exit creates a new PTY', async () => {
@@ -153,8 +158,8 @@ test.describe('Claude Agent -- Session Exit Handling', () => {
     // Get swimlane IDs
     const swimlaneIds = await page.evaluate(async () => {
       const swimlanes = await window.electronAPI.swimlanes.list();
-      const planning = swimlanes.find((s: any) => s.name === 'Planning');
-      const backlog = swimlanes.find((s: any) => s.name === 'To Do');
+      const planning = swimlanes.find((s: { name: string }) => s.name === 'Planning');
+      const backlog = swimlanes.find((s: { name: string }) => s.name === 'To Do');
       return { planning: planning?.id, backlog: backlog?.id };
     });
     expect(swimlaneIds.planning).toBeTruthy();
@@ -162,7 +167,7 @@ test.describe('Claude Agent -- Session Exit Handling', () => {
 
     const taskId = await page.evaluate(async (t) => {
       const tasks = await window.electronAPI.tasks.list();
-      const task = tasks.find((tk: any) => tk.title === t);
+      const task = tasks.find((tk: { title: string }) => tk.title === t);
       return task?.id;
     }, title);
     expect(taskId).toBeTruthy();
@@ -178,26 +183,18 @@ test.describe('Claude Agent -- Session Exit Handling', () => {
 
     // Wait for running
     await page.waitForFunction(async (tid) => {
-      const sessions = await (window as any).electronAPI.sessions.list();
-      return sessions.some((s: any) => s.taskId === tid && s.status === 'running');
+      const sessions = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.list();
+      return sessions.some((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
     }, taskId!, { timeout: 15000 });
 
     // Wait for scrollback to have content (session fully started)
     await page.waitForFunction(async (tid) => {
-      const sessions = await (window as any).electronAPI.sessions.list();
-      const s = sessions.find((s: any) => s.taskId === tid && s.status === 'running');
+      const sessions = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.list();
+      const s = sessions.find((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
       if (!s) return false;
-      const sb = await (window as any).electronAPI.sessions.getScrollback(s.id);
+      const sb = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.getScrollback(s.id);
       return sb && sb.length > 10;
     }, taskId!, { timeout: 15000 });
-
-    // Record the first scrollback content
-    const firstScrollback = await page.evaluate(async (tid) => {
-      const sessions = await window.electronAPI.sessions.list();
-      const s = sessions.find((s: any) => s.taskId === tid);
-      if (!s) return '';
-      return window.electronAPI.sessions.getScrollback(s.id);
-    }, taskId!);
 
     // Move to To Do (suspends session, kills PTY)
     await page.evaluate(async ({ taskId, swimlaneId }) => {
@@ -210,8 +207,8 @@ test.describe('Claude Agent -- Session Exit Handling', () => {
 
     // Wait for no running sessions
     await page.waitForFunction(async () => {
-      const sessions = await (window as any).electronAPI.sessions.list();
-      return !sessions.some((s: any) => s.status === 'running');
+      const sessions = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.list();
+      return !sessions.some((s: { status: string }) => s.status === 'running');
     }, null, { timeout: 15000 });
 
     await page.waitForTimeout(1000);
@@ -227,23 +224,23 @@ test.describe('Claude Agent -- Session Exit Handling', () => {
 
     // Wait for a new running session
     await page.waitForFunction(async (tid) => {
-      const sessions = await (window as any).electronAPI.sessions.list();
-      return sessions.some((s: any) => s.taskId === tid && s.status === 'running');
+      const sessions = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.list();
+      return sessions.some((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
     }, taskId!, { timeout: 15000 });
 
     // Wait for the new session to produce scrollback
     await page.waitForFunction(async (tid) => {
-      const sessions = await (window as any).electronAPI.sessions.list();
-      const s = sessions.find((s: any) => s.taskId === tid && s.status === 'running');
+      const sessions = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.list();
+      const s = sessions.find((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
       if (!s) return false;
-      const sb = await (window as any).electronAPI.sessions.getScrollback(s.id);
+      const sb = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.getScrollback(s.id);
       return sb && sb.includes('MOCK_CLAUDE_');
     }, taskId!, { timeout: 15000 });
 
     // Verify a running session exists for this task
     const newSession = await page.evaluate(async (tid) => {
       const sessions = await window.electronAPI.sessions.list();
-      return sessions.find((s: any) => s.taskId === tid && s.status === 'running');
+      return sessions.find((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
     }, taskId!);
 
     expect(newSession).toBeTruthy();
@@ -251,12 +248,11 @@ test.describe('Claude Agent -- Session Exit Handling', () => {
 
     // To Do marks sessions as 'exited' (not 'suspended'), so re-entry
     // must spawn a FRESH session (MOCK_CLAUDE_SESSION), never a resumed one.
-    // Poll until the marker appears in this task's scrollback.
     await page.waitForFunction(async (tid) => {
-      const sessions = await (window as any).electronAPI.sessions.list();
-      const s = sessions.find((s: any) => s.taskId === tid && s.status === 'running');
+      const sessions = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.list();
+      const s = sessions.find((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
       if (!s) return false;
-      const sb = await (window as any).electronAPI.sessions.getScrollback(s.id);
+      const sb = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.getScrollback(s.id);
       return sb && sb.includes('MOCK_CLAUDE_SESSION:');
     }, taskId!, { timeout: 15000 });
   });

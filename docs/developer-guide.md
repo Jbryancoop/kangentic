@@ -222,9 +222,13 @@ npx playwright test --project=electron
 ```
 
 - **Runner:** Playwright with `_electron.launch()`
-- **Speed:** Slower, opens real windows (no headless mode on Windows)
+- **Speed:** Slower, opens real windows (no headless mode on Windows). `workers` is locked at 1.
 - **What to test here:** PTY sessions, terminal rendering, session lifecycle, shell detection, config persistence
 - **Build required** before running
+- **Boot reuse (opt-in):** a spec that uses the canonical default config and never relaunches
+  Electron can import `{ test, expect }` from `./shared-app` instead of `@playwright/test` to
+  share one worker-scoped Electron boot. See the header of `tests/e2e/shared-app.ts` for the
+  eligibility and never-migrate lists.
 
 ### Decision Guide
 
@@ -237,6 +241,10 @@ npx playwright test --project=electron
 Release-time manual validation against real authenticated agent CLIs lives in [release-checklist.md](release-checklist.md). Automated tests use mock fixtures and intentionally do not exercise real model latency, real tool calls, or conversation continuity across resume.
 
 ### Run All
+
+The `/test` command is the full local gate: typecheck, build, then unit + UI + E2E (all tests,
+no selection heuristic). `/test quick` runs unit + UI only for the fast inner loop. To run tiers
+directly:
 
 ```bash
 npx playwright test              # UI + E2E

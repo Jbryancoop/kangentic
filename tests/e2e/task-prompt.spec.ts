@@ -10,6 +10,17 @@
  *
  * Encapsulated under "Claude Agent" -- future agent types (e.g. Codex, Aider)
  * should get their own describe blocks.
+ *
+ * NOT migrated to shared-app fixture: test 3 ("prompt includes full description
+ * text, not just title") fails 8/10 in --repeat-each=10 after the first repeat.
+ * Root cause: Playwright's --repeat-each re-evaluates the module, so runId
+ * changes each repeat (new Date.now()), producing a unique task title per
+ * repeat. In a warm shared Electron instance after many repeats, the
+ * accumulated in-memory session registry (exited sessions, multiple projects)
+ * slows PTY scrollback emission enough to exceed the 15s waitForTerminalOutput
+ * timeout. Tests 1 and 2 pass because they run before the accumulated load
+ * reaches test 3. With its own boot, the Electron starts fresh every time.
+ * Keeping own boot.
  */
 import { test, expect } from '@playwright/test';
 import {

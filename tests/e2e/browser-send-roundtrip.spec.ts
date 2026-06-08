@@ -8,72 +8,24 @@
  * coverage purposes -- capturePage() works on about:blank, returning a
  * blank PNG. The point of the test is the IPC -> file -> paste-engine ->
  * mock-claude PTY chain, not the rendered page content.
+ *
+ * Migrated to shared-app fixture (2026-06-08): boots once per worker instead
+ * of once per spec file, saving ~3-5s of Electron launch overhead.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './shared-app';
 import {
-  launchApp,
-  createProject,
   createTask,
-  createTempProject,
-  cleanupTempProject,
-  getTestDataDir,
   waitForRunningSession,
   waitForScrollback,
   getTaskIdByTitle,
 } from './helpers';
-import type { ElectronApplication, Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import path from 'node:path';
 import fs from 'node:fs';
 
-const TEST_NAME = 'browser-send-roundtrip';
 const runId = Date.now();
-const PROJECT_NAME = `Browser Send ${runId}`;
-let app: ElectronApplication;
-let page: Page;
-let tmpDir: string;
-let dataDir: string;
 
-function mockClaudePath(): string {
-  const fixturesDir = path.join(__dirname, '..', 'fixtures');
-  if (process.platform === 'win32') {
-    return path.join(fixturesDir, 'mock-claude.cmd');
-  }
-  const jsPath = path.join(fixturesDir, 'mock-claude.js');
-  fs.chmodSync(jsPath, 0o755);
-  return jsPath;
-}
-
-test.beforeAll(async () => {
-  tmpDir = createTempProject(TEST_NAME);
-  dataDir = getTestDataDir(TEST_NAME);
-
-  fs.writeFileSync(
-    path.join(dataDir, 'config.json'),
-    JSON.stringify({
-      claude: {
-        cliPath: mockClaudePath(),
-        permissionMode: 'default',
-        maxConcurrentSessions: 5,
-        queueOverflow: 'queue',
-      },
-      git: {
-        worktreesEnabled: false,
-      },
-    }),
-  );
-
-  const result = await launchApp({ dataDir });
-  app = result.app;
-  page = result.page;
-  await createProject(page, PROJECT_NAME, tmpDir);
-});
-
-test.afterAll(async () => {
-  await app?.close();
-  cleanupTempProject(TEST_NAME);
-});
-
-async function dragTaskToColumn(taskTitle: string, targetColumn: string): Promise<void> {
+async function dragTaskToColumn(page: Page, taskTitle: string, targetColumn: string): Promise<void> {
   const card = page.locator('[data-testid="swimlane"]').locator(`text=${taskTitle}`).first();
   await card.waitFor({ state: 'visible', timeout: 5000 });
   const target = page.locator(`[data-swimlane-name="${targetColumn}"]`);
@@ -104,12 +56,13 @@ test.describe('Claude Agent -- Browser Send round-trip', () => {
   // `attachment-chips`); the capture-file existence path is also covered
   // by the `eats-first-cr` case in `browser-evidence-retry.spec.ts`. This
   // E2E remains valuable on POSIX PTYs to prove the full round-trip.
-  test('Send composites capture and submits the prompt envelope to the agent PTY', async () => {
+  test('Send composites capture and submits the prompt envelope to the agent PTY', async ({ freshProject }) => {
     test.fixme(process.platform === 'win32', 'ConPTY does not echo paste content into scrollback; round-trip covered at unit tier.');
+    const { page, tmpDir } = freshProject;
     const title = `Browser Send ${runId}`;
     const description = 'browser send round-trip';
     await createTask(page, title, description);
-    await dragTaskToColumn(title, 'Code Review');
+    await dragTaskToColumn(page, title, 'Code Review');
     await waitForRunningSession(page);
 
     const taskId = await getTaskIdByTitle(page, title);

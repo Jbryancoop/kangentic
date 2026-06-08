@@ -14,86 +14,27 @@
  * with no JSONL file → "No conversation found" error.
  *
  * Uses mock-claude so tests work without a real Claude installation.
+ *
+ * Migrated to shared-app fixture (2026-06-08): boots once per worker instead
+ * of once per spec file, saving ~3-5s of Electron launch overhead.
  */
-import { test, expect } from '@playwright/test';
-import {
-  launchApp,
-  waitForBoard,
-  createProject,
-  createTask,
-  createTempProject,
-  cleanupTempProject,
-  getTestDataDir,
-  cleanupTestDataDir,
-} from './helpers';
-import type { ElectronApplication, Page } from '@playwright/test';
-import path from 'node:path';
-import fs from 'node:fs';
+import { test, expect } from './shared-app';
+import { createTask } from './helpers';
 
-const TEST_NAME = 'session-no-false-resume';
 const runId = Date.now();
-const PROJECT_NAME = `NoFalseResume ${runId}`;
-
-function mockClaudePath(): string {
-  const fixturesDir = path.join(__dirname, '..', 'fixtures');
-  if (process.platform === 'win32') {
-    return path.join(fixturesDir, 'mock-claude.cmd');
-  }
-  const jsPath = path.join(fixturesDir, 'mock-claude.js');
-  fs.chmodSync(jsPath, 0o755);
-  return jsPath;
-}
-
-function writeTestConfig(dataDir: string): void {
-  fs.writeFileSync(
-    path.join(dataDir, 'config.json'),
-    JSON.stringify({
-      claude: {
-        cliPath: mockClaudePath(),
-        permissionMode: 'default',
-        maxConcurrentSessions: 5,
-        queueOverflow: 'queue',
-      },
-      git: {
-        worktreesEnabled: false,
-      },
-    }),
-  );
-}
 
 test.describe('Claude Agent -- No False Resume on New Tasks', () => {
-  let app: ElectronApplication;
-  let page: Page;
-  let tmpDir: string;
-  let dataDir: string;
-
-  test.beforeAll(async () => {
-    tmpDir = createTempProject(TEST_NAME);
-    dataDir = getTestDataDir(TEST_NAME);
-    writeTestConfig(dataDir);
-
-    const result = await launchApp({ dataDir });
-    app = result.app;
-    page = result.page;
-    await createProject(page, PROJECT_NAME, tmpDir);
-  });
-
-  test.afterAll(async () => {
-    await app?.close();
-    cleanupTempProject(TEST_NAME);
-    cleanupTestDataDir(TEST_NAME);
-  });
-
-  test('new task moved to Planning gets fresh session, not resume', async () => {
+  test('new task moved to Planning gets fresh session, not resume', async ({ freshProject }) => {
+    const { page } = freshProject;
     // Create a task in To Do and move it to Planning via IPC
     const title = `Fresh Session ${runId}`;
     await createTask(page, title, 'Should use --session-id, not --resume');
 
     const { taskId, planningSwimlaneId } = await page.evaluate(async (t) => {
       const tasks = await window.electronAPI.tasks.list();
-      const task = tasks.find((tk: any) => tk.title === t);
+      const task = tasks.find((tk: { title: string }) => tk.title === t);
       const swimlanes = await window.electronAPI.swimlanes.list();
-      const planning = swimlanes.find((s: any) => s.name === 'Planning');
+      const planning = swimlanes.find((s: { name: string }) => s.name === 'Planning');
       return { taskId: task?.id, planningSwimlaneId: planning?.id };
     }, title);
     expect(taskId).toBeTruthy();
@@ -110,8 +51,8 @@ test.describe('Claude Agent -- No False Resume on New Tasks', () => {
 
     // Wait for a running session
     await page.waitForFunction(async (tid) => {
-      const sessions = await (window as any).electronAPI.sessions.list();
-      return sessions.some((s: any) => s.taskId === tid && s.status === 'running');
+      const sessions = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.list();
+      return sessions.some((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
     }, taskId!, { timeout: 15000 });
 
     // Wait for mock Claude to output a marker
@@ -120,7 +61,7 @@ test.describe('Claude Agent -- No False Resume on New Tasks', () => {
     while (Date.now() - start < 15000) {
       scrollback = await page.evaluate(async (tid) => {
         const sessions = await window.electronAPI.sessions.list();
-        const s = sessions.find((s: any) => s.taskId === tid);
+        const s = sessions.find((s: { taskId: string }) => s.taskId === tid);
         if (!s) return '';
         return window.electronAPI.sessions.getScrollback(s.id);
       }, taskId!);
@@ -135,15 +76,16 @@ test.describe('Claude Agent -- No False Resume on New Tasks', () => {
     expect(scrollback).not.toContain('MOCK_CLAUDE_RESUMED:');
   });
 
-  test('duplicate PROJECT_OPEN does not orphan active sessions', async () => {
+  test('duplicate PROJECT_OPEN does not orphan active sessions', async ({ freshProject }) => {
+    const { page } = freshProject;
     const title = `Reopen Guard ${runId}`;
     await createTask(page, title, 'Session should survive re-open');
 
     const { taskId, planningSwimlaneId } = await page.evaluate(async (t) => {
       const tasks = await window.electronAPI.tasks.list();
-      const task = tasks.find((tk: any) => tk.title === t);
+      const task = tasks.find((tk: { title: string }) => tk.title === t);
       const swimlanes = await window.electronAPI.swimlanes.list();
-      const planning = swimlanes.find((s: any) => s.name === 'Planning');
+      const planning = swimlanes.find((s: { name: string }) => s.name === 'Planning');
       return { taskId: task?.id, planningSwimlaneId: planning?.id };
     }, title);
     expect(taskId).toBeTruthy();
@@ -159,14 +101,14 @@ test.describe('Claude Agent -- No False Resume on New Tasks', () => {
 
     // Wait for a running session
     await page.waitForFunction(async (tid) => {
-      const sessions = await (window as any).electronAPI.sessions.list();
-      return sessions.some((s: any) => s.taskId === tid && s.status === 'running');
+      const sessions = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.sessions.list();
+      return sessions.some((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
     }, taskId!, { timeout: 15000 });
 
     // Record the current session ID
     const sessionBefore = await page.evaluate(async (tid) => {
       const sessions = await window.electronAPI.sessions.list();
-      const s = sessions.find((s: any) => s.taskId === tid && s.status === 'running');
+      const s = sessions.find((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
       return s?.id ?? null;
     }, taskId!);
     expect(sessionBefore).toBeTruthy();
@@ -180,13 +122,15 @@ test.describe('Claude Agent -- No False Resume on New Tasks', () => {
       }
     });
 
-    // Brief pause for any recovery to settle
+    // Brief pause for any recovery to settle.
+    // Intentional fixed wait: proving non-occurrence of orphaning requires a
+    // bounded budget; no observable condition to poll for "nothing happened".
     await page.waitForTimeout(1000);
 
     // The session should STILL be running with the same ID
     const sessionAfter = await page.evaluate(async (tid) => {
       const sessions = await window.electronAPI.sessions.list();
-      const s = sessions.find((s: any) => s.taskId === tid && s.status === 'running');
+      const s = sessions.find((s: { taskId: string; status: string }) => s.taskId === tid && s.status === 'running');
       return s?.id ?? null;
     }, taskId!);
 

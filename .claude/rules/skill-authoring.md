@@ -29,8 +29,8 @@ session. Choosing it (or its alternatives) wrong makes skills slow, lossy, or un
   by forking: `add-ipc-endpoint` to `ipc-auditor`, `add-migration` to `migration-safety`, and
   `code-review` to its dimension auditors (`ipc-auditor`, `hmr-parity`, `platform-guard`,
   `session-debugger`, `migration-safety`) fanned out as parallel in-session subagents (the
-  `Agent` tool) and synthesized in the main loop. `test` delegates to `test-builder`, fanning out
-  per-tier coverage auditors via `Workflow` on sprawling changes.
+  `Agent` tool) and synthesized in the main loop. `test` delegates to `test-builder` for coverage
+  audits and test writing in a single in-session pass.
 - **Never route a fixing or mutating skill to `agent: Explore` or `agent: Plan`** - those
   built-in agents are read-only and skip CLAUDE.md, so they would drop our conventions
   (single-command Bash, no em-dashes, no `any`). The default general-purpose fork loads CLAUDE.md

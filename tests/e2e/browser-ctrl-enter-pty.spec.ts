@@ -43,65 +43,22 @@
  *   events created in the test frame don't always reach it). We therefore
  *   limit this E2E spec to the document-level regression guard, which is the
  *   observable and reliable side of the fix.
+ *
+ * Migrated to shared-app fixture (2026-06-08): boots once per worker instead
+ * of once per spec file, saving ~3-5s of Electron launch overhead.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './shared-app';
 import {
-  launchApp,
-  createProject,
   createTask,
-  createTempProject,
-  cleanupTempProject,
-  getTestDataDir,
-  mockAgentPath,
   waitForRunningSession,
   waitForScrollback,
   getTaskIdByTitle,
 } from './helpers';
-import type { ElectronApplication, Page } from '@playwright/test';
-import path from 'node:path';
-import fs from 'node:fs';
+import type { Page } from '@playwright/test';
 
-const TEST_NAME = 'browser-ctrl-enter-pty';
 const runId = Date.now();
-const PROJECT_NAME = `Browser CtrlEnter PTY ${runId}`;
 
-let app: ElectronApplication;
-let page: Page;
-let tmpDir: string;
-let dataDir: string;
-
-test.beforeAll(async () => {
-  tmpDir = createTempProject(TEST_NAME);
-  dataDir = getTestDataDir(TEST_NAME);
-
-  fs.writeFileSync(
-    path.join(dataDir, 'config.json'),
-    JSON.stringify({
-      claude: {
-        cliPath: mockAgentPath('claude'),
-        permissionMode: 'default',
-        maxConcurrentSessions: 5,
-        queueOverflow: 'queue',
-      },
-      git: { worktreesEnabled: false },
-    }),
-  );
-
-  const result = await launchApp({ dataDir });
-  app = result.app;
-  page = result.page;
-  await createProject(page, PROJECT_NAME, tmpDir);
-});
-
-test.afterAll(async () => {
-  await app?.close();
-  cleanupTempProject(TEST_NAME);
-  // getTestDataDir() cleans up stale dataDir on the next run; no
-  // explicit cleanupTestDataDir() here avoids a Windows handle-release
-  // race where better-sqlite3 still has the file open during afterAll.
-});
-
-async function dragToCodeReview(taskTitle: string): Promise<void> {
+async function dragToCodeReview(page: Page, taskTitle: string): Promise<void> {
   const card = page.locator('[data-testid="swimlane"]').locator(`text=${taskTitle}`).first();
   await card.waitFor({ state: 'visible', timeout: 5000 });
 
@@ -126,7 +83,7 @@ async function dragToCodeReview(taskTitle: string): Promise<void> {
 }
 
 test.describe('BrowserPane + Terminal Ctrl+Enter regression guard', () => {
-  test('document-level Ctrl+Enter does NOT trigger browser send when browser pane is open', async () => {
+  test('document-level Ctrl+Enter does NOT trigger browser send when browser pane is open', async ({ freshProject }) => {
     // This is the primary regression guard. Before the fix, BrowserPane's
     // document-level capture-phase listener called handleSend() on any
     // Ctrl+Enter dispatched from anywhere in the document, including from
@@ -136,9 +93,10 @@ test.describe('BrowserPane + Terminal Ctrl+Enter regression guard', () => {
     // captureAndSend must NOT be called when Ctrl+Enter is dispatched at
     // document level with the browser pane mounted.
 
+    const { page } = freshProject;
     const taskTitle = `CtrlEnter Doc ${runId}`;
     await createTask(page, taskTitle, 'ctrl-enter document-level regression');
-    await dragToCodeReview(taskTitle);
+    await dragToCodeReview(page, taskTitle);
     await waitForRunningSession(page);
 
     // Wait for mock-claude to print its session marker, which confirms the PTY
@@ -179,9 +137,6 @@ test.describe('BrowserPane + Terminal Ctrl+Enter regression guard', () => {
 
     // Spy on captureAndSend BEFORE dispatching the key event. Any call to
     // this function means handleSend() ran, which is the regression we're guarding.
-    // The spy replaces the IPC bridge method at the window object level; the
-    // replacement is visible in this page's JavaScript context on subsequent
-    // calls to captureAndSend made from BrowserPane.handleSend().
     await page.evaluate(() => {
       (window as unknown as Record<string, unknown>).__captureAndSendCalls = [];
       const original = window.electronAPI.browser.captureAndSend.bind(

@@ -9,6 +9,15 @@
  *  - Archiving a task without a session works cleanly
  *
  * Uses mock-claude so tests work without a real Claude installation.
+ *
+ * NOT migrated to shared-app fixture: the "delete task with queued session"
+ * test modifies maxConcurrentSessions to 1 via config IPC and restores it in
+ * the test body (not a try/finally). With a shared Electron instance, if this
+ * test fails before the restore step, subsequent --repeat-each runs see
+ * maxConcurrentSessions=1 and the "wait for running session" step times out.
+ * With its own Electron boot, each run starts fresh from config.json (which
+ * has maxConcurrentSessions=5), so the state cannot leak. 2/10 failures in
+ * shared mode; keeping own boot.
  */
 import { test, expect } from '@playwright/test';
 import {
@@ -203,7 +212,7 @@ test.describe('Task Delete', () => {
     // Kill the session via IPC so it becomes "(exited)"
     await page.evaluate(async (t) => {
       const tasks = await window.electronAPI.tasks.list();
-      const task = tasks.find((tk: any) => tk.title === t);
+      const task = tasks.find((tk: { title: string }) => tk.title === t);
       if (task?.session_id) {
         await window.electronAPI.sessions.kill(task.session_id);
       }
@@ -303,7 +312,7 @@ test.describe('Task Delete', () => {
     // Wait for the session entry to be created (queued or running)
     await page.waitForFunction(
       async (title) => {
-        const tasks = await (window as any).electronAPI.tasks.list();
+        const tasks = await (window as { electronAPI: typeof window.electronAPI }).electronAPI.tasks.list();
         const task = tasks.find((t: { title: string }) => t.title === title);
         return task?.session_id != null;
       },
@@ -347,7 +356,7 @@ test.describe('Task Delete', () => {
     // the in-memory map but are marked exited, not removed entirely)
     const queuedSessionStatus = await page.evaluate(async (sid) => {
       const sessions = await window.electronAPI.sessions.list();
-      const s = sessions.find((s: any) => s.id === sid);
+      const s = sessions.find((s: { id: string }) => s.id === sid);
       return s?.status ?? 'gone';
     }, taskBSessionId);
     expect(queuedSessionStatus).not.toBe('queued');
@@ -355,10 +364,10 @@ test.describe('Task Delete', () => {
     // Verify task A's session is still running
     const taskASession = await page.evaluate(async (title) => {
       const tasks = await window.electronAPI.tasks.list();
-      const t = tasks.find((tk: any) => tk.title === title);
+      const t = tasks.find((tk: { title: string }) => tk.title === title);
       if (!t?.session_id) return null;
       const sessions = await window.electronAPI.sessions.list();
-      const s = sessions.find((sess: any) => sess.id === t.session_id);
+      const s = sessions.find((sess: { id: string }) => sess.id === t.session_id);
       return s?.status ?? null;
     }, titleA);
     expect(taskASession).toBe('running');
@@ -369,7 +378,7 @@ test.describe('Task Delete', () => {
       cfg.agent.maxConcurrentSessions = 5;
       await window.electronAPI.config.set(cfg);
       const tasks = await window.electronAPI.tasks.list();
-      const t = tasks.find((tk: any) => tk.title === title);
+      const t = tasks.find((tk: { title: string }) => tk.title === title);
       if (t?.session_id) {
         await window.electronAPI.sessions.kill(t.session_id);
       }
