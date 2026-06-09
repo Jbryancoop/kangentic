@@ -230,7 +230,8 @@ async function cleanBacklogTaskResources(
  * worktree remove --force -> removeWithRetry fallback) so it handles every
  * removal mode the original move attempted. On success we clear
  * `worktree_path`, which also unsticks the task for resume if the user later
- * drags it out of Done (`ensureWorktree` skips when `worktree_path` is set).
+ * drags it out of Done (`ensureWorktree` skips only when `worktree_path` still
+ * points at a live worktree on disk; a cleared or husk path recreates it).
  *
  * Runs on every project open and on app-startup activate-all, piggybacking
  * on `cleanupStaleResourcesAsync`. The branch is preserved - only the

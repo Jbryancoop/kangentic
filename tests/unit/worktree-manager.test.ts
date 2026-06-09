@@ -22,6 +22,7 @@ vi.mock('node:fs', () => ({
   default: {
     existsSync: vi.fn(),
     statSync: vi.fn(),
+    readdirSync: vi.fn(),
     mkdirSync: vi.fn(),
     rmSync: vi.fn(),
     copyFileSync: vi.fn(),
@@ -570,7 +571,10 @@ describe('WorktreeManager -- ensureWorktree', () => {
     mockWorktreeGit.raw.mockResolvedValue('');
   });
 
-  it('returns null when task already has a worktree_path', async () => {
+  it('returns null when the worktree_path still exists on disk', async () => {
+    // existsSync true (beforeEach) + statSync isFile=true => isInsideWorktree
+    // true => a genuine, present worktree, so no recreation.
+    vi.mocked(fs.statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof fs.statSync>);
     const mgr = new WorktreeManager('/project');
     const result = await mgr.ensureWorktree(
       { id: 'abcd1234', title: 'Test', worktree_path: '/existing' },
@@ -578,6 +582,44 @@ describe('WorktreeManager -- ensureWorktree', () => {
     );
     expect(result).toBeNull();
     expect(mockProjectGit.raw).not.toHaveBeenCalled();
+  });
+
+  it('falls through to createWorktree when worktree_path points at a husk (no .git file)', async () => {
+    // beforeEach: existsSync true (husk dir still on disk), statSync throws (no
+    // `.git` file => isInsideWorktree false). A Done cleanup that could not
+    // delete the directory leaves worktree_path pointing at this emptied husk;
+    // trusting it blindly would silently no-op the move-back.
+    const mgr = new WorktreeManager('/project');
+    const createSpy = vi
+      .spyOn(mgr, 'createWorktree')
+      .mockResolvedValue({ worktreePath: '/project/.kangentic/worktrees/test-abcd1234', branchName: 'test-abcd1234' });
+
+    const result = await mgr.ensureWorktree(
+      { id: 'abcd1234', title: 'Test', worktree_path: '/project/.kangentic/worktrees/test-abcd1234' },
+      gitConfig,
+    );
+
+    expect(createSpy).toHaveBeenCalled();
+    expect(result).toEqual({ worktreePath: '/project/.kangentic/worktrees/test-abcd1234', branchName: 'test-abcd1234' });
+  });
+
+  it('falls through to createWorktree when worktree_path is set but the directory is missing', async () => {
+    // The worktree dir is gone; the project root still exists (is a git repo).
+    vi.mocked(fs.existsSync).mockImplementation(
+      (checkPath: fs.PathLike) => !String(checkPath).includes('missing-worktree'),
+    );
+    const mgr = new WorktreeManager('/project');
+    const createSpy = vi
+      .spyOn(mgr, 'createWorktree')
+      .mockResolvedValue({ worktreePath: '/project/.kangentic/worktrees/test-abcd1234', branchName: 'test-abcd1234' });
+
+    const result = await mgr.ensureWorktree(
+      { id: 'abcd1234', title: 'Test', worktree_path: '/project/.kangentic/worktrees/missing-worktree' },
+      gitConfig,
+    );
+
+    expect(createSpy).toHaveBeenCalled();
+    expect(result).not.toBeNull();
   });
 
   it('returns null when worktreesEnabled is false', async () => {
@@ -760,6 +802,65 @@ describe('WorktreeManager -- stale branch recovery', () => {
     );
     expect(removeCall).toBeDefined();
     expect(String(removeCall!.args[2])).toContain('test-task-abcd1234');
+  });
+
+  it('reuses an empty husk with --force when the stale directory cannot be removed', async () => {
+    // existsSync true (stale husk on disk), readdirSync [] (emptied husk),
+    // removeWorktree returns false (Windows pinned-CWD blocks the final rmdir).
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.mkdirSync).mockReturnValue(undefined);
+    vi.mocked(fs.readdirSync).mockReturnValue([] as unknown as ReturnType<typeof fs.readdirSync>);
+    // Branch survived the Done transition, so rev-parse --verify resolves.
+    mockProjectGit.raw.mockResolvedValue('');
+
+    const mgr = new WorktreeManager('/project');
+    vi.spyOn(mgr, 'removeWorktree').mockResolvedValue(false);
+
+    const result = await mgr.createWorktree('abcd1234-0000', 'Test task');
+
+    expect(result.branchName).toBe('test-task-abcd1234');
+    const worktreeAddCall = mockProjectGit.raw.mock.calls.find(
+      (call: string[][]) => call[0]?.includes('worktree') && call[0]?.includes('add'),
+    );
+    expect(worktreeAddCall).toBeDefined();
+    const worktreeAddArgs = worktreeAddCall![0];
+    const worktreeIndex = worktreeAddArgs.indexOf('worktree');
+    // Existing-branch arm + --force, no -b flag.
+    expect(worktreeAddArgs.slice(worktreeIndex)).toEqual([
+      'worktree', 'add', '--force',
+      expect.stringContaining('test-task-abcd1234'),
+      'test-task-abcd1234',
+    ]);
+  });
+
+  it('throws an actionable error when a non-empty stale directory cannot be removed', async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.mkdirSync).mockReturnValue(undefined);
+    vi.mocked(fs.readdirSync).mockReturnValue(['somefile'] as unknown as ReturnType<typeof fs.readdirSync>);
+    mockProjectGit.raw.mockResolvedValue('');
+
+    const mgr = new WorktreeManager('/project');
+    vi.spyOn(mgr, 'removeWorktree').mockResolvedValue(false);
+
+    await expect(mgr.createWorktree('abcd1234-0000', 'Test task')).rejects.toThrow(/preview/);
+
+    // No worktree add should have been attempted for a genuinely-stuck dir.
+    const worktreeAddCall = mockProjectGit.raw.mock.calls.find(
+      (call: string[][]) => call[0]?.includes('worktree') && call[0]?.includes('add'),
+    );
+    expect(worktreeAddCall).toBeUndefined();
+  });
+
+  it('throws an actionable error when the stale directory cannot even be listed', async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.mkdirSync).mockReturnValue(undefined);
+    vi.mocked(fs.readdirSync).mockImplementation(() => { throw new Error('EPERM: operation not permitted'); });
+    mockProjectGit.raw.mockResolvedValue('');
+
+    const mgr = new WorktreeManager('/project');
+    vi.spyOn(mgr, 'removeWorktree').mockResolvedValue(false);
+
+    await expect(mgr.createWorktree('abcd1234-0000', 'Test task')).rejects.toThrow(/could not be removed/);
   });
 
   it('pruneWorktrees spawns "git worktree prune"', async () => {

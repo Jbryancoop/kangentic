@@ -41,10 +41,10 @@ All git-mutating operations (create, remove, branch delete, prune, checkout, ren
 1. Create `.kangentic/worktrees/` directory
 2. `git fetch origin <baseBranch>` (best-effort, falls back to local branch)
 3. `git worktree prune` (clean up stale metadata from previous failed cleanups)
-4. Clean up stale worktree directory if it exists on disk
+4. Clean up the stale worktree directory if it exists on disk. If removal fails because a process holds the directory as its current directory (Windows pinned-CWD) and the leftover is an empty husk, reuse it in place; if it is non-empty or cannot be inspected, fail with an actionable error naming the likely blocker (an open terminal or editor, the `/preview` dev server, or antivirus).
 5. Check if branch already exists (stale branch from failed cleanup, or custom branch)
-6. If branch exists: `git worktree add <worktreePath> <branchName>`
-7. If new branch: `git worktree add -b <branchName> <worktreePath> <startPoint>`
+6. If branch exists: `git worktree add [--force] <worktreePath> <branchName>`
+7. If new branch: `git worktree add [--force] -b <branchName> <worktreePath> <startPoint>` (`--force` is added only when reusing an empty husk from step 4, to clear any stale `.git/worktrees/` registration whose directory still exists)
 8. On Windows: enable `core.longpaths` (see below)
 9. `git config kangentic.baseBranch <baseBranch>` (in worktree)
 10. Set up sparse-checkout (see below)
@@ -164,6 +164,8 @@ Task moved to Done
 Task moved back from Done (into any non-todo, non-done column)
   → Worktree recreated from preserved branch_name via ensureTaskWorktree
     (runs regardless of auto_spawn so the code is always on disk)
+  → Recreation verifies the worktree still exists on disk; a leftover empty
+    husk (a Done cleanup that could not delete the directory) is reused in place
   → If target has auto_spawn: claude --resume <uuid> (no prompt, continues context)
   → Status: running
 

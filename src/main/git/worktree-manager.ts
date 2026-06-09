@@ -34,6 +34,25 @@ function runGitWithTimeout(
 const backgroundPruneTimestamps = new Map<string, number>();
 const BACKGROUND_PRUNE_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 
+/**
+ * Actionable message for a stale worktree directory that could not be removed
+ * and is not a reusable empty husk. `reason` distinguishes a directory that
+ * still holds files (`not-empty`) from one that could not even be listed
+ * (`unreadable`); both mean a process is holding it, but the unreadable case
+ * must not falsely claim the directory is non-empty. Names the likely blockers
+ * so the toast that surfaces this (via TASK_MOVE -> renderer) tells the user
+ * what to close.
+ */
+function staleWorktreeError(worktreePath: string, reason: 'not-empty' | 'unreadable'): string {
+  const detail = reason === 'not-empty'
+    ? 'could not be removed and is not empty'
+    : 'could not be removed and could not be inspected';
+  return `Cannot create worktree: a stale directory at ${worktreePath} ${detail}. `
+    + `A process is likely holding files in it. Close anything using this `
+    + `path (an open agent terminal or editor, the Kangentic /preview dev server, or `
+    + `antivirus/search indexing) and retry.`;
+}
+
 // ---------------------------------------------------------------------------
 // Per-project priority queue for git-mutating operations
 // ---------------------------------------------------------------------------
@@ -216,14 +235,23 @@ export class WorktreeManager {
 
   /**
    * Guard + create worktree in one call. Returns null if any guard fails
-   * (already has worktree, worktrees disabled, not a git repo, is a worktree).
+   * (already has a live worktree on disk, worktrees disabled, not a git repo,
+   * is a worktree).
    */
   async ensureWorktree(
     task: { id: string; title: string; worktree_path: string | null; branch_name?: string | null; base_branch?: string | null; use_worktree?: number | null },
     gitConfig: { worktreesEnabled: boolean; defaultBaseBranch: string; copyFiles: string[] },
     options?: { onProgress?: (phase: string) => void; signal?: AbortSignal },
   ): Promise<{ worktreePath: string; branchName: string } | null> {
-    if (task.worktree_path) return null;
+    // Trust worktree_path only if the worktree still genuinely exists on disk.
+    // A Done cleanup that could not delete the directory (Windows pinned-CWD)
+    // leaves worktree_path set pointing at an emptied husk with no `.git` file;
+    // trusting it blindly would silently no-op the move-back and resume nothing.
+    // A missing or husk directory falls through to createWorktree, which
+    // recomputes the identical (deterministic) path and recreates the worktree.
+    if (task.worktree_path && fs.existsSync(task.worktree_path) && isInsideWorktree(task.worktree_path)) {
+      return null;
+    }
     const shouldUseWorktree = task.use_worktree != null
       ? Boolean(task.use_worktree)
       : gitConfig.worktreesEnabled;
@@ -332,10 +360,33 @@ export class WorktreeManager {
     // Use full removeWorktree (git worktree remove --force + EPERM retries)
     // instead of a single rmSync. On Windows, file handles from a recently
     // killed PTY may still be held, and rmSync fails with EPERM.
+    let reuseEmptyHusk = false;
     if (fs.existsSync(worktreePath)) {
       const removed = await this.removeWorktree(worktreePath);
       if (!removed) {
-        throw new Error(`Cannot create worktree: stale directory at ${worktreePath} could not be removed. A process may still hold file handles. Close any terminals or editors using this path and retry.`);
+        // The directory could not be deleted. On Windows a process holding it
+        // as its current directory (an agent terminal, an open editor, the
+        // Kangentic /preview dev server, or antivirus) blocks the final rmdir
+        // even though removeWorktree already cleared the contents. A pinned-CWD
+        // directory can still be populated by another process, and `git worktree
+        // add` accepts an existing EMPTY directory, so reuse the husk in place
+        // rather than failing the move-back. Only the genuinely-stuck case
+        // (real files still held) is fatal.
+        let leftover: string[];
+        try {
+          leftover = fs.readdirSync(worktreePath);
+        } catch (error) {
+          const errnoError = error as NodeJS.ErrnoException;
+          console.warn(
+            `[WorktreeManager] Could not inspect stale worktree dir: ${worktreePath} `
+            + `(code=${errnoError.code ?? 'unknown'} errno=${errnoError.errno ?? '?'} syscall=${errnoError.syscall ?? '?'}): ${errnoError.message}`
+          );
+          throw new Error(staleWorktreeError(worktreePath, 'unreadable'));
+        }
+        if (leftover.length > 0) {
+          throw new Error(staleWorktreeError(worktreePath, 'not-empty'));
+        }
+        reuseEmptyHusk = true;
       }
       options?.signal?.throwIfAborted();
     }
@@ -345,11 +396,17 @@ export class WorktreeManager {
     // This setting is Windows-only (uses \\?\ extended-length path prefix);
     // macOS/Linux have 1024-4096 byte PATH_MAX and are unaffected.
     const longPathsConfig = process.platform === 'win32' ? ['-c', 'core.longpaths=true'] : [];
+    // Reusing an empty husk needs --force so git clears any stale
+    // `.git/worktrees/<id>` registration whose directory still exists (plain
+    // prune only removes registrations for missing dirs). --force is gated on
+    // the husk path so the normal create still surfaces a genuine "branch
+    // already checked out in another worktree" error.
+    const forceFlag = reuseEmptyHusk ? ['--force'] : [];
     if (branchExists) {
-      await this.git.raw([...longPathsConfig, 'worktree', 'add', worktreePath, branchName]);
+      await this.git.raw([...longPathsConfig, 'worktree', 'add', ...forceFlag, worktreePath, branchName]);
       console.log(`[WORKTREE] Created worktree (existing branch): ${branchName}`);
     } else {
-      await this.git.raw([...longPathsConfig, 'worktree', 'add', '-b', branchName, worktreePath, startPoint]);
+      await this.git.raw([...longPathsConfig, 'worktree', 'add', ...forceFlag, '-b', branchName, worktreePath, startPoint]);
       console.log(`[WORKTREE] Created worktree (new branch): ${branchName} from ${startPoint}`);
     }
 
