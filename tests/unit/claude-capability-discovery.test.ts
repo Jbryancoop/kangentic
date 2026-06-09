@@ -30,14 +30,23 @@ vi.mock('node:fs', () => ({
   },
 }));
 
+// The /model picker probe spawns a real PTY - always mocked here. Its own
+// behavior is covered by tests/unit/claude-model-picker-probe.test.ts.
+// Discovery reads the non-blocking cache accessor (sync), not the probe.
+vi.mock('../../src/main/agent/adapters/claude/model-picker-probe', () => ({
+  getCachedModelPickerModels: vi.fn(),
+}));
+
 import { execFile, exec } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { discoverClaudeCapabilities } from '../../src/main/agent/adapters/claude/capability-discovery';
+import { getCachedModelPickerModels } from '../../src/main/agent/adapters/claude/model-picker-probe';
 
 const execMock = exec as unknown as ReturnType<typeof vi.fn>;
 const execFileMock = execFile as unknown as ReturnType<typeof vi.fn>;
+const probeMock = getCachedModelPickerModels as unknown as ReturnType<typeof vi.fn>;
 const readdirMock = fs.readdirSync as unknown as ReturnType<typeof vi.fn>;
 const statMock = fs.statSync as unknown as ReturnType<typeof vi.fn>;
 const openMock = fs.openSync as unknown as ReturnType<typeof vi.fn>;
@@ -139,6 +148,10 @@ beforeEach(() => {
   // Default: no Claude session store - discovery falls through and the
   // renderer would render a free-form input.
   setSessionStore(null);
+  // Default: the /model picker cache is empty, keeping the historical tests
+  // focused on the transcript walk alone.
+  probeMock.mockReset();
+  probeMock.mockReturnValue(undefined);
 });
 
 describe('discoverClaudeCapabilities', () => {
@@ -364,6 +377,71 @@ Commands:
       expect(capabilities.models).toBeUndefined();
       // We never even tried to walk the directory.
       expect(readdirMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('/model picker cache merge', () => {
+    const MODEL_HELP = '  --model <model>  Model for the current session.\n';
+
+    function assistantLine(model: string): string {
+      return JSON.stringify({ type: 'assistant', message: { model, content: [] } });
+    }
+
+    it('merges cached picker model ids with transcript models, sorted and deduped', async () => {
+      setHelpOutput(MODEL_HELP);
+      setSessionStore({
+        '-Users-dev-projectA': {
+          'session.jsonl': `${assistantLine('claude-opus-4-7')}\n`,
+        },
+      });
+      // Overlap on opus collapses in the union; the rest sorts alphabetically.
+      probeMock.mockReturnValue(['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-fable-5']);
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      expect(capabilities.models).toEqual([
+        'claude-fable-5',
+        'claude-opus-4-7',
+        'claude-sonnet-4-6',
+      ]);
+    });
+
+    it('returns cached picker models alone when the transcript walk finds nothing', async () => {
+      setHelpOutput(MODEL_HELP);
+      setSessionStore(null);
+      probeMock.mockReturnValue(['claude-sonnet-4-6', 'claude-opus-4-8']);
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      expect(capabilities.models).toEqual(['claude-opus-4-8', 'claude-sonnet-4-6']);
+    });
+
+    it('falls back silently to transcript models when the cache is empty', async () => {
+      setHelpOutput(MODEL_HELP);
+      setSessionStore({
+        '-Users-dev-projectA': {
+          'session.jsonl': `${assistantLine('claude-opus-4-7')}\n`,
+        },
+      });
+      probeMock.mockReturnValue(undefined);
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      expect(capabilities.models).toEqual(['claude-opus-4-7']);
+    });
+
+    it('passes the CLI path through to the cache accessor', async () => {
+      setHelpOutput(MODEL_HELP);
+      setSessionStore(null);
+      probeMock.mockReturnValue(['claude-opus-4-8']);
+
+      await discoverClaudeCapabilities('/opt/claude/bin/claude');
+      expect(probeMock).toHaveBeenCalledWith('/opt/claude/bin/claude');
+    });
+
+    it('does not touch the picker when the --model flag is absent', async () => {
+      setHelpOutput('  --some-other-flag <x>  No model flag here.\n');
+
+      const capabilities = await discoverClaudeCapabilities('/usr/bin/claude');
+      expect(probeMock).not.toHaveBeenCalled();
+      expect(capabilities.models).toBeUndefined();
     });
   });
 });

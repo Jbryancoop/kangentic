@@ -59,7 +59,7 @@ Adapter-discovered capabilities surfaced to the renderer (returned by `discoverC
 |-------|------|---------|
 | `effortLevels?` | `string[]` | Effort/reasoning levels accepted by the CLI's `--effort` (or equivalent) flag. Claude parses these from the `--help` output. Drives the Effort dropdown on `EditColumnDialog`. |
 | `supportsModelOverride?` | `boolean` | True when the CLI accepts a model override flag (e.g. Claude `--model <alias>`). When true and `models` has entries, the renderer shows a dropdown; when true and `models` is empty/undefined, the renderer falls back to a free-form text input. |
-| `models?` | `string[]` | Model identifiers the user can pick from. Discovered from agent-specific sources (Claude scans `~/.claude/projects/<slug>/<sessionId>.jsonl` for assistant `message.model` values). Absent when no curated list is available - the renderer falls back to a free-form text input. |
+| `models?` | `string[]` | Model identifiers the user can pick from. Discovered from agent-specific sources: Claude scans `~/.claude/projects/<slug>/<sessionId>.jsonl` for assistant `message.model` values, and merges ids harvested from the CLI's own `/model` picker driven through a hidden short-lived PTY (`model-picker-probe.ts`). The picker probe runs in the background and its result is read from a cache, so discovery never blocks on it; a newly shipped model surfaces on the next discovery after the probe settles, with silent fallback to the transcript scan on any failure. Absent when no curated list is available - the renderer falls back to a free-form text input. |
 
 `AgentDetectionInfo.capabilities?: AgentCapabilities` - populated at detection time; absent for adapters that do not implement `discoverCapabilities`.
 

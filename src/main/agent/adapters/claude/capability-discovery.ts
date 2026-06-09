@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { getCachedModelPickerModels } from './model-picker-probe';
 import type { AgentCapabilities } from '../../../../shared/types';
 
 const execFileAsync = promisify(execFile);
@@ -228,14 +229,29 @@ export async function discoverClaudeStaticCapabilities(cliPath: string): Promise
 }
 
 /**
- * Live scan of the user's `~/.claude/projects/` session store. Always runs
- * fresh (no cache) so the dropdown picks up models the user just used in
- * another window since the last time the dialog opened. Returns undefined
- * when the store is missing or no models could be extracted, in which case
- * the renderer falls back to a free-form text input.
+ * Discover the models the user can pass to `--model`, from two sources:
+ *
+ * 1. A live scan of `~/.claude/projects/` session JSONLs. Always runs fresh
+ *    (no cache) so the dropdown picks up models the user just used in another
+ *    window since the last time the dialog opened. This is the base source -
+ *    it covers `[1m]` variants and gateway/Bedrock id forms that only appear
+ *    in transcripts.
+ * 2. The CLI's own `/model` picker, driven through a hidden short-lived PTY
+ *    (see model-picker-probe.ts) - the only surface that enumerates a newly
+ *    shipped model before the user has used it, and it works with every auth
+ *    method. Read from a background-warmed cache so discovery never blocks on
+ *    the PTY round trip; fails silently to source 1.
+ *
+ * Returns undefined when neither source yields a model, in which case the
+ * renderer falls back to a free-form text input.
  */
-export function rescanClaudeModels(): string[] | undefined {
-  return discoverHistoricalModels();
+export function rescanClaudeModels(cliPath: string): string[] | undefined {
+  const transcriptModels = discoverHistoricalModels();
+  const pickerModels = getCachedModelPickerModels(cliPath);
+
+  if (!transcriptModels && !pickerModels) return undefined;
+  const union = new Set<string>([...(transcriptModels ?? []), ...(pickerModels ?? [])]);
+  return Array.from(union).sort((modelIdA, modelIdB) => modelIdA.localeCompare(modelIdB));
 }
 
 /**
@@ -246,7 +262,7 @@ export function rescanClaudeModels(): string[] | undefined {
 export async function discoverClaudeCapabilities(cliPath: string): Promise<AgentCapabilities> {
   const capabilities = await discoverClaudeStaticCapabilities(cliPath);
   if (capabilities.supportsModelOverride) {
-    const models = rescanClaudeModels();
+    const models = rescanClaudeModels(cliPath);
     if (models) capabilities.models = models;
   }
   return capabilities;
