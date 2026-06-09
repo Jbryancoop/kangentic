@@ -114,6 +114,14 @@ export interface AgentSpawnOptions {
   projectId?: string;
   /** Project filesystem path for handoff context resolution. */
   projectPath?: string | null;
+  /**
+   * Fallback resume prompt when the destination column has no auto_command.
+   * Set by plan-exit auto-moves ("Your plan was approved...") so a respawned
+   * session continues instead of resuming idle. Only delivered on a RESUME of
+   * an existing conversation - a fresh session has no plan context to
+   * continue. The column's auto_command always wins when present.
+   */
+  continuationPrompt?: string;
 }
 
 /**
@@ -317,7 +325,14 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
     : undefined;
   const deliverAutoCommandAsPrompt = interpolatedAutoCommand !== undefined
     && (canResumeDestination || skipPromptTemplate === true);
-  const resumePrompt = deliverAutoCommandAsPrompt ? interpolatedAutoCommand : undefined;
+  // The continuation prompt (plan-exit auto-move) is a resume-only fallback:
+  // the auto_command is the user's explicit per-column automation and wins,
+  // and a fresh spawn has no prior conversation for "proceed" to refer to.
+  // Known limitation: a user-configured spawn_agent transition action spawns
+  // before this fallback runs, so the continuation is dropped there.
+  const resumePrompt = deliverAutoCommandAsPrompt
+    ? interpolatedAutoCommand
+    : (canResumeDestination ? options.continuationPrompt : undefined);
 
   try {
     // Always pass targetAgent so the column's agent_override is respected.

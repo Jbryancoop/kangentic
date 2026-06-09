@@ -34,7 +34,7 @@ import { resolveTargetAgent } from '../../engine/agent-resolver';
 import { agentRegistry } from '../../agent/agent-registry';
 import { prepareInjectionPlan } from '../../engine/injection-plan';
 import { resolveIsolatedSwimlaneId, resolveForceFresh } from '../../engine/session-isolation';
-import type { Task, Swimlane } from '../../../shared/types';
+import type { Task, Swimlane, SessionRecord } from '../../../shared/types';
 
 /**
  * Guard: before checking out a branch in the main repo, verify no other
@@ -74,6 +74,42 @@ export function guardActiveNonWorktreeSessions(
 const taskMoveControllers = new Map<string, AbortController>();
 
 /**
+ * Suspend a live PTY session so Phase 3 can respawn it with new CLI flags:
+ * capture metrics while caches are populated, mark the DB record suspended
+ * (or exited for queued records that never started), suspend the PTY, and
+ * clear task.session_id. Shared by the two same-agent respawn triggers
+ * (model/effort delta with no live swap, permission-mode delta).
+ */
+async function suspendLiveSessionForRespawn(args: {
+  context: IpcContext;
+  tasks: ReturnType<typeof getProjectRepos>['tasks'];
+  sessionRepo: SessionRepository;
+  usageHistoryRepo: UsageHistoryRepository;
+  taskId: string;
+  liveSessionId: string;
+  record: SessionRecord | undefined | null;
+}): Promise<void> {
+  const { context, tasks, sessionRepo, usageHistoryRepo, taskId, liveSessionId, record } = args;
+  if (record && record.agent_session_id
+      && (record.status === 'running' || record.status === 'exited')) {
+    captureSessionMetrics(
+      context.sessionManager,
+      sessionRepo,
+      usageHistoryRepo,
+      liveSessionId,
+      record.id,
+      record.started_at,
+      record.session_type,
+    );
+    markRecordSuspended(sessionRepo, record.id, 'system');
+  } else if (record && record.status === 'queued') {
+    markRecordExited(sessionRepo, record.id);
+  }
+  await context.sessionManager.suspend(liveSessionId);
+  tasks.update({ id: taskId, session_id: null });
+}
+
+/**
  * Abort the in-flight move/spawn for a task, if any. Returns true if a move
  * was actually aborted. The abort is deliberately OUTSIDE any task lock (per
  * the task-lifecycle-lock contract): the holder observes the signal and runs
@@ -107,6 +143,15 @@ type MoveSpawnPlan = {
   skipPromptTemplate: boolean;
   resolvedProjectId: string;
   resolvedProjectPath: string | null;
+  /**
+   * Delivered as the resumed session's next message by spawnAgent's fallback
+   * when the destination column has no auto_command. Set by the plan-exit
+   * auto-move so a respawned session does not sit idle. Required (not optional)
+   * so every return site that builds a plan must thread it through explicitly;
+   * a new respawn sub-case that forgets it is a compile error, not a silent
+   * dropped continuation.
+   */
+  continuationPrompt: string | undefined;
 };
 
 export async function handleTaskMove(
@@ -114,6 +159,10 @@ export async function handleTaskMove(
   input: { taskId: string; targetSwimlaneId: string; targetPosition: number },
   projectId?: string | null,
   projectPath?: string | null,
+  // Kept out of `input` (which flows raw from the renderer over IPC) so the
+  // renderer cannot inject prompts; only main-process callers (the plan-exit
+  // listener) can pass a continuation.
+  options?: { continuationPrompt?: string },
 ): Promise<void> {
   // Abort any in-flight move or promotion BEFORE queueing on the lock - the
   // existing holder must see its abort and return so we can acquire the lock.
@@ -324,13 +373,17 @@ export async function handleTaskMove(
       }
 
       // --- Priority 3: TASK HAS ACTIVE SESSION ---
-      // Four sub-cases (in evaluation order):
+      // Five sub-cases (in evaluation order):
       //   a) Agent change (handoff): suspend + fall through to spawnAgent
-      //   b) Same agent + adapter has live-swap plan: inject command(s)
+      //   b) Same agent + permission-mode delta (destination's effective mode
+      //      differs from the session record's spawn-time mode): suspend and
+      //      respawn so --permission-mode / --model / --effort land as CLI
+      //      flags (no adapter can switch permission mode on a live session)
+      //   c) Same agent + adapter has live-swap plan: inject command(s)
       //      directly into running session (model/effort/auto_command)
-      //   c) Same agent + no live-swap plan + model/effort delta: suspend
+      //   d) Same agent + no live-swap plan + model/effort delta: suspend
       //      and respawn so the new flags land via command-line args
-      //   d) Same agent + no delta and no live-swap: keep session alive
+      //   e) Same agent + no delta and no live-swap: keep session alive
       //      (no-op; preserves auto_command-less moves between custom columns)
       if (task.session_id) {
         context.terminalSubmitScheduler.cancel(task.id);
@@ -397,6 +450,7 @@ export async function handleTaskMove(
             skipPromptTemplate,
             resolvedProjectId,
             resolvedProjectPath,
+            continuationPrompt: options?.continuationPrompt,
           };
         }
 
@@ -461,7 +515,50 @@ export async function handleTaskMove(
           );
           // Fall through to Phase 2/3 (handoff spawn) by not returning null.
         } else {
-          // Same agent. Delegate the model/effort/auto_command translation
+          // Same agent. A permission-mode delta cannot be applied to a live
+          // session: no adapter exposes a non-interactive permission-mode
+          // switch (Claude's only mechanism is interactive shift+tab
+          // cycling), so this check runs BEFORE live injection. When the
+          // destination's EFFECTIVE permission mode differs from the mode
+          // this session was spawned with (the session record, not the
+          // source lane, is the ground truth), suspend + respawn: --resume
+          // keeps the full conversation while --permission-mode / --model /
+          // --effort from the destination column land as CLI flags. If an
+          // adapter ever grows a live permission switch, the right evolution
+          // is a permissionMode field on SettingsChangeSpec.
+          const recordedPermissionMode = activeRecord?.permission_mode ?? null;
+          if (toLane && recordedPermissionMode !== null) {
+            const effectiveTargetPermissionMode = toLane.permission_mode
+              ?? context.configManager.getEffectiveConfig(resolvedProjectPath || undefined).agent.permissionMode;
+            if (recordedPermissionMode !== effectiveTargetPermissionMode) {
+              await suspendLiveSessionForRespawn({
+                context,
+                tasks,
+                sessionRepo,
+                usageHistoryRepo,
+                taskId: task.id,
+                liveSessionId: task.session_id,
+                record: activeRecord,
+              });
+              console.log(
+                `[TASK_MOVE] Suspending session for task ${task.id.slice(0, 8)}`
+                + ` (permission mode ${recordedPermissionMode} -> ${effectiveTargetPermissionMode},`
+                + ` no live permission switch exists). Will respawn with destination column flags.`,
+              );
+              return {
+                task,
+                fromSwimlaneId,
+                originalPosition,
+                toLane,
+                skipPromptTemplate,
+                resolvedProjectId,
+                resolvedProjectPath,
+                continuationPrompt: options?.continuationPrompt,
+              };
+            }
+          }
+
+          // Delegate the model/effort/auto_command translation
           // to the destination adapter via prepareInjectionPlan - adapters
           // own their slash syntax and verification semantics, so this
           // branch stays agent-agnostic.
@@ -517,24 +614,15 @@ export async function handleTaskMove(
           if (restartNeeded && !interpolatedAuto) {
             // Settings changed but adapter returned no plan (no live swap).
             // Suspend and respawn to apply settings via command flags.
-            const sessionRecord = activeRecord;
-            if (sessionRecord && sessionRecord.agent_session_id
-                && (sessionRecord.status === 'running' || sessionRecord.status === 'exited')) {
-              captureSessionMetrics(
-                context.sessionManager,
-                sessionRepo,
-                usageHistoryRepo,
-                task.session_id,
-                sessionRecord.id,
-                sessionRecord.started_at,
-                sessionRecord.session_type,
-              );
-              markRecordSuspended(sessionRepo, sessionRecord.id, 'system');
-            } else if (sessionRecord && sessionRecord.status === 'queued') {
-              markRecordExited(sessionRepo, sessionRecord.id);
-            }
-            await context.sessionManager.suspend(task.session_id);
-            tasks.update({ id: task.id, session_id: null });
+            await suspendLiveSessionForRespawn({
+              context,
+              tasks,
+              sessionRepo,
+              usageHistoryRepo,
+              taskId: task.id,
+              liveSessionId: task.session_id,
+              record: activeRecord,
+            });
             console.log(
               `[TASK_MOVE] Suspending session for task ${task.id.slice(0, 8)}`
               + ` (model/effort changed, adapter has no live swap). Will respawn with new settings.`,
@@ -548,6 +636,7 @@ export async function handleTaskMove(
               skipPromptTemplate,
               resolvedProjectId,
               resolvedProjectPath,
+              continuationPrompt: options?.continuationPrompt,
             };
           }
 
@@ -613,6 +702,7 @@ export async function handleTaskMove(
         skipPromptTemplate,
         resolvedProjectId,
         resolvedProjectPath,
+        continuationPrompt: options?.continuationPrompt,
       };
     });
 
@@ -623,7 +713,7 @@ export async function handleTaskMove(
     // will spawn for the destination column.
     if (isShuttingDown()) return;
 
-    const { task, fromSwimlaneId, originalPosition, toLane, skipPromptTemplate, resolvedProjectId, resolvedProjectPath } = plan;
+    const { task, fromSwimlaneId, originalPosition, toLane, skipPromptTemplate, resolvedProjectId, resolvedProjectPath, continuationPrompt } = plan;
 
     // === Phase 2 (unlocked, slow) ===
     // All async operations below receive the abort signal so a newer move
@@ -728,7 +818,7 @@ export async function handleTaskMove(
           const sessionRepoPhase3 = new SessionRepository(dbPhase3);
           const engine = createTransitionEngine(context, actionsPhase3, tasksPhase3, sessionRepoPhase3, attachmentsPhase3, resolvedProjectId, resolvedProjectPath);
           if (toLane) {
-            await spawnAgent({ context, engine, tasks: tasksPhase3, sessionRepo: sessionRepoPhase3, task: current, fromSwimlaneId, toLane, skipPromptTemplate, signal, projectId: resolvedProjectId, projectPath: resolvedProjectPath });
+            await spawnAgent({ context, engine, tasks: tasksPhase3, sessionRepo: sessionRepoPhase3, task: current, fromSwimlaneId, toLane, skipPromptTemplate, signal, projectId: resolvedProjectId, projectPath: resolvedProjectPath, continuationPrompt });
           }
         } finally {
           clearSpawnProgress(context.mainWindow, task.id);

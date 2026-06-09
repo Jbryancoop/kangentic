@@ -132,6 +132,15 @@ When a suspended task moves to an active column:
 - Command: `claude --settings <path> --resume <agentSessionId>` (no prompt)
 - New PTY spawned with scrollback carried over from previous session
 - New session DB record inserted, old record marked `exited`
+- The destination column's settings are re-applied as CLI flags on the resume
+  command: `--permission-mode` (lane override, else global default), `--model`,
+  and `--effort`. A column move that changes the effective permission mode
+  forces this suspend + respawn cycle, because no adapter can switch
+  permission mode on a live session.
+- A plan-exit auto-move (Planning -> Executing) passes a continuation prompt
+  ("Your plan was approved. Proceed with the implementation.") delivered as
+  the resumed session's first message when the destination column has no
+  `auto_command`; the `auto_command` wins when present.
 
 ## Crash Recovery (Session Recovery)
 

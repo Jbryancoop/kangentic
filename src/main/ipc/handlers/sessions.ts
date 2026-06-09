@@ -608,7 +608,17 @@ export function registerSessionHandlers(context: IpcContext): void {
     };
   });
 
-  // Auto-move task when agent exits plan mode (ExitPlanMode tool)
+  // Auto-move task when agent exits plan mode (ExitPlanMode tool).
+  //
+  // When the destination column changes the effective permission mode (the
+  // common Planning -> Executing pipeline), the move suspends the PTY and
+  // respawns it with --resume plus the destination's CLI flags. The live
+  // ExitPlanMode approval dialog dies with the PTY, so the resumed session
+  // needs an explicit go-ahead: this continuation is delivered as the
+  // resume's first message. Plain English, agent-agnostic. A destination
+  // auto_command takes precedence over it.
+  const PLAN_EXIT_CONTINUATION_PROMPT =
+    'Your plan was approved. Proceed with the implementation.';
   context.sessionManager.on('plan-exit', async (sessionId: string) => {
     // Use the session's own projectId -- not the singleton, which may have
     // changed if the user switched projects while the agent was running.
@@ -631,7 +641,13 @@ export function registerSessionHandlers(context: IpcContext): void {
       if (!target) return;
 
       const position = tasks.list(target.id).length;
-      await handleTaskMove(context, { taskId: task.id, targetSwimlaneId: target.id, targetPosition: position }, resolvedProjectId, resolvedProjectPath);
+      await handleTaskMove(
+        context,
+        { taskId: task.id, targetSwimlaneId: target.id, targetPosition: position },
+        resolvedProjectId,
+        resolvedProjectPath,
+        { continuationPrompt: PLAN_EXIT_CONTINUATION_PROMPT },
+      );
 
       if (!context.mainWindow.isDestroyed()) {
         context.mainWindow.webContents.send(IPC.TASK_AUTO_MOVED, task.id, target.id, task.title, resolvedProjectId);
