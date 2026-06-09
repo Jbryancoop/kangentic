@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CircleStop, FolderOpen, GitCompare, Loader2, SquareChevronRight, X, Zap } from 'lucide-react';
+import { CircleStop, FolderOpen, GitCompare, Loader2, Maximize2, Minimize2, SquareChevronRight, X, Zap } from 'lucide-react';
 import { BranchPicker } from '../dialogs/BranchPicker';
 import { ShimmerOverlay } from '../ShimmerOverlay';
 import { Pill } from '../Pill';
@@ -45,6 +45,10 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
   const changesOpen = useSessionStore((s) => s.changesOpenTasks.has(COMMAND_TERMINAL_ENTITY_ID));
   const toggleChangesOpen = useSessionStore((s) => s.toggleChangesOpen);
   const handleToggleChanges = useCallback(() => toggleChangesOpen(COMMAND_TERMINAL_ENTITY_ID), [toggleChangesOpen]);
+  const isMaximized = useSessionStore((s) => s.maximizedTasks.has(COMMAND_TERMINAL_ENTITY_ID));
+  const toggleMaximized = useSessionStore((s) => s.toggleMaximized);
+  const handleToggleMaximized = useCallback(() => toggleMaximized(COMMAND_TERMINAL_ENTITY_ID), [toggleMaximized]);
+  const modKey = window.electronAPI.platform === 'darwin' ? 'Cmd' : 'Ctrl';
   const backdropMouseDown = useRef(false);
   const spawnedRef = useRef(false);
   const commandButtonRef = useRef<HTMLDivElement>(null);
@@ -188,10 +192,11 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
     }
   }, [phase, fit, focus]);
 
-  // Re-fit terminal when changes panel toggles (container width changes)
+  // Re-fit terminal when the changes panel toggles or the overlay maximizes
+  // (container dimensions change).
   useEffect(() => {
     if (initialized.current) requestAnimationFrame(() => fit());
-  }, [changesOpen, fit]);
+  }, [changesOpen, isMaximized, fit]);
 
   const defaultBranch = config.git.defaultBaseBranch || 'main';
 
@@ -246,6 +251,29 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
     if (phase !== 'exiting') setPhase('exiting');
   }, [phase]);
 
+  // Command Terminal hotkeys, mirroring the task detail dialog. Capture phase so
+  // they beat the embedded xterm's control-char handling (Ctrl+W = 0x17, Ctrl+M
+  // = CR). Ctrl/Cmd+Shift+M toggles maximize; Ctrl/Cmd+Shift+W hides the overlay.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
+      const key = event.key.toLowerCase();
+      if (key === 'm') {
+        event.preventDefault();
+        event.stopPropagation();
+        handleToggleMaximized();
+        return;
+      }
+      if (key === 'w') {
+        event.preventDefault();
+        event.stopPropagation();
+        requestClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [handleToggleMaximized, requestClose]);
+
   const handleAnimationEnd = () => {
     if (phase === 'entering') setPhase('visible');
     if (phase === 'exiting') onClose();
@@ -265,7 +293,7 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 z-50"
+      className={`fixed ${isMaximized ? 'inset-x-0 top-10 bottom-9' : 'inset-0'} bg-black/60 z-50`}
       style={{ animation: backdropAnimation }}
       onAnimationEnd={handleAnimationEnd}
       onMouseDown={(event) => { backdropMouseDown.current = event.target === event.currentTarget; }}
@@ -276,11 +304,13 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
       data-testid="command-bar-overlay"
     >
       <div
-        className={`absolute top-20 left-1/2 -translate-x-1/2 transition-[width,max-width] duration-200 ${changesOpen ? 'w-[90vw] max-w-none' : 'w-[70%] max-w-4xl'}`}
+        className={isMaximized
+          ? 'absolute inset-0'
+          : `absolute top-20 left-1/2 -translate-x-1/2 transition-[width,max-width] duration-200 ${changesOpen ? 'w-[90vw] max-w-none' : 'w-[70%] max-w-5xl'}`}
         style={{ animation: contentAnimation }}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="bg-surface-raised border border-edge rounded-lg shadow-2xl overflow-hidden flex flex-col">
+        <div className={`bg-surface-raised border border-edge shadow-2xl overflow-hidden flex flex-col ${isMaximized ? 'h-full rounded-none' : 'rounded-lg'}`}>
           {/* Header */}
           <div className="flex items-center gap-3 px-4 py-2.5 border-b border-edge flex-shrink-0">
             <button
@@ -431,9 +461,18 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
 
             <div className="w-px h-5 bg-surface-hover flex-shrink-0" />
             <button
+              onClick={handleToggleMaximized}
+              className="p-1.5 text-fg-faint hover:text-fg-tertiary hover:bg-surface-hover rounded transition-colors flex-shrink-0"
+              title={`${isMaximized ? 'Restore' : 'Maximize'} (${modKey}+Shift+M)`}
+              aria-label={isMaximized ? 'Restore terminal' : 'Maximize terminal'}
+              data-testid="command-bar-maximize"
+            >
+              {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
+            <button
               onClick={requestClose}
               className="p-1.5 text-fg-faint hover:text-fg-tertiary hover:bg-surface-hover rounded transition-colors flex-shrink-0"
-              title="Hide terminal"
+              title={`Hide terminal (${modKey}+Shift+W)`}
               aria-label="Hide terminal"
             >
               <X size={16} />
@@ -441,7 +480,7 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
           </div>
 
           {/* Body */}
-          <div className="relative h-[60vh] flex">
+          <div className={`relative flex ${isMaximized ? 'flex-1' : 'h-[60vh]'}`}>
             {/* Terminal */}
             <div className={`${changesOpen ? 'w-1/2' : 'flex-1'} relative`} style={{ backgroundColor: '#18181b' }}>
               {!terminalReady && <ShimmerOverlay label="Starting Command Terminal..." />}

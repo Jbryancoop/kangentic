@@ -64,6 +64,10 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   // Changes panel's per-task state. Mutually exclusive with changes.
   const browserOpen = useSessionStore((s) => s.browserOpenTasks.has(task.id));
   const toggleBrowserOpen = useSessionStore((s) => s.toggleBrowserOpen);
+  // Maximize toggle persists across dialog open/close, mirroring the
+  // Changes/Browser per-task state.
+  const isMaximized = useSessionStore((s) => s.maximizedTasks.has(task.id));
+  const toggleMaximized = useSessionStore((s) => s.toggleMaximized);
 
   const isArchived = task.archived_at !== null;
   const currentSwimlane = swimlanes.find((s) => s.id === task.swimlane_id);
@@ -134,11 +138,26 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   // transition even if displayState briefly reports 'exited'.
   const hasSessionContext = sessionState.hasSessionContext || actions.toggling;
 
-  // Dialog sizing depends on session/edit state.
+  // Dialog sizing depends on session/edit/maximize state. Maximize only
+  // applies in the view header (edit mode uses the small standard header,
+  // which has no maximize button).
   const needsLargeDialog = hasSessionContext || changesOpen || browserOpen;
-  const dialogSizeClass = isEditing || !needsLargeDialog
-    ? (sessionState.isQueued ? 'w-[520px] h-[320px]' : 'w-[700px]')
-    : 'w-[90vw] h-[85vh]';
+  const isDialogMaximized = !isEditing && isMaximized;
+  const dialogSizeClass = isDialogMaximized
+    ? 'w-full h-full'
+    : isEditing || !needsLargeDialog
+      ? (sessionState.isQueued ? 'w-[520px] h-[320px]' : 'w-[700px]')
+      : 'w-[90vw] h-[85vh]';
+  // When maximized, inset the backdrop to the content area between the title
+  // bar (h-10 = 40px) and status bar (h-9 = 36px) so the app's window
+  // controls and live stats stay visible and clickable. Drop the backdrop
+  // padding so the dialog fills that region.
+  const backdropPositionClass = isDialogMaximized ? 'inset-x-0 top-10 bottom-9' : 'inset-0';
+  const backdropPadding = isDialogMaximized ? '' : 'p-6';
+  // Square the corners when maximized so the border meets the screen edges flush.
+  const contentRadiusClass = isDialogMaximized ? 'rounded-none' : 'rounded-lg';
+
+  const handleToggleMaximized = useCallback(() => toggleMaximized(task.id), [toggleMaximized, task.id]);
 
   const handleToggleBrowser = useCallback(() => {
     // Mutually exclusive with the changes panel for the 2-col layout.
@@ -162,9 +181,6 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
     && sessionState.displayState.kind !== 'suspended';
 
   const { copied: displayIdCopied, copy: copyDisplayId } = useCopyDisplayId(task.display_id);
-
-  // Track whether mouse is inside the dialog content (for Escape key behavior)
-  const mouseInsideDialog = useRef(false);
 
   // Columns available as move targets: exclude current column and Done column (for archived tasks)
   const moveTargets = useMemo(() =>
@@ -223,18 +239,56 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
     hadSessionContext.current = hasSessionContext;
   }, [hasSessionContext, task.id, updateTask]);
 
-  // Capture-phase Escape listener: close dialog when mouse is outside content
+  // Task-detail hotkeys. All are Ctrl/Cmd+Shift combos. We listen in CAPTURE
+  // phase so we intercept before the embedded xterm consumes the Ctrl-letter
+  // control chars (Ctrl+X = 0x18, Ctrl+B = 0x02, Ctrl+M = CR); a bubble-phase
+  // listener never fires for those while the terminal has focus. We deliberately
+  // do NOT bind Escape in this handler; BaseDialog keeps its own document-level
+  // Escape-to-close listener (we never pass preventBackdropClose), which still
+  // dismisses the dialog when focus is outside the terminal. A focused xterm
+  // consumes Escape first, so it stays available to the Claude TUI.
+  //   Ctrl/Cmd+Shift+M - toggle maximize (view mode only, matching the button)
+  //   Ctrl/Cmd+Shift+W - close the dialog (works in every mode)
+  //   Ctrl/Cmd+Shift+B - toggle the Browser pane (when available); while the
+  //                      dialog is open it shadows the global board/backlog toggle
   useEffect(() => {
-    if (!hasSessionContext || isEditing) return;
-    const handleEscapeCapture = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !mouseInsideDialog.current && !attachments.previewOpenRef.current) {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
+      const key = event.key.toLowerCase();
+      if (key === 'm' && !isEditing) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleMaximized(task.id);
+        return;
+      }
+      if (key === 'w') {
+        event.preventDefault();
         event.stopPropagation();
         onClose();
+        return;
+      }
+      if (key === 'b' && canShowBrowser) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleToggleBrowser();
       }
     };
-    document.addEventListener('keydown', handleEscapeCapture, true);
-    return () => document.removeEventListener('keydown', handleEscapeCapture, true);
-  }, [hasSessionContext, isEditing, onClose, attachments.previewOpenRef]);
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [isEditing, toggleMaximized, task.id, onClose, canShowBrowser, handleToggleBrowser]);
+
+  // Maximizing resizes the dialog container, so nudge the embedded terminal to
+  // refit through the fast (50ms) terminal-panel-resize path, mirroring the
+  // edit-mode refit in useTaskSessionState. Without this the terminal only
+  // reflows on TerminalTab's slower 200ms ResizeObserver fallback, lagging the
+  // equivalent refit CommandBarOverlay performs on its own maximize toggle.
+  useEffect(() => {
+    if (!hasSessionContext) return;
+    const refitTimer = setTimeout(() => {
+      window.dispatchEvent(new Event('terminal-panel-resize'));
+    }, 100);
+    return () => clearTimeout(refitTimer);
+  }, [isDialogMaximized, hasSessionContext]);
 
   // -- Render --
 
@@ -303,6 +357,8 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
       canShowBrowser={canShowBrowser}
       browserOpen={browserOpen}
       onToggleBrowser={handleToggleBrowser}
+      isMaximized={isDialogMaximized}
+      onToggleMaximized={handleToggleMaximized}
     />
   );
 
@@ -335,10 +391,10 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
           }
           : { header: customHeader, rawBody: true }
         )}
-        onContentMouseEnter={() => { mouseInsideDialog.current = true; }}
-        onContentMouseLeave={() => { mouseInsideDialog.current = false; }}
         className={dialogSizeClass}
-        backdropClassName="p-6"
+        backdropClassName={backdropPadding}
+        backdropPositionClass={backdropPositionClass}
+        contentRadiusClass={contentRadiusClass}
         testId="task-detail-dialog"
         footer={isEditing ? (
           <div className={`flex ${isInTodo ? 'justify-between' : 'justify-end'} items-center`}>

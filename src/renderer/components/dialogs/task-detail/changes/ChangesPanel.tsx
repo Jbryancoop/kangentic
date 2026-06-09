@@ -1,6 +1,6 @@
 import '../../../../monacoConfig';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, Maximize2, Minimize2, X } from 'lucide-react';
+import { RefreshCw, ChevronsLeftRight, ChevronsRightLeft, X } from 'lucide-react';
 import { FileTreePanel } from './FileTreePanel';
 import { DiffViewer } from './DiffViewer';
 import { useSessionStore } from '../../../../stores/session-store';
@@ -77,7 +77,7 @@ export function ChangesPanel({ entityId, projectPath, worktreePath, baseBranch, 
           className="p-1 rounded text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors"
           data-testid="changes-expand"
         >
-          <Maximize2 size={14} />
+          <ChevronsLeftRight size={14} />
         </button>
       )}
       {panelMode === 'expanded' && onCollapse && (
@@ -87,7 +87,7 @@ export function ChangesPanel({ entityId, projectPath, worktreePath, baseBranch, 
           className="p-1 rounded text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors"
           data-testid="changes-collapse"
         >
-          <Minimize2 size={14} />
+          <ChevronsRightLeft size={14} />
         </button>
       )}
       {onClose && (

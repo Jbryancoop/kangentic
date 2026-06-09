@@ -38,6 +38,13 @@ interface BaseDialogProps {
   className?: string;
   zIndex?: string;
   backdropClassName?: string;
+  // Backdrop position utilities (default 'inset-0'). Override to keep the
+  // backdrop clear of app chrome, e.g. a maximized dialog that must leave the
+  // title bar and status bar uncovered and clickable.
+  backdropPositionClass?: string;
+  // Content corner radius (default 'rounded-lg'). Override to 'rounded-none'
+  // when the dialog fills an edge so its border meets the edges flush.
+  contentRadiusClass?: string;
   testId?: string;
 }
 
@@ -57,6 +64,8 @@ export function BaseDialog({
   className = 'w-[400px]',
   zIndex = 'z-50',
   backdropClassName,
+  backdropPositionClass = 'inset-0',
+  contentRadiusClass = 'rounded-lg',
   testId,
 }: BaseDialogProps) {
   const [phase, setPhase] = useState<Phase>('entering');
@@ -94,7 +103,7 @@ export function BaseDialog({
 
   return (
     <div
-      className={`fixed inset-0 bg-black/60 flex items-center justify-center ${zIndex} ${backdropClassName || ''}`}
+      className={`fixed ${backdropPositionClass} bg-black/60 flex items-center justify-center ${zIndex} ${backdropClassName || ''}`}
       style={{ animation: backdropAnimation }}
       onAnimationEnd={handleBackdropAnimationEnd}
       onMouseDown={(e) => { backdropMouseDown.current = e.target === e.currentTarget; }}
@@ -114,7 +123,7 @@ export function BaseDialog({
         onMouseEnter={onContentMouseEnter}
         onMouseLeave={onContentMouseLeave}
         style={{ animation: contentAnimation }}
-        className={`bg-surface-raised border border-edge rounded-lg shadow-2xl flex flex-col overflow-visible ${className}`}
+        className={`bg-surface-raised border border-edge ${contentRadiusClass} shadow-2xl flex flex-col overflow-visible ${className}`}
         {...(testId ? { 'data-testid': testId } : {})}
       >
         {/* Standard header */}

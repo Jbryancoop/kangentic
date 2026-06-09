@@ -339,6 +339,61 @@ test.describe('Command Terminal', () => {
         await browser.close();
       }
     });
+
+    test('content container has max-w-5xl when non-maximized and changes panel closed', async () => {
+      // The PR widened the content container from max-w-4xl to max-w-5xl so the
+      // ContextBar fits on one row. Assert the class is present (not max-w-4xl).
+      const { browser, page } = await launchWithState(preConfigWithTransientSession());
+      try {
+        await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
+
+        await page.keyboard.press('Control+Shift+P');
+        const overlay = page.getByTestId('command-bar-overlay');
+        await expect(overlay).toBeVisible();
+
+        // The content container is the direct child div of the overlay backdrop.
+        // When non-maximized and changes panel closed, it carries max-w-5xl.
+        const contentContainer = overlay.locator('> div').first();
+        await expect(contentContainer).toHaveClass(/max-w-5xl/);
+        await expect(contentContainer).not.toHaveClass(/max-w-4xl/);
+      } finally {
+        await browser.close();
+      }
+    });
+
+    test('maximize button and Ctrl+Shift+M/W hotkeys toggle and hide the overlay', async () => {
+      const { browser, page } = await launchWithState(preConfigWithTransientSession());
+      try {
+        await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
+
+        await page.keyboard.press('Control+Shift+P');
+        const overlay = page.getByTestId('command-bar-overlay');
+        await expect(overlay).toBeVisible();
+
+        const maximizeButton = page.getByTestId('command-bar-maximize');
+        await expect(maximizeButton).toBeVisible();
+        await expect(maximizeButton).toHaveAttribute('title', /^Maximize/);
+        await expect(overlay).toHaveClass(/inset-0/);
+
+        // Button maximizes -> backdrop insets to clear the app chrome.
+        await maximizeButton.click();
+        await expect(maximizeButton).toHaveAttribute('title', /^Restore/);
+        await expect(overlay).toHaveClass(/top-10/);
+        await expect(overlay).toHaveClass(/bottom-9/);
+
+        // Ctrl+Shift+M restores (terminal-safe combo).
+        await page.keyboard.press('Control+Shift+M');
+        await expect(maximizeButton).toHaveAttribute('title', /^Maximize/);
+        await expect(overlay).toHaveClass(/inset-0/);
+
+        // Ctrl+Shift+W hides the overlay; the transient session stays alive.
+        await page.keyboard.press('Control+Shift+W');
+        await expect(overlay).not.toBeVisible({ timeout: 5000 });
+        await expect(page.getByTestId('transient-session-indicator')).toBeVisible();
+      } finally {
+        await browser.close();
+      }
+    });
   });
 
   test.describe('Cross-Project Transient Session Persistence', () => {

@@ -1,5 +1,5 @@
 /**
- * Unit tests for the toggleBrowserOpen reducer in
+ * Unit tests for the toggleBrowserOpen and toggleMaximized reducers in
  * src/renderer/stores/session-store/task-changes-panel-slice.ts.
  *
  * The slice is a Zustand StateCreator - a plain function that takes (set, get).
@@ -93,5 +93,73 @@ describe('toggleBrowserOpen', () => {
   it('starts with an empty browserOpenTasks set', () => {
     const { getState } = createTestStore();
     expect(getState().browserOpenTasks.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toggleMaximized
+// ---------------------------------------------------------------------------
+
+describe('toggleMaximized', () => {
+  it('adds taskId to maximizedTasks when not present', () => {
+    const { actions, getState } = createTestStore();
+    actions.toggleMaximized('task-1');
+    expect(getState().maximizedTasks.has('task-1')).toBe(true);
+  });
+
+  it('removes taskId from maximizedTasks when already present', () => {
+    const { actions, getState } = createTestStore();
+    actions.toggleMaximized('task-1');
+    actions.toggleMaximized('task-1');
+    expect(getState().maximizedTasks.has('task-1')).toBe(false);
+  });
+
+  it('toggles independently per taskId', () => {
+    const { actions, getState } = createTestStore();
+    actions.toggleMaximized('task-1');
+    actions.toggleMaximized('task-2');
+    expect(getState().maximizedTasks.has('task-1')).toBe(true);
+    expect(getState().maximizedTasks.has('task-2')).toBe(true);
+
+    actions.toggleMaximized('task-1');
+    expect(getState().maximizedTasks.has('task-1')).toBe(false);
+    expect(getState().maximizedTasks.has('task-2')).toBe(true);
+  });
+
+  it('starts with an empty maximizedTasks set', () => {
+    const { getState } = createTestStore();
+    expect(getState().maximizedTasks.size).toBe(0);
+  });
+
+  it('does not mutate browserOpenTasks when toggling maximized', () => {
+    const { actions, getState } = createTestStore();
+    actions.toggleBrowserOpen('task-1');
+    expect(getState().browserOpenTasks.has('task-1')).toBe(true);
+
+    actions.toggleMaximized('task-1');
+    // browserOpenTasks must be unaffected
+    expect(getState().browserOpenTasks.has('task-1')).toBe(true);
+  });
+
+  it('does not mutate changesOpenTasks when toggling maximized', () => {
+    const { actions, getState } = createTestStore();
+    actions.toggleChangesOpen('task-1');
+    expect(getState().changesOpenTasks.has('task-1')).toBe(true);
+
+    actions.toggleMaximized('task-1');
+    // changesOpenTasks must be unaffected
+    expect(getState().changesOpenTasks.has('task-1')).toBe(true);
+  });
+
+  it('allows the command-terminal entity id to be keyed independently from a task id', () => {
+    const { actions, getState } = createTestStore();
+    actions.toggleMaximized('task-1');
+    actions.toggleMaximized('command-terminal');
+    expect(getState().maximizedTasks.has('task-1')).toBe(true);
+    expect(getState().maximizedTasks.has('command-terminal')).toBe(true);
+
+    actions.toggleMaximized('task-1');
+    expect(getState().maximizedTasks.has('task-1')).toBe(false);
+    expect(getState().maximizedTasks.has('command-terminal')).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useCopyDisplayId } from './useCopyDisplayId';
-import { X, Trash2, Pencil, Loader2, FolderGit2, FolderOpen, GitPullRequest, GitCompare, ArrowRightLeft, ChevronRight, ChevronLeft, CirclePause, CirclePlay, Clock, SquareChevronRight, Zap, Archive, Inbox, Copy, Check, Globe, RefreshCw } from 'lucide-react';
+import { X, Trash2, Pencil, Loader2, FolderGit2, FolderOpen, GitPullRequest, GitCompare, ArrowRightLeft, ChevronRight, ChevronLeft, CirclePause, CirclePlay, Clock, SquareChevronRight, Zap, Archive, Inbox, Copy, Check, Globe, RefreshCw, Maximize2, Minimize2 } from 'lucide-react';
 import { usePopoverPosition } from '../../../hooks/usePopoverPosition';
 import { getSwimlaneIcon } from '../../../utils/swimlane-icons';
 import { ICON_REGISTRY } from '../../../utils/swimlane-icons';
@@ -42,6 +42,8 @@ interface TaskDetailHeaderProps {
   canShowBrowser: boolean;
   browserOpen: boolean;
   onToggleBrowser: () => void;
+  isMaximized: boolean;
+  onToggleMaximized: () => void;
 }
 
 export function TaskDetailHeader({
@@ -72,12 +74,15 @@ export function TaskDetailHeader({
   canShowBrowser,
   browserOpen,
   onToggleBrowser,
+  isMaximized,
+  onToggleMaximized,
 }: TaskDetailHeaderProps) {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const commandButtonRef = useRef<HTMLDivElement>(null);
   const { copied: displayIdCopied, copy: copyDisplayId } = useCopyDisplayId(task.display_id);
   const defaultBaseBranch = useConfigStore((s) => s.config.git.defaultBaseBranch);
   const worktreeBaseBranch = task.base_branch || defaultBaseBranch || null;
+  const modKey = window.electronAPI.platform === 'darwin' ? 'Cmd' : 'Ctrl';
 
   return (
     <div className="flex items-center gap-3 px-4 py-3 min-w-0">
@@ -305,11 +310,21 @@ export function TaskDetailHeader({
         )}
       </KebabMenu>
 
-      {/* Divider + Close */}
+      {/* Divider + Maximize + Close */}
       <div className="w-px h-5 bg-surface-hover flex-shrink-0" />
+      <button
+        onClick={onToggleMaximized}
+        data-testid="task-detail-maximize"
+        aria-label={isMaximized ? 'Restore dialog' : 'Maximize dialog'}
+        title={`${isMaximized ? 'Restore' : 'Maximize'} (${modKey}+Shift+M)`}
+        className="p-1.5 text-fg-faint hover:text-fg-tertiary hover:bg-surface-hover rounded transition-colors flex-shrink-0"
+      >
+        {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+      </button>
       <button
         onClick={onClose}
         data-testid="task-detail-close"
+        title={`Close (${modKey}+Shift+W)`}
         className="p-1.5 text-fg-faint hover:text-fg-tertiary hover:bg-surface-hover rounded transition-colors flex-shrink-0"
       >
         <X size={16} />
