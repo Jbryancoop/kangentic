@@ -1,0 +1,83 @@
+import { useState, useCallback, useRef, useEffect, type RefObject } from 'react';
+import { useSessionStore } from '../stores/session-store';
+
+const MIN_RATIO = 0.25;
+const MAX_RATIO = 0.75;
+export const DEFAULT_SPLIT_RATIO = 0.5;
+
+function clampRatio(value: number): number {
+  return Math.max(MIN_RATIO, Math.min(MAX_RATIO, value));
+}
+
+export interface TaskSplitResizeState {
+  /** Fraction of horizontal space for the left (terminal) pane, clamped to [0.25, 0.75]. */
+  ratio: number;
+  isResizing: boolean;
+  onResizeStart: (event: React.MouseEvent) => void;
+}
+
+/**
+ * Drag-to-resize for the task-detail terminal / right-panel split. Mirrors the
+ * col-resize pattern in `useSidebarResize`: document-level mousemove/mouseup
+ * listeners, body cursor + userSelect overrides, and a `terminal-panel-resize`
+ * dispatch on release so the embedded xterm refits to its new width.
+ *
+ * The ratio is one shared value per task (keyed by `taskId` in the session
+ * store), so the divider position is identical whether the Browser or Changes
+ * view is showing. Local state drives live feedback during the drag; the store
+ * is written once on release.
+ */
+export function useTaskSplitResize(
+  taskId: string,
+  containerRef: RefObject<HTMLDivElement | null>,
+): TaskSplitResizeState {
+  const storedRatio = useSessionStore((state) => state.dividerRatio[taskId] ?? DEFAULT_SPLIT_RATIO);
+  const setDividerRatio = useSessionStore((state) => state.setDividerRatio);
+
+  const [ratio, setRatio] = useState(storedRatio);
+  const [isResizing, setIsResizing] = useState(false);
+  const latestRatioRef = useRef(storedRatio);
+
+  // Resync local state when the stored ratio changes externally (switching to a
+  // different task, or the value being cleared), but never mid-drag.
+  useEffect(() => {
+    if (isResizing) return;
+    setRatio(storedRatio);
+    latestRatioRef.current = storedRatio;
+  }, [storedRatio, isResizing]);
+
+  const onResizeStart = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    const container = containerRef.current;
+    if (!container) return;
+
+    setIsResizing(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width === 0) return;
+      const nextRatio = clampRatio((moveEvent.clientX - rect.left) / rect.width);
+      setRatio(nextRatio);
+      latestRatioRef.current = nextRatio;
+    };
+
+    const onMouseUp = () => {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      setIsResizing(false);
+      setDividerRatio(taskId, latestRatioRef.current);
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new CustomEvent('terminal-panel-resize'));
+      });
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [containerRef, setDividerRatio, taskId]);
+
+  return { ratio, isResizing, onResizeStart };
+}

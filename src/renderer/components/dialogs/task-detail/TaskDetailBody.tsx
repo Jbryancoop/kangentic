@@ -1,4 +1,4 @@
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useRef } from 'react';
 import { Loader2, Play, RotateCcw } from 'lucide-react';
 import { TerminalTab } from '../../terminal/TerminalTab';
 import { ContextBar } from '../../terminal/ContextBar';
@@ -16,6 +16,7 @@ import type { AttachmentWithPreview } from './useAttachments';
 import { MarkdownRenderer } from '../../MarkdownRenderer';
 import type { Task, SessionDisplayState } from '../../../../shared/types';
 import { useSessionStore } from '../../../stores/session-store';
+import { useTaskSplitResize } from '../../../hooks/useTaskSplitResize';
 
 const ChangesPanel = lazy(() => import('./changes/ChangesPanel').then((module) => ({ default: module.ChangesPanel })));
 
@@ -75,6 +76,11 @@ export function TaskDetailBody({
   const changesViewMode = useSessionStore((state) => state.changesViewMode[task.id] ?? 'split');
   const setChangesViewMode = useSessionStore((state) => state.setChangesViewMode);
   const toggleChangesOpen = useSessionStore((state) => state.toggleChangesOpen);
+  // Draggable terminal / right-panel split. One shared ratio per task across
+  // both the Browser and Changes views, so switching tabs never moves it.
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const { ratio: splitRatio, isResizing: isSplitResizing, onResizeStart: onSplitResizeStart } =
+    useTaskSplitResize(task.id, splitContainerRef);
   const changesExpanded = changesOpen && changesViewMode === 'expanded';
   const handleChangesExpand = () => setChangesViewMode(task.id, 'expanded');
   const handleChangesCollapse = () => setChangesViewMode(task.id, 'split');
@@ -137,7 +143,7 @@ export function TaskDetailBody({
 
   const changesPanelElement = changesOpen && (
     <div
-      className={`${changesExpanded ? 'flex-1' : 'w-1/2 border-l border-edge'} min-h-0 flex-shrink-0`}
+      className={`flex-1 min-h-0 min-w-0 overflow-hidden ${changesExpanded ? '' : 'border-l border-edge'}`}
     >
       <Suspense
         fallback={
@@ -162,11 +168,12 @@ export function TaskDetailBody({
 
   // Active terminal session
   if (sessionId && displayKind !== 'queued' && displayKind !== 'suspended') {
-    // Browser pane takes the right half when toggled on, and is mutually
-    // exclusive with the changes panel.
-    const terminalWidthClass = (browserOpen || changesOpen) ? 'w-1/2' : 'flex-1';
+    // Browser pane and changes panel are mutually exclusive; when either shares
+    // the row with the terminal, a draggable divider sets the per-task split.
+    const rightPanelOpen = browserOpen || changesOpen;
+    const showDivider = rightPanelOpen && !changesExpanded;
     const browserPaneElement = browserOpen && (
-      <div className="w-1/2 min-h-0 flex-shrink-0 border-l border-edge">
+      <div className="flex-1 min-h-0 min-w-0 overflow-hidden border-l border-edge">
         <BrowserPane
           sessionId={sessionId}
           taskId={task.id}
@@ -178,9 +185,12 @@ export function TaskDetailBody({
     return (
       <>
         {descriptionBar}
-        <div className="flex-1 min-h-0 flex">
+        <div ref={splitContainerRef} className="flex-1 min-h-0 flex">
           {!changesExpanded && (
-            <div className={`${terminalWidthClass} min-h-0 relative`}>
+            <div
+              className={`${rightPanelOpen ? 'flex-shrink-0 flex-grow-0' : 'flex-1'} min-h-0 relative overflow-hidden`}
+              style={rightPanelOpen ? { flexBasis: `${splitRatio * 100}%` } : undefined}
+            >
               <div className="absolute inset-0">
                 <TerminalTab
                   key={sessionId}
@@ -191,7 +201,31 @@ export function TaskDetailBody({
               </div>
             </div>
           )}
+          {showDivider && (
+            <div
+              onMouseDown={onSplitResizeStart}
+              data-testid="task-detail-split-divider"
+              role="separator"
+              aria-orientation="vertical"
+              title="Drag to resize"
+              className="group relative z-10 w-1 -mx-0.5 flex-shrink-0 cursor-col-resize"
+            >
+              {/* Widened invisible hit zone for easier grabbing. */}
+              <span className="absolute inset-y-0 -inset-x-1" />
+              {/* Resting seam is the panel's border-edge. Highlight on hover, and
+                  hold the highlight through the whole drag so the target split
+                  stays visible while the panes resize underneath. */}
+              <span
+                className={`absolute inset-0 transition-colors ${
+                  isSplitResizing ? 'bg-accent/60' : 'group-hover:bg-accent/40'
+                }`}
+              />
+            </div>
+          )}
           {browserOpen ? browserPaneElement : changesPanelElement}
+          {/* While dragging, an overlay keeps mouse events flowing over the
+              Electron <webview> (Browser pane) and the xterm canvas. */}
+          {isSplitResizing && <div className="fixed inset-0 z-50 cursor-col-resize" />}
         </div>
         <ContextBar sessionId={sessionId} agentFallback={projectDefaultAgent} />
       </>
