@@ -1,8 +1,9 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useBoardStore } from '../../stores/board-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useKnownModels } from '../../hooks/useKnownModels';
+import { groupModelIds } from '../../../shared/model-id';
 import { ContextBarPopover } from './ContextBarPopover';
 
 const pill = 'px-2 py-0.5 rounded bg-surface-raised whitespace-nowrap select-none';
@@ -78,6 +79,17 @@ export function ModelEffortPicker({
   // with the New Task Advanced section + column manager, and learns any model
   // the user invokes live.
   const modelOptions = useKnownModels(agent);
+  // Display grouping only: one row per base model, with [1m] variants as a 1M
+  // chip and dated pins demoted behind the popover's collapsed section. Every
+  // selectable value stays the exact discovered string.
+  const modelGroups = useMemo(() => groupModelIds(modelOptions), [modelOptions]);
+  const pinnedModelOptions = useMemo(
+    () =>
+      modelGroups
+        .flatMap((group) => group.pinnedBuildIds)
+        .map((model) => ({ value: model, label: model })),
+    [modelGroups],
+  );
 
   const [openPopover, setOpenPopover] = useState<'model' | 'effort' | null>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -153,7 +165,12 @@ export function ModelEffortPicker({
             <ContextBarPopover
               triggerRef={modelTriggerRef}
               title="Model"
-              options={modelOptions.map((value) => ({ value, label: value }))}
+              options={modelGroups.map((group) => ({
+                value: group.primaryId,
+                label: group.primaryId,
+                oneMillionValue: group.oneMillionId,
+              }))}
+              pinnedOptions={pinnedModelOptions}
               currentValue={currentModelValue}
               swimlaneDefault={swimlaneModelOverride}
               onSelect={applyModel}

@@ -1,5 +1,5 @@
-import React, { useEffect, useRef } from 'react';
-import { Check } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Check, ChevronDown } from 'lucide-react';
 import { usePopoverPosition } from '../../hooks/usePopoverPosition';
 
 /**
@@ -23,6 +23,7 @@ export function ContextBarPopover({
   triggerRef,
   title,
   options,
+  pinnedOptions = [],
   currentValue,
   swimlaneDefault,
   onSelect,
@@ -31,7 +32,17 @@ export function ContextBarPopover({
 }: {
   triggerRef: React.RefObject<HTMLElement | null>;
   title: string;
-  options: ReadonlyArray<{ value: string; label: string; hint?: string }>;
+  /**
+   * `oneMillionValue` carries the exact `<base>[1m]` model string for rows
+   * whose base model has a known 1M context variant; it renders as an
+   * always-visible chip that selects that exact string.
+   */
+  options: ReadonlyArray<{ value: string; label: string; hint?: string; oneMillionValue?: string | null }>;
+  /**
+   * Dated pinned builds demoted behind a collapsed "Pinned builds" disclosure
+   * below the main list. Values are exact spawnable strings.
+   */
+  pinnedOptions?: ReadonlyArray<{ value: string; label: string }>;
   /** The currently active value (live status > task override > swimlane override). Checkmark is rendered next to this. */
   currentValue: string | null;
   /**
@@ -48,6 +59,12 @@ export function ContextBarPopover({
   testId?: string;
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
+  // Collapsed by default; forced open when the active value IS a pinned build
+  // so its checkmark is never hidden.
+  const [pinnedExpanded, setPinnedExpanded] = useState(false);
+  const currentIsPinned =
+    currentValue !== null && pinnedOptions.some((option) => option.value === currentValue);
+  const showPinnedExpanded = pinnedExpanded || currentIsPinned;
   // The ContextBar is always pinned to the bottom of its container (task-detail
   // dialog, bottom panel, or the floating command-terminal overlay). Prefer
   // opening upward so the menu never renders past a floating container's bottom
@@ -95,27 +112,78 @@ export function ContextBarPopover({
         {title}
       </div>
       {options.map((option) => {
-        const isCurrent = option.value === currentValue;
+        const oneMillionValue = option.oneMillionValue ?? null;
+        // The row checkmark lights for either spelling of the same base model
+        // (`claude-opus-4-8` and `claude-opus-4-8[1m]` share one row).
+        const isCurrent =
+          option.value === currentValue ||
+          (oneMillionValue !== null && oneMillionValue === currentValue);
         return (
-          <button
-            key={option.value}
-            type="button"
-            onClick={() => onSelect(option.value)}
-            title={option.value}
-            // Click target sizing: `py-2` + `text-sm` ≈ 38px tall (above WCAG
-            // 2.5.5 AA's 24px floor and close to AAA's 44px). `min-w-[180px]`
-            // keeps short option lists like effort (`low`..`max`) from
-            // collapsing to a 60px-wide target. Long model ids still grow
-            // the popover past this floor via the parent's `w-max`.
-            className="w-full min-w-[180px] px-3 py-2 text-sm text-fg-secondary text-left hover:bg-surface-hover/40 flex items-center gap-2 whitespace-nowrap"
-            data-testid={testId ? `${testId}-option-${option.value}` : undefined}
-          >
-            <Check size={12} className={`flex-shrink-0 ${isCurrent ? 'text-fg-secondary' : 'text-transparent'}`} />
-            <span className="flex-1 truncate">{option.label}</span>
-            {option.hint && <span className="text-fg-faint text-xs flex-shrink-0">{option.hint}</span>}
-          </button>
+          <div key={option.value} className="flex items-center">
+            <button
+              type="button"
+              onClick={() => onSelect(option.value)}
+              title={option.value}
+              // Click target sizing: `py-2` + `text-sm` ≈ 38px tall (above WCAG
+              // 2.5.5 AA's 24px floor and close to AAA's 44px). `min-w-[180px]`
+              // keeps short option lists like effort (`low`..`max`) from
+              // collapsing to a 60px-wide target. Long model ids still grow
+              // the popover past this floor via the parent's `w-max`.
+              className="flex-1 min-w-[180px] px-3 py-2 text-sm text-fg-secondary text-left hover:bg-surface-hover/40 flex items-center gap-2 whitespace-nowrap"
+              data-testid={testId ? `${testId}-option-${option.value}` : undefined}
+            >
+              <Check size={12} className={`flex-shrink-0 ${isCurrent ? 'text-fg-secondary' : 'text-transparent'}`} />
+              <span className="flex-1 truncate">{option.label}</span>
+              {option.hint && <span className="text-fg-faint text-xs flex-shrink-0">{option.hint}</span>}
+            </button>
+            {oneMillionValue !== null && (
+              <button
+                type="button"
+                onClick={() => onSelect(oneMillionValue)}
+                title={oneMillionValue}
+                className={`mr-2 px-1.5 py-0.5 text-[11px] rounded border flex-shrink-0 transition-colors ${
+                  currentValue === oneMillionValue
+                    ? 'border-fg-muted text-fg-secondary'
+                    : 'border-edge text-fg-muted hover:text-fg-secondary hover:border-fg-faint'
+                }`}
+                data-testid={testId ? `${testId}-option-1m-${oneMillionValue}` : undefined}
+              >
+                1M
+              </button>
+            )}
+          </div>
         );
       })}
+      {pinnedOptions.length > 0 && (
+        <div className="border-t border-edge mt-1 pt-1">
+          <button
+            type="button"
+            onClick={() => setPinnedExpanded((previous) => !previous)}
+            className="w-full min-w-[180px] px-3 py-2 text-xs text-fg-faint text-left hover:bg-surface-hover/40 flex items-center gap-1 whitespace-nowrap"
+            data-testid={testId ? `${testId}-pinned-toggle` : undefined}
+          >
+            <ChevronDown
+              size={12}
+              className={`flex-shrink-0 transition-transform ${showPinnedExpanded ? '' : '-rotate-90'}`}
+            />
+            Pinned builds ({pinnedOptions.length})
+          </button>
+          {showPinnedExpanded &&
+            pinnedOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => onSelect(option.value)}
+                title={option.value}
+                className="w-full min-w-[180px] pl-7 pr-3 py-2 text-sm text-fg-muted text-left hover:bg-surface-hover/40 flex items-center gap-2 whitespace-nowrap"
+                data-testid={testId ? `${testId}-option-${option.value}` : undefined}
+              >
+                <Check size={12} className={`flex-shrink-0 ${option.value === currentValue ? 'text-fg-secondary' : 'text-transparent'}`} />
+                <span className="flex-1 truncate">{option.label}</span>
+              </button>
+            ))}
+        </div>
+      )}
       {swimlaneDefault !== null && (
         // Only show "Use column default" when the column actually has a
         // default to revert to. When the column is on Auto/agent-default,

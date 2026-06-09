@@ -341,3 +341,137 @@ test.describe('NewTaskDialog Advanced - Agent picker (multi-agent fixture)', () 
     expect(task!.agent_override).toBeNull();
   });
 });
+
+/**
+ * Grouped model dropdown tests use their own browser instance with a fixture
+ * whose model list contains the duplicate spellings real Claude transcripts
+ * produce: a bare alias, its [1m] context-window variant, and a dated pinned
+ * build. The combobox must collapse them to one row per base model while
+ * every selectable value stays the exact discovered string (the spawn value).
+ */
+test.describe('NewTaskDialog Advanced - grouped model dropdown (suffixed fixture)', () => {
+  let groupedBrowser: Browser;
+  let groupedPage: Page;
+
+  test.beforeAll(async () => {
+    await waitForViteReady();
+    groupedBrowser = await chromium.launch({ headless: true });
+    const context = await groupedBrowser.newContext({ viewport: { width: 1920, height: 1080 } });
+    groupedPage = await context.newPage();
+
+    await groupedPage.addInitScript(() => {
+      (window as Record<string, unknown>).__mockAgentListOverrides = {
+        claude: {
+          capabilities: {
+            effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+            supportsModelOverride: true,
+            models: [
+              'claude-haiku-4-5',
+              'claude-haiku-4-5-20251001',
+              'claude-opus-4-8',
+              'claude-opus-4-8[1m]',
+            ],
+          },
+        },
+      };
+    });
+    await groupedPage.addInitScript({ path: MOCK_SCRIPT });
+    await groupedPage.goto(VITE_URL);
+    await groupedPage.waitForLoadState('load');
+    await groupedPage.waitForSelector('text=Kangentic', { timeout: 15000 });
+    await createProject(groupedPage, `GroupedModels ${Date.now()}`);
+  });
+
+  test.afterAll(async () => {
+    await groupedBrowser?.close();
+  });
+
+  async function openDialog() {
+    const column = groupedPage.locator('[data-swimlane-name="To Do"]');
+    await column.locator('text=Add task').click();
+    await groupedPage.locator('input[placeholder="Task title"]').waitFor({ state: 'visible' });
+    await groupedPage.locator('[data-testid="task-advanced-toggle"]').click();
+  }
+
+  async function closeDialog() {
+    await groupedPage.keyboard.press('Escape');
+    await groupedPage.locator('input[placeholder="Task title"]').waitFor({ state: 'hidden', timeout: 2000 });
+  }
+
+  test('collapses variants to one row per base model with a 1M chip and a collapsed pinned section', async () => {
+    await openDialog();
+
+    await groupedPage.locator('input[data-testid="task-model-override"]').click();
+    const optionTexts = await groupedPage.locator('[data-model-option]').allTextContents();
+    // One primary row per base model; the [1m] variant and the dated pin do
+    // not get their own visible rows.
+    expect(optionTexts).toEqual(['claude-haiku-4-5', 'claude-opus-4-8']);
+
+    // The opus row carries an always-visible 1M chip.
+    await expect(groupedPage.locator('[data-model-1m]')).toHaveCount(1);
+
+    // The dated build sits behind a collapsed "Pinned builds" toggle.
+    const pinnedToggle = groupedPage.locator('[data-model-pinned-toggle]');
+    await expect(pinnedToggle).toHaveText(/Pinned builds \(1\)/);
+    await expect(groupedPage.locator('[data-model-pinned-option]')).toHaveCount(0);
+
+    // Close the suggestion dropdown before dismissing the dialog.
+    await groupedPage.keyboard.press('Escape');
+    await closeDialog();
+  });
+
+  test('clicking the 1M chip persists the exact [1m] string', async () => {
+    await openDialog();
+
+    await groupedPage.locator('input[placeholder="Task title"]').fill('One Million Task');
+    await groupedPage.locator('input[data-testid="task-model-override"]').click();
+    await groupedPage.locator('[data-model-1m]').click();
+    await expect(groupedPage.locator('input[data-testid="task-model-override"]')).toHaveValue('claude-opus-4-8[1m]');
+
+    await groupedPage.locator('button:has-text("Create")').click();
+    await groupedPage.locator('input[placeholder="Task title"]').waitFor({ state: 'hidden', timeout: 3000 });
+
+    const taskData = await groupedPage.evaluate(() => window.electronAPI.tasks.list());
+    const task = taskData.find((t: { title: string }) => t.title === 'One Million Task');
+    expect(task).toBeDefined();
+    expect(task!.model_override).toBe('claude-opus-4-8[1m]');
+  });
+
+  test('expanding pinned builds and selecting one persists the exact dated string', async () => {
+    await openDialog();
+
+    await groupedPage.locator('input[placeholder="Task title"]').fill('Pinned Build Task');
+    await groupedPage.locator('input[data-testid="task-model-override"]').click();
+    await groupedPage.locator('[data-model-pinned-toggle]').click();
+    await groupedPage.locator('[data-model-pinned-option]:has-text("claude-haiku-4-5-20251001")').click();
+    await expect(groupedPage.locator('input[data-testid="task-model-override"]')).toHaveValue('claude-haiku-4-5-20251001');
+
+    await groupedPage.locator('button:has-text("Create")').click();
+    await groupedPage.locator('input[placeholder="Task title"]').waitFor({ state: 'hidden', timeout: 3000 });
+
+    const taskData = await groupedPage.evaluate(() => window.electronAPI.tasks.list());
+    const task = taskData.find((t: { title: string }) => t.title === 'Pinned Build Task');
+    expect(task).toBeDefined();
+    expect(task!.model_override).toBe('claude-haiku-4-5-20251001');
+  });
+
+  test('a query that only matches a pinned build auto-expands the pinned section', async () => {
+    await openDialog();
+
+    const modelInput = groupedPage.locator('input[data-testid="task-model-override"]');
+    await modelInput.click();
+    await modelInput.fill('20251001');
+
+    // No primary row matches, so the pinned section opens by itself and the
+    // dated build is selectable without touching the toggle.
+    await expect(groupedPage.locator('[data-model-pinned-option]')).toHaveText(['claude-haiku-4-5-20251001']);
+    await groupedPage.locator('[data-model-pinned-option]').click();
+    await expect(modelInput).toHaveValue('claude-haiku-4-5-20251001');
+
+    // Close the suggestion popover, then click Cancel (the dirty model
+    // selection can block Escape-to-close via the unsaved-work confirm).
+    await groupedPage.keyboard.press('Escape');
+    await groupedPage.locator('button:has-text("Cancel")').click();
+    await groupedPage.locator('input[placeholder="Task title"]').waitFor({ state: 'hidden', timeout: 2000 });
+  });
+});

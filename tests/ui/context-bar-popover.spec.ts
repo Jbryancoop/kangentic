@@ -549,3 +549,79 @@ test.describe('ContextBar model/effort popover - capability gating', () => {
     }
   });
 });
+
+// Grouped model list: when discovery surfaces duplicate spellings of the same
+// base model (bare alias, [1m] context-window variant, dated pinned build),
+// the popover shows one row per base model with a 1M chip and tucks dated
+// builds behind a collapsed "Pinned builds" disclosure. Every selection still
+// sends the exact discovered string (the spawn value).
+test.describe('ContextBar model popover - grouped suffixed models', () => {
+  test('groups variants onto one row and selections send exact suffixed strings', async () => {
+    const preconfig = `
+      window.__mockAgentListOverrides = {
+        claude: {
+          capabilities: {
+            effortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+            supportsModelOverride: true,
+            models: [
+              'claude-haiku-4-5',
+              'claude-haiku-4-5-20251001',
+              'claude-opus-4-8',
+              'claude-opus-4-8[1m]',
+            ],
+          },
+        },
+      };
+      ${CLAUDE_RUNNING_PRECONFIG}
+    `;
+    const { browser, page } = await launchWithState(preconfig);
+    try {
+      await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
+      await applyClaudeUsage(page, SESSION_ID, 'claude-opus-4-8[1m]', 'Opus 4.8 (1M context)', 'xhigh');
+
+      const modelTrigger = page.locator('[data-testid="context-bar-model-trigger"]');
+      await expect(modelTrigger).toBeVisible({ timeout: 5000 });
+      await modelTrigger.click();
+
+      const popover = page.locator('[data-testid="context-bar-model-popover"]');
+      await expect(popover).toBeVisible();
+
+      // One primary row per base model; no separate row for the [1m] spelling.
+      await expect(page.locator('[data-testid="context-bar-model-popover-option-claude-haiku-4-5"]')).toBeVisible();
+      await expect(page.locator('[data-testid="context-bar-model-popover-option-claude-opus-4-8"]')).toBeVisible();
+      await expect(page.locator('[data-testid="context-bar-model-popover-option-claude-opus-4-8[1m]"]')).toHaveCount(0);
+
+      // The dated build hides behind the collapsed pinned disclosure (the
+      // live [1m] value is not pinned, so the section starts closed).
+      const pinnedToggle = page.locator('[data-testid="context-bar-model-popover-pinned-toggle"]');
+      await expect(pinnedToggle).toHaveText(/Pinned builds \(1\)/);
+      await expect(page.locator('[data-testid="context-bar-model-popover-option-claude-haiku-4-5-20251001"]')).toHaveCount(0);
+
+      // Expanding and picking the dated build sends the exact dated string.
+      await pinnedToggle.click();
+      await page.locator('[data-testid="context-bar-model-popover-option-claude-haiku-4-5-20251001"]').click();
+      await expect(popover).toHaveCount(0);
+      let calls = await page.evaluate(() => (window as unknown as { __mockSetRuntimeOverrideCalls?: unknown[] }).__mockSetRuntimeOverrideCalls);
+      expect(calls).toEqual([{ taskId: TASK_ID, model: 'claude-haiku-4-5-20251001' }]);
+
+      // Reopen and click the always-visible 1M chip on the opus row: the
+      // exact [1m] string is sent, not the base alias.
+      await modelTrigger.click();
+      await page.locator('[data-testid="context-bar-model-popover-option-1m-claude-opus-4-8[1m]"]').click();
+      await expect(page.locator('[data-testid="context-bar-model-popover"]')).toHaveCount(0);
+      calls = await page.evaluate(() => (window as unknown as { __mockSetRuntimeOverrideCalls?: unknown[] }).__mockSetRuntimeOverrideCalls);
+      expect(calls).toEqual([
+        { taskId: TASK_ID, model: 'claude-haiku-4-5-20251001' },
+        { taskId: TASK_ID, model: 'claude-opus-4-8[1m]' },
+      ]);
+
+      // When the live model IS a pinned build, the disclosure auto-expands so
+      // the active value's checkmark is never hidden.
+      await applyClaudeUsage(page, SESSION_ID, 'claude-haiku-4-5-20251001', 'Haiku 4.5', 'high');
+      await modelTrigger.click();
+      await expect(page.locator('[data-testid="context-bar-model-popover-option-claude-haiku-4-5-20251001"]')).toBeVisible();
+    } finally {
+      await browser.close();
+    }
+  });
+});
