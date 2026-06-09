@@ -40,7 +40,7 @@ test.afterAll(async () => {
 
 /** Open settings and navigate to the given tab. */
 async function openTab(tabName: string) {
-  await page.locator('button[title="Settings"]').click();
+  await page.locator('[data-testid="settings-button"]').click();
   await page.locator('h2:has-text("Settings")').waitFor({ state: 'visible', timeout: 3000 });
   await page.getByRole('button', { name: tabName, exact: true }).click();
 }

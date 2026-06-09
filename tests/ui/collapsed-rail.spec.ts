@@ -40,7 +40,7 @@ async function launchWithCollapsedRail(preConfigScript: string): Promise<{ brows
   await page.locator('[data-swimlane-name="To Do"]').waitFor({ state: 'visible', timeout: 15000 });
 
   // Collapse the sidebar so the CollapsedRail becomes active
-  await page.locator('button[title="Hide sidebar"]').click();
+  await page.locator('button[title^="Hide sidebar"]').click();
 
   // Wait for the rail expand button to confirm the rail is now interactive
   await page.locator('[data-testid="sidebar-expand-button"]').waitFor({ state: 'attached', timeout: 5000 });

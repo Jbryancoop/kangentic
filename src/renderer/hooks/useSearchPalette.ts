@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useKeybinding } from './useKeybinding';
 
 /** Preserved across HMR so the search palette stays mounted during hot
  *  module replacement instead of resetting to closed. */
@@ -49,31 +50,25 @@ export function useSearchPalette(options: UseSearchPaletteOptions = {}) {
   const open = useCallback(() => setIsOpen(true), []);
   const close = useCallback(() => setIsOpen(false), []);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const isCtrlOrMeta = event.ctrlKey || event.metaKey;
-      if (!isCtrlOrMeta) return;
-      const isFKey = event.key === 'f' || event.key === 'F';
-      if (!isFKey) return;
-      if (event.shiftKey) {
-        event.preventDefault();
-        event.stopPropagation();
-        if (isOpen) close(); else open();
-        return;
-      }
-      // Plain Ctrl+F: only act when not in an editable region, so in-input
-      // "find selection" muscle memory and a focused board search stay intact.
-      if (isEditableTarget(event.target)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      // Let the host claim plain Ctrl+F first (board view focuses its inline
-      // search); if unclaimed, fall back to the global palette.
+  // Ctrl/Cmd+Shift+F always toggles the palette.
+  useKeybinding('search.togglePalette', () => {
+    if (isOpen) close();
+    else open();
+  });
+
+  // Plain Ctrl/Cmd+F: only when not in an editable region, so in-input "find
+  // selection" muscle memory and a focused board search stay intact. The host
+  // claims it first (board view focuses its inline search); if unclaimed, fall
+  // back to toggling the global palette.
+  useKeybinding(
+    'search.plainFind',
+    () => {
       if (onPlainFindKey?.()) return;
-      if (isOpen) close(); else open();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, open, close, onPlainFindKey]);
+      if (isOpen) close();
+      else open();
+    },
+    { when: (event) => !isEditableTarget(event.target) },
+  );
 
   return { isOpen, open, close };
 }

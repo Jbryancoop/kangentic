@@ -1144,6 +1144,10 @@ export interface AppConfig {
    *  for the model dropdowns so they don't depend on re-walking JSONL every
    *  launch and they "discover" new models the user invokes in real time. */
   discoveredModelsByAgent: Record<string, string[]>;
+  /** User keybinding overrides: registry action id -> canonical combo string
+   *  (e.g. 'Mod+Shift+K'). Absent/empty means use the registry default. Global
+   *  only (per-machine), like `developer.*`. See `src/shared/keybindings.ts`. */
+  hotkeyOverrides: Record<string, string>;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -1243,6 +1247,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   statusBarPeriod: 'live',
   lastActiveTaskByProject: {},
   discoveredModelsByAgent: {},
+  hotkeyOverrides: {},
 };
 
 // === Agent Commands ===
@@ -2248,6 +2253,15 @@ export interface ElectronAPI {
     getProjectOverridesByPath: (projectPath: string) => Promise<DeepPartial<AppConfig> | null>;
     setProjectOverridesByPath: (projectPath: string, overrides: DeepPartial<AppConfig>) => Promise<void>;
     syncDefaultToProjects: (partial: DeepPartial<AppConfig>) => Promise<number>;
+  };
+
+  // Keybindings
+  keybindings: {
+    /** Probe whether each canonical combo can be claimed as a system-wide global
+     *  shortcut. 'taken' means another app/OS already owns it (so it may not
+     *  reach Kangentic); 'available' means it is free; 'unsupported' means the
+     *  combo cannot be expressed as an accelerator and was not probed. */
+    probeGlobal: (combos: string[]) => Promise<Record<string, 'available' | 'taken' | 'unsupported'>>;
   };
 
   // Agent detection & commands

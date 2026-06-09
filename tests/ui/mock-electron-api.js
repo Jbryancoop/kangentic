@@ -107,6 +107,7 @@
       ],
       labelColors: {},
     },
+    hotkeyOverrides: {},
     hasCompletedFirstRun: true,
     skipDeleteConfirm: false,
     skipDoneWorktreeConfirm: false,
@@ -1306,6 +1307,13 @@
       },
       set: async function (partial) {
         config = deepMerge(config, partial);
+        // hotkeyOverrides is a dictionary-style map (CONFIG_DICTIONARY_PATHS in
+        // config-manager.ts): the real save REPLACES it wholesale so a deleted
+        // key (reset) actually disappears. deepMerge above would instead merge it
+        // key-by-key, so mirror the replace semantics here.
+        if (partial && Object.prototype.hasOwnProperty.call(partial, 'hotkeyOverrides')) {
+          config.hotkeyOverrides = Object.assign({}, partial.hotkeyOverrides);
+        }
       },
       getProjectOverrides: async function () {
         var currentProject = projects.find(function (p) { return p.id === currentProjectId; });
@@ -1328,6 +1336,19 @@
       },
       syncDefaultToProjects: async function () {
         return 0;
+      },
+    },
+
+    keybindings: {
+      // Default: every probed combo is free. Tests can override the verdict by
+      // setting window.__mockProbeGlobal = { 'Mod+Shift+S': 'taken', ... }.
+      probeGlobal: async function (combos) {
+        var overrides = (typeof window !== 'undefined' && window.__mockProbeGlobal) || {};
+        var result = {};
+        (combos || []).forEach(function (combo) {
+          result[combo] = overrides[combo] || 'available';
+        });
+        return result;
       },
     },
 

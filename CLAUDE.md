@@ -180,6 +180,7 @@ session; rules with one load when you touch matching files. Each rule names its 
 - `external-scripts-parity.md` - unbundled bridge/plugin scripts must register in `EXTERNAL_SCRIPTS` and be copied by both `build.js` and `dev.js`.
 - `activity-state-classification.md` - bucket `ActivityState` idle-vs-active only via `src/shared/activity-state.ts` (`src/renderer/`).
 - `board-completing-task-chokepoint.md` - hide in-flight Done-completing tasks only at KanbanBoard's `tasksPerLane`, never per-lane (`src/renderer/components/board/`).
+- `keybindings-registry.md` - renderer shortcuts declared in `KEYBINDINGS` and bound via `useKeybinding`, not ad-hoc `addEventListener('keydown')` (`src/renderer/`).
 
 **Local overrides:** there is no per-rule local file. Put machine-specific instruction
 overrides in a gitignored `CLAUDE.local.md` at the project root.

@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -13,6 +13,7 @@ import { Swimlane, type SwimlaneProps } from './Swimlane';
 import { DoneSwimlane } from './DoneSwimlane';
 import { TaskCard } from './TaskCard';
 import { BoardDialogs } from './BoardDialogs';
+import { NewTaskDialog } from '../dialogs/NewTaskDialog';
 import { WelcomeOverlay } from './WelcomeOverlay';
 import { useBoardStore } from '../../stores/board-store';
 import { useBoardDragDrop } from '../../hooks/useBoardDragDrop';
@@ -256,6 +257,24 @@ export function KanbanBoard() {
   const boardSearchQuery = useBoardStore((s) => s.boardSearchQuery);
   const normalizedSearch = boardSearchQuery.trim().toLowerCase();
 
+  // New Task hotkey (task.create): a nonce increments in the board store; we open
+  // a board-level New Task dialog targeting the first actionable (non-Done) lane,
+  // defaulting to the To Do column. This mirrors the per-lane "+" button without
+  // coupling the global shortcut to any one lane's local state.
+  const newTaskRequestNonce = useBoardStore((s) => s.newTaskRequestNonce);
+  const [newTaskOpen, setNewTaskOpen] = useState(false);
+  useEffect(() => {
+    if (newTaskRequestNonce > 0) setNewTaskOpen(true);
+  }, [newTaskRequestNonce]);
+  const newTaskLaneId = useMemo(() => {
+    return (
+      swimlanes.find((lane) => lane.role === 'todo')?.id
+      ?? swimlanes.find((lane) => lane.role !== 'done')?.id
+      ?? swimlanes[0]?.id
+      ?? null
+    );
+  }, [swimlanes]);
+
   const {
     sensors,
     collisionDetection,
@@ -363,6 +382,10 @@ export function KanbanBoard() {
       </DndContext>
       <FlyingCard key={completingTaskId ?? 'idle'} />
       </div>
+
+      {newTaskOpen && newTaskLaneId && (
+        <NewTaskDialog swimlaneId={newTaskLaneId} onClose={() => setNewTaskOpen(false)} />
+      )}
 
       <BoardDialogs />
     </div>

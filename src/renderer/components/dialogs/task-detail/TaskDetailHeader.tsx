@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useCopyDisplayId } from './useCopyDisplayId';
 import { X, Trash2, Pencil, Loader2, FolderGit2, FolderOpen, GitPullRequest, GitCompare, ArrowRightLeft, ChevronRight, ChevronLeft, CirclePause, CirclePlay, Clock, SquareChevronRight, Zap, Archive, Inbox, Copy, Check, Globe, RefreshCw, Maximize2, Minimize2 } from 'lucide-react';
 import { usePopoverPosition } from '../../../hooks/usePopoverPosition';
+import { useFormattedCombo } from '../../../hooks/useKeybinding';
 import { getSwimlaneIcon } from '../../../utils/swimlane-icons';
 import { ICON_REGISTRY } from '../../../utils/swimlane-icons';
 import { Pill } from '../../Pill';
@@ -82,7 +83,10 @@ export function TaskDetailHeader({
   const { copied: displayIdCopied, copy: copyDisplayId } = useCopyDisplayId(task.display_id);
   const defaultBaseBranch = useConfigStore((s) => s.config.git.defaultBaseBranch);
   const worktreeBaseBranch = task.base_branch || defaultBaseBranch || null;
-  const modKey = window.electronAPI.platform === 'darwin' ? 'Cmd' : 'Ctrl';
+  const maximizeCombo = useFormattedCombo('panel.maximize');
+  const closeCombo = useFormattedCombo('panel.close');
+  const browserCombo = useFormattedCombo('taskDetail.toggleBrowser');
+  const changesCombo = useFormattedCombo('taskDetail.toggleChanges');
 
   return (
     <div className="flex items-center gap-3 px-4 py-3 min-w-0">
@@ -234,7 +238,7 @@ export function TaskDetailHeader({
                   ? 'bg-accent/15 text-accent-fg border-accent/30'
                   : 'bg-surface-hover/50 text-fg-muted hover:text-fg-secondary hover:bg-surface-hover border-transparent'
               }`}
-              title={changesOpen ? 'Hide changes' : 'Show changes'}
+              title={`${changesOpen ? 'Hide' : 'Show'} changes (${changesCombo})`}
               data-testid="changes-toggle"
             >
               <GitCompare size={14} />
@@ -252,7 +256,7 @@ export function TaskDetailHeader({
                   ? 'bg-accent/15 text-accent-fg border-accent/30'
                   : 'bg-surface-hover/50 text-fg-muted hover:text-fg-secondary hover:bg-surface-hover border-transparent'
               }`}
-              title={browserOpen ? 'Hide browser' : 'Show browser'}
+              title={`${browserOpen ? 'Hide' : 'Show'} browser (${browserCombo})`}
               data-testid="browser-toggle"
             >
               <Globe size={14} />
@@ -316,7 +320,7 @@ export function TaskDetailHeader({
         onClick={onToggleMaximized}
         data-testid="task-detail-maximize"
         aria-label={isMaximized ? 'Restore dialog' : 'Maximize dialog'}
-        title={`${isMaximized ? 'Restore' : 'Maximize'} (${modKey}+Shift+M)`}
+        title={`${isMaximized ? 'Restore' : 'Maximize'} (${maximizeCombo})`}
         className="p-1.5 text-fg-faint hover:text-fg-tertiary hover:bg-surface-hover rounded transition-colors flex-shrink-0"
       >
         {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
@@ -324,7 +328,7 @@ export function TaskDetailHeader({
       <button
         onClick={onClose}
         data-testid="task-detail-close"
-        title={`Close (${modKey}+Shift+W)`}
+        title={`Close (${closeCombo})`}
         className="p-1.5 text-fg-faint hover:text-fg-tertiary hover:bg-surface-hover rounded transition-colors flex-shrink-0"
       >
         <X size={16} />

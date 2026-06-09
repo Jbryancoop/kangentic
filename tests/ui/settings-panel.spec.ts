@@ -18,7 +18,7 @@ test.afterAll(async () => {
 
 /** Open the Settings panel by clicking the gear button in the title bar. */
 async function openSettings() {
-  await page.locator('button[title="Settings"]').click();
+  await page.locator('[data-testid="settings-button"]').click();
   await page.locator('h2:has-text("Settings")').waitFor({ state: 'visible', timeout: 3000 });
 }
 
@@ -38,18 +38,19 @@ async function closeSettings() {
 }
 
 test.describe('Settings Panel', () => {
-  test('titlebar gear opens Settings panel with all 10 tabs when project is open', async () => {
+  test('titlebar gear opens Settings panel with all 11 tabs when project is open', async () => {
     await openSettings();
     await expect(page.locator('h2:has-text("Settings")')).toBeVisible();
 
-    // All 10 tabs should be visible (5 project + 5 system)
+    // All 11 tabs should be visible (5 project + 6 system)
     await expect(page.getByRole('button', { name: 'Theme' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Agent' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Agent', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Git' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Shortcuts' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Layout' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Behavior' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Hotkeys', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'MCP Server' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Notifications' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Privacy' })).toBeVisible();
@@ -65,7 +66,7 @@ test.describe('Settings Panel', () => {
 
   test('shows Agent section with CLI Path and Idle Timeout', async () => {
     await openSettings();
-    await page.getByRole('button', { name: 'Agent' }).click();
+    await page.getByRole('button', { name: 'Agent', exact: true }).click();
     await expect(page.getByText('Claude Code Path')).toBeVisible();
     await expect(page.getByText('Idle Timeout (minutes)')).toBeVisible();
     await closeSettings();
@@ -146,7 +147,7 @@ test.describe('Settings Panel', () => {
   });
 
   test('settings gear shows active state when panel is open', async () => {
-    const gearButton = page.locator('button[title="Settings"]');
+    const gearButton = page.locator('[data-testid="settings-button"]');
 
     await gearButton.click();
     await page.locator('h2:has-text("Settings")').waitFor({ state: 'visible', timeout: 3000 });
@@ -157,7 +158,7 @@ test.describe('Settings Panel', () => {
 
   test('CLI path status indicator appears after panel opens', async () => {
     await openSettings();
-    await page.getByRole('button', { name: 'Agent' }).click();
+    await page.getByRole('button', { name: 'Agent', exact: true }).click();
     // The mock returns { found: true }, so the refresh button has a "Re-detect agent" title
     await expect(page.locator('[title="Re-detect agent"]')).toBeVisible();
     await closeSettings();
@@ -165,7 +166,7 @@ test.describe('Settings Panel', () => {
 
   test('permission mode dropdown shows agent-specific modes for Claude Code', async () => {
     await openSettings();
-    await page.getByRole('button', { name: 'Agent' }).click();
+    await page.getByRole('button', { name: 'Agent', exact: true }).click();
 
     // Find the Permissions setting row by its description text, then locate its select
     const permDescription = page.getByText('How the agent handles tool approvals');
@@ -188,7 +189,7 @@ test.describe('Settings Panel', () => {
 
   test('permission mode dropdown shows Kimi-specific modes after switching to Kimi agent', async () => {
     await openSettings();
-    await page.getByRole('button', { name: 'Agent' }).click();
+    await page.getByRole('button', { name: 'Agent', exact: true }).click();
 
     // Switch default agent to Kimi via the Default Agent select.
     const defaultAgentDescription = page.getByText('Which agent CLI to use for new sessions');
@@ -227,7 +228,7 @@ test.describe('Settings Panel', () => {
 
   test('permission mode dropdown shows OpenCode-specific modes after switching to OpenCode agent', async () => {
     await openSettings();
-    await page.getByRole('button', { name: 'Agent' }).click();
+    await page.getByRole('button', { name: 'Agent', exact: true }).click();
 
     // Switch default agent to OpenCode via the Default Agent select.
     const defaultAgentDescription = page.getByText('Which agent CLI to use for new sessions');
@@ -290,6 +291,21 @@ test.describe('Settings Panel', () => {
 
     await closeSettings();
   });
+
+  test('reopens to the last viewed tab after closing', async () => {
+    await openSettings();
+    await page.getByRole('button', { name: 'Git', exact: true }).click();
+    await expect(page.getByText('Enable Worktrees')).toBeVisible();
+    await closeSettings();
+
+    // Reopening returns to Git, not the first tab.
+    await openSettings();
+    await expect(page.getByText('Enable Worktrees')).toBeVisible();
+
+    // Reset to Theme so later tests start from a known tab.
+    await page.getByRole('button', { name: 'Theme', exact: true }).click();
+    await closeSettings();
+  });
 });
 
 test.describe('Project Settings via Sidebar', () => {
@@ -317,14 +333,14 @@ test.describe('Project Settings via Sidebar', () => {
     // All tabs visible (no separate project panel with fewer tabs)
     await expect(page.getByRole('button', { name: 'Theme' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Agent' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Agent', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Git' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Layout' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'MCP Server' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Behavior' })).toBeVisible();
 
     // Agent tab should show agent-specific settings
-    await page.getByRole('button', { name: 'Agent' }).click();
+    await page.getByRole('button', { name: 'Agent', exact: true }).click();
     await expect(page.getByText('Claude Code Path')).toBeVisible();
 
     await closeSettings();

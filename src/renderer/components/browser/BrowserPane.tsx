@@ -7,6 +7,7 @@ import { useBrowserUrl } from './useBrowserUrl';
 import { INSPECT_SCRIPT, CLEAR_PICK_SCRIPT } from './inspectScript';
 import { AttachmentChips } from './AttachmentChips';
 import { useToastStore } from '../../stores/toast-store';
+import { useKeybinding } from '../../hooks/useKeybinding';
 import { BROWSER_PARTITION } from '../../../shared/browser-partition';
 import type { BrowserPickedElement } from '../../../shared/types';
 import type { WebviewElement } from './webview-types';
@@ -156,18 +157,13 @@ function BrowserPaneActive({
 
   // F5 / Ctrl+R reload when focus is *outside* the embedded webview (e.g. in
   // the URL bar or any pane chrome). The matching main-process
-  // before-input-event hook handles the webview-focused case.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const isF5 = event.key === 'F5';
-      const isCtrlR = (event.ctrlKey || event.metaKey) && (event.key === 'r' || event.key === 'R');
-      if (!isF5 && !isCtrlR) return;
-      event.preventDefault();
-      webviewRef.current?.reload();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, []);
+  // before-input-event hook handles the webview-focused case. Combo from the
+  // central keybinding registry; bubble phase, no stopPropagation (matches the
+  // original document-level listener).
+  useKeybinding('browser.reload', () => webviewRef.current?.reload(), {
+    target: 'document',
+    stopPropagation: false,
+  });
 
   const applyZoom = useCallback((factor: number) => {
     const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, factor));
@@ -346,52 +342,47 @@ function BrowserPaneActive({
     webviewRef.current?.executeJavaScript(CLEAR_PICK_SCRIPT).catch(() => undefined);
   }, []);
 
-  // Document-level keyboard shortcuts. Skipped when target is a form
-  // field so typing the letter `i` in the note input doesn't toggle Inspect.
-  // Registered in CAPTURE phase so the Esc-cancels-Inspect handler runs
-  // BEFORE the parent TaskDetailDialog's bubble-phase Esc-closes-dialog
-  // handler. stopImmediatePropagation prevents the dialog from also firing.
+  // Esc cancels Inspect mode. Kept as a hand-written CAPTURE-phase listener (not
+  // a registry binding) because it must run BEFORE the parent TaskDetailDialog's
+  // bubble-phase Esc-closes-dialog handler and call stopImmediatePropagation so
+  // the dialog does not also close on the same Esc. Escape is not rebindable.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      const target = event.target as HTMLElement | null;
-      const inFormField = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
       if (event.key === 'Escape' && inspectActive) {
-        // Eat the event so the parent dialog doesn't close on the same Esc.
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
         cancelInspect();
-        return;
-      }
-      const mod = event.ctrlKey || event.metaKey;
-      if (!mod) return;
-      const key = event.key.toLowerCase();
-      if (key === 'i' && !inFormField) {
-        event.preventDefault();
-        void startInspect();
-      } else if (key === 'd' && !inFormField) {
-        event.preventDefault();
-        setDrawMode((previous) => {
-          if (!previous) cancelInspect();
-          return !previous;
-        });
-      } else if (!inFormField && (event.key === '=' || event.key === '+' || event.key === '-' || event.key === '0')) {
-        // Zoom shortcuts only fire when the browser pane is active: mouse
-        // over it OR something inside it has focus. Without this gate,
-        // Ctrl+0 from anywhere in the app would reset browser zoom. See
-        // task #139 for the same principle applied to Ctrl+Enter.
-        const pane = paneRef.current;
-        const focusInside = !!pane && pane.contains(document.activeElement);
-        if (!hoveredRef.current && !focusInside) return;
-        event.preventDefault();
-        if (event.key === '=' || event.key === '+') zoomIn();
-        else if (event.key === '-') zoomOut();
-        else if (event.key === '0') resetZoom();
       }
     };
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [cancelInspect, inspectActive, resetZoom, startInspect, zoomIn, zoomOut]);
+  }, [cancelInspect, inspectActive]);
+
+  // Browser-pane shortcuts from the central keybinding registry. Document +
+  // capture phase, preventDefault only (no stopPropagation), and skipped when a
+  // form field is focused so typing `i`/`d` in the note input doesn't trigger
+  // them. Zoom additionally requires the pane to be active (mouse over it OR
+  // focus inside) so e.g. Ctrl+0 from elsewhere doesn't reset browser zoom.
+  const notFormField = (event: KeyboardEvent): boolean => {
+    const target = event.target as HTMLElement | null;
+    return !(!!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'));
+  };
+  const paneActive = (event: KeyboardEvent): boolean => {
+    if (!notFormField(event)) return false;
+    const pane = paneRef.current;
+    const focusInside = !!pane && pane.contains(document.activeElement);
+    return hoveredRef.current || focusInside;
+  };
+  const browserKeyOptions = { target: 'document', capture: true, stopPropagation: false } as const;
+  useKeybinding('browser.inspect', () => void startInspect(), { ...browserKeyOptions, when: notFormField });
+  useKeybinding('browser.draw', () => setDrawMode((previous) => {
+    if (!previous) cancelInspect();
+    return !previous;
+  }), { ...browserKeyOptions, when: notFormField });
+  useKeybinding('browser.zoomIn', () => zoomIn(), { ...browserKeyOptions, when: paneActive });
+  useKeybinding('browser.zoomOut', () => zoomOut(), { ...browserKeyOptions, when: paneActive });
+  useKeybinding('browser.zoomReset', () => resetZoom(), { ...browserKeyOptions, when: paneActive });
 
   return (
     <div

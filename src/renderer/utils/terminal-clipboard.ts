@@ -156,10 +156,17 @@ async function handlePaste(
 /**
  * Enable clipboard copy support for an xterm.js Terminal instance.
  *
- * - Ctrl+C copies selected text instead of sending SIGINT (when selection exists)
- * - Ctrl+Shift+C always copies
+ * - Ctrl+C copies selected text instead of sending SIGINT (when a selection exists)
+ * - Ctrl+Shift+C always copies the selection
  * - Ctrl+V / Cmd+V pastes text or image from clipboard
+ * - Ctrl+Shift+V also pastes from clipboard
+ * - Ctrl+Enter / Cmd+Enter sends a newline for the Claude Code TUI
  * - Right-click shows the browser's native context menu (with Copy)
+ *
+ * These combos are the embedded terminal's own; they are mirrored in the central
+ * keybinding registry (`src/shared/keybindings.ts`) as `terminalUnsafe` entries so
+ * the conflict checker can warn against assigning them to a global/dialog action.
+ * Keep the two in sync; `tests/unit/keybindings-registry.test.ts` locks the set.
  *
  * Call after `terminal.open(el)`.
  */

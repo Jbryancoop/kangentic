@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import { Bell, Bot, Bug, GitBranch, Globe, LayoutGrid, Palette, Plug, ShieldCheck, SlidersHorizontal, Terminal, Zap } from 'lucide-react';
+import { Bell, Bot, Bug, GitBranch, Globe, Keyboard, LayoutGrid, Palette, Plug, ShieldCheck, SlidersHorizontal, Terminal, Zap } from 'lucide-react';
 import { useConfigStore } from '../../stores/config-store';
 import { SettingsPanelProvider, SearchTabGroupHeader, NoSearchResults } from './shared';
 import type { SettingsTabDefinition, SettingScope, SettingsContentProps } from './shared';
@@ -17,6 +17,7 @@ import { McpServerTab } from './tabs/McpServerTab';
 import { NotificationsTab } from './tabs/NotificationsTab';
 import { PrivacyTab } from './tabs/PrivacyTab';
 import { DeveloperTab } from './tabs/DeveloperTab';
+import { HotkeysTab } from './tabs/HotkeysTab';
 
 /**
  * Settings tab layout:
@@ -39,6 +40,7 @@ export const APP_TABS: SettingsTabDefinition[] = [
   // -- Shared settings (separator marks the boundary) --
   { id: 'layout', label: 'Layout', icon: LayoutGrid, separator: true, tooltip: 'Applies to all projects' },
   { id: 'behavior', label: 'Behavior', icon: SlidersHorizontal, tooltip: 'Applies to all projects' },
+  { id: 'hotkeys', label: 'Hotkeys', icon: Keyboard, tooltip: 'Applies to all projects' },
   { id: 'mcpServer', label: 'MCP Server', icon: Plug, tooltip: 'Applies to all projects' },
   { id: 'notifications', label: 'Notifications', icon: Bell, tooltip: 'Applies to all projects' },
   { id: 'privacy', label: 'Privacy', icon: ShieldCheck, tooltip: 'Applies to all projects' },
@@ -97,6 +99,7 @@ export function SettingsContent({ activeTab, isSearching, searchQuery, matchingT
       case 'developer': return <DeveloperTab globalConfig={globalConfig} />;
       case 'layout': return <LayoutTab globalConfig={globalConfig} />;
       case 'behavior': return <BehaviorTab globalConfig={globalConfig} />;
+      case 'hotkeys': return <HotkeysTab globalConfig={globalConfig} />;
       case 'mcpServer': return <McpServerTab globalConfig={globalConfig} />;
       case 'notifications': return <NotificationsTab globalConfig={globalConfig} />;
       case 'privacy': return <PrivacyTab />;

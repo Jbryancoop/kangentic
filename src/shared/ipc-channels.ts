@@ -116,6 +116,9 @@ export const IPC = {
   CONFIG_SET_PROJECT_BY_PATH: 'config:setProjectByPath',
   CONFIG_SYNC_DEFAULT_TO_PROJECTS: 'config:syncDefaultToProjects',
 
+  // Keybindings
+  KEYBINDINGS_PROBE_GLOBAL: 'keybindings:probeGlobal',
+
   // Agent
   AGENT_DETECT: 'agent:detect',
   AGENT_LIST_COMMANDS: 'agent:listCommands',

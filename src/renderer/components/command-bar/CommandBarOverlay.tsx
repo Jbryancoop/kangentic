@@ -6,6 +6,7 @@ import { Pill } from '../Pill';
 import { KebabMenu, KebabMenuItem, KebabMenuDivider } from '../KebabMenu';
 import { CommandPalettePopover } from '../dialogs/task-detail/CommandPalettePopover';
 import { useTerminal } from '../../hooks/useTerminal';
+import { useKeybinding, useFormattedCombo } from '../../hooks/useKeybinding';
 import { useTerminalFileDrop } from '../../hooks/useTerminalFileDrop';
 import { FileDropOverlay } from '../terminal/FileDropOverlay';
 import { ContextBar } from '../terminal/ContextBar';
@@ -48,7 +49,8 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
   const isMaximized = useSessionStore((s) => s.maximizedTasks.has(COMMAND_TERMINAL_ENTITY_ID));
   const toggleMaximized = useSessionStore((s) => s.toggleMaximized);
   const handleToggleMaximized = useCallback(() => toggleMaximized(COMMAND_TERMINAL_ENTITY_ID), [toggleMaximized]);
-  const modKey = window.electronAPI.platform === 'darwin' ? 'Cmd' : 'Ctrl';
+  const maximizeCombo = useFormattedCombo('panel.maximize');
+  const closeCombo = useFormattedCombo('panel.close');
   const backdropMouseDown = useRef(false);
   const spawnedRef = useRef(false);
   const commandButtonRef = useRef<HTMLDivElement>(null);
@@ -251,28 +253,11 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
     if (phase !== 'exiting') setPhase('exiting');
   }, [phase]);
 
-  // Command Terminal hotkeys, mirroring the task detail dialog. Capture phase so
-  // they beat the embedded xterm's control-char handling (Ctrl+W = 0x17, Ctrl+M
-  // = CR). Ctrl/Cmd+Shift+M toggles maximize; Ctrl/Cmd+Shift+W hides the overlay.
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
-      const key = event.key.toLowerCase();
-      if (key === 'm') {
-        event.preventDefault();
-        event.stopPropagation();
-        handleToggleMaximized();
-        return;
-      }
-      if (key === 'w') {
-        event.preventDefault();
-        event.stopPropagation();
-        requestClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [handleToggleMaximized, requestClose]);
+  // Command Terminal hotkeys, mirroring the task detail dialog, read from the
+  // central keybinding registry. Capture phase so they beat the embedded xterm's
+  // control-char handling (Ctrl+W = 0x17, Ctrl+M = CR).
+  useKeybinding('panel.maximize', () => handleToggleMaximized(), { capture: true });
+  useKeybinding('panel.close', () => requestClose(), { capture: true });
 
   const handleAnimationEnd = () => {
     if (phase === 'entering') setPhase('visible');
@@ -463,7 +448,7 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
             <button
               onClick={handleToggleMaximized}
               className="p-1.5 text-fg-faint hover:text-fg-tertiary hover:bg-surface-hover rounded transition-colors flex-shrink-0"
-              title={`${isMaximized ? 'Restore' : 'Maximize'} (${modKey}+Shift+M)`}
+              title={`${isMaximized ? 'Restore' : 'Maximize'} (${maximizeCombo})`}
               aria-label={isMaximized ? 'Restore terminal' : 'Maximize terminal'}
               data-testid="command-bar-maximize"
             >
@@ -472,7 +457,7 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
             <button
               onClick={requestClose}
               className="p-1.5 text-fg-faint hover:text-fg-tertiary hover:bg-surface-hover rounded transition-colors flex-shrink-0"
-              title={`Hide terminal (${modKey}+Shift+W)`}
+              title={`Hide terminal (${closeCombo})`}
               aria-label="Hide terminal"
             >
               <X size={16} />

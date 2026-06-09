@@ -24,11 +24,14 @@ export interface BoardFilterSlice {
   boardSearchQuery: string;
   /** Increments to request focus of the board search input (plain Ctrl+F). */
   boardSearchFocusNonce: number;
+  /** Increments to request opening the New Task dialog (the task.create hotkey). */
+  newTaskRequestNonce: number;
   togglePriorityFilter: (value: number) => void;
   toggleLabelFilter: (label: string) => void;
   clearBoardFilters: () => void;
   setBoardSearchQuery: (query: string) => void;
   requestBoardSearchFocus: () => void;
+  requestNewTask: () => void;
 }
 
 export const createBoardFilterSlice: StateCreator<BoardStore, [], [], BoardFilterSlice> = (set) => ({
@@ -36,6 +39,7 @@ export const createBoardFilterSlice: StateCreator<BoardStore, [], [], BoardFilte
   labelFilters: new Set<string>(),
   boardSearchQuery: '',
   boardSearchFocusNonce: 0,
+  newTaskRequestNonce: 0,
 
   togglePriorityFilter: (value) => set((state) => {
     const next = new Set(state.priorityFilters);
@@ -56,4 +60,6 @@ export const createBoardFilterSlice: StateCreator<BoardStore, [], [], BoardFilte
   setBoardSearchQuery: (query) => set({ boardSearchQuery: query }),
 
   requestBoardSearchFocus: () => set((state) => ({ boardSearchFocusNonce: state.boardSearchFocusNonce + 1 })),
+
+  requestNewTask: () => set((state) => ({ newTaskRequestNonce: state.newTaskRequestNonce + 1 })),
 });

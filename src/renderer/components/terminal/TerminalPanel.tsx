@@ -10,6 +10,7 @@ import { ContextBar } from './ContextBar';
 import { IsolatedBadge } from '../IsolatedBadge';
 import { slugify } from '../../utils/slugify';
 import { shellDisplayName } from '../../utils/shell-display-name';
+import { useFormattedCombo } from '../../hooks/useKeybinding';
 import { ACTIVITY_TAB } from '../../../shared/types';
 import type { ActivityState } from '../../../shared/types';
 import { requiresUserInteraction, isActive } from '../../../shared/activity-state';
@@ -21,6 +22,7 @@ interface TerminalPanelProps {
 }
 
 export function TerminalPanel({ collapsed = false, showContent = true, onToggleCollapse }: TerminalPanelProps) {
+  const terminalPanelCombo = useFormattedCombo('view.toggleTerminalPanel');
   const allSessions = useSessionStore((s) => s.sessions);
   const currentProjectId = useProjectStore((s) => s.currentProject?.id ?? null);
   // Fallback agent for default-agent tasks (task.agent null) so the ContextBar
@@ -185,7 +187,7 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
             role="presentation"
             className="flex-1 self-stretch cursor-pointer hover:bg-surface-raised/30 transition-colors"
             onClick={onToggleCollapse}
-            title={collapsed ? 'Expand terminal panel' : 'Collapse terminal panel'}
+            title={`${collapsed ? 'Expand' : 'Collapse'} terminal panel (${terminalPanelCombo})`}
           />
         )}
 
@@ -194,7 +196,7 @@ export function TerminalPanel({ collapsed = false, showContent = true, onToggleC
           <button
             onClick={onToggleCollapse}
             className="flex items-center justify-center px-2 py-1.5 text-fg-faint hover:text-fg-tertiary transition-colors flex-shrink-0"
-            title={collapsed ? 'Expand terminal panel' : 'Collapse terminal panel'}
+            title={`${collapsed ? 'Expand' : 'Collapse'} terminal panel (${terminalPanelCombo})`}
           >
             {collapsed ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
           </button>

@@ -4,6 +4,20 @@ import { DEFAULT_CONFIG } from '../../shared/types';
 import { deepMergeConfig } from '../../shared/object-utils';
 import { invalidateAllProjects } from './project-cache';
 
+/** Last-viewed settings tab, preserved across HMR (Pattern A) so the panel
+ *  reopens to the same section during dogfooding instead of resetting to the
+ *  first tab. Session-scoped only: intentionally not persisted across restarts. */
+// @ts-expect-error -- Vite handles import.meta.hot; tsc's "module": "commonjs" doesn't support it
+let lastSettingsTabHmr: string | null = import.meta.hot?.data?.lastSettingsTab ?? null;
+
+// @ts-expect-error -- Vite handles import.meta.hot
+if (import.meta.hot) {
+  // @ts-expect-error -- Vite handles import.meta.hot
+  import.meta.hot.dispose((data: Record<string, unknown>) => {
+    data.lastSettingsTab = lastSettingsTabHmr;
+  });
+}
+
 /** Extract the version number from the raw string (e.g. "2.1.50 (Claude Code)" -> "2.1.50"). */
 function parseAgentVersion(version: string | null): string | null {
   return version?.replace(/\s*\(.*\)/, '') || null;
@@ -42,6 +56,10 @@ interface ConfigStore {
   // -- Settings panel UI --
   settingsOpen: boolean;
   setSettingsOpen: (open: boolean) => void;
+  /** Last settings tab the user viewed, so closing and reopening the panel
+   *  returns to the same section instead of resetting to the first tab. */
+  lastSettingsTab: string | null;
+  setLastSettingsTab: (tabId: string) => void;
 
   // -- Project Settings --
   projectSettingsPath: string | null;
@@ -75,6 +93,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
   gitInfo: null,
   loading: true,
   settingsOpen: false,
+  lastSettingsTab: lastSettingsTabHmr,
   projectSettingsPath: null,
   projectSettingsProjectName: null,
   projectSettingsInitialTab: null,
@@ -173,6 +192,11 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
       });
       refreshConfigs().then((configs) => set(configs));
     }
+  },
+
+  setLastSettingsTab: (tabId) => {
+    lastSettingsTabHmr = tabId;
+    set({ lastSettingsTab: tabId });
   },
 
   // -- Project settings --

@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { app, ipcMain, Notification, dialog, shell } from 'electron';
+import { app, ipcMain, Notification, dialog, shell, globalShortcut } from 'electron';
 import { IPC } from '../../../shared/ipc-channels';
+import { comboToAccelerator } from '../../../shared/keybindings';
 import { WorktreeManager } from '../../git/worktree-manager';
 import { isGitRepo } from '../../git/git-checks';
 import { deepMergeConfig } from '../../../shared/object-utils';
@@ -102,6 +103,49 @@ export function registerSystemHandlers(context: IpcContext): void {
     }
     return updatedCount;
   });
+
+  // === Keybindings ===
+  // Probe whether each combo can be claimed as a system-wide global shortcut.
+  // Registration silently fails (returns false) when the OS or another app
+  // already owns the accelerator, which is a strong signal the in-renderer
+  // keydown would never reach Kangentic. We register only to test, then
+  // immediately unregister so Kangentic holds no real global shortcuts.
+  // Electron's macOS Accessibility-permission caveat for globalShortcut applies
+  // only to media-key accelerators (Media Play/Pause, etc.), which
+  // comboToAccelerator never emits (modifier + letter/digit/F-key only), so the
+  // probe is not subject to that false-'taken' case.
+  ipcMain.handle(
+    IPC.KEYBINDINGS_PROBE_GLOBAL,
+    (_, combos: string[]): Record<string, 'available' | 'taken' | 'unsupported'> => {
+      const result: Record<string, 'available' | 'taken' | 'unsupported'> = {};
+      for (const combo of combos) {
+        const accelerator = comboToAccelerator(combo);
+        if (!accelerator) {
+          result[combo] = 'unsupported';
+          continue;
+        }
+        try {
+          // If we (or anything in-process) already hold it, treat as available:
+          // it is not owned by another app, which is what matters here.
+          if (globalShortcut.isRegistered(accelerator)) {
+            result[combo] = 'available';
+            continue;
+          }
+          const registered = globalShortcut.register(accelerator, () => {});
+          if (registered) {
+            globalShortcut.unregister(accelerator);
+            result[combo] = 'available';
+          } else {
+            result[combo] = 'taken';
+          }
+        } catch {
+          // Malformed accelerator or platform refusal: cannot probe.
+          result[combo] = 'unsupported';
+        }
+      }
+      return result;
+    },
+  );
 
   // === Agent ===
   ipcMain.handle(IPC.AGENT_DETECT, async () => {

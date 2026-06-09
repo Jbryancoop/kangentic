@@ -5,6 +5,7 @@ import { useConfigStore } from '../../stores/config-store';
 import { useSessionStore } from '../../stores/session-store';
 import { isWorktreePath } from '../../../shared/git-utils';
 import { requiresUserInteraction } from '../../../shared/activity-state';
+import { useFormattedCombo } from '../../hooks/useKeybinding';
 import logoSrc from '../../assets/logo-32.png';
 
 const isMac = window.electronAPI.platform === 'darwin';
@@ -24,6 +25,10 @@ export function TitleBar({ onQuickSession, onOpenSearch, commandBarOpen }: Title
   const transientActivity = useSessionStore((s) =>
     s.transientSessionId ? s.sessionActivity[s.transientSessionId] : undefined,
   );
+  // Tooltips read the live effective combo so they update when the user rebinds.
+  const quickFindCombo = useFormattedCombo('search.togglePalette');
+  const commandTerminalCombo = useFormattedCombo('commandBar.toggle');
+  const settingsCombo = useFormattedCombo('settings.toggle');
 
   const hasBackgroundSession = !!transientSessionId && !commandBarOpen;
   const transientIsIdle = hasBackgroundSession && requiresUserInteraction(transientActivity);
@@ -71,7 +76,7 @@ export function TitleBar({ onQuickSession, onOpenSearch, commandBarOpen }: Title
           <button
             onClick={onOpenSearch}
             className="p-1.5 hover:bg-surface-hover rounded text-fg-muted hover:text-fg transition-colors"
-            title={`Quick Find (${isMac ? '⌘' : 'Ctrl'}+Shift+F)`}
+            title={`Quick Find (${quickFindCombo})`}
             aria-label="Quick Find"
             // testid kept as "open-search" for selector stability; UI label is "Quick Find"
             data-testid="open-search-button"
@@ -83,7 +88,7 @@ export function TitleBar({ onQuickSession, onOpenSearch, commandBarOpen }: Title
           <button
             onClick={onQuickSession}
             className="relative p-1.5 hover:bg-surface-hover rounded text-fg-muted hover:text-fg transition-colors"
-            title={`Command Terminal (${isMac ? '⌘' : 'Ctrl'}+Shift+P)`}
+            title={`Command Terminal (${commandTerminalCombo})`}
             aria-label="Command Terminal"
             data-testid="quick-session-button"
           >
@@ -103,7 +108,8 @@ export function TitleBar({ onQuickSession, onOpenSearch, commandBarOpen }: Title
           className={`p-1.5 hover:bg-surface-hover rounded transition-colors ${
             settingsOpen ? 'text-fg bg-surface-hover' : 'text-fg-muted hover:text-fg'
           }`}
-          title="Settings"
+          title={`Settings (${settingsCombo})`}
+          data-testid="settings-button"
         >
           <Settings size={20} />
         </button>

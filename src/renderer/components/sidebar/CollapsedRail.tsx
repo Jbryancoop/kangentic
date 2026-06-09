@@ -1,6 +1,7 @@
 import { PanelLeft, FolderPlus } from 'lucide-react';
 import { useProjectStore } from '../../stores/project-store';
 import { useToastStore } from '../../stores/toast-store';
+import { useFormattedCombo } from '../../hooks/useKeybinding';
 import type { Project } from '../../../shared/types';
 
 interface CollapsedRailProps {
@@ -23,6 +24,7 @@ export function CollapsedRail({ onExpandSidebar }: CollapsedRailProps) {
   const currentProject = useProjectStore((s) => s.currentProject);
   const openProject = useProjectStore((s) => s.openProject);
   const openProjectByPath = useProjectStore((s) => s.openProjectByPath);
+  const sidebarCombo = useFormattedCombo('view.toggleSidebar');
 
   const handleNewProject = async () => {
     const selectedPath = await window.electronAPI.dialog.selectFolder();
@@ -42,7 +44,7 @@ export function CollapsedRail({ onExpandSidebar }: CollapsedRailProps) {
       <button
         onClick={onExpandSidebar}
         className="p-1.5 hover:bg-surface-hover rounded text-fg-muted hover:text-fg transition-colors mb-2"
-        title="Show sidebar"
+        title={`Show sidebar (${sidebarCombo})`}
         data-testid="sidebar-expand-button"
       >
         <PanelLeft size={18} />

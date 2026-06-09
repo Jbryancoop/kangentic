@@ -5,6 +5,7 @@ import { useSessionStore } from '../../stores/session-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useProjectStore } from '../../stores/project-store';
 import { resolveShortcutCommand } from '../../../shared/template-vars';
+import { useKeybinding } from '../../hooks/useKeybinding';
 import { PriorityBadge } from '../backlog/PriorityBadge';
 import { BaseDialog } from './BaseDialog';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -239,43 +240,20 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
     hadSessionContext.current = hasSessionContext;
   }, [hasSessionContext, task.id, updateTask]);
 
-  // Task-detail hotkeys. All are Ctrl/Cmd+Shift combos. We listen in CAPTURE
-  // phase so we intercept before the embedded xterm consumes the Ctrl-letter
-  // control chars (Ctrl+X = 0x18, Ctrl+B = 0x02, Ctrl+M = CR); a bubble-phase
-  // listener never fires for those while the terminal has focus. We deliberately
-  // do NOT bind Escape in this handler; BaseDialog keeps its own document-level
+  // Task-detail hotkeys, read from the central keybinding registry. We listen in
+  // CAPTURE phase so we intercept before the embedded xterm consumes the
+  // Ctrl-letter control chars (Ctrl+X = 0x18, Ctrl+B = 0x02, Ctrl+M = CR); a
+  // bubble-phase listener never fires for those while the terminal has focus. We
+  // deliberately do NOT bind Escape; BaseDialog keeps its own document-level
   // Escape-to-close listener (we never pass preventBackdropClose), which still
   // dismisses the dialog when focus is outside the terminal. A focused xterm
-  // consumes Escape first, so it stays available to the Claude TUI.
-  //   Ctrl/Cmd+Shift+M - toggle maximize (view mode only, matching the button)
-  //   Ctrl/Cmd+Shift+W - close the dialog (works in every mode)
-  //   Ctrl/Cmd+Shift+B - toggle the Browser pane (when available); while the
-  //                      dialog is open it shadows the global board/backlog toggle
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
-      const key = event.key.toLowerCase();
-      if (key === 'm' && !isEditing) {
-        event.preventDefault();
-        event.stopPropagation();
-        toggleMaximized(task.id);
-        return;
-      }
-      if (key === 'w') {
-        event.preventDefault();
-        event.stopPropagation();
-        onClose();
-        return;
-      }
-      if (key === 'b' && canShowBrowser) {
-        event.preventDefault();
-        event.stopPropagation();
-        handleToggleBrowser();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isEditing, toggleMaximized, task.id, onClose, canShowBrowser, handleToggleBrowser]);
+  // consumes Escape first, so it stays available to the Claude TUI. The browser
+  // toggle (Mod+Shift+B) shadows the global board/backlog toggle while the
+  // dialog is open, which works because this capture-phase listener runs first.
+  useKeybinding('panel.maximize', () => toggleMaximized(task.id), { capture: true, enabled: !isEditing });
+  useKeybinding('panel.close', () => onClose(), { capture: true });
+  useKeybinding('taskDetail.toggleBrowser', () => handleToggleBrowser(), { capture: true, enabled: canShowBrowser });
+  useKeybinding('taskDetail.toggleChanges', () => handleToggleChanges(), { capture: true, enabled: sessionState.canShowChanges });
 
   // Maximizing resizes the dialog container, so nudge the embedded terminal to
   // refit through the fast (50ms) terminal-panel-resize path, mirroring the

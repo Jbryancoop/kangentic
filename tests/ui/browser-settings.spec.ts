@@ -29,7 +29,7 @@ test.afterAll(async () => {
 });
 
 async function openBrowserTab() {
-  await page.locator('button[title="Settings"]').click();
+  await page.locator('[data-testid="settings-button"]').click();
   await page.locator('h2:has-text("Settings")').waitFor({ state: 'visible', timeout: 3000 });
   await page.getByRole('button', { name: 'Browser', exact: true }).click();
   await expect(page.getByText('Enable Browser Pane')).toBeVisible();

@@ -22,9 +22,12 @@ import { useCommandBar } from '../../hooks/useCommandBar';
 import { useSearchPalette } from '../../hooks/useSearchPalette';
 import { useViewToggle } from '../../hooks/useViewToggle';
 import { useFocusedSessionsSync } from '../../hooks/useFocusedSessionsSync';
+import { useKeybinding } from '../../hooks/useKeybinding';
 
 export function AppLayout() {
   const settingsOpen = useConfigStore((s) => s.settingsOpen);
+  const setSettingsOpen = useConfigStore((s) => s.setSettingsOpen);
+  const openProjectSettings = useConfigStore((s) => s.openProjectSettings);
   const config = useConfigStore((s) => s.config);
   const currentProject = useProjectStore((s) => s.currentProject);
   const projects = useProjectStore((s) => s.projects);
@@ -45,6 +48,20 @@ export function AppLayout() {
   const searchPalette = useSearchPalette({ onPlainFindKey: handlePlainFindKey });
   useViewToggle();
   useFocusedSessionsSync();
+
+  // App-level shortcuts wired here, where the layout owns the relevant state and
+  // resize controllers. Combos come from the central keybinding registry.
+  // Settings toggle mirrors the title-bar gear's behavior.
+  useKeybinding('settings.toggle', () => {
+    if (settingsOpen) setSettingsOpen(false);
+    else if (currentProject) openProjectSettings(currentProject.path, currentProject.name);
+    else setSettingsOpen(true);
+  });
+  useKeybinding('view.toggleSidebar', () => sidebar.toggle());
+  useKeybinding('view.toggleTerminalPanel', () => terminal.onToggleCollapse());
+  useKeybinding('task.create', () => useBoardStore.getState().requestNewTask(), {
+    enabled: activeView === 'board' && !!currentProject,
+  });
 
   return (
     <div className="h-screen flex flex-col bg-surface">

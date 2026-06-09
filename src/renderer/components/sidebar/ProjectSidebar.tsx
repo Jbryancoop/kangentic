@@ -11,6 +11,7 @@ import { useProjectStore } from '../../stores/project-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useToastStore } from '../../stores/toast-store';
 import { useHmrGeneration } from '../../utils/hmr-generation';
+import { useFormattedCombo } from '../../hooks/useKeybinding';
 import { ConfirmDialog } from '../dialogs/ConfirmDialog';
 import { CountBadge } from '../CountBadge';
 import type { Project, ProjectGroup } from '../../../shared/types';
@@ -43,6 +44,7 @@ export function ProjectSidebar({ onToggleSidebar }: ProjectSidebarProps) {
   const toggleGroupCollapsed = useProjectStore((s) => s.toggleGroupCollapsed);
   const openProjectSettings = useConfigStore((state) => state.openProjectSettings);
   const openProjectByPath = useProjectStore((s) => s.openProjectByPath);
+  const sidebarCombo = useFormattedCombo('view.toggleSidebar');
 
   const renameProject = useProjectStore((s) => s.renameProject);
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
@@ -246,7 +248,7 @@ export function ProjectSidebar({ onToggleSidebar }: ProjectSidebarProps) {
             <button
               onClick={onToggleSidebar}
               className="p-1 hover:bg-surface-hover rounded text-fg-muted hover:text-fg transition-colors"
-              title="Hide sidebar"
+              title={`Hide sidebar (${sidebarCombo})`}
             >
               <ChevronsLeft size={16} />
             </button>

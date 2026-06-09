@@ -6,6 +6,7 @@ import { useSessionStore } from '../../stores/session-store';
 import { useProjectStore } from '../../stores/project-store';
 import { useBoardStore } from '../../stores/board-store';
 import { useToastStore } from '../../stores/toast-store';
+import { useKeybinding } from '../../hooks/useKeybinding';
 import { ActivityTimeline } from './ActivityTimeline';
 
 const POLL_INTERVAL_MS = 2_000;
@@ -42,29 +43,20 @@ export function ActivityDebugOverlay() {
   });
   const updateConfig = useConfigStore((state) => state.updateConfig);
 
-  // Ctrl+Shift+D / Cmd+Shift+D toggles the overlay. Power-user-only,
-  // not exposed in any in-app UI besides the Developer settings.
-  // Truly global: no INPUT/TEXTAREA target filter (would block the
-  // shortcut whenever xterm's hidden textarea has focus, which is the
-  // common case while a task detail dialog is open). The modifier
-  // combination ensures this can't conflict with normal typing.
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey)) return;
-      if (!event.shiftKey) return;
-      if (event.key !== 'D' && event.key !== 'd') return;
-      event.preventDefault();
-      event.stopPropagation();
-      const next = !overlayEnabled;
-      void updateConfig({ developer: { activityDebugOverlay: next } });
-      useToastStore.getState().addToast({
-        message: next ? 'Activity engine debug overlay enabled' : 'Activity engine debug overlay disabled',
-        variant: 'info',
-      });
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [overlayEnabled, updateConfig]);
+  // Default Ctrl/Cmd+Shift+D toggles the overlay (combo from the central
+  // keybinding registry). Power-user-only, not exposed in any in-app UI besides
+  // the Developer settings. Truly global: no INPUT/TEXTAREA target filter (would
+  // block the shortcut whenever xterm's hidden textarea has focus, which is the
+  // common case while a task detail dialog is open). The listener stays
+  // installed regardless of whether the panel is visible.
+  useKeybinding('debug.toggleOverlay', () => {
+    const next = !overlayEnabled;
+    void updateConfig({ developer: { activityDebugOverlay: next } });
+    useToastStore.getState().addToast({
+      message: next ? 'Activity engine debug overlay enabled' : 'Activity engine debug overlay disabled',
+      variant: 'info',
+    });
+  });
 
   if (!overlayEnabled) return null;
   return <ActivityDebugOverlayContent />;

@@ -16,6 +16,7 @@ import { ICON_REGISTRY, ROLE_DEFAULTS, getUsedIcons } from '../../utils/swimlane
 import { Select } from '../settings/shared';
 import { ToggleCard } from '../ToggleCard';
 import { useAgentCapabilityResolution } from '../../hooks/useAgentCapabilityResolution';
+import { useKeybinding } from '../../hooks/useKeybinding';
 import {
   getPermissionLabel,
   DEFAULT_PERMISSIONS,
@@ -671,20 +672,26 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
     onClose();
   }, [saving, laneOrder, drafts, originals, newDraftIds, updateSwimlane, createSwimlane, reorderSwimlanes, onClose]);
 
-  // Cmd/Ctrl+S to save.
+  // Cmd/Ctrl+S to save, via the central keybinding registry. Document-level,
+  // bubble phase, preventDefault only - matching the original listener.
+  useKeybinding('boardManager.save', () => void handleSave(), {
+    target: 'document',
+    stopPropagation: false,
+  });
+
+  // Escape-to-cancel stays a hand-written listener: it is a structural dialog
+  // key with conditional dismissal (suppressed while a nested confirm or picker
+  // is open) and is not rebindable. See .claude/rules/keybindings-registry.md.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
-        event.preventDefault();
-        void handleSave();
-      } else if (event.key === 'Escape' && !showCancelConfirm && !confirmDeleteId && !showIconPicker) {
+      if (event.key === 'Escape' && !showCancelConfirm && !confirmDeleteId && !showIconPicker) {
         event.preventDefault();
         requestCancel();
       }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [handleSave, requestCancel, showCancelConfirm, confirmDeleteId, showIconPicker]);
+  }, [requestCancel, showCancelConfirm, confirmDeleteId, showIconPicker]);
 
   const removeDraftLocally = useCallback((id: string) => {
     setDrafts((previous) => {

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useProjectStore } from '../stores/project-store';
 import { useSessionStore } from '../stores/session-store';
 import { useToastStore } from '../stores/toast-store';
+import { useKeybinding } from './useKeybinding';
 
 /** Preserved across HMR so the command bar overlay stays mounted during
  *  hot module replacement instead of resetting to closed. */
@@ -66,21 +67,10 @@ export function useCommandBar() {
     setIsOpen(true);
   }, [pendingOpenCommandTerminal, currentProjectId]);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'P') {
-        event.preventDefault();
-        event.stopPropagation();
-        if (isOpen) {
-          close();
-        } else {
-          open();
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, open, close]);
+  useKeybinding('commandBar.toggle', () => {
+    if (isOpen) close();
+    else open();
+  });
 
   return { isOpen, open, close };
 }

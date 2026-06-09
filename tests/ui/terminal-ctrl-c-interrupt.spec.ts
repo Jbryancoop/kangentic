@@ -199,8 +199,8 @@ test.describe('terminal-clipboard: Ctrl+C with no selection notifies user interr
       // hasSelection() is false, neither branch fires. notifyUserInterrupt
       // is only called when ctrlKey=true, no selection, no shiftKey.
       //
-      // This test verifies that Ctrl+Shift+C (always-copy shortcut) does NOT
-      // trigger the interrupt path (shiftKey is true).
+      // This test verifies that Ctrl+Shift+C does NOT trigger the interrupt path
+      // (the interrupt branch requires Ctrl+C with no shift).
       await page.evaluate(() => {
         const overlay = document.querySelector('[data-testid="command-bar-overlay"]');
         const textarea = overlay?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
@@ -211,7 +211,7 @@ test.describe('terminal-clipboard: Ctrl+C with no selection notifies user interr
           code: 'KeyC',
           ctrlKey: true,
           metaKey: false,
-          shiftKey: true, // Ctrl+Shift+C = always-copy, NOT SIGINT
+          shiftKey: true, // shift excludes the interrupt path
           bubbles: true,
           cancelable: true,
         });

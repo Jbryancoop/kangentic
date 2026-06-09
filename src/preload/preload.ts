@@ -216,6 +216,10 @@ const api: ElectronAPI = {
     syncDefaultToProjects: (partial) => ipcRenderer.invoke(IPC.CONFIG_SYNC_DEFAULT_TO_PROJECTS, partial),
   },
 
+  keybindings: {
+    probeGlobal: (combos: string[]) => ipcRenderer.invoke(IPC.KEYBINDINGS_PROBE_GLOBAL, combos),
+  },
+
   agent: {
     detect: () => ipcRenderer.invoke(IPC.AGENT_DETECT),
     listCommands: (cwd?) => ipcRenderer.invoke(IPC.AGENT_LIST_COMMANDS, cwd),

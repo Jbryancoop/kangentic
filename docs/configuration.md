@@ -20,7 +20,7 @@ The config directory (`<configDir>`) is platform-specific:
 
 Both panels use a VS Code-style layout: a sidebar with tab navigation on the left and the active settings pane on the right. A search bar at the top filters settings by keyword. Search uses multi-token matching (all tokens must appear in the setting name or description). Results are grouped by tab with match count badges on the sidebar; tabs with zero matches are dimmed. Press Ctrl+F (Cmd+F on macOS) to focus the search bar, Escape to clear the filter.
 
-- **Settings Panel** -- opened via the titlebar gear icon or the gear icon on each project row in the sidebar. A project switcher dropdown in the header allows switching between projects. Sidebar tabs: Theme, Terminal, Agent, Git, Browser, Shortcuts, Layout, Behavior, MCP Server, Notifications, Privacy, Developer. The first six tabs (above the separator) are per-project settings. Five of them (Theme, Terminal, Agent, Git, Browser) save to `.kangentic/config.json`, while Shortcuts saves to the board config files (`kangentic.json` and `kangentic.local.json`). The last six (Layout, Behavior, MCP Server, Notifications, Privacy, Developer) are shared settings that apply across all projects, saved to the global config. When no project is open, only the 6 shared tabs appear. Changes save immediately. New projects inherit only the seeded settings subset (`theme`, `terminal.*`, `agent.permissionMode`, `git.*`) from the most recently configured project, falling back to defaults if none exist. Project-specific data such as `browser.defaultUrl` and `importSources` is stored per-project and is never cloned into a new project.
+- **Settings Panel** -- opened via the titlebar gear icon or the gear icon on each project row in the sidebar. A project switcher dropdown in the header allows switching between projects. Sidebar tabs: Theme, Terminal, Agent, Git, Browser, Shortcuts, Layout, Behavior, Hotkeys, MCP Server, Notifications, Privacy, Developer. The first six tabs (above the separator) are per-project settings. Five of them (Theme, Terminal, Agent, Git, Browser) save to `.kangentic/config.json`, while Shortcuts saves to the board config files (`kangentic.json` and `kangentic.local.json`). The last seven (Layout, Behavior, Hotkeys, MCP Server, Notifications, Privacy, Developer) are shared settings that apply across all projects, saved to the global config. When no project is open, only the 7 shared tabs appear. Changes save immediately. New projects inherit only the seeded settings subset (`theme`, `terminal.*`, `agent.permissionMode`, `git.*`) from the most recently configured project, falling back to defaults if none exist. Project-specific data such as `browser.defaultUrl` and `importSources` is stored per-project and is never cloned into a new project.
 
 ### App-Only Settings
 
@@ -36,6 +36,7 @@ These settings appear only in App Settings and cannot be overridden per-project:
 - `notifications.*` (all notification settings)
 - `agent.idleTimeoutMinutes`
 - `developer.activityDebugOverlay`, `developer.persistConsoleLogs`, `developer.recordIpcTraffic`, `developer.previewInspectionServer`, `developer.previewEvalEnabled`
+- `hotkeyOverrides`
 
 ### Per-Project Overridable Settings
 
@@ -76,6 +77,7 @@ These settings appear in both App Settings (as defaults) and Project Settings (a
 | `autoNameAskedTaskIds` | string[] | `[]` | Task IDs that have already been offered an auto-rename suggestion. Persisted so a dismissed suggestion does not reappear next launch. Drained on task delete (single + bulk delete handlers in `task-crud.ts`). Auto-saved, not shown in UI. |
 | `autoNameRateLimitPerHour` | number | `60` | Maximum auto-name CLI calls per rolling 60-minute window. Caps cost on burst task creation. `0` disables the limit. Enforced in the `agent:summarize` IPC handler. Global-only, not currently surfaced in the Settings panel. |
 | `discoveredModelsByAgent` | Record\<string, string[]\> | `{}` | Persisted union of every model ID seen for each agent. Sources: `discoverCapabilities()` walk (Claude reads `~/.claude/projects/` JSONL), live `usage.model.id` from running sessions (via `rememberDiscoveredModel` in `config-store.ts`), and override picks. Keyed by agent name. Backs the model dropdowns in the New Task / Edit dialogs and column manager so they learn new models without re-walking JSONL on each launch. Auto-saved, not shown in UI. |
+| `hotkeyOverrides` | Record\<string, string\> | `{}` | User keyboard-shortcut overrides: keybinding action id (e.g. `commandBar.toggle`) to a canonical combo string (e.g. `Mod+Shift+K`, where `Mod` is Cmd on macOS and Ctrl elsewhere). Absent keys use the registry default in `src/shared/keybindings.ts`. Edited in the Hotkeys settings tab; replaced wholesale on save (a `CONFIG_DICTIONARY_PATHS` entry) so a reset deletes the key. Global-only. |
 
 ### terminal.*
 
@@ -204,6 +206,10 @@ All context bar settings are global-only and cannot be overridden per-project.
 | `browser.defaultUrl` | string \| undefined | `undefined` | Project default URL when a task has no per-task URL override. Auto-saved when the user first navigates the Browser pane. Per-project overridable (stored per-project; not seeded into new projects). |
 
 **Action (not a config key):** the Browser tab also exposes a destructive **Clear Browser Data** button (registry id `browser.clearStorage`) that wipes cookies, localStorage, IndexedDB, service workers, and HTTP/auth caches for the shared embedded browser partition (`persist:kangentic-browser`). Saved URLs are kept. Backed by the `browser:clearStorage` IPC channel; not persisted in `AppConfig`.
+
+### Hotkeys
+
+Lists every keyboard shortcut grouped by area (General, Task Detail, Terminal, Developer) and lets the user rebind the configurable ones. Global-only (per-machine). Each row's capture widget records the next key chord (Escape cancels) and probes whether that combo is already claimed by the OS or another app (via the `keybindings:probeGlobal` IPC channel), warning if so. Two actions resolving to the same combo in overlapping scopes are flagged as a conflict. Reset-to-default is available per row and for all at once. Terminal clipboard combos (Copy, Paste) and Escape are shown read-only. The registry of every shortcut + default combo lives in `src/shared/keybindings.ts`; handlers read their effective combo through the `useKeybinding` hook. Overrides persist to the `hotkeyOverrides` key (see the Top-Level table above).
 
 ### Privacy
 

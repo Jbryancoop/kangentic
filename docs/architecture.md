@@ -206,6 +206,11 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `config:setProjectByPath` | invoke | Update project overrides by filesystem path |
 | `config:syncDefaultToProjects` | invoke | Sync default config values to all project configs |
 
+### Keybindings (1 channel)
+| Channel | Pattern | Purpose |
+|---------|---------|---------|
+| `keybindings:probeGlobal` | invoke | Probe whether each canonical combo can be claimed as a system-wide global shortcut (via Electron `globalShortcut`); returns `Record<combo, 'available' \| 'taken' \| 'unsupported'>`. Used by the Hotkeys settings tab to warn when a combo is already owned by the OS or another app. |
+
 ### Board Config (8 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|

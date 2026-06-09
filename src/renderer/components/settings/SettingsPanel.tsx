@@ -35,13 +35,23 @@ export function SettingsPanel() {
     return SETTINGS_REGISTRY.filter((setting) => visibleTabIds.has(setting.tabId));
   }, [tabs]);
 
+  const setLastSettingsTab = useConfigStore((state) => state.setLastSettingsTab);
   const [shells, setShells] = useState<Array<{ name: string; path: string }>>([]);
   const [activeTab, setActiveTab] = useState(() => {
-    const initialTab = useConfigStore.getState().projectSettingsInitialTab;
-    if (initialTab) return initialTab;
+    const state = useConfigStore.getState();
+    // An explicit open-to-tab (sidebar) wins; otherwise resume the last viewed
+    // tab so closing and reopening returns to the same section.
+    if (state.projectSettingsInitialTab) return state.projectSettingsInitialTab;
+    if (state.lastSettingsTab) return state.lastSettingsTab;
     return hasProject ? 'theme' : tabs[0].id;
   });
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Remember the active tab (including clamps to a valid tab) so the next open
+  // resumes here. Reads back via the initializer above.
+  useEffect(() => {
+    setLastSettingsTab(activeTab);
+  }, [activeTab, setLastSettingsTab]);
 
   useEffect(() => {
     window.electronAPI.shell.getAvailable().then(setShells).catch(() => {});

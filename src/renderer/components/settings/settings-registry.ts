@@ -89,6 +89,9 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   { id: 'notifications.toasts.durationSeconds', tabId: 'notifications', label: 'Toast Auto-Dismiss', description: 'How long toasts remain visible', scope: 'global', keywords: ['timeout', 'seconds'] },
   { id: 'notifications.toasts.maxCount', tabId: 'notifications', label: 'Max Visible Toasts', description: 'Maximum simultaneous toasts on screen', scope: 'global', keywords: ['limit', 'count'] },
 
+  // ── Hotkeys ──
+  { id: 'hotkeys', tabId: 'hotkeys', label: 'Hotkeys', description: 'Keyboard shortcuts and key bindings', scope: 'global', keywords: ['keyboard', 'shortcut', 'hotkey', 'keybind', 'rebind', 'key', 'ctrl', 'cmd', 'shift', 'combo'] },
+
   // ── Privacy (synthetic) ──
   { id: 'privacy.info', tabId: 'privacy', label: 'Privacy', description: 'Anonymous analytics and data collection policy', scope: 'global', keywords: ['telemetry', 'analytics', 'aptabase', 'gdpr', 'opt out'] },
 
@@ -111,6 +114,7 @@ export const TAB_LABELS: Record<string, string> = {
   shortcuts: 'Shortcuts',
   layout: 'Layout',
   behavior: 'Behavior',
+  hotkeys: 'Hotkeys',
   mcpServer: 'MCP Server',
   notifications: 'Notifications',
   privacy: 'Privacy',
