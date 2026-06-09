@@ -100,7 +100,7 @@ export function ToolbarSearchFilter({
           ref={filterButtonRef}
           type="button"
           onClick={() => setShowFilterPopover(!showFilterPopover)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded transition-colors ${
+          className={`relative flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded transition-colors ${
             hasActiveFilters
               ? 'text-accent-fg border-accent/50 bg-accent-bg/10'
               : 'text-fg-muted hover:text-fg border-edge/50 hover:bg-surface-hover/40'
@@ -110,7 +110,11 @@ export function ToolbarSearchFilter({
           <Filter size={14} />
           Filter
           {hasActiveFilters && (
-            <CountBadge count={priorityFilters.size + labelFilters.size} variant="solid" />
+            <CountBadge
+              count={priorityFilters.size + labelFilters.size}
+              variant="solid"
+              className="absolute -top-2 -right-2"
+            />
           )}
         </button>
 

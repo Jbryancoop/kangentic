@@ -15,6 +15,32 @@ interface FilterPopoverProps {
 }
 
 /**
+ * Builds the className for a toggleable filter pill. Inactive pills get a hover
+ * affordance (bg brighten + subtle ring + pointer) so they read as clickable;
+ * the active state stays distinct via a stronger `ring-fg-muted`. Colored pills
+ * carry their text color via an inline style, so we vary only bg + ring for them.
+ */
+function pillClassName({ isActive, colored, fullWidth }: {
+  isActive: boolean;
+  colored: boolean;
+  fullWidth: boolean;
+}): string {
+  const parts = ['font-medium cursor-pointer transition-colors'];
+  if (fullWidth) parts.push('w-full');
+  if (colored) {
+    parts.push('bg-surface-hover/60');
+    parts.push(isActive
+      ? 'ring-1 ring-fg-muted'
+      : 'hover:bg-surface-hover hover:ring-1 hover:ring-edge');
+  } else {
+    parts.push(isActive
+      ? 'bg-surface-hover text-fg ring-1 ring-fg-muted'
+      : 'bg-surface-hover/60 text-fg-muted hover:bg-surface-hover hover:text-fg hover:ring-1 hover:ring-edge');
+  }
+  return parts.join(' ');
+}
+
+/**
  * Shared filter popover content for filtering by priority and labels.
  * Used by both BacklogView and KanbanBoard.
  *
@@ -41,28 +67,20 @@ export const FilterPopover = React.memo(function FilterPopover({
       <div className="flex flex-wrap gap-1.5 px-3 py-1.5">
         {priorities.map((priority, index) => {
           const isActive = priorityFilters.has(index);
+          const isColored = index !== 0;
           return (
             <button
               key={index}
               type="button"
               onClick={() => onTogglePriority(index)}
             >
-              {index === 0 ? (
-                <Pill
-                  size="sm"
-                  className={`font-medium ${isActive ? 'bg-surface-hover text-fg ring-1 ring-fg-muted' : 'bg-surface-hover/60 text-fg-muted'}`}
-                >
-                  {priority.label}
-                </Pill>
-              ) : (
-                <Pill
-                  size="sm"
-                  className={`bg-surface-hover/60 font-medium ${isActive ? 'ring-1 ring-fg-muted' : ''}`}
-                  style={{ color: priority.color }}
-                >
-                  {priority.label}
-                </Pill>
-              )}
+              <Pill
+                size="sm"
+                className={pillClassName({ isActive, colored: isColored, fullWidth: false })}
+                style={isColored ? { color: priority.color } : undefined}
+              >
+                {priority.label}
+              </Pill>
             </button>
           );
         })}
@@ -88,10 +106,7 @@ export const FilterPopover = React.memo(function FilterPopover({
                 >
                   <Pill
                     size="sm"
-                    className={color
-                      ? `bg-surface-hover/60 font-medium w-full ${isActive ? 'ring-1 ring-fg-muted' : ''}`
-                      : `w-full ${isActive ? 'bg-surface-hover text-fg ring-1 ring-fg-muted' : 'bg-surface-hover/60 text-fg-muted'}`
-                    }
+                    className={pillClassName({ isActive, colored: Boolean(color), fullWidth: true })}
                     style={color ? { color } : undefined}
                   >
                     {label}
@@ -110,7 +125,7 @@ export const FilterPopover = React.memo(function FilterPopover({
           <button
             type="button"
             onClick={onClearAll}
-            className="w-full px-3 py-1.5 text-xs text-fg-secondary hover:text-fg text-left hover:bg-surface-hover/30 flex items-center gap-1.5"
+            className="w-full px-3 py-1.5 text-xs leading-none text-fg-secondary hover:text-fg text-left hover:bg-surface-hover/30 flex items-center gap-1.5 cursor-pointer transition-colors"
           >
             <X size={12} />
             Clear all filters
