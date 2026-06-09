@@ -222,9 +222,24 @@ export interface SessionEngineState {
   /**
    * Sticky flag set when an Idle event with `detail=permission` fires.
    * Cleared by Prompt, Interrupted, SubagentStart, depth-0 ToolStart,
-   * depth-0 ToolEnd, non-permission Idle, forceThinking, forceIdle.
+   * depth-0 ToolEnd, a ToolStart/ToolEnd carrying
+   * `permissionAwaitedToolId` (any depth), non-permission Idle,
+   * forceThinking, forceIdle.
    */
   permissionPending: boolean;
+  /**
+   * Correlation id of the tool the pending permission prompt was raised
+   * for: the top of `pendingToolStack` when `idle:permission` fired
+   * (permission prompts fire between PreToolUse and execution, and
+   * permission idles leave the stack intact). Lets the engine clear
+   * `permissionPending` when THAT tool starts/ends at any subagent
+   * depth. Without it, an approved tool inside a subagent leaves the
+   * flag stuck until the subagent stops: the depth-0 gate ignores its
+   * tool_end, and the PTY force-thinking net deliberately exempts
+   * 'permission'. Null when no permission is pending or the awaiting
+   * tool carried no correlation id.
+   */
+  permissionAwaitedToolId: string | null;
   /**
    * Wall-clock ms of the most recent activity-proving signal. Used by
    * the bg-shell escape hatch and stale-thinking watchdog.

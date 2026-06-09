@@ -215,17 +215,38 @@ export function updateCounters(state: SessionEngineState, event: SessionEvent): 
  * Update `permissionPending` based on the event. Permission is set by
  * `Idle` events with detail=permission, and cleared by signals from
  * the main agent (Prompt, Interrupted, SubagentStart, non-permission
- * Idle, depth-0 ToolStart/ToolEnd).
+ * Idle, depth-0 ToolStart/ToolEnd) or by the awaited tool itself
+ * starting/ending at ANY depth (`permissionAwaitedToolId` match - the
+ * prompt was approved and the tool ran).
  */
 export function updatePermissionFlag(state: SessionEngineState, event: SessionEvent): void {
-  // Set on Idle/permission.
+  // Set on Idle/permission. Record which tool the prompt was raised for:
+  // permission prompts fire between PreToolUse and execution, so the
+  // awaiting tool is the top of the pending stack (left intact by the
+  // permission exemption in updateCounters). With parallel subagents the
+  // top can in principle belong to a racing tool_start, but the
+  // PreToolUse-to-prompt window is sub-second and the failure mode (an
+  // early clear) is bounded - unlike the stuck flag this prevents.
   if (event.type === EventType.Idle && event.detail === IdleReason.Permission) {
     state.permissionPending = true;
+    state.permissionAwaitedToolId =
+      state.pendingToolStack[state.pendingToolStack.length - 1]?.id ?? null;
     return;
   }
+  // The awaited tool itself started/ended: the prompt was approved and
+  // the tool ran. Clears at ANY depth - the depth-0 gate below exists so
+  // unrelated subagent tool churn cannot dismiss a pending prompt, but an
+  // id match is precise attribution, not churn. (updateCounters runs
+  // before this and may have already popped the stack, so match on the
+  // event's own toolId, never the stack.)
+  const awaitedToolResolved =
+    (event.type === EventType.ToolStart || event.type === EventType.ToolEnd)
+    && event.toolId !== undefined
+    && event.toolId === state.permissionAwaitedToolId;
   // Clear on signals from the main agent (depth 0) or unambiguous wakes.
   const isPermissionClearingSignal =
-    event.type === EventType.Prompt
+    awaitedToolResolved
+    || event.type === EventType.Prompt
     || event.type === EventType.Interrupted
     || event.type === EventType.SubagentStart
     || (event.type === EventType.Idle && event.detail !== IdleReason.Permission)
@@ -233,5 +254,6 @@ export function updatePermissionFlag(state: SessionEngineState, event: SessionEv
         && state.subagentDepth === 0);
   if (isPermissionClearingSignal) {
     state.permissionPending = false;
+    state.permissionAwaitedToolId = null;
   }
 }

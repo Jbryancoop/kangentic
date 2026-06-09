@@ -14,6 +14,7 @@ export function createSessionEngineState(): SessionEngineState {
     activeBackgroundShellIds: new Set<string>(),
     anonymousBackgroundShellCount: 0,
     permissionPending: false,
+    permissionAwaitedToolId: null,
     lastSignalAt: null,
     currentTool: null,
     pendingToolStack: [],

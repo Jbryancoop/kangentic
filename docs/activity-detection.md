@@ -205,14 +205,15 @@ The predicate uses `set.size + anonymousCount > 0` so both modes coexist.
 
 ### Permission flag
 
-Set when an `Idle` event fires with `detail: 'permission'`. Cleared by:
+Set when an `Idle` event fires with `detail: 'permission'`. The engine also records `permissionAwaitedToolId` - the correlation id at the top of `pendingToolStack`, i.e. the tool the prompt was raised for (permission prompts fire between PreToolUse and execution, and permission idles leave the stack intact). Cleared by:
 - `Prompt` (user typed something new)
 - `Interrupted` (Esc)
 - `SubagentStart` (main agent spawning a child)
 - `Idle` with non-permission detail (agent ended turn)
 - `ToolStart`/`ToolEnd` at `subagentDepth === 0` (main agent activity)
+- `ToolStart`/`ToolEnd` carrying `permissionAwaitedToolId`, at ANY depth (the prompt was approved and that exact tool ran - e.g. a tool inside a subagent; without this the flag stays stuck until the subagent stops, since the PTY net deliberately exempts `'permission'`)
 
-Subagent-tool events at depth>0 do NOT clear permission (the permission belonged to the main agent which is still paused).
+Unrelated subagent-tool events at depth>0 (different or absent toolId) do NOT clear permission (parallel-subagent tool churn must not dismiss a prompt that is still awaiting approval). The approved-tool clear is pinned by the `session-010` replay fixture (task #194's stuck 77s window).
 
 **Resume restores `turnActive`.** A permission pause begins with `Idle{detail:'permission'}`, which clears `turnActive` (Idle is a turn-ending event). When the pause resolves, the wake is typically a depth-0 `ToolEnd` (e.g. the `AskUserQuestion` / `ExitPlanMode` tool ending after the user answers/approves) - a LOG_ONLY event that clears `permissionPending` but does not re-arm `turnActive`. The resumed turn emits no fresh `Prompt`/`ToolStart` hook, so without intervention the predicate would see no holder and drop to **idle** until the PTY force-thinking net catches up seconds later. To avoid that, `processEvent` restores `turnActive = true` whenever `permissionPending` transitions `true -> false` on a non-turn-ending event (i.e. not `Idle`/`Interrupted`, which are genuine end-of-turn). This is classified by the generic permission-clear shape, not by tool or agent name, so it covers every permission-class pause. Pinned by the `session-006`/`session-007` replay fixtures.
 

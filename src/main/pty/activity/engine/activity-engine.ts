@@ -251,6 +251,9 @@ export class ActivityEngine {
     state.activeBackgroundShellIds.clear();
     state.anonymousBackgroundShellCount = 0;
     state.currentTool = null;
+    // permissionPending and permissionAwaitedToolId are already cleared by
+    // updatePermissionFlag, which processEvent runs before this bypass
+    // (Interrupted is a permission-clearing signal).
     const delta = formatCounterDelta(before, snapshotCounters(state));
     this.commitTransition(sessionId, state, 'idle', 'interrupted', delta);
   }
@@ -270,6 +273,7 @@ export class ActivityEngine {
     state.turnActive = true;
     state.lastSignalAt = this.now();
     state.permissionPending = false;
+    state.permissionAwaitedToolId = null;
     state.pendingIdleAt = null;
     state.compensationCounters.forceThinking += 1;
     const delta = formatCounterDelta(before, snapshotCounters(state));
@@ -287,6 +291,7 @@ export class ActivityEngine {
     const before = snapshotCounters(state);
     state.turnActive = false;
     state.permissionPending = false;
+    state.permissionAwaitedToolId = null;
     state.lastSignalAt = null;
     state.pendingToolCount = 0;
     state.pendingToolStack.length = 0;

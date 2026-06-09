@@ -381,6 +381,64 @@ describe('ActivityEngine replay tests', () => {
     });
   });
 
+  describe('session-010-subagent-permission-resume', () => {
+    // Real capture from task #194 session 4ee951bb (sanitized). A PowerShell
+    // tool INSIDE a Plan subagent raised a permission prompt (idle:permission
+    // at subagentDepth 1). The user approved it: the tool ran to completion
+    // and its tool_end arrived carrying the same toolId - but at depth 1,
+    // where the depth-0 clearing gate ignored it. The PTY net deliberately
+    // exempts 'permission' (a live prompt repaints the TUI), so the card sat
+    // in the needs-attention state for the remaining 77s of the subagent's
+    // life. The awaited tool's own completion must clear the flag regardless
+    // of depth.
+    const FIXTURE = 'session-010-subagent-permission-resume.jsonl';
+    const APPROVED_TOOL_ID = 'toolu_0159sz6ngCMPXwqAqi3CUUiV';
+
+    function sliceThroughApprovedToolEnd(events: SessionEvent[]): SessionEvent[] {
+      const approvedToolEndIndex = events.findIndex(
+        (candidate) => candidate.type === EventType.ToolEnd && candidate.toolId === APPROVED_TOOL_ID,
+      );
+      expect(approvedToolEndIndex).toBeGreaterThan(0);
+      return events.slice(0, approvedToolEndIndex + 1);
+    }
+
+    it('clears permission the moment the approved subagent tool completes', () => {
+      // Red without the awaited-toolId clear: the depth-0 gate ignores the
+      // approving tool_end and this slice replays to a stuck 'permission'.
+      const events = loadFixture(FIXTURE);
+      const result = replay(sliceThroughApprovedToolEnd(events));
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.permissionPending).toBe(false);
+      expect(result.finalState.turnActive).toBe(true);
+      // The Plan subagent and its spawning Agent tool are still in flight.
+      expect(result.finalState.subagentDepth).toBe(1);
+      expect(result.finalState.pendingToolCount).toBe(1);
+    });
+
+    it('transitions idle -> thinking -> permission -> thinking with no idle dip', () => {
+      const events = loadFixture(FIXTURE);
+      const result = replay(sliceThroughApprovedToolEnd(events));
+      // Leading idle is the initSession baseline. A pre-fix run ends on
+      // 'permission' with no recovery entry.
+      expect(result.transitions).toEqual(['idle', 'thinking', 'permission', 'thinking']);
+    });
+
+    it('full replay ends thinking with clean counters and no safety-net compensations', () => {
+      const result = replay(loadFixture(FIXTURE));
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.permissionPending).toBe(false);
+      expect(result.finalState.pendingToolCount).toBe(0);
+      expect(result.finalState.subagentDepth).toBe(0);
+      expect(
+        result.finalState.activeBackgroundShellIds.length
+        + result.finalState.anonymousBackgroundShellCount,
+      ).toBe(0);
+      // Recovery came from the hook event, not the PTY net or watchdogs.
+      expect(result.forceThinkingCompensations).toBe(0);
+      expect(result.staleThinkingCompensations).toBe(0);
+    });
+  });
+
   // ───────────────────────────────────────────────────────────────────
   // The coupled tool-blind-remap bug (foreground Agent completion was
   // mis-mapped to background_shell_end). The two input-layer bugs
@@ -468,6 +526,7 @@ describe('ActivityEngine replay tests', () => {
         'session-004-large-22-bg-shells.jsonl',
         'session-006-ask-user-question-resume.jsonl',
         'session-007-exit-plan-mode-resume.jsonl',
+        'session-010-subagent-permission-resume.jsonl',
         'session-008-coupled-bg-shell-corrected.jsonl',
         'session-008-coupled-bg-shell-red-fix1-only.jsonl',
         'session-008-coupled-bg-shell-red-fix2-only.jsonl',

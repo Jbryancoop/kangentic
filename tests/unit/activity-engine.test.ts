@@ -526,6 +526,72 @@ describe('ActivityEngine', () => {
       expect(engine.getState(SESSION_ID)?.permissionPending).toBe(true);
       expect(engine.getState(SESSION_ID)?.activity).toBe('permission');
     });
+
+    it('subagent ToolEnd carrying the AWAITED toolId clears permissionPending (approved tool)', () => {
+      // Task #194: a tool inside a subagent raised the permission prompt
+      // (PreToolUse fired, then idle:permission). The user approved and the
+      // tool ran to completion - its tool_end carries the same toolId but
+      // arrives at depth 1, which the depth-0 gate ignores. The awaited-tool
+      // match must clear the flag regardless of depth and resume the turn.
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStart));
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'PowerShell', toolId: 'tool-awaited' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle, { detail: IdleReason.Permission }));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('permission');
+      transitions.length = 0;
+
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { tool: 'PowerShell', toolId: 'tool-awaited' }));
+      expect(engine.getState(SESSION_ID)?.permissionPending).toBe(false);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.turnActive).toBe(true);
+    });
+
+    it('subagent tool events with a DIFFERENT toolId still do NOT clear permissionPending', () => {
+      // The parallel-subagent property the depth gate protects: unrelated
+      // subagent tool churn must not dismiss a genuinely pending prompt.
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStart));
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'PowerShell', toolId: 'tool-awaited' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle, { detail: IdleReason.Permission }));
+      transitions.length = 0;
+
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Read', toolId: 'tool-unrelated' }));
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { tool: 'Read', toolId: 'tool-unrelated' }));
+      expect(engine.getState(SESSION_ID)?.permissionPending).toBe(true);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('permission');
+    });
+
+    it('duplicate ToolStart carrying the awaited toolId also clears (duplicate-safe)', () => {
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStart));
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'PowerShell', toolId: 'tool-awaited' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle, { detail: IdleReason.Permission }));
+      transitions.length = 0;
+
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'PowerShell', toolId: 'tool-awaited' }));
+      expect(engine.getState(SESSION_ID)?.permissionPending).toBe(false);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+    });
+
+    it('no-toolId permission: permissionAwaitedToolId is null and depth-0 ToolEnd still clears (id-less adapter no-regression)', () => {
+      // When an adapter supplies no correlation id, updatePermissionFlag must
+      // store null in permissionAwaitedToolId (the `?? null` fallback). The
+      // pre-existing depth-0 gate must still clear permissionPending so
+      // adapters without toolId support are not permanently stuck.
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle, { detail: IdleReason.Permission }));
+      // The stack top has no id, so permissionAwaitedToolId must be null.
+      expect(engine.getState(SESSION_ID)?.permissionAwaitedToolId).toBeNull();
+      expect(engine.getState(SESSION_ID)?.activity).toBe('permission');
+      transitions.length = 0;
+
+      // Depth-0 ToolEnd with no toolId - the existing depth-0 gate fires.
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { tool: 'Bash' }));
+      expect(engine.getState(SESSION_ID)?.permissionPending).toBe(false);
+      // The permission-resume branch restores turnActive, so activity is
+      // thinking (not stuck idle) after the depth-0 gate clears the flag.
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+    });
   });
 
   describe('force paths', () => {
@@ -566,6 +632,27 @@ describe('ActivityEngine', () => {
       engine.forceIdle(SESSION_ID);
       expect(engine.getState(SESSION_ID)?.permissionPending).toBe(false);
       expect(transitions[0].activity).toBe('idle');
+    });
+
+    it('forceThinking clears permissionAwaitedToolId when a tracked toolId is pending', () => {
+      // Drive the engine to permission state with a tracked awaited toolId so
+      // the field is non-null before forceThinking fires. Starting from idle
+      // (the prior test) would leave it null from the start and miss a
+      // regression in the `state.permissionAwaitedToolId = null` line.
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'PowerShell', toolId: 'tool-x' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle, { detail: IdleReason.Permission }));
+      expect(engine.getState(SESSION_ID)?.permissionAwaitedToolId).toBe('tool-x');
+      expect(engine.getState(SESSION_ID)?.activity).toBe('permission');
+      transitions.length = 0;
+
+      engine.forceThinking(SESSION_ID);
+
+      // The field must be null - this is the line under test in forceThinking().
+      expect(engine.getState(SESSION_ID)?.permissionAwaitedToolId).toBeNull();
+      // forceThinking also clears permissionPending and sets thinking.
+      expect(engine.getState(SESSION_ID)?.permissionPending).toBe(false);
+      expect(transitions).toHaveLength(1);
+      expect(transitions[0].activity).toBe('thinking');
     });
 
     it('markThinkingSignal is no-op on unknown sessions', () => {
