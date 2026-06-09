@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { EventType } from '../../../../shared/types';
 import { filterKangenticHooks, buildBridgeCommand, safelyUpdateSettingsFile } from '../../shared/hook-utils';
-import { extractTool, extractToolId, extractDetail, setDetail, setTypeWhen, setTypeWhenDetailContains } from '../../shared/directive-builders';
+import { extractTool, extractToolId, extractDetail, setDetail, setTypeWhen, setTypeWhenDetailContains, setTypeWhenDetailMatches } from '../../shared/directive-builders';
 
 /** All Claude Code hook event names (settings.json keys). */
 export const ClaudeHookEvent = {
@@ -73,7 +73,7 @@ export function buildHooks(
       // Emit `tool_start` by default, but REMAP to `background_shell_start`
       // when the tool is Bash with run_in_background: true, or to
       // `background_shell_end` when the tool is KillBash. The state
-      // machine uses these to track active detached children -- a
+      // machine uses these to track active detached children - a
       // backgrounded Bash fires a well-formed tool_start/tool_end pair
       // around the handle return, then Stop fires while the real child
       // keeps running. Tracking these explicitly lets the engine avoid
@@ -107,15 +107,38 @@ export function buildHooks(
       // agent-assigned shell id for a backgrounded Bash.
       //
       // The ONLY conditional remap here is the backgrounded-Bash
-      // promotion: a Bash with run_in_background:true fires a SECOND
-      // `background_shell_start` carrying the shell id from tool_response.
-      // The engine treats this as a promotion (the anonymous slot from
-      // PreToolUse becomes a named slot keyed by the id), keeping the
-      // total count constant. The id field is `shellId` (camelCase) in
+      // promotion: a Bash whose `tool_response` carries an assigned shell
+      // id fires a SECOND `background_shell_start` carrying that id. The
+      // engine treats this as a promotion (the anonymous slot from a
+      // run_in_background PreToolUse becomes a named slot keyed by the id),
+      // OR - for a foreground Bash that Claude auto-backgrounds on timeout -
+      // closes the in-flight foreground tool (matched by tool_use_id) and
+      // opens a named shell. The id field is `shellId` (camelCase) in
       // Claude's structured tool_response output; older CLIs used
       // `shell_id`, and the TS SDK uses `backgroundTaskId`, so we try all
-      // candidates first-non-null. `bash_id` is the BashOutput INPUT
-      // param, listed last as a defensive fallback.
+      // candidates first-non-null into `detail`. `bash_id` is the BashOutput
+      // INPUT param, listed last as a defensive fallback.
+      //
+      // We key the remap on the EXTRACTED detail being a shell id, not on
+      // `tool_input.run_in_background`: a foreground Bash that exceeds Claude
+      // Code's 10-min ceiling is auto-promoted to a background shell WITHOUT
+      // run_in_background:true, but its PostToolUse `tool_response` still
+      // carries the assigned shell id (empirically `bjosycg6w` in session
+      // 3fc0dca7, events.jsonl line 20). Gating on run_in_background missed
+      // that and false-idled the task. The id-shape pattern mirrors
+      // `looksLikeShellId` (background-shell/looks-like-shell-id.ts); the
+      // engine independently re-classifies named-vs-anonymous via the same
+      // shape, so the two MUST be kept in sync by hand (no shared constant
+      // links the `^[\w-]{1,64}$` literal here to looksLikeShellId's check).
+      // Matching on the resolved
+      // detail (not a source field) keeps it robust to CLI field-name skew,
+      // exactly like the Notification setTypeWhenDetailContains remap.
+      //
+      // The inverse risk - a normal foreground Bash mistaken for a
+      // backgrounded shell - is structurally avoided: this PostToolUse
+      // extractDetail sources ONLY the tool_response shell-id fields, so a
+      // plain completion has no detail and never remaps, and a failed Bash
+      // flows through PostToolUseFailure (a separate directive set).
       //
       // We deliberately do NOT remap on `tool_response.status`. That field
       // is shared by Bash/BashOutput/Agent, and a tool-blind status remap
@@ -135,7 +158,7 @@ export function buildHooks(
         extractToolId(['tool_use_id']),
         extractToolId(['tool_use_id'], { nested: 'tool_response' }),
         extractDetail(['shellId', 'shell_id', 'backgroundTaskId', 'bash_id'], { nested: 'tool_response' }),
-        setTypeWhen({ whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: EventType.BackgroundShellStart })) }] },
+        setTypeWhenDetailMatches('^[\\w-]{1,64}$', EventType.BackgroundShellStart)) }] },
     ],
     [H.PostToolUseFailure]: [
       ...(existingHooks[H.PostToolUseFailure] || []),

@@ -21,6 +21,7 @@ import {
   setDetail,
   setTypeWhen,
   setTypeWhenDetailContains,
+  setTypeWhenDetailMatches,
 } from '../../src/main/agent/shared/directive-builders';
 
 const BRIDGE = path.resolve(__dirname, '../../src/main/agent/event-bridge.js');
@@ -267,6 +268,31 @@ describe('event-bridge', () => {
     const line = readEvent();
     expect(line.type).toBe('tool_start');
     expect(readErrorLog()).toContain('unknown directive kind: bogusKind');
+  });
+
+  it('setTypeWhenDetailMatches: an invalid regex pattern is a logged no-op and the event still writes with unchanged type', () => {
+    // The builder encodes the pattern as a JSON string without validation.
+    // At bridge execution time, `new RegExp('[invalid')` throws a SyntaxError.
+    // The catch block must: (a) log the error to the sibling error log, and
+    // (b) NOT crash the bridge before the event write - so the event still lands
+    // with its original type unchanged.
+    // A detail value is pre-extracted so the remap path is reached and only
+    // the regex compile step is what stops the retype.
+    const invalidPatternDirective = setTypeWhenDetailMatches('[invalid', EventType.BackgroundShellStart);
+    runBridge(
+      JSON.stringify({ tool_response: { shellId: 'bash_1' } }),
+      [outputFile, 'tool_end',
+        extractDetail(['shellId'], { nested: 'tool_response' }),
+        invalidPatternDirective,
+      ],
+    );
+    const line = readEvent();
+    // Type must be unchanged (the regex threw, no retype fired).
+    expect(line.type).toBe('tool_end');
+    // Detail was extracted correctly before the remap was attempted.
+    expect(line.detail).toBe('bash_1');
+    // The error log must record the bad pattern so it is discoverable.
+    expect(readErrorLog()).toContain('invalid setTypeWhenDetailMatches pattern: [invalid');
   });
 
   // --- session_start hookContext ---

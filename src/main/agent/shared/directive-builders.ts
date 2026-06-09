@@ -96,3 +96,15 @@ export function setTypeWhen(rule: TypeWhenRule): string {
 export function setTypeWhenDetailContains(contains: string, to: EventType): string {
   return encodeDirective('setTypeWhenDetailContains', { contains, to });
 }
+
+/**
+ * Change `event.type` to `to` when the ALREADY-EXTRACTED `event.detail`
+ * matches the `pattern` regular expression (the regex sibling of
+ * `setTypeWhenDetailContains`). Must be listed AFTER an extractDetail
+ * directive. Like the substring form, classifying on the resolved detail makes
+ * it robust to which payload field carried the value. `pattern` is compiled
+ * with `new RegExp(pattern)` in the bridge.
+ */
+export function setTypeWhenDetailMatches(pattern: string, to: EventType): string {
+  return encodeDirective('setTypeWhenDetailMatches', { pattern, to });
+}

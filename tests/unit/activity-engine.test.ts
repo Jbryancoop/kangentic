@@ -1101,6 +1101,74 @@ describe('ActivityEngine', () => {
     });
   });
 
+  describe('foreground Bash auto-backgrounded on timeout (#187)', () => {
+    beforeEach(() => {
+      engine.initSession(SESSION_ID);
+      transitions.length = 0;
+    });
+
+    it('closes the in-flight pending tool and tracks the shell as named, holding thinking', () => {
+      // Empirical repro (session 3fc0dca7, events.jsonl lines 19-20): a
+      // foreground `npx playwright test` ToolStart (run_in_background absent),
+      // then ~601s later a tool_end carrying the assigned shell id
+      // `bjosycg6w` that the adapter remaps to BackgroundShellStart. The tool
+      // didn't end, it moved to the background: the pending tool must close
+      // (so it doesn't orphan and stick thinking for 5 min) AND the shell must
+      // be tracked so the session stays active while the E2E runs.
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash', toolId: 'toolu_e2e' }));
+      let state = engine.getState(SESSION_ID)!;
+      expect(state.pendingToolCount).toBe(1);
+
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { tool: 'Bash', toolId: 'toolu_e2e', detail: 'bjosycg6w' }));
+      state = engine.getState(SESSION_ID)!;
+      expect(state.pendingToolCount).toBe(0);
+      expect(state.pendingToolStack).toHaveLength(0);
+      expect(state.currentTool).toBeNull();
+      expect(state.activeBackgroundShellIds.has('bjosycg6w')).toBe(true);
+      expect(state.anonymousBackgroundShellCount).toBe(0);
+      expect(state.activity).toBe('thinking');
+
+      // The agent's turn then ends (Stop hook) while the shell keeps running.
+      // The named shell holds the session thinking - this is the false-idle
+      // the fix prevents.
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(asBgShell(engine.getActivityReason(SESSION_ID)!).ids).toEqual(['bjosycg6w']);
+
+      // Once the shell actually exits, the session settles to idle.
+      engine.markBackgroundShellEnded(SESSION_ID, 'bjosycg6w');
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+    });
+
+    it('does NOT close an unrelated in-flight foreground tool (id-only match)', () => {
+      // A foreground Read is in flight when a DIFFERENT Bash auto-backgrounds.
+      // The pending-tool closure matches by correlation id only, so the Read
+      // stays pending and only the bg shell is added.
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Read', toolId: 'toolu_read' }));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { tool: 'Bash', toolId: 'toolu_bg', detail: 'bjosycg6w' }));
+      const state = engine.getState(SESSION_ID)!;
+      expect(state.pendingToolCount).toBe(1);
+      expect(state.pendingToolStack.map((entry) => entry.id)).toEqual(['toolu_read']);
+      expect(state.activeBackgroundShellIds.has('bjosycg6w')).toBe(true);
+    });
+
+    it('explicit run_in_background promotion pair does not spuriously decrement pending tools', () => {
+      // The explicit run_in_background path: PreToolUse is already a
+      // BackgroundShellStart (anonymous, no prior ToolStart), PostToolUse
+      // promotes it to a named slot. Both carry a tool_use_id, but there is no
+      // pending tool under it, so the closure is a no-op and the promotion
+      // keeps the count at 1.
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { tool: 'Bash', toolId: 'toolu_bg', detail: 'npx playwright test --project=ui' }));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { tool: 'Bash', toolId: 'toolu_bg', detail: 'bash_1' }));
+      const state = engine.getState(SESSION_ID)!;
+      expect(state.pendingToolCount).toBe(0);
+      expect(state.activeBackgroundShellIds.has('bash_1')).toBe(true);
+      expect(state.anonymousBackgroundShellCount).toBe(0);
+    });
+  });
+
   describe('bg-shell hatch: orphaned-shell sole-holder grace', () => {
     beforeEach(() => {
       engine.initSession(SESSION_ID);

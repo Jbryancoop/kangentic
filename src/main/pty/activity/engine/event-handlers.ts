@@ -25,9 +25,12 @@ import { looksLikeShellId } from '../background-shell/looks-like-shell-id';
  *                         are stale by definition (PostToolUse hook
  *                         dropped, tool force-killed, etc.).
  * - `SubagentStart/Stop`  adjusts `subagentDepth` (clamped at zero).
- * - `BackgroundShellStart` either tracks by `shell_id` (when the detail
- *                         is id-shaped) or anonymously (when the detail
- *                         is empty or a command-string fallback).
+ * - `BackgroundShellStart` first closes any in-flight pending tool whose
+ *                         id matches `event.toolId` (a foreground Bash that
+ *                         Claude auto-backgrounded on timeout - the tool
+ *                         moved to the background rather than ending), then
+ *                         tracks by `shell_id` (when the detail is id-shaped)
+ *                         or anonymously (empty / command-string fallback).
  *                         When PreToolUse + PostToolUse fire as a pair,
  *                         the second arrival "promotes" an anonymous
  *                         slot to a named one to keep total count constant.
@@ -121,6 +124,31 @@ export function updateCounters(state: SessionEngineState, event: SessionEvent): 
       state.subagentDepth = Math.max(0, state.subagentDepth - 1);
       break;
     case EventType.BackgroundShellStart: {
+      // A foreground Bash that Claude auto-backgrounds on timeout arrives
+      // here as a promotion of an in-flight tool: its PreToolUse emitted a
+      // plain ToolStart (run_in_background was absent at launch), and this
+      // PostToolUse carries the assigned shell id, remapped to
+      // BackgroundShellStart by the adapter. Close the matching pending tool
+      // by correlation id - the tool didn't END, it MOVED to the background,
+      // so leaving it pending would orphan the count (the matching ToolEnd
+      // never arrives) and stick the session thinking until the 5-min
+      // stuck-pending-tools watchdog. Id-only match (no LIFO-by-name
+      // fallback) so an unrelated foreground tool is never closed by
+      // mistake. The explicit run_in_background path has no pending tool
+      // under this id (its PreToolUse was already a BackgroundShellStart, not
+      // a ToolStart), so this is a no-op there.
+      if (event.toolId) {
+        const pendingIndex = state.pendingToolStack.findIndex((entry) => entry.id === event.toolId);
+        if (pendingIndex >= 0) {
+          state.pendingToolStack.splice(pendingIndex, 1);
+          state.pendingToolCount = Math.max(0, state.pendingToolCount - 1);
+          state.currentTool = state.pendingToolStack[state.pendingToolStack.length - 1]?.name ?? null;
+          if (state.pendingToolCount === 0) {
+            state.pendingToolStack.length = 0;
+            state.currentTool = null;
+          }
+        }
+      }
       // PreToolUse fires this without a shell_id (the agent hasn't
       // assigned one yet) - we count anonymously. PostToolUse fires
       // this AGAIN once Claude Code has assigned a shell_id to the

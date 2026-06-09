@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { EventType } from '../../src/shared/types';
-import { extractTool, extractToolId, extractDetail, setTypeWhen, setTypeWhenDetailContains } from '../../src/main/agent/shared/directive-builders';
+import { extractTool, extractToolId, extractDetail, setTypeWhen, setTypeWhenDetailContains, setTypeWhenDetailMatches } from '../../src/main/agent/shared/directive-builders';
 
 const BRIDGE = path.resolve(__dirname, '../../src/main/agent/event-bridge.js');
 
@@ -67,13 +67,17 @@ const PRETOOLUSE_DIRECTIVES = [
 
 /** The exact directive set Claude's PostToolUse hook wires after the
  *  tool-blind-remap fix. Note: NO status-based remap (those mis-mapped
- *  Agent completions), and the bg-shell id field list is camelCase-first. */
+ *  Agent completions), and the bg-shell id field list is camelCase-first.
+ *  The remap keys on the EXTRACTED shell-id detail (not run_in_background) so
+ *  a foreground Bash that Claude auto-backgrounds on TIMEOUT - which never
+ *  carries run_in_background:true but DOES carry an assigned shell id in
+ *  tool_response - still promotes to background_shell_start (#187). */
 const POSTTOOLUSE_DIRECTIVES = [
   extractTool('tool_name'),
   extractToolId(['tool_use_id']),
   extractToolId(['tool_use_id'], { nested: 'tool_response' }),
   extractDetail(['shellId', 'shell_id', 'backgroundTaskId', 'bash_id'], { nested: 'tool_response' }),
-  setTypeWhen({ whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: EventType.BackgroundShellStart }),
+  setTypeWhenDetailMatches('^[\\w-]{1,64}$', EventType.BackgroundShellStart),
 ];
 
 describe('event-bridge background-shell events (PreToolUse)', () => {
@@ -278,6 +282,30 @@ describe('event-bridge tool completions (PostToolUse)', () => {
     expect(emitted.detail).toBe('bash_1');
   });
 
+  it('T6: a foreground Bash auto-backgrounded on TIMEOUT promotes via the shell id, with NO run_in_background (#187)', () => {
+    // Empirical shape from session 3fc0dca7, events.jsonl line 20: a
+    // foreground `npx playwright test --project=electron` exceeded Claude
+    // Code's 10-min Bash ceiling and was auto-promoted to a background shell.
+    // Its PostToolUse tool_input has NO run_in_background, but tool_response
+    // carries the assigned shell id `bjosycg6w`. The old run_in_background
+    // remap missed this and false-idled the task; keying on the extracted
+    // shell-id detail promotes it to background_shell_start.
+    const stdinContent = JSON.stringify({
+      tool_name: 'Bash',
+      tool_input: { command: 'npx playwright test --project=electron' },
+      tool_response: { shellId: 'bjosycg6w' },
+      tool_use_id: 'toolu_01JLj1ZAx1vs4d1qbAP3J7t1',
+    });
+
+    runBridge(stdinContent, [outputFile, 'tool_end', ...POSTTOOLUSE_DIRECTIVES]);
+
+    const emitted = readEvent();
+    expect(emitted.type).toBe('background_shell_start');
+    expect(emitted.tool).toBe('Bash');
+    expect(emitted.detail).toBe('bjosycg6w');
+    expect(emitted.toolId).toBe('toolu_01JLj1ZAx1vs4d1qbAP3J7t1');
+  });
+
   it('captures the tool_use_id correlation from tool_response on PostToolUse', () => {
     const stdinContent = JSON.stringify({
       tool_name: 'Read',
@@ -393,5 +421,73 @@ describe('event-bridge setTypeWhenDetailContains (substring classification on ex
     const emitted = readEvent();
     expect(emitted.type).toBe('notification');
     expect(emitted.detail).toBeUndefined();
+  });
+});
+
+describe('event-bridge setTypeWhenDetailMatches (regex classification on extracted detail)', () => {
+  // The exact pattern Claude's PostToolUse hook wires to detect the shell id
+  // assigned by Claude Code when a foreground Bash is auto-backgrounded on
+  // timeout (bug #187). The shell id is a word-char/dash slug of 1-64 chars
+  // (e.g. 'bjosycg6w', 'bash_1', 'bash-e2e-run'). This describe block covers
+  // the directive in isolation, independent of the full PostToolUse fixture
+  // set in the 'tool completions' describe above (T6).
+  const SHELL_ID_PATTERN = '^[\\w-]{1,64}$';
+  const SHELL_ID_DIRECTIVES = [
+    extractDetail(['shellId', 'shell_id'], { nested: 'tool_response' }),
+    setTypeWhenDetailMatches(SHELL_ID_PATTERN, EventType.BackgroundShellStart),
+  ];
+
+  it('retypes tool_end to background_shell_start when the extracted detail matches the pattern', () => {
+    // Empirical shell id from session 3fc0dca7 (bug #187 trigger event).
+    const stdinContent = JSON.stringify({
+      tool_response: { shellId: 'bjosycg6w' },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_end', ...SHELL_ID_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('background_shell_start');
+    expect(emitted.detail).toBe('bjosycg6w');
+  });
+
+  it('does NOT retype when the extracted detail does not match the pattern', () => {
+    // A tool_response with output text rather than a shell id. The pattern
+    // requires 1-64 word-chars/dashes with no spaces or punctuation; output
+    // text fails that and must stay tool_end.
+    const stdinContent = JSON.stringify({
+      tool_response: { shellId: 'file1.ts\nfile2.ts' },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_end', ...SHELL_ID_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('tool_end');
+    // The detail is truncated to 200 chars by the bridge but the key point
+    // is that it did NOT match the shell-id pattern.
+    expect(emitted.detail).toBeDefined();
+  });
+
+  it('does NOT retype when detail is absent (no tool_response.shellId in the payload)', () => {
+    // A foreground Bash completion whose tool_response has stdout/exitCode but
+    // no shellId. The typeof guard prevents the regex from even being evaluated.
+    // This is structurally guaranteed but worth asserting explicitly for clarity.
+    const stdinContent = JSON.stringify({
+      tool_response: { stdout: 'ok', exitCode: 0 },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_end', ...SHELL_ID_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('tool_end');
+    expect(emitted.detail).toBeUndefined();
+  });
+
+  it('is shell-safe: the pattern round-trips through the base64 payload without being split by the shell', () => {
+    // The pattern '^[\\w-]{1,64}$' contains '{', ',', '}' which are shell
+    // metacharacters on some shells. Because the payload is base64-encoded,
+    // the directive is a single shell token - these characters cannot split it.
+    // Feed args directly (not via the real shell) to confirm the wire form
+    // encodes correctly, then verify the match fires as expected.
+    const stdinContent = JSON.stringify({
+      tool_response: { shellId: 'valid-shell-id-123' },
+    });
+    runBridge(stdinContent, [outputFile, 'tool_end', ...SHELL_ID_DIRECTIVES]);
+    const emitted = readEvent();
+    expect(emitted.type).toBe('background_shell_start');
+    expect(emitted.detail).toBe('valid-shell-id-123');
   });
 });

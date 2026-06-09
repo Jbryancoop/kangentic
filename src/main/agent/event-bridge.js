@@ -28,6 +28,9 @@
  *   setTypeWhenDetailContains  { contains, to }     -> if event.detail (already
  *                                 extracted) contains `contains` (case-insensitive),
  *                                 event.type = to. Must be listed AFTER an extractDetail.
+ *   setTypeWhenDetailMatches   { pattern, to }      -> if event.detail (already
+ *                                 extracted) matches the regex `pattern`,
+ *                                 event.type = to. Must be listed AFTER an extractDetail.
  *
  * Stdin: Agent CLIs pipe hook context as JSON. Directives control which
  * fields are extracted for each event type.
@@ -147,6 +150,21 @@ process.stdin.on('end', () => {
         if (payload.to && typeof event.detail === 'string'
             && event.detail.toLowerCase().includes(String(payload.contains).toLowerCase())) {
           event.type = payload.to;
+        }
+        break;
+      }
+      case 'setTypeWhenDetailMatches': {
+        // Regex sibling of setTypeWhenDetailContains. A malformed pattern must
+        // not crash the bridge before the event is written - treat it as a
+        // logged no-op so the event still lands.
+        if (payload.to && typeof event.detail === 'string' && typeof payload.pattern === 'string') {
+          let matched = false;
+          try {
+            matched = new RegExp(payload.pattern).test(event.detail);
+          } catch {
+            logBridgeError(`invalid setTypeWhenDetailMatches pattern: ${payload.pattern}`);
+          }
+          if (matched) event.type = payload.to;
         }
         break;
       }

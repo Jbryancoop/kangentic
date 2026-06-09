@@ -7,7 +7,7 @@ import {
   removeHooks,
 } from '../../src/main/agent/adapters/claude';
 import { EventType } from '../../src/shared/types';
-import { extractDetail, setTypeWhen, setTypeWhenDetailContains } from '../../src/main/agent/shared/directive-builders';
+import { extractDetail, setTypeWhen, setTypeWhenDetailContains, setTypeWhenDetailMatches } from '../../src/main/agent/shared/directive-builders';
 
 let tmpDir: string;
 const EVENT_BRIDGE = '/fake/.kangentic/event-bridge.js';
@@ -52,6 +52,8 @@ describe('hook-manager', () => {
 
       // PostToolUse: tool_end, plus the backgrounded-Bash promotion (shell id
       // extracted from tool_response, re-emitted as background_shell_start).
+      // The remap keys on the EXTRACTED shell-id detail (not run_in_background)
+      // so a foreground Bash auto-backgrounded on timeout still promotes (#187).
       expect(hooks.PostToolUse).toHaveLength(1);
       expect(hooks.PostToolUse[0].matcher).toBe('');
       expect(hooks.PostToolUse[0].hooks[0].command).toContain('tool_end');
@@ -59,7 +61,7 @@ describe('hook-manager', () => {
         extractDetail(['shellId', 'shell_id', 'backgroundTaskId', 'bash_id'], { nested: 'tool_response' }),
       );
       expect(hooks.PostToolUse[0].hooks[0].command).toContain(
-        setTypeWhen({ whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: EventType.BackgroundShellStart }),
+        setTypeWhenDetailMatches('^[\\w-]{1,64}$', EventType.BackgroundShellStart),
       );
 
       // PostToolUseFailure: tool_end with a setTypeWhen directive for interrupts

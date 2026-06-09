@@ -315,7 +315,7 @@ Kangentic subscribes to 17 Claude Code hook points via the event bridge:
 |------------|-----------|---------|
 | `PreToolUse` (blank) | `tool_start` | Agent began using a tool |
 | `PostToolUse` (blank) | `tool_end` | Tool execution completed |
-| `PostToolUseFailure` (blank) | `tool_failure` | Tool execution failed |
+| `PostToolUseFailure` (blank) | `tool_end` | Tool execution failed (remaps to `interrupted` when `is_interrupt` is true) |
 | `UserPromptSubmit` | `prompt` | User submitted a prompt |
 | `Stop` | `idle` | Agent stopped naturally |
 | `PermissionRequest` | `idle` | Agent hit a permission wall |
