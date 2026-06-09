@@ -21,7 +21,8 @@
       "id": "dc9f2b38-5882-4182-8f09-923f2a583b08",
       "name": "Executing",
       "icon": "square-terminal",
-      "autoSpawn": true
+      "autoSpawn": true,
+      "permissionMode": "auto"
     },
     {
       "id": "623a36ef-9045-4437-b9c8-f67312dc5437",
@@ -29,6 +30,7 @@
       "icon": "code",
       "color": "#f59e0b",
       "autoSpawn": true,
+      "permissionMode": "auto",
       "autoCommand": "/code-review {{baseBranch}}",
       "sessionTarget": "isolated",
       "sessionSpawnStrategy": "always_spawn_new"
@@ -39,6 +41,7 @@
       "icon": "flask-conical",
       "color": "#06b6d4",
       "autoSpawn": true,
+      "permissionMode": "auto",
       "autoCommand": "/test"
     },
     {
@@ -47,6 +50,7 @@
       "icon": "sailboat",
       "color": "#f97316",
       "autoSpawn": true,
+      "permissionMode": "auto",
       "autoCommand": "/merge-back"
     },
     {
