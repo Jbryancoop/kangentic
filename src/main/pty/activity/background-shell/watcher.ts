@@ -51,6 +51,16 @@ export interface BgShellWatcherCallbacks {
   /** Called when the Claude CLI itself dies. Engine should forceIdle. */
   onRootProcessDied(sessionId: string): void;
   /**
+   * Tier B positive-liveness: every engine-tracked bg shell is present in
+   * the OS tree this cycle (`shellLikeCount === preExistingHelpers + tracked`
+   * with `tracked > 0`). The engine refreshes the bg-shell sole-holder grace
+   * anchor so a genuinely-running long bg shell is not reclaimed at the 30s
+   * grace. Fires ONLY on the in-sync branch - never on a deficit (possible
+   * exit), a surplus (helper churn), a probe failure, or the first-cycle
+   * anchor - so a phantom (which shows a deficit) is still reclaimed.
+   */
+  onShellsObservedAlive(sessionId: string): void;
+  /**
    * Read accessors for the watcher to introspect engine state. The
    * watcher does not own counters - it observes them.
    */
@@ -408,8 +418,16 @@ export class BgShellWatcher {
       }
       state.consecutiveDeficitCycles = 0;
     } else {
-      // No deficit - reset the lag-tolerance counter.
+      // In sync (shellLikeCount === expected): every tracked bg shell is
+      // present in the OS tree. Reset the lag-tolerance counter and, when the
+      // engine has tracked bg shells, confirm liveness so the engine refreshes
+      // the bg-shell sole-holder grace anchor for a long-running shell. Not
+      // fired on the surplus branch above (ambiguous helper birth, returns
+      // early) nor on a deficit (a possible exit must NOT refresh the grace).
       state.consecutiveDeficitCycles = 0;
+      if (tracked > 0) {
+        this.callbacks.onShellsObservedAlive(sessionId);
+      }
     }
   }
 

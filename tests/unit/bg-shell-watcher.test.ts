@@ -67,6 +67,7 @@ interface CallbackLog {
   naturalExits: Array<{ sessionId: string; exitedCount: number }>;
   shellPidExited: Array<{ sessionId: string; shellId: string }>;
   rootDied: string[];
+  observedAlive: string[];
 }
 
 function makeWatcher(opts?: {
@@ -76,7 +77,7 @@ function makeWatcher(opts?: {
   pendingToolMap?: Map<string, number>;
 }) {
   const probe = new MockProcessTreeProbe();
-  const log: CallbackLog = { naturalExits: [], shellPidExited: [], rootDied: [] };
+  const log: CallbackLog = { naturalExits: [], shellPidExited: [], rootDied: [], observedAlive: [] };
   const rootPids = opts?.rootPidMap ?? new Map<string, number>();
   const shellCounts = opts?.shellCountMap ?? new Map<string, number>();
   const pendingTools = opts?.pendingToolMap ?? new Map<string, number>();
@@ -90,6 +91,9 @@ function makeWatcher(opts?: {
     },
     onRootProcessDied(sessionId) {
       log.rootDied.push(sessionId);
+    },
+    onShellsObservedAlive(sessionId) {
+      log.observedAlive.push(sessionId);
     },
     getRootPid(sessionId) {
       return rootPids.get(sessionId);
@@ -1357,5 +1361,121 @@ describe('BgShellWatcher', () => {
     // Exactly one listAllProcesses call despite two ticks firing.
     expect(probe.listAllCalls).toBe(1);
     watcher.dispose();
+  });
+
+  describe('onShellsObservedAlive (positive-liveness keep-alive)', () => {
+    it('fires on an in-sync cycle when the engine has tracked bg shells', async () => {
+      // A genuinely-running bg shell (e.g. a backgrounded `npx playwright
+      // test`) stays present in the OS tree cycle after cycle. The watcher
+      // confirms liveness so the engine can refresh the 30s grace anchor.
+      const { watcher, probe, rootPids, shellCounts, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
+      shellCounts.set('s1', 1);
+
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // first-cycle anchor: preExisting=0, tracked=1, no keep-alive
+      expect(log.observedAlive).toHaveLength(0);
+
+      // Steady state: shellLikeCount(1) === expected(0 + 1). In sync.
+      await watcher.pollNow();
+      await watcher.pollNow();
+      expect(log.observedAlive).toEqual(['s1', 's1']);
+      expect(log.naturalExits).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('does NOT fire on the first-cycle anchor', async () => {
+      const { watcher, probe, rootPids, shellCounts, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
+      shellCounts.set('s1', 1);
+
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor returns early before `expected`
+      expect(log.observedAlive).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('does NOT fire on a deficit cycle (a possible exit must not refresh the grace)', async () => {
+      const { watcher, probe, rootPids, shellCounts, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, [
+        { pid: 5001, ppid: 1234, comm: 'bash' },
+        { pid: 5002, ppid: 1234, comm: 'bash' },
+      ]);
+      shellCounts.set('s1', 2);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor
+
+      // One bg shell exits -> deficit. The deficit branch (and its 2-cycle
+      // lag window) must never emit a liveness keep-alive.
+      probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
+      await watcher.pollNow(); // deficit cycle 1 (suppressed)
+      await watcher.pollNow(); // deficit cycle 2 (fires onNaturalExit)
+      expect(log.observedAlive).toHaveLength(0);
+      expect(log.naturalExits).toEqual([{ sessionId: 's1', exitedCount: 1 }]);
+      watcher.dispose();
+    });
+
+    it('does NOT fire on a probe failure', async () => {
+      const { watcher, probe, rootPids, shellCounts, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
+      shellCounts.set('s1', 1);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor
+
+      // Probe times out: snapshot-health guard returns before `expected`.
+      probe.failProbe = true;
+      await watcher.pollNow();
+      await watcher.pollNow();
+      expect(log.observedAlive).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('does NOT fire when the engine has no tracked bg shells (helpers only)', async () => {
+      const { watcher, probe, rootPids, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      // Two pre-existing helpers, engine tracks 0 (shellCounts unset -> 0).
+      probe.trees.set(1234, [
+        { pid: 5001, ppid: 1234, comm: 'bash' },
+        { pid: 5002, ppid: 1234, comm: 'sh' },
+      ]);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor preExisting=2, tracked=0
+      await watcher.pollNow(); // in sync but tracked=0 -> no keep-alive
+      expect(log.observedAlive).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('does NOT fire on a surplus cycle (helper birth is not confirmed shell liveness)', async () => {
+      const { watcher, probe, rootPids, shellCounts, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
+      shellCounts.set('s1', 1);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor: preExisting=0, tracked=1
+
+      // A helper appears post-anchor: surplus branch rebases and returns
+      // early, before the in-sync keep-alive site.
+      probe.trees.set(1234, [
+        { pid: 5001, ppid: 1234, comm: 'bash' },
+        { pid: 6001, ppid: 1234, comm: 'sh' },
+      ]);
+      await watcher.pollNow(); // surplus cycle: no keep-alive
+      expect(log.observedAlive).toHaveLength(0);
+
+      // Next cycle is back in balance (helper folded into preExisting) -> fires.
+      await watcher.pollNow();
+      expect(log.observedAlive).toEqual(['s1']);
+      watcher.dispose();
+    });
   });
 });

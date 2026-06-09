@@ -25,25 +25,28 @@ import type { ActivityState, ActivityReason, SessionEvent } from '../../../../sh
 export const DEFAULT_BG_SHELL_ESCAPE_HATCH_MS = 5 * 60_000;
 
 /**
- * Grace before the bg-shell hatch reclaims an orphaned background shell
- * that is the SOLE holder of `thinking`. Anchored to `bgShellHoldSince`
- * (when bg shells first became the only holder), NOT to `lastSignalAt`.
+ * Grace before the bg-shell hatch reclaims an ORPHANED background shell that
+ * is the SOLE holder of `thinking`. Anchored to `bgShellHoldSince` (when bg
+ * shells first became the only holder), NOT to `lastSignalAt`.
  *
- * Why anchored, not signal-based: a `Bash(run_in_background:true)` that
- * exits naturally fires no `BackgroundShellEnd` hook, so the engine over-
- * counts until something reclaims it. The process-tree watcher polls
- * every 2s and, while it sees ANY shell-like descendant, used to refresh
- * `lastSignalAt` to keep the old 5-min hatch warm. For an ALREADY-exited
- * (phantom) tracked shell whose exit the watcher could not attribute,
- * that 2s pulse pushed the deadline out forever - the session stayed
- * `active` indefinitely (empirically confirmed: `lastSignalAt` ~2s fresh
- * 7+ minutes after turn end, with events and status both silent). Anchoring
- * to `bgShellHoldSince` makes the deadline immovable by any keep-alive.
+ * Why anchored, not signal-based: a `Bash(run_in_background:true)` that exits
+ * naturally fires no `BackgroundShellEnd` hook, so the engine over-counts
+ * until something reclaims it. The old design had the process-tree watcher
+ * refresh `lastSignalAt` whenever it saw ANY shell-like descendant; for an
+ * already-exited (phantom) shell whose exit the watcher could not attribute,
+ * that 2s pulse pushed the old 5-min deadline out forever - the session
+ * stayed `active` indefinitely (empirically confirmed: `lastSignalAt` ~2s
+ * fresh 7+ minutes after turn end, with events and status both silent).
  *
- * Once the turn is over and only a bg shell holds, the agent is idle
- * (waiting for input); a short grace flips the card to idle whether or not
- * detached bg work is still running. The watcher's attributed drain
- * (`onNaturalExit`, ~4s) still wins for clean exits; this is the backstop.
+ * The deadline is therefore immovable by SIGNAL-ONLY keep-alives
+ * (`markThinkingSignal`). It is refreshed only by watcher-CONFIRMED liveness
+ * (`markBackgroundShellsAlive`), which the watcher emits exclusively on an
+ * in-sync cycle where every tracked shell is still present in the OS tree. A
+ * phantom shows a deficit, never gets confirmed, and is reclaimed at the
+ * grace; a genuinely-running shell (e.g. a 10-min E2E) is observed alive each
+ * cycle and held active until it actually exits. The watcher's attributed
+ * drain (`onNaturalExit`, ~4-6s) still wins for clean exits; this grace is the
+ * backstop for the un-attributable case.
  *
  * Default 30 seconds. Override via constructor option for tests.
  */
@@ -254,13 +257,16 @@ export interface SessionEngineState {
    */
   pendingIdleAt: number | null;
   /**
-   * Wall-clock ms when background shells first became the SOLE holder of
-   * `thinking` (the `timer:bg-shell-hatch` watchdog shape). Anchors that
-   * hatch's deadline so it cannot be pushed out by `markThinkingSignal`
-   * keep-alive pulses. Set lazily by `scheduleTimer` when the bg-shell
-   * hold becomes active; cleared the moment any other holder appears or
-   * the bg count reaches zero. `null` whenever bg shells are not the sole
-   * holder.
+   * Wall-clock ms anchoring the `timer:bg-shell-hatch` deadline. Set to when
+   * background shells first became the SOLE holder of `thinking`, then
+   * refreshed forward by `markBackgroundShellsAlive` each cycle the watcher
+   * confirms the tracked shells are still alive in the OS tree. Signal-only
+   * `markThinkingSignal` keep-alive pulses deliberately CANNOT push it out -
+   * so a phantom (which the watcher sees as a deficit, never confirming
+   * liveness) is still reclaimed at the grace, while a genuinely-running shell
+   * is held. Stamped lazily by `scheduleTimer` when the bg-shell hold becomes
+   * active; cleared the moment any other holder appears or the bg count
+   * reaches zero. `null` whenever bg shells are not the sole holder.
    */
   bgShellHoldSince: number | null;
   /**

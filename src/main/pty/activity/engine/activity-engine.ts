@@ -46,8 +46,11 @@ import type { WatchdogHold } from './watchdog';
  * reclaimed by the bg-shell sole-holder grace (30s, `timer:bg-shell-hatch`,
  * anchored to `bgShellHoldSince`). The process-tree watcher (Subsystem B)
  * reports natural exits much faster via
- * `markBackgroundShellEnded(sessionId, shellId?)`. The 5-min
- * `bgShellEscapeHatchMs` now backs only the stuck-pending-tools hatch.
+ * `markBackgroundShellEnded(sessionId, shellId?)`, and conversely keeps a
+ * genuinely-running bg shell active by refreshing the anchor via
+ * `markBackgroundShellsAlive` on each cycle it still sees the shell alive.
+ * The 5-min `bgShellEscapeHatchMs` now backs only the stuck-pending-tools
+ * hatch.
  */
 export class ActivityEngine {
   private readonly states = new Map<string, SessionEngineState>();
@@ -317,6 +320,36 @@ export class ActivityEngine {
   }
 
   /**
+   * Watcher liveness keep-alive (Subsystem B). The process-tree watcher
+   * confirmed every engine-tracked bg shell is still present in the OS tree
+   * this cycle (no deficit). Unlike `markThinkingSignal` - which moves only
+   * `lastSignalAt` and so cannot touch the bg-shell grace - this DELIBERATELY
+   * advances the `bgShellHoldSince` anchor so a genuinely-running long bg
+   * shell (e.g. a 10-min E2E whose `BackgroundShellEnd` hook was dropped) is
+   * not false-idled at the 30s sole-holder grace.
+   *
+   * Safety rests on the watcher's gating, not the engine: the watcher fires
+   * this ONLY on a no-deficit cycle, so a phantom (process gone) shows a
+   * deficit, never refreshes, and is still reclaimed at the grace. Here we
+   * no-op unless the bg-shell sole-holder hold is the active deadline
+   * (`bgShellHoldSince !== null`, which `scheduleTimer` stamps only for that
+   * hold), so a confirmation that races ahead of the hold cannot keep a
+   * `turnActive` / pending-tools session warm.
+   */
+  markBackgroundShellsAlive(sessionId: string): void {
+    if (this.disposed) return;
+    const state = this.states.get(sessionId);
+    if (!state) return;
+    if (state.activity !== 'thinking') return;
+    // bgShellHoldSince is non-null exactly when the bg-shell sole-holder hold
+    // is the active deadline. Write the anchor directly (scheduleTimer only
+    // stamps it when null, so it would not advance an already-set anchor).
+    if (state.bgShellHoldSince === null) return;
+    state.bgShellHoldSince = this.now();
+    this.scheduleTimer(sessionId, state);
+  }
+
+  /**
    * Record a PTY chunk arrival for the timeline-overlay visualization.
    * Chunks are aggregated into 100ms buckets so the ring stays small
    * (~1200 entries for the 120s window). Does NOT affect engine state -
@@ -536,8 +569,11 @@ export class ActivityEngine {
 
     // Maintain the bg-shell anchor before any early return, so it clears the
     // instant the bg-shell-only hold ends (another holder appears, or bg count
-    // hits zero). Stamped only when null, so the watcher's keep-alive pulses
-    // re-run scheduleTimer but never advance it - that immovability is the fix.
+    // hits zero). Stamped here only when null, so signal-only keep-alives
+    // (`markThinkingSignal`) re-run scheduleTimer but never advance it - that
+    // immovability is what fixed the phantom-pin bug. The one path that DOES
+    // advance it is `markBackgroundShellsAlive` (the watcher, on a confirmed-
+    // alive cycle), which writes the anchor directly before calling this.
     // A fresh BackgroundShellStart re-arms it: that event sets turnActive, so
     // the hold predicate briefly goes false (clearing the anchor here), then
     // the following Idle drops turnActive and the next scheduleTimer re-stamps.
@@ -556,8 +592,9 @@ export class ActivityEngine {
 
     if (state.activity !== 'thinking' || !hold) return;
 
-    // The bg-shell hatch is anchored to `bgShellHoldSince` so keep-alive
-    // `markThinkingSignal` pulses cannot push it out; all other holds key
+    // The bg-shell hatch is anchored to `bgShellHoldSince` so signal-only
+    // `markThinkingSignal` pulses cannot push it out (only a watcher-confirmed
+    // `markBackgroundShellsAlive` advances the anchor); all other holds key
     // off `lastSignalAt`.
     const baseTime = hold.trigger === 'timer:bg-shell-hatch'
       ? (state.bgShellHoldSince ?? this.now())
@@ -602,8 +639,10 @@ export class ActivityEngine {
     if (state.activity !== 'thinking') return;
 
     const hold = findActiveWatchdogHold(state, this.watchdogConfig);
-    // The bg-shell hatch is anchored to `bgShellHoldSince` so the watcher's
-    // keep-alive cannot push it out; every other hold uses `lastSignalAt`.
+    // The bg-shell hatch is anchored to `bgShellHoldSince` so signal-only
+    // keep-alives (`markThinkingSignal`) cannot push it out; only a watcher-
+    // confirmed `markBackgroundShellsAlive` advances the anchor. Every other
+    // hold uses `lastSignalAt`.
     const baseTime = hold?.trigger === 'timer:bg-shell-hatch'
       ? (state.bgShellHoldSince ?? this.now())
       : (state.lastSignalAt ?? 0);

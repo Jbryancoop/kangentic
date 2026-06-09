@@ -40,8 +40,11 @@ export interface WatchdogConfig {
   /**
    * ms grace for the bg-shell hatch. Unlike the others, this hold is
    * measured off `bgShellHoldSince` (when bg shells became the sole holder)
-   * in the engine, NOT off `lastSignalAt` - so keep-alive pulses cannot push
-   * it out. See `activity-engine.ts` scheduleTimer/onTick.
+   * in the engine, NOT off `lastSignalAt` - so signal-only keep-alive pulses
+   * cannot push it out. Only watcher-confirmed liveness
+   * (`markBackgroundShellsAlive`, emitted on an in-sync cycle) refreshes the
+   * anchor; a phantom shows a deficit and is reclaimed at the grace. See
+   * `activity-engine.ts` scheduleTimer/onTick.
    */
   bgShellOnlyGraceMs: number;
   /** ms threshold for the stale-thinking hatch. */
@@ -55,8 +58,11 @@ export function buildWatchdogHolds(config: WatchdogConfig): readonly WatchdogHol
   return [
     {
       // Held by bg shells alone. Measured off `bgShellHoldSince` (NOT
-      // `lastSignalAt`) in the engine, so the watcher's 2s keep-alive
-      // cannot push the deadline out for an orphaned/phantom shell.
+      // `lastSignalAt`) in the engine, so signal-only keep-alive pulses
+      // cannot push the deadline out for an orphaned/phantom shell. The
+      // watcher refreshes the anchor only when it confirms the shell is
+      // still alive in the OS tree; a phantom shows a deficit and is
+      // reclaimed here at the grace.
       predicate: (state) =>
         !state.turnActive
         && state.pendingToolCount === 0

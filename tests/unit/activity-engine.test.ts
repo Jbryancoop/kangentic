@@ -1238,6 +1238,57 @@ describe('ActivityEngine', () => {
       vi.advanceTimersByTime(200 + TEST_STABILITY_WINDOW_MS + 10);
       expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
     });
+
+    it('markBackgroundShellsAlive holds a genuinely-running bg shell past the grace, then releases it (regression for 8f8b5071)', () => {
+      // The sibling of the phantom case: a backgrounded E2E whose
+      // BackgroundShellEnd hook was dropped is STILL running. The watcher
+      // confirms it alive each cycle (markBackgroundShellsAlive), which
+      // advances the anchor so the 30s grace does not false-idle it. Unlike
+      // markThinkingSignal (which cannot move the anchor - see the phantom
+      // tests above), this keep-alive holds the session active.
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart));
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      transitions.length = 0;
+
+      // Watcher confirms liveness every 2s for 3x the grace.
+      const cycleMs = 2_000;
+      for (let elapsed = 0; elapsed < TEST_BG_SHELL_HATCH_MS * 3; elapsed += cycleMs) {
+        vi.advanceTimersByTime(cycleMs);
+        engine.markBackgroundShellsAlive(SESSION_ID);
+      }
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.bgShellHatch).toBe(0);
+
+      // The shell finally exits: confirmations stop. The grace now elapses
+      // from the last confirmation and reclaims (the backstop still works).
+      vi.advanceTimersByTime(TEST_BG_SHELL_HATCH_MS + TEST_STABILITY_WINDOW_MS + 10);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.bgShellHatch).toBe(1);
+    });
+
+    it('markBackgroundShellsAlive is a no-op unless the bg-shell hold is the active deadline', () => {
+      // (a) turnActive thinking with a bg shell: the bg-shell hold predicate
+      // requires !turnActive, so no hold is active and bgShellHoldSince is
+      // null. The keep-alive must not stamp/advance an anchor here (it would
+      // otherwise keep a thinking turn warm forever).
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart));
+      expect(engine.getState(SESSION_ID)?.bgShellHoldSince).toBeNull();
+      engine.markBackgroundShellsAlive(SESSION_ID);
+      expect(engine.getState(SESSION_ID)?.bgShellHoldSince).toBeNull();
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+      // (b) idle session: no-op, stays idle.
+      engine.processEvent(SESSION_ID, event(EventType.Interrupted));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      engine.markBackgroundShellsAlive(SESSION_ID);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+
+      // (c) unknown session: no throw.
+      expect(() => engine.markBackgroundShellsAlive('unknown')).not.toThrow();
+    });
   });
 
   describe('180s stale-thinking watchdog (hook loss safety net)', () => {

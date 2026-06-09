@@ -212,3 +212,78 @@ describe('SessionTelemetry: clearSessionTracking -> bgShellWatcher.unregisterSes
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+describe('SessionTelemetry: watcher liveness keep-alive (onShellsObservedAlive -> markBackgroundShellsAlive)', () => {
+  const GRACE_MS = 5_000;
+  let probe: MockProcessTreeProbe;
+  let rootPids: Map<string, number>;
+  let log: CallbackLog;
+  let telemetry: SessionTelemetry;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    probe = new MockProcessTreeProbe();
+    rootPids = new Map();
+    log = { activityChanges: [], events: [] };
+    const callbacks = makeCallbacks(log);
+    telemetry = new SessionTelemetry(
+      { ...callbacks, getSessionRootPid: (sessionId) => rootPids.get(sessionId) },
+      {
+        processTreeProbe: probe,
+        disableBgShellWatcher: false,
+        activityEngineOptions: {
+          bgShellEscapeHatchMs: 60_000,
+          staleThinkingTimeoutMs: 60_000,
+          bgShellOnlyGraceMs: GRACE_MS,
+          idleStabilityWindowMs: 0,
+        },
+      },
+    );
+  });
+
+  afterEach(() => {
+    telemetry.dispose();
+    vi.useRealTimers();
+  });
+
+  it('a still-running bg shell stays thinking past the grace, then reclaims when it exits', async () => {
+    // End-to-end of the fix: the watcher's onShellsObservedAlive fires on each
+    // in-sync cycle, the wiring calls markBackgroundShellsAlive, and the engine
+    // refreshes the grace anchor so a genuinely-running bg shell (the persistent
+    // bash wrapper of a backgrounded E2E) is not false-idled at the grace.
+    const rootPid = 8881;
+    rootPids.set('s1', rootPid);
+    probe.alive.add(rootPid);
+    probe.trees.set(rootPid, [{ pid: 20001, ppid: rootPid, comm: 'bash' }]);
+
+    telemetry.initSession('s1');
+    telemetry.ingestEvents('s1', [
+      { ts: Date.now(), type: EventType.Prompt },
+      { ts: Date.now(), type: EventType.BackgroundShellStart },
+      { ts: Date.now(), type: EventType.Idle },
+    ]);
+    const state = () => telemetry.activityEngine.getState('s1');
+    expect(state()?.activity).toBe('thinking');
+
+    // First cycle anchors the baseline (no keep-alive).
+    await telemetry.bgShellWatcher!.pollNow();
+
+    // Interleave time and in-sync polls across 3x the grace. Each poll refreshes
+    // the anchor before the hatch deadline, so the live shell is never reclaimed.
+    for (let elapsed = 0; elapsed < GRACE_MS * 3; elapsed += 2_000) {
+      vi.advanceTimersByTime(2_000);
+      await telemetry.bgShellWatcher!.pollNow();
+    }
+    expect(state()?.activity).toBe('thinking');
+    expect(state()?.compensationCounters.bgShellHatch).toBe(0);
+
+    // The shell exits. The watcher now sees a deficit and, after the 2-cycle lag
+    // tolerance, drains the engine via onNaturalExit - reclaiming to idle without
+    // the hatch ever firing.
+    probe.trees.set(rootPid, []);
+    await telemetry.bgShellWatcher!.pollNow();
+    await telemetry.bgShellWatcher!.pollNow();
+    expect(state()?.activity).toBe('idle');
+    expect(state()?.compensationCounters.bgShellHatch).toBe(0);
+  });
+});

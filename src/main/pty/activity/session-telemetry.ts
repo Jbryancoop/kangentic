@@ -210,6 +210,14 @@ export class SessionTelemetry {
           onRootProcessDied: (sessionId) => {
             this.activityEngine.forceIdle(sessionId);
           },
+          onShellsObservedAlive: (sessionId) => {
+            // Watcher confirmed the tracked bg shells are still alive in the
+            // OS tree. Refresh the bg-shell sole-holder grace anchor so a
+            // genuinely-running long bg shell is not reclaimed at 30s. No
+            // synthetic event: this is liveness confirmation, not a state
+            // change (mirrors markThinkingSignal).
+            this.activityEngine.markBackgroundShellsAlive(sessionId);
+          },
         },
       });
     }
