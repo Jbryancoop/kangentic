@@ -237,6 +237,11 @@ export class SessionRepository {
     this.db.prepare('UPDATE sessions SET cwd = ? WHERE id = ?').run(cwd, id);
   }
 
+  /** All session records, regardless of status. Used by project relocation to rewrite stored cwds. */
+  listAll(): SessionRecord[] {
+    return this.db.prepare('SELECT * FROM sessions').all() as SessionRecord[];
+  }
+
   /** Find the latest session record for a given task */
   getLatestForTask(taskId: string): SessionRecord | undefined {
     return this.db.prepare(

@@ -12,6 +12,7 @@ import { captureSessionMetrics } from './session-metrics';
 import { markRecordExited, markRecordSuspended, promoteRecord, recoverStaleSessionId } from '../../engine/session-lifecycle';
 import { isShuttingDown } from '../../shutdown-state';
 import { applySuspendDbWrites, reconcileTaskSessionRef } from './session-reconcile';
+import { abortInFlightResume, registerResumeController, releaseResumeController } from './session-resume-controllers';
 import type { Session, UsageTimePeriod, TaskResolvePrResult } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 import { isAbortError } from '../../../shared/abort-utils';
@@ -24,13 +25,6 @@ const sessionStartTimes = new Map<string, number>();
 // event so we never double-fire if `session-changed` re-emits running for the
 // same id. Cleared on exit alongside `sessionStartTimes`.
 const sessionSpawnAnalyticsFired = new Set<string>();
-
-/**
- * Per-task AbortController to cancel in-flight resumes when the session is
- * suspended before the async resume completes. Prevents orphaned sessions
- * from spawning when the user quickly moves a task back after clicking resume.
- */
-const sessionResumeControllers = new Map<string, AbortController>();
 
 export function registerSessionHandlers(context: IpcContext): void {
   // === Sessions ===
@@ -87,7 +81,7 @@ export function registerSessionHandlers(context: IpcContext): void {
   ipcMain.handle(IPC.SESSION_SUSPEND, (_, taskId: string) => {
     // Cancel any in-flight resume BEFORE queueing on the lock - otherwise
     // we would deadlock waiting for a resume that is stuck in worktree I/O.
-    sessionResumeControllers.get(taskId)?.abort();
+    abortInFlightResume(taskId);
 
     return withTaskLock(taskId, async () => {
       const resolvedProjectId = context.currentProjectId;
@@ -114,9 +108,9 @@ export function registerSessionHandlers(context: IpcContext): void {
     // unlocked - a second resume must be able to cancel the first's in-flight
     // fetch. Aborting inside the lock would deadlock: we'd be waiting for a
     // holder stuck in the now-unlocked git op.
-    sessionResumeControllers.get(taskId)?.abort();
+    abortInFlightResume(taskId);
     const resumeController = new AbortController();
-    sessionResumeControllers.set(taskId, resumeController);
+    registerResumeController(taskId, resumeController);
     const { signal } = resumeController;
 
     return (async (): Promise<Session | null> => {
@@ -214,9 +208,7 @@ export function registerSessionHandlers(context: IpcContext): void {
         }
         throw error;
       } finally {
-        if (sessionResumeControllers.get(taskId) === resumeController) {
-          sessionResumeControllers.delete(taskId);
-        }
+        releaseResumeController(taskId, resumeController);
       }
     })();
   });
@@ -225,7 +217,7 @@ export function registerSessionHandlers(context: IpcContext): void {
   ipcMain.handle(IPC.SESSION_RESET, (_, taskId: string) => {
     // Cancel any in-flight resume BEFORE queueing on the lock - otherwise
     // we would deadlock waiting for a resume that is stuck in worktree I/O.
-    sessionResumeControllers.get(taskId)?.abort();
+    abortInFlightResume(taskId);
 
     return withTaskLock(taskId, async () => {
       const resolvedProjectId = context.currentProjectId;

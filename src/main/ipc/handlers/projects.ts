@@ -1,7 +1,8 @@
 import path from 'node:path';
 import fs from '../../git/original-fs';
 import { ipcMain } from 'electron';
-import { IPC } from '../../../shared/ipc-channels';
+import { IPC, PROJECT_PATH_MISSING_PREFIX } from '../../../shared/ipc-channels';
+import { relocateProject } from './project-relocate';
 import { TaskRepository } from '../../db/repositories/task-repository';
 import { SessionRepository } from '../../db/repositories/session-repository';
 import { resumeSuspendedSessions, autoSpawnTasks } from '../../engine/session-startup';
@@ -326,6 +327,18 @@ export async function openProjectByPath(context: IpcContext, projectPath: string
   const projects = context.projectRepo.list();
   let project = projects.find((p) => path.resolve(p.path) === normalized);
 
+  // Guard BEFORE any directory-creating side effect (saveProjectOverrides,
+  // ensureGitignore, syncProjectMcpConfig all mkdir under the project path).
+  // A registered project whose folder vanished means it was moved or renamed
+  // on disk: silently recreating an empty folder there loses the project.
+  // The sentinel lets the renderer offer the "Locate Folder..." flow.
+  if (!fs.existsSync(normalized)) {
+    if (project) {
+      throw new Error(PROJECT_PATH_MISSING_PREFIX + normalized);
+    }
+    throw new Error(`Project path does not exist: ${normalized}`);
+  }
+
   if (!project) {
     // Create a new project using the directory name
     const name = path.basename(normalized);
@@ -426,6 +439,14 @@ export async function activateAllProjects(context: IpcContext): Promise<void> {
     // with the project that produced them, not the focused project.
     otherProjects.map((project) => runWithProjectLogContext(project.name, async () => {
       if (isShuttingDown()) return;
+      // A missing folder means the project was moved or renamed on disk.
+      // Skip activation entirely: ensureGitignore would recreate an empty
+      // folder at the stale path, and session recovery would retire the
+      // suspended session records because their cwds no longer exist.
+      if (!fs.existsSync(project.path)) {
+        console.warn(`[PROJECT_OPEN] Skipping activation, path missing: ${project.path}`);
+        return;
+      }
       ensureGitignore(project.path);
       const db = getProjectDb(project.id);
       const taskRepo = new TaskRepository(db);
@@ -481,6 +502,13 @@ export function registerProjectHandlers(context: IpcContext): void {
   ipcMain.handle(IPC.PROJECT_OPEN, async (_, id) => {
     const project = context.projectRepo.getById(id);
     if (!project) throw new Error(`Project ${id} not found`);
+
+    // The project folder was moved or renamed on disk. Bail before any
+    // directory-creating side effect below recreates an empty folder at the
+    // stale path; the sentinel triggers the renderer's "Locate Folder..." flow.
+    if (!fs.existsSync(project.path)) {
+      throw new Error(PROJECT_PATH_MISSING_PREFIX + project.path);
+    }
 
     // Skip full recovery on warm reopens: any project we've already recovered
     // this process lifetime has live PTYs in the registry and DB rows that
@@ -564,6 +592,10 @@ export function registerProjectHandlers(context: IpcContext): void {
 
   ipcMain.handle(IPC.PROJECT_RENAME, (_, id: string, name: string) => {
     return context.projectRepo.rename(id, name);
+  });
+
+  ipcMain.handle(IPC.PROJECT_RELOCATE, async (_, id: string, newPath: string) => {
+    return relocateProject(context, id, newPath);
   });
 
   ipcMain.handle(IPC.PROJECT_SET_DEFAULT_AGENT, async (_, id: string, agentName: string) => {

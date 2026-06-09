@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { launchPage, waitForBoard, createProject } from './helpers';
+import { launchPage, createProject } from './helpers';
 
 let page: Page;
 
@@ -136,5 +136,61 @@ test.describe('Project Sidebar Actions', () => {
     await expect(contextMenu.locator('text=Open in Explorer')).toBeVisible();
     await expect(contextMenu.locator('text=Project Settings')).toBeVisible();
     await expect(contextMenu.locator('text=Delete')).toBeVisible();
+  });
+});
+
+test.describe('Project Relocation', () => {
+  test('context menu Change Directory confirms and updates the project path', async () => {
+    // The folder picker returns the new location (consume-once override).
+    await page.evaluate(() => {
+      (window as Record<string, unknown>).__mockFolderPath = '/mock/new-location/TestProject';
+    });
+
+    await page.locator('.truncate.font-medium:text("TestProject")').first().click({ button: 'right' });
+    await page.locator('[data-testid="project-context-change-directory"]').click();
+
+    // Confirm dialog shows both the old and the new path
+    await expect(page.getByRole('heading', { name: 'Change Project Directory' })).toBeVisible();
+    await expect(page.getByText('/mock/projects/TestProject')).toBeVisible();
+    await expect(page.getByText('/mock/new-location/TestProject')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Change Directory', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Change Project Directory' })).toBeHidden();
+
+    // Sidebar search matches project.path: the project must now be found by
+    // the new location and no longer by the old one.
+    const searchInput = page.locator('[data-testid="project-sidebar-search"]');
+    await searchInput.fill('new-location');
+    await expect(page.locator('.truncate.font-medium:text("TestProject")').first()).toBeVisible();
+    await searchInput.fill('/mock/projects/');
+    await expect(page.locator('.truncate.font-medium:text("TestProject")')).toHaveCount(0);
+  });
+
+  test('settings General tab shows the location and a Change button', async () => {
+    await page.locator('.truncate.font-medium:text("TestProject")').first().click({ button: 'right' });
+    await page.locator('.fixed.bg-surface-raised').locator('text=Project Settings').click();
+    await page.locator('h2:has-text("Settings")').waitFor({ state: 'visible', timeout: 3000 });
+
+    await page.getByRole('button', { name: 'General', exact: true }).click();
+
+    await expect(page.getByTestId('project-location-path')).toHaveText('/mock/projects/TestProject');
+    await expect(page.getByTestId('project-location-change')).toBeVisible();
+  });
+
+  test('missing-path push shows the Project Folder Not Found dialog', async () => {
+    await page.evaluate(async () => {
+      const projects = await window.electronAPI.projects.list();
+      (window as unknown as {
+        __mockFireProjectPathMissing?: (id: string) => void;
+      }).__mockFireProjectPathMissing?.(projects[0].id);
+    });
+
+    await expect(page.getByRole('heading', { name: 'Project Folder Not Found' })).toBeVisible();
+    await expect(page.getByTestId('project-path-missing-dialog')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Locate Folder...' })).toBeVisible();
+
+    // Cancel dismisses without changing anything
+    await page.locator('button:has-text("Cancel")').click();
+    await expect(page.getByRole('heading', { name: 'Project Folder Not Found' })).toBeHidden();
   });
 });

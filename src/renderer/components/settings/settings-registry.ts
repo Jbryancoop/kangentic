@@ -19,6 +19,9 @@ export interface SettingDefinition {
 
 /** Flat registry array. All settings in display order. */
 export const SETTINGS_REGISTRY: SettingDefinition[] = [
+  // ── General ──
+  { id: 'project.location', tabId: 'general', label: 'Project Location', description: 'Folder on disk this project points at. Change it when the folder was moved or renamed; all tasks and history are preserved.', scope: 'project', keywords: ['path', 'folder', 'directory', 'move', 'relocate', 'change directory', 'locate'] },
+
   // ── Theme ──
   { id: 'theme', tabId: 'theme', label: 'Theme', description: 'Color scheme for the interface', scope: 'project', keywords: ['color', 'dark', 'light', 'appearance'] },
 
@@ -106,6 +109,7 @@ export const SETTINGS_BY_ID: Record<string, SettingDefinition> = Object.fromEntr
 
 /** Tab label lookup for search matching against tab names. */
 export const TAB_LABELS: Record<string, string> = {
+  general: 'General',
   theme: 'Theme',
   terminal: 'Terminal',
   agent: 'Agent',

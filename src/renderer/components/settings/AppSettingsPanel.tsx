@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import { Bell, Bot, Bug, GitBranch, Globe, Keyboard, LayoutGrid, Palette, Plug, ShieldCheck, SlidersHorizontal, Terminal, Zap } from 'lucide-react';
+import { Bell, Bot, Bug, FolderCog, GitBranch, Globe, Keyboard, LayoutGrid, Palette, Plug, ShieldCheck, SlidersHorizontal, Terminal, Zap } from 'lucide-react';
 import { useConfigStore } from '../../stores/config-store';
 import { SettingsPanelProvider, SearchTabGroupHeader, NoSearchResults } from './shared';
 import type { SettingsTabDefinition, SettingScope, SettingsContentProps } from './shared';
@@ -18,6 +18,7 @@ import { NotificationsTab } from './tabs/NotificationsTab';
 import { PrivacyTab } from './tabs/PrivacyTab';
 import { DeveloperTab } from './tabs/DeveloperTab';
 import { HotkeysTab } from './tabs/HotkeysTab';
+import { GeneralTab } from './tabs/GeneralTab';
 
 /**
  * Settings tab layout:
@@ -31,6 +32,7 @@ import { HotkeysTab } from './tabs/HotkeysTab';
  */
 export const APP_TABS: SettingsTabDefinition[] = [
   // -- Per-project settings --
+  { id: 'general', label: 'General', icon: FolderCog },
   { id: 'theme', label: 'Theme', icon: Palette },
   { id: 'terminal', label: 'Terminal', icon: Terminal },
   { id: 'agent', label: 'Agent', icon: Bot },
@@ -90,6 +92,7 @@ export function SettingsContent({ activeTab, isSearching, searchQuery, matchingT
 
   const renderTab = (tabId: string) => {
     switch (tabId) {
+      case 'general': return <GeneralTab />;
       case 'theme': return <ThemeTab config={effectiveConfig} />;
       case 'terminal': return <TerminalTab config={effectiveConfig} globalConfig={globalConfig} shells={shells} />;
       case 'agent': return <AgentTab config={effectiveConfig} globalConfig={globalConfig} agentInfo={agentInfo} agentList={agentList} />;

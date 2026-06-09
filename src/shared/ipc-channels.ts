@@ -12,6 +12,8 @@ export const IPC = {
   PROJECT_RENAME: 'project:rename',
   PROJECT_SET_DEFAULT_AGENT: 'project:setDefaultAgent',
   PROJECT_AUTO_OPENED: 'project:autoOpened',
+  PROJECT_RELOCATE: 'project:relocate',
+  PROJECT_PATH_MISSING: 'project:pathMissing',
 
   // Project Groups
   PROJECT_GROUP_LIST: 'projectGroup:list',
@@ -239,3 +241,11 @@ export const IPC = {
   LOG_APPEND: 'diagnostics:logAppend',
   CRASH_REPORT: 'diagnostics:crashReport',
 } as const;
+
+/**
+ * Sentinel prefix for "registered project path no longer exists on disk".
+ * Electron wraps handler errors in its own Error, so the renderer detects
+ * this case via `error.message.includes(PROJECT_PATH_MISSING_PREFIX)` and
+ * offers the "Locate Folder..." relocation flow instead of a generic error.
+ */
+export const PROJECT_PATH_MISSING_PREFIX = 'PROJECT_PATH_MISSING:';

@@ -1,0 +1,342 @@
+/**
+ * Unit tests for project relocation (src/main/ipc/handlers/project-relocate.ts).
+ *
+ * better-sqlite3 cannot load under vitest's system Node, so the repositories
+ * and filesystem are mocked; the tests exercise relocateProject's
+ * orchestration contracts:
+ *
+ *   - replacePathPrefix: prefix matching via path.relative (no naive string
+ *     prefixing - sibling folders sharing a name prefix must NOT match).
+ *   - Validation: new path must exist and be a directory; another project
+ *     registered at the same path is rejected; same path is a no-op.
+ *   - Live sessions are suspended (abort-then-lock order) and transient
+ *     sessions killed before any path rewriting.
+ *   - tasks.worktree_path and sessions.cwd rows under the old prefix are
+ *     rewritten; rows outside it are untouched.
+ *   - git worktree repair runs best-effort for git projects only, with the
+ *     rewritten worktree paths that exist on disk.
+ *   - Runtime state fixups: worktree queue cleared, recoveredProjects entry
+ *     dropped, currentProjectPath + board config watcher updated when the
+ *     relocated project is the current one.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'node:path';
+
+// ---------------------------------------------------------------------------
+// Hoisted state + mocks (factories are hoisted above imports)
+// ---------------------------------------------------------------------------
+
+const mockFs = vi.hoisted(() => ({
+  /** Paths that exist on disk. */
+  existing: new Set<string>(),
+  /** Paths that are directories (subset of existing). */
+  directories: new Set<string>(),
+}));
+
+const dbState = vi.hoisted(() => ({
+  tasks: [] as Array<{ id: string; worktree_path: string | null }>,
+  archivedTasks: [] as Array<{ id: string; worktree_path: string | null }>,
+  sessions: [] as Array<{ id: string; cwd: string }>,
+  taskUpdates: [] as Array<{ id: string; worktree_path: string }>,
+  cwdUpdates: [] as Array<{ id: string; cwd: string }>,
+}));
+
+const runGitWithTimeoutMock = vi.hoisted(() => vi.fn(async () => ({ stdout: '', stderr: '' })));
+const isGitRepoMock = vi.hoisted(() => vi.fn(() => false));
+const applySuspendDbWritesMock = vi.hoisted(() => vi.fn());
+const abortInFlightResumeMock = vi.hoisted(() => vi.fn());
+const clearQueueMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/main/git/original-fs', () => ({
+  default: {
+    existsSync: vi.fn((target: string) => mockFs.existing.has(target)),
+    statSync: vi.fn((target: string) => ({ isDirectory: () => mockFs.directories.has(target) })),
+  },
+}));
+vi.mock('../../src/main/db/database', () => ({
+  getProjectDb: vi.fn(() => ({})),
+}));
+vi.mock('../../src/main/db/repositories/task-repository', () => ({
+  TaskRepository: class {
+    list() { return dbState.tasks; }
+    listArchived() { return dbState.archivedTasks; }
+    update(input: { id: string; worktree_path: string }) { dbState.taskUpdates.push(input); }
+  },
+}));
+vi.mock('../../src/main/db/repositories/session-repository', () => ({
+  SessionRepository: class {
+    listAll() { return dbState.sessions; }
+    updateCwd(id: string, cwd: string) { dbState.cwdUpdates.push({ id, cwd }); }
+  },
+}));
+vi.mock('../../src/main/git/worktree-manager', () => ({
+  WorktreeManager: class {
+    static clearQueue = clearQueueMock;
+  },
+}));
+vi.mock('../../src/main/git/git-checks', () => ({
+  isGitRepo: isGitRepoMock,
+}));
+vi.mock('../../src/main/git/git-spawn', () => ({
+  runGitWithTimeout: runGitWithTimeoutMock,
+}));
+vi.mock('../../src/main/analytics/analytics', () => ({
+  trackEvent: vi.fn(),
+}));
+vi.mock('../../src/main/ipc/handlers/session-reconcile', () => ({
+  applySuspendDbWrites: applySuspendDbWritesMock,
+}));
+vi.mock('../../src/main/ipc/handlers/session-resume-controllers', () => ({
+  abortInFlightResume: abortInFlightResumeMock,
+}));
+
+// ---------------------------------------------------------------------------
+// Import under test (after mocks)
+// ---------------------------------------------------------------------------
+
+import { relocateProject, replacePathPrefix } from '../../src/main/ipc/handlers/project-relocate';
+import type { IpcContext } from '../../src/main/ipc/ipc-context';
+import type { Project, Session } from '../../src/shared/types';
+
+// ---------------------------------------------------------------------------
+// Helpers (generic paths only - never personal/machine-specific ones)
+// ---------------------------------------------------------------------------
+
+const OLD_PATH = path.resolve(path.join('/', 'projects', 'old-app'));
+const NEW_PATH = path.resolve(path.join('/', 'projects', 'new-app'));
+
+function makeProject(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 'project-1',
+    name: 'Old App',
+    path: OLD_PATH,
+    github_url: null,
+    default_agent: 'claude',
+    group_id: null,
+    position: 0,
+    last_opened: '2026-01-01T00:00:00.000Z',
+    created_at: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+interface ContextOptions {
+  projects?: Project[];
+  sessions?: Session[];
+  currentProjectId?: string | null;
+}
+
+function makeContext(options: ContextOptions = {}) {
+  const projects = options.projects ?? [makeProject()];
+  const context = {
+    projectRepo: {
+      getById: vi.fn((id: string) => projects.find((project) => project.id === id)),
+      list: vi.fn(() => projects),
+      updatePath: vi.fn((id: string, newPath: string) => {
+        const project = projects.find((candidate) => candidate.id === id);
+        if (!project) throw new Error('not found');
+        project.path = newPath;
+        return { ...project };
+      }),
+    },
+    sessionManager: {
+      listSessions: vi.fn(() => options.sessions ?? []),
+      suspend: vi.fn(async () => {}),
+      kill: vi.fn(async () => {}),
+    },
+    recoveredProjects: new Set<string>(['project-1']),
+    currentProjectId: options.currentProjectId ?? null,
+    currentProjectPath: options.currentProjectId ? OLD_PATH : null,
+    boardConfigManager: { detach: vi.fn() },
+  };
+  return context;
+}
+
+function asIpcContext(context: ReturnType<typeof makeContext>): IpcContext {
+  return context as unknown as IpcContext;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockFs.existing.clear();
+  mockFs.directories.clear();
+  dbState.tasks = [];
+  dbState.archivedTasks = [];
+  dbState.sessions = [];
+  dbState.taskUpdates = [];
+  dbState.cwdUpdates = [];
+  isGitRepoMock.mockReturnValue(false);
+  // New location exists as a directory in the common case.
+  mockFs.existing.add(NEW_PATH);
+  mockFs.directories.add(NEW_PATH);
+});
+
+// ---------------------------------------------------------------------------
+// replacePathPrefix
+// ---------------------------------------------------------------------------
+
+describe('replacePathPrefix', () => {
+  it('returns the new prefix when the target IS the old prefix', () => {
+    expect(replacePathPrefix(OLD_PATH, OLD_PATH, NEW_PATH)).toBe(NEW_PATH);
+  });
+
+  it('rewrites a nested path under the old prefix', () => {
+    const nested = path.join(OLD_PATH, '.kangentic', 'worktrees', 'feat-x');
+    expect(replacePathPrefix(nested, OLD_PATH, NEW_PATH))
+      .toBe(path.join(NEW_PATH, '.kangentic', 'worktrees', 'feat-x'));
+  });
+
+  it('returns null for an unrelated path', () => {
+    const unrelated = path.resolve(path.join('/', 'somewhere', 'else'));
+    expect(replacePathPrefix(unrelated, OLD_PATH, NEW_PATH)).toBeNull();
+  });
+
+  it('returns null for a sibling that merely shares a string prefix', () => {
+    // A naive startsWith() check would wrongly match /projects/old-app2.
+    const sibling = `${OLD_PATH}2`;
+    expect(replacePathPrefix(sibling, OLD_PATH, NEW_PATH)).toBeNull();
+  });
+
+  it.runIf(process.platform === 'win32')('matches Windows paths case-insensitively', () => {
+    const nested = path.join(OLD_PATH.toUpperCase(), 'sub');
+    expect(replacePathPrefix(nested, OLD_PATH, NEW_PATH)).toBe(path.join(NEW_PATH, 'sub'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// relocateProject
+// ---------------------------------------------------------------------------
+
+describe('relocateProject', () => {
+  it('rejects a new path that does not exist', async () => {
+    const context = makeContext();
+    const missing = path.resolve(path.join('/', 'projects', 'nope'));
+    await expect(relocateProject(asIpcContext(context), 'project-1', missing))
+      .rejects.toThrow('not a directory');
+    expect(context.projectRepo.updatePath).not.toHaveBeenCalled();
+  });
+
+  it('rejects a path already registered to another project', async () => {
+    const other = makeProject({ id: 'project-2', name: 'Other', path: NEW_PATH });
+    const context = makeContext({ projects: [makeProject(), other] });
+    await expect(relocateProject(asIpcContext(context), 'project-1', NEW_PATH))
+      .rejects.toThrow('Other');
+    expect(context.projectRepo.updatePath).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when the path is unchanged', async () => {
+    const context = makeContext();
+    mockFs.existing.add(OLD_PATH);
+    mockFs.directories.add(OLD_PATH);
+    const result = await relocateProject(asIpcContext(context), 'project-1', OLD_PATH);
+    expect(result.path).toBe(OLD_PATH);
+    expect(context.projectRepo.updatePath).not.toHaveBeenCalled();
+  });
+
+  it('updates the path and rewrites only rows under the old prefix', async () => {
+    const context = makeContext();
+    const insideWorktree = path.join(OLD_PATH, '.kangentic', 'worktrees', 'feat-x');
+    const outsideWorktree = path.resolve(path.join('/', 'elsewhere', 'worktree'));
+    dbState.tasks = [
+      { id: 'task-1', worktree_path: insideWorktree },
+      { id: 'task-2', worktree_path: outsideWorktree },
+      { id: 'task-3', worktree_path: null },
+    ];
+    dbState.archivedTasks = [
+      { id: 'task-4', worktree_path: path.join(OLD_PATH, '.kangentic', 'worktrees', 'old-feat') },
+    ];
+    dbState.sessions = [
+      { id: 'session-1', cwd: OLD_PATH },
+      { id: 'session-2', cwd: insideWorktree },
+      { id: 'session-3', cwd: outsideWorktree },
+    ];
+
+    const result = await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
+
+    expect(result.path).toBe(NEW_PATH);
+    expect(context.projectRepo.updatePath).toHaveBeenCalledWith('project-1', NEW_PATH);
+    expect(dbState.taskUpdates).toEqual([
+      { id: 'task-1', worktree_path: path.join(NEW_PATH, '.kangentic', 'worktrees', 'feat-x') },
+      { id: 'task-4', worktree_path: path.join(NEW_PATH, '.kangentic', 'worktrees', 'old-feat') },
+    ]);
+    expect(dbState.cwdUpdates).toEqual([
+      { id: 'session-1', cwd: NEW_PATH },
+      { id: 'session-2', cwd: path.join(NEW_PATH, '.kangentic', 'worktrees', 'feat-x') },
+    ]);
+    expect(clearQueueMock).toHaveBeenCalledWith(OLD_PATH);
+    expect(context.recoveredProjects.has('project-1')).toBe(false);
+  });
+
+  it('suspends live task sessions and kills transient ones before rewriting', async () => {
+    const taskSession = {
+      id: 'pty-1', taskId: 'task-1', projectId: 'project-1', status: 'running',
+    } as unknown as Session;
+    const transientSession = {
+      id: 'pty-2', taskId: '', projectId: 'project-1', status: 'running', transient: true,
+    } as unknown as Session;
+    const otherProjectSession = {
+      id: 'pty-3', taskId: 'task-9', projectId: 'project-2', status: 'running',
+    } as unknown as Session;
+    const exitedSession = {
+      id: 'pty-4', taskId: 'task-2', projectId: 'project-1', status: 'exited',
+    } as unknown as Session;
+    const context = makeContext({
+      sessions: [taskSession, transientSession, otherProjectSession, exitedSession],
+    });
+
+    await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
+
+    expect(abortInFlightResumeMock).toHaveBeenCalledWith('task-1');
+    expect(applySuspendDbWritesMock).toHaveBeenCalledTimes(1);
+    expect(applySuspendDbWritesMock).toHaveBeenCalledWith(expect.anything(), 'project-1', 'task-1', 'system');
+    expect(context.sessionManager.suspend).toHaveBeenCalledWith('pty-1');
+    expect(context.sessionManager.kill).toHaveBeenCalledWith('pty-2');
+    // Other projects' and already-exited sessions are untouched.
+    expect(context.sessionManager.suspend).toHaveBeenCalledTimes(1);
+    expect(context.sessionManager.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('updates currentProjectPath and detaches the board watcher for the current project', async () => {
+    const context = makeContext({ currentProjectId: 'project-1' });
+    await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
+    expect(context.currentProjectPath).toBe(NEW_PATH);
+    expect(context.boardConfigManager.detach).toHaveBeenCalled();
+  });
+
+  it('runs git worktree repair with rewritten worktree paths that exist', async () => {
+    isGitRepoMock.mockReturnValue(true);
+    const context = makeContext();
+    const insideWorktree = path.join(OLD_PATH, '.kangentic', 'worktrees', 'feat-x');
+    const goneWorktree = path.join(OLD_PATH, '.kangentic', 'worktrees', 'deleted');
+    dbState.tasks = [
+      { id: 'task-1', worktree_path: insideWorktree },
+      { id: 'task-2', worktree_path: goneWorktree },
+    ];
+    const rewrittenExisting = path.join(NEW_PATH, '.kangentic', 'worktrees', 'feat-x');
+    mockFs.existing.add(rewrittenExisting);
+
+    await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
+
+    expect(runGitWithTimeoutMock).toHaveBeenCalledWith(
+      NEW_PATH,
+      ['worktree', 'repair', rewrittenExisting],
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
+  it('treats a git worktree repair failure as non-fatal', async () => {
+    isGitRepoMock.mockReturnValue(true);
+    runGitWithTimeoutMock.mockRejectedValueOnce(new Error('repair exploded'));
+    const context = makeContext();
+    const result = await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
+    expect(result.path).toBe(NEW_PATH);
+  });
+
+  it('skips git worktree repair for non-git folders', async () => {
+    isGitRepoMock.mockReturnValue(false);
+    const context = makeContext();
+    await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
+    expect(runGitWithTimeoutMock).not.toHaveBeenCalled();
+  });
+});

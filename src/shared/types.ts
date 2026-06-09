@@ -2087,7 +2087,9 @@ export interface ElectronAPI {
     setDefaultAgent: (id: string, agentName: string) => Promise<Project>;
     reorder: (ids: string[]) => Promise<void>;
     setGroup: (projectId: string, groupId: string | null) => Promise<void>;
+    relocate: (id: string, newPath: string) => Promise<Project>;
     onAutoOpened: (callback: (project: Project) => void) => () => void;
+    onPathMissing: (callback: (project: Project) => void) => () => void;
   };
 
   // Project Groups

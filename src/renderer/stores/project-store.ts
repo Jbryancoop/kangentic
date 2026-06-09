@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Project, ProjectCreateInput, ProjectGroup, ProjectGroupCreateInput } from '../../shared/types';
+import { PROJECT_PATH_MISSING_PREFIX } from '../../shared/ipc-channels';
 import { useSessionStore } from './session-store';
 import { useConfigStore } from './config-store';
 import { dropProject as dropProjectCache } from './project-cache';
@@ -17,6 +18,8 @@ interface ProjectStore {
   currentProject: Project | null;
   loading: boolean;
   hydrated: boolean;
+  /** Project whose registered folder no longer exists on disk; drives the "Locate Folder..." dialog. */
+  missingPathProject: Project | null;
 
   loadProjects: () => Promise<void>;
   createProject: (input: ProjectCreateInput) => Promise<Project>;
@@ -25,6 +28,8 @@ interface ProjectStore {
   openProjectByPath: (folderPath: string) => Promise<Project>;
   reorderProjects: (ids: string[]) => Promise<void>;
   renameProject: (id: string, name: string) => Promise<void>;
+  relocateProject: (id: string, newPath: string) => Promise<Project>;
+  setMissingPathProject: (project: Project | null) => void;
   setProjectGroup: (projectId: string, groupId: string | null) => Promise<void>;
   loadCurrent: () => Promise<void>;
 
@@ -43,6 +48,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   currentProject: null,
   loading: false,
   hydrated: false,
+  missingPathProject: null,
 
   loadProjects: async () => {
     set({ loading: true });
@@ -85,7 +91,18 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   openProject: async (id) => {
     // Stash current project's transient session (keep PTY alive for later restore)
     useSessionStore.getState().stashTransientSession();
-    await window.electronAPI.projects.open(id);
+    try {
+      await window.electronAPI.projects.open(id);
+    } catch (err) {
+      // The project's folder was moved or renamed on disk. Surface the
+      // "Locate Folder..." dialog instead of a generic failure.
+      if (err instanceof Error && err.message.includes(PROJECT_PATH_MISSING_PREFIX)) {
+        const project = get().projects.find((candidate) => candidate.id === id) ?? null;
+        set({ missingPathProject: project });
+        return;
+      }
+      throw err;
+    }
     const project = get().projects.find((p) => p.id === id) || await window.electronAPI.projects.getCurrent();
     set({ currentProject: project });
     // Restore the target project's transient session if one exists
@@ -145,6 +162,28 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     } catch {
       await get().loadProjects();
     }
+  },
+
+  relocateProject: async (id, newPath) => {
+    // No optimistic update: validation failures (path missing, already
+    // registered to another project) are expected user-facing errors.
+    useSessionStore.getState().killTransientSessionForProject(id).catch(() => {});
+    const updated = await window.electronAPI.projects.relocate(id, newPath);
+    set((state) => ({
+      projects: state.projects.map((project) => (project.id === id ? updated : project)),
+      currentProject: state.currentProject?.id === id ? updated : state.currentProject,
+      missingPathProject: state.missingPathProject?.id === id ? null : state.missingPathProject,
+    }));
+    // Re-open through the normal flow so the main process re-attaches the
+    // board config watcher and re-runs session recovery at the new path.
+    if (get().currentProject?.id === id) {
+      await get().openProject(id);
+    }
+    return updated;
+  },
+
+  setMissingPathProject: (project) => {
+    set({ missingPathProject: project });
   },
 
   setProjectGroup: async (projectId, groupId) => {

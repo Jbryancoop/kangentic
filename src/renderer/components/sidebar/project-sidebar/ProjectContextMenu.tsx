@@ -1,5 +1,5 @@
 import { useRef, useEffect } from 'react';
-import { FolderTree, Folder, Pencil, FolderOpen, Settings, Trash2 } from 'lucide-react';
+import { FolderTree, Folder, Pencil, FolderOpen, FolderInput, Settings, Trash2 } from 'lucide-react';
 import type { Project, ProjectGroup } from '../../../../shared/types';
 
 export interface ProjectContextMenuProps {
@@ -8,6 +8,7 @@ export interface ProjectContextMenuProps {
   groups: ProjectGroup[];
   onRename: (project: Project) => void;
   onOpenInExplorer: (project: Project) => void;
+  onChangeDirectory: (project: Project) => void;
   onOpenSettings: (project: Project) => void;
   onDelete: (project: Project) => void;
   onMoveToGroup: (projectId: string, groupId: string) => void;
@@ -21,6 +22,7 @@ export function ProjectContextMenu({
   groups,
   onRename,
   onOpenInExplorer,
+  onChangeDirectory,
   onOpenSettings,
   onDelete,
   onMoveToGroup,
@@ -82,6 +84,17 @@ export function ProjectContextMenu({
       >
         <FolderOpen size={14} className="text-fg-faint" />
         Open in Explorer
+      </button>
+      <button
+        onClick={() => {
+          onChangeDirectory(project);
+          onClose();
+        }}
+        className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-fg-secondary hover:bg-surface-hover transition-colors text-left"
+        data-testid="project-context-change-directory"
+      >
+        <FolderInput size={14} className="text-fg-faint" />
+        Change Directory
       </button>
       <button
         onClick={() => {

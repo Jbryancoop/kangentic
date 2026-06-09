@@ -437,6 +437,39 @@
         var idx = projects.findIndex(function (p) { return p.id === projectId; });
         if (idx >= 0) projects[idx].group_id = groupId;
       },
+      relocate: async function (id, newPath) {
+        var duplicate = projects.find(function (p) { return p.id !== id && p.path === newPath; });
+        if (duplicate) {
+          throw new Error('Another project ("' + duplicate.name + '") already points at ' + newPath);
+        }
+        var idx = projects.findIndex(function (p) { return p.id === id; });
+        if (idx >= 0) {
+          projects[idx].path = newPath;
+          return Object.assign({}, projects[idx]);
+        }
+        throw new Error('Project not found: ' + id);
+      },
+      onPathMissing: function (callback) {
+        // Tests can fire the startup missing-path push via
+        // `window.__mockFireProjectPathMissing(projectId)`.
+        if (!window.__mockProjectPathMissingListeners) {
+          window.__mockProjectPathMissingListeners = [];
+        }
+        window.__mockProjectPathMissingListeners.push(callback);
+        if (!window.__mockFireProjectPathMissing) {
+          window.__mockFireProjectPathMissing = function (projectId) {
+            var project = projects.find(function (p) { return p.id === projectId; });
+            if (!project) return;
+            var listeners = (window.__mockProjectPathMissingListeners || []).slice();
+            listeners.forEach(function (fn) { fn(project); });
+          };
+        }
+        return function () {
+          var listeners = window.__mockProjectPathMissingListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
+      },
       onAutoOpened: function (callback) {
         // Tests can fire the programmatic auto-open path via
         // `window.__mockFireProjectAutoOpened(projectId)`. Useful for

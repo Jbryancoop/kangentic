@@ -1,0 +1,58 @@
+import { FolderInput } from 'lucide-react';
+import { useConfigStore } from '../../../stores/config-store';
+import { useProjectStore } from '../../../stores/project-store';
+import { useProjectRelocation } from '../../../hooks/useProjectRelocation';
+import { SettingRow } from '../shared';
+import { settingProps } from '../settings-registry';
+
+/**
+ * General per-project settings. Unlike the other per-project tabs, this one
+ * edits the project row in the global DB (via the projects IPC surface), not
+ * the project's config overrides, so it bypasses useScopedUpdate.
+ */
+export function GeneralTab() {
+  const projectSettingsPath = useConfigStore((state) => state.projectSettingsPath);
+  const openProjectSettings = useConfigStore((state) => state.openProjectSettings);
+  const currentProject = useProjectStore((state) => state.currentProject);
+  const projects = useProjectStore((state) => state.projects);
+
+  // Settings can target a non-current project (sidebar gear icon); resolve
+  // by the path the panel was opened for, falling back to the current project.
+  const activePath = projectSettingsPath || currentProject?.path;
+  const project = projects.find((candidate) => candidate.path === activePath)
+    ?? currentProject;
+
+  const { requestRelocate, relocationDialog } = useProjectRelocation((updated) => {
+    // The settings panel and its project switcher are keyed by path; re-key
+    // them so the panel keeps pointing at the relocated project.
+    openProjectSettings(updated.path, updated.name, 'general');
+  });
+
+  if (!project) return null;
+
+  return (
+    <>
+      <SettingRow {...settingProps('project.location')}>
+        <div className="flex items-center gap-2">
+          <div
+            className="flex-1 min-w-0 px-3 py-1.5 text-sm bg-surface border border-edge rounded text-fg-muted truncate"
+            title={project.path}
+            data-testid="project-location-path"
+          >
+            {project.path}
+          </div>
+          <button
+            type="button"
+            onClick={() => requestRelocate(project)}
+            data-testid="project-location-change"
+            className="flex-shrink-0 inline-flex items-center gap-2 px-3 py-1.5 text-xs rounded border border-edge-input text-fg-muted hover:text-fg hover:border-edge-hover transition-colors"
+          >
+            <FolderInput size={14} />
+            <span>Change...</span>
+          </button>
+        </div>
+      </SettingRow>
+      {relocationDialog}
+    </>
+  );
+}

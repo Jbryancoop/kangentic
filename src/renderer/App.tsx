@@ -77,6 +77,13 @@ export function App() {
       loadProjects();
     });
 
+    // Last-opened project's folder vanished at startup (moved or renamed on
+    // disk): show the "Project Folder Not Found" dialog. Optional chaining:
+    // during Vite HMR full reloads the preload bridge may predate this method.
+    const cleanupPathMissing = window.electronAPI.projects.onPathMissing?.((project) => {
+      useProjectStore.setState({ missingPathProject: project });
+    });
+
     // Listen for auto-update downloaded notification
     const cleanupUpdateListener = window.electronAPI.updater?.onUpdateDownloaded((info) => {
       useToastStore.getState().addToast({
@@ -93,6 +100,7 @@ export function App() {
     return () => {
       if (mountTimerRafId !== undefined) cancelAnimationFrame(mountTimerRafId);
       cleanupAutoOpen();
+      cleanupPathMissing?.();
       cleanupUpdateListener?.();
     };
   }, []);

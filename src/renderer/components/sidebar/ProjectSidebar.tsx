@@ -12,6 +12,7 @@ import { useConfigStore } from '../../stores/config-store';
 import { useToastStore } from '../../stores/toast-store';
 import { useHmrGeneration } from '../../utils/hmr-generation';
 import { useFormattedCombo } from '../../hooks/useKeybinding';
+import { useProjectRelocation } from '../../hooks/useProjectRelocation';
 import { ConfirmDialog } from '../dialogs/ConfirmDialog';
 import { CountBadge } from '../CountBadge';
 import type { Project, ProjectGroup } from '../../../shared/types';
@@ -57,6 +58,7 @@ export function ProjectSidebar({ onToggleSidebar }: ProjectSidebarProps) {
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
   const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const { requestRelocate, relocationDialog } = useProjectRelocation();
 
   const {
     sensors,
@@ -423,6 +425,7 @@ export function ProjectSidebar({ onToggleSidebar }: ProjectSidebarProps) {
           groups={sortedGroups}
           onRename={(project) => setRenamingProjectId(project.id)}
           onOpenInExplorer={(project) => window.electronAPI.shell.openPath(project.path)}
+          onChangeDirectory={requestRelocate}
           onOpenSettings={handleOpenSettings}
           onDelete={handleDeleteClick}
           onMoveToGroup={handleContextMenuMoveToGroup}
@@ -448,6 +451,8 @@ export function ProjectSidebar({ onToggleSidebar }: ProjectSidebarProps) {
           />
         );
       })()}
+
+      {relocationDialog}
 
       {projectToDelete && (
         <ConfirmDialog

@@ -12,6 +12,7 @@ import { SettingsPanel } from '../settings/SettingsPanel';
 import { CommandBarOverlay } from '../command-bar/CommandBarOverlay';
 import { SearchPalette } from '../search/SearchPalette';
 import { WelcomeScreen } from './WelcomeScreen';
+import { ProjectPathMissingDialog } from '../dialogs/ProjectPathMissingDialog';
 import { useConfigStore } from '../../stores/config-store';
 import { useProjectStore } from '../../stores/project-store';
 import { useBoardStore } from '../../stores/board-store';
@@ -178,6 +179,7 @@ export function AppLayout() {
       {settingsOpen && <SettingsPanel />}
       {commandBar.isOpen && <CommandBarOverlay onClose={commandBar.close} />}
       {searchPalette.isOpen && <SearchPalette onClose={searchPalette.close} />}
+      <ProjectPathMissingDialog />
       <ToastContainer />
     </div>
   );

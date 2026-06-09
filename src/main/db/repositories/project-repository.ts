@@ -72,6 +72,13 @@ export class ProjectRepository {
     return db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as Project;
   }
 
+  /** Re-point a project at a new folder on disk. Tasks/board data are keyed by project id and are unaffected. */
+  updatePath(id: string, newPath: string): Project {
+    const db = getGlobalDb();
+    db.prepare('UPDATE projects SET path = ? WHERE id = ?').run(newPath, id);
+    return db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as Project;
+  }
+
   setDefaultAgent(projectId: string, agentName: string): Project {
     const db = getGlobalDb();
     db.prepare('UPDATE projects SET default_agent = ? WHERE id = ?').run(agentName, projectId);

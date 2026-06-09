@@ -31,10 +31,16 @@ const api: ElectronAPI = {
     setDefaultAgent: (id: string, agentName: string) => ipcRenderer.invoke(IPC.PROJECT_SET_DEFAULT_AGENT, id, agentName),
     reorder: (ids: string[]) => ipcRenderer.invoke(IPC.PROJECT_REORDER, ids),
     setGroup: (projectId: string, groupId: string | null) => ipcRenderer.invoke(IPC.PROJECT_SET_GROUP, projectId, groupId),
+    relocate: (id: string, newPath: string) => ipcRenderer.invoke(IPC.PROJECT_RELOCATE, id, newPath),
     onAutoOpened: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, project: Project) => callback(project);
       ipcRenderer.on(IPC.PROJECT_AUTO_OPENED, handler);
       return () => ipcRenderer.removeListener(IPC.PROJECT_AUTO_OPENED, handler);
+    },
+    onPathMissing: (callback) => {
+      const handler = (_event: Electron.IpcRendererEvent, project: Project) => callback(project);
+      ipcRenderer.on(IPC.PROJECT_PATH_MISSING, handler);
+      return () => ipcRenderer.removeListener(IPC.PROJECT_PATH_MISSING, handler);
     },
   },
 

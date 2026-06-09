@@ -8,7 +8,7 @@ import { installDiagnostics } from './diagnostics/install';
 import { installDevtools } from '../devtools/install';
 import { startMcpHttpServer, type McpHttpServerHandle } from './agent/mcp-http-server';
 import { createRequestResolver } from './agent/mcp-project-context';
-import { IPC } from '../shared/ipc-channels';
+import { IPC, PROJECT_PATH_MISSING_PREFIX } from '../shared/ipc-channels';
 import { ConfigManager } from './config/config-manager';
 import { isShuttingDown, setShuttingDown } from './shutdown-state';
 const windowConfigManager = new ConfigManager();
@@ -503,6 +503,16 @@ const createWindow = () => {
           return project;
         } catch (err) {
           endPhase('openProjectByPath');
+          // The last-opened project's folder vanished (moved or renamed on
+          // disk). Surface it to the renderer so the "Project Folder Not
+          // Found" dialog offers "Locate Folder..." instead of a dead board.
+          // Electron queues the send until the renderer is ready.
+          if (err instanceof Error && err.message.includes(PROJECT_PATH_MISSING_PREFIX) && mainWindow && !mainWindow.isDestroyed()) {
+            const lastOpened = getLastOpenedProject();
+            if (lastOpened && path.resolve(lastOpened.path) === path.resolve(projectPath)) {
+              mainWindow.webContents.send(IPC.PROJECT_PATH_MISSING, lastOpened);
+            }
+          }
           console.error('[APP] Failed to preload project:', err);
           return null;
         }
@@ -517,7 +527,7 @@ const createWindow = () => {
     if (cwd && mainWindow) {
       const worktreeMatch = cwd.replace(/\\/g, '/').match(/\.kangentic\/worktrees\/([^/]+)/);
       if (worktreeMatch) {
-        mainWindow.setTitle(`Kangentic -- ${worktreeMatch[1]}`);
+        mainWindow.setTitle(`Kangentic - ${worktreeMatch[1]}`);
       }
     }
 
