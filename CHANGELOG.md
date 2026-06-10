@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.22.0] - 2026-06-09
+
+### Features
+
+- Allow relocating a project to a new directory (1cb82707)
+- Auto-discover new models via the /model picker (6915ac1c)
+- Group [1m] variants and dated snapshots in the model dropdown (3409c1f8)
+- Central keybinding registry and Hotkeys settings panel (f16b95be)
+- Draggable terminal / right-panel split divider (63dd5e40)
+- Maximize/restore and keyboard shortcuts for task detail and command terminal (7902b1cc)
+- Unify board/backlog toolbar with shared search + filter (2f4d7614)
+
+### Fixes
+
+- Respawn on permission-mode change for plan-to-execute handoff (02e65348)
+- Clear stuck permission state after approving a subagent's tool (c670350b)
+- Track timed-out auto-backgrounded Bash as a bg shell (0fc99ef3)
+- Hold watcher-confirmed live bg shells past the 30s grace (bb9380f6)
+- Recreate worktree on Done round-trip past an empty husk (f33cdb10)
+- Keep popover anchored on apply, add pill hover affordance (84bebafe)
+
+### Other
+
+- Set per-swimlane model and effort overrides (9e4bc1ea)
+- Set auto permission mode on auto-spawn swimlanes (db03c107)
+- Allow common dev commands via the PowerShell tool (9d5ea58d)
+
 ## [v0.21.0] - 2026-06-08
 
 ### Features

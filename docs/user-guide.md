@@ -346,8 +346,11 @@ The context bar is a status line displayed below the terminal showing session me
 |--------|--------------|
 | Shell | The active shell name (e.g., pwsh, bash, zsh) |
 | Version | Agent CLI version |
+| Elapsed | Ticking wall-clock time since the session started |
 | Model | Active model name (e.g., Claude Sonnet 4) |
 | Cost | Cumulative session cost in dollars |
+| Tool Calls | Cumulative count of completed tool calls |
+| Agent Active | Agent active time reported by the CLI (off by default) |
 | Tokens | Token usage (input + output) |
 | Context Fraction | Context window usage as a percentage |
 | Progress Bar | Visual progress bar for context window usage |

@@ -1,16 +1,16 @@
 ## What's New
 
-- **Per-column session control.** Columns can now run their own isolated agent session, with separate settings for the session target and spawn strategy. These per-column settings round-trip to `kangentic.json` so they can be shared with your team.
-- **Live session stats in the context bar.** The context bar now surfaces live session stats with an expandable tool-call breakdown.
-- **Smarter code review.** Code review scopes against the base branch through your working tree, and larger reviews automatically fan out across multiple agents.
-- **More reliable PR linking.** Branches now resolve to their pull request through a confidence-ranked resolver.
-- **Clearer diagnostics.** Main-process logs are tagged with the project name and prefixed with local-time timestamps.
-- **Readable Isolated badge.** A theme-adaptive Isolated badge now appears on the session tab and task detail.
+- **Relocate a project.** Move a project to a new directory without losing its board, tasks, or history.
+- **Smarter model picker.** The model picker auto-discovers newly released models and groups [1m] context variants and dated snapshots in the dropdown.
+- **Customizable hotkeys.** A new Hotkeys settings panel, backed by a central keybinding registry, lets you see and customize keyboard shortcuts.
+- **Maximize task detail and terminal.** Maximize/restore controls and keyboard shortcuts for the task detail view and command terminal.
+- **Resizable task detail split.** Drag the divider between the terminal and the right-hand panel in task detail to resize the split.
+- **Unified toolbar.** The board and backlog now share a single toolbar with shared search and filter.
 
 ## Bug Fixes
 
-- Smoother, flicker-free drag-to-Done animations: cards no longer snap back, flash back to their source column, or flicker on repeat completion.
-- More accurate activity tracking: no false idle when a running session's directory is deleted, active state restores after a permission pause, and "waiting for input" is treated as idle.
-- Agent sessions killed by the OS are now resumed on startup.
-- The model and effort picker is interactive in the Command Terminal and default-agent tasks.
-- Bridge and plugin scripts now deploy correctly in dev mode.
+- Plan-to-execute handoff now respawns the agent correctly when the permission mode changes.
+- Cleared a stuck permission state that could linger after approving a subagent's tool call.
+- More accurate background-shell activity tracking, including timed-out auto-backgrounded Bash and watcher-confirmed live shells held past the grace window.
+- The worktree is now recreated on a Done round-trip past an empty husk.
+- The filter popover stays anchored when you apply a filter, with a clearer pill hover affordance.
