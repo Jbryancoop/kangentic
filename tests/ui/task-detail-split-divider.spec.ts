@@ -364,11 +364,11 @@ test.describe('Task Detail split divider: drag to resize', () => {
   });
 
   test('dragging the divider left decreases the terminal pane flex-basis', async () => {
-    // This test is fully self-contained: it opens the Changes panel itself and
-    // pre-sets the divider ratio to a known 60% via the store before dragging.
-    // Previously this test relied on the previous test having left the panel
-    // open and the ratio at an unknown post-drag value, which caused flake when
-    // the previous test's drag produced a value too close to the clamp boundary.
+    // Fully self-contained: opens the Changes panel itself and pre-sets the
+    // divider ratio to a known 50% via the store before dragging. We start from
+    // 50% (the default), the same position the drag-right and clamp tests use:
+    // on headless Linux the mousedown/drag only engaged reliably from the 50%
+    // divider position. This test is the mirror of "drag right increases".
     await openTaskDialog(page);
 
     // Open the Changes panel (may already be open if store persisted from the
@@ -380,17 +380,16 @@ test.describe('Task Detail split divider: drag to resize', () => {
       await divider.waitFor({ state: 'visible', timeout: 3000 });
     }
 
-    // Pre-set the ratio to 60% so we have a known, unambiguous starting point.
-    // A 200px leftward drag from a 60% position yields a value well below 60%.
-    await setStoredDividerRatioAndWait(page, TASK_ID, 0.6);
+    // Pre-set the ratio to 50% so we have a known, unambiguous starting point.
+    await setStoredDividerRatioAndWait(page, TASK_ID, 0.5);
 
     const dividerBox = await divider.boundingBox();
     expect(dividerBox).not.toBeNull();
     const startX = dividerBox!.x + dividerBox!.width / 2;
     const startY = dividerBox!.y + dividerBox!.height / 2;
 
-    // Move 200px to the left. From ~60% (~1152px of 1920), this targets
-    // ~952px which yields ~49.6% - clearly less than 60%.
+    // Move 200px to the left. From ~50% (~960px of 1920), this targets ~760px
+    // which yields ~40% - clearly less than the 50% start, with ample margin.
     const targetX = startX - 200;
 
     await page.mouse.move(startX, startY);
@@ -398,12 +397,11 @@ test.describe('Task Detail split divider: drag to resize', () => {
     await page.mouse.move(targetX, startY, { steps: 10 });
     await page.mouse.up();
 
-    // Assert the result is less than the known 60% start. Using toBeGreaterThan
-    // on the negative: new value < 60%.
+    // The terminal pane flex-basis must drop below the known 50% start.
     await expect.poll(
       async () => getTerminalPaneFlexBasisPercent(page),
       { timeout: 3000 },
-    ).toBeLessThan(60);
+    ).toBeLessThan(50);
 
     await closeTaskDialog(page);
   });
