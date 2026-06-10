@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.22.1] - 2026-06-10
+
+### Fixes
+
+- Gate handoff on plan approval, not ExitPlanMode invocation (462eb74c)
+- Start the drag-left divider test from 50% for Linux parity (2c9b0487)
+- Harden Linux-flaky UI tests and add cross-platform parity rule (572aa317)
+
+### Other
+
+- Sync docs with source after v0.22.0 (f4e8eae3)
+- Publish launcher to npm via trusted publishing (OIDC) (da79d829)
+
 ## [v0.22.0] - 2026-06-09
 
 ### Features
