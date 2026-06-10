@@ -73,6 +73,45 @@ let dragActive = false;
 // no-ops because flush() reads live buffers and re-checks dragActive.
 let flushScheduled = false;
 
+/**
+ * Backstop against a permanently stuck reload gate. dnd-kit does not fire
+ * onDragEnd / onDragCancel when the <DndContext> unmounts mid-drag (a view or
+ * project switch) or when the window loses a pointerup (Windows alt-tab to an
+ * overlapping window). Either leaves dragActive stuck true, parking every
+ * agent-driven loadBoard() forever - the "MCP-created task only appears after
+ * the next drag" bug. The unmount cleanup in useBoardDragDrop and the blur
+ * flush below recover promptly; this timer is the last-resort guarantee that
+ * the gate cannot stay closed without a live drag. 30s is comfortably longer
+ * than any real drag (including hover-to-autoscroll), so a premature fire only
+ * costs one mid-drag reload's frame jitter, and the timer re-arms on the next
+ * drag.
+ */
+const DRAG_GATE_WATCHDOG_MS = 30_000;
+// hmr-safe: transient watchdog handle; resetCoalescerForHmr clears it, and a
+// drag never survives a module reload (the <DndContext> re-keys).
+let dragGateWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearDragGateWatchdog(): void {
+  if (dragGateWatchdogTimer !== null) {
+    clearTimeout(dragGateWatchdogTimer);
+    dragGateWatchdogTimer = null;
+  }
+}
+
+/**
+ * Flush the gate if the window loses focus mid-drag. A blurred window cannot
+ * receive the pointerup that ends a drag, so dnd-kit may never fire onDragEnd
+ * (it cancels on visibilitychange, but not on a plain blur such as alt-tab to
+ * an overlapping window or a DevTools focus steal). Exported for unit tests.
+ * Worst case if a real drag is mid-flight when focus is stolen: that one drag
+ * loses jitter protection for its remainder, a perf nicety, not correctness.
+ */
+export function flushDragGateOnWindowBlur(): void {
+  if (!dragActive) return;
+  console.warn('[reload-gate] window blur during active drag; flushing gate');
+  endBoardDrag();
+}
+
 function flush(): void {
   flushScheduled = false;
   // A microtask scheduled just before the drag began must not apply updates
@@ -156,6 +195,7 @@ export function enqueueSessionUpdate(thunk: () => void): void {
  */
 export function enqueueReload(key: ReloadKey, thunk: () => void): void {
   if (dragActive) {
+    console.debug('[reload-gate] parked reload', key, '(drag active, flushes on drag end)');
     pendingReloads.set(key, thunk);
     return;
   }
@@ -164,15 +204,39 @@ export function enqueueReload(key: ReloadKey, thunk: () => void): void {
 
 /** Mark the start of a board drag. While active, all queued updates are held. */
 export function beginBoardDrag(): void {
+  console.debug('[reload-gate] begin board drag');
   dragActive = true;
+  // Arm the stuck-gate backstop and listen for a focus-stealing blur that
+  // would swallow the drag's pointerup. Both clear in endBoardDrag.
+  clearDragGateWatchdog();
+  dragGateWatchdogTimer = setTimeout(() => {
+    console.warn(
+      '[reload-gate] watchdog fired after',
+      DRAG_GATE_WATCHDOG_MS,
+      'ms with no drag end; force-clearing a stuck drag gate',
+    );
+    endBoardDrag();
+  }, DRAG_GATE_WATCHDOG_MS);
+  if (typeof window !== 'undefined') {
+    // Remove before add so a stray begin without a paired end cannot stack a
+    // second listener, mirroring the clearDragGateWatchdog() re-arm above.
+    window.removeEventListener('blur', flushDragGateOnWindowBlur);
+    window.addEventListener('blur', flushDragGateOnWindowBlur);
+  }
 }
 
 /**
  * Mark the end of a board drag and flush everything that was held. Call this
  * synchronously at the top of handleDragEnd / handleDragCancel, before any
- * await, so the buffer stops growing while the async drop resolves.
+ * await, so the buffer stops growing while the async drop resolves. Idempotent:
+ * the watchdog or a blur flush may call it before the real drag end does.
  */
 export function endBoardDrag(): void {
+  console.debug('[reload-gate] end board drag, held reloads:', pendingReloads.size);
+  clearDragGateWatchdog();
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('blur', flushDragGateOnWindowBlur);
+  }
   dragActive = false;
   flush();
 }
@@ -188,6 +252,10 @@ export function resetCoalescerForHmr(): void {
   pendingEvents.length = 0;
   pendingThunks.length = 0;
   pendingReloads.clear();
+  clearDragGateWatchdog();
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('blur', flushDragGateOnWindowBlur);
+  }
   dragActive = false;
   flushScheduled = false;
 }

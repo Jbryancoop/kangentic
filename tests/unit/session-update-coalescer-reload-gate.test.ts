@@ -18,7 +18,7 @@
  * exported lifecycle directly. `resetCoalescerForHmr()` clears the module-scope
  * buffers between tests for isolation.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   useSessionStore: { getState: vi.fn() },
@@ -33,6 +33,7 @@ import {
   enqueueSessionUpdate,
   beginBoardDrag,
   endBoardDrag,
+  flushDragGateOnWindowBlur,
   resetCoalescerForHmr,
 } from '../../src/renderer/lib/session-update-coalescer';
 
@@ -125,5 +126,89 @@ describe('enqueueReload - reload gate', () => {
 
     expect(staleReload).not.toHaveBeenCalled();
     expect(freshReload).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The hardening leg: dnd-kit fires no dragEnd/dragCancel when the <DndContext>
+ * unmounts mid-drag or the window loses a pointerup, which would otherwise
+ * leave dragActive=true and park every agent-driven loadBoard() forever (the
+ * "MCP-created task only appears after the next drag" bug). Two structural
+ * guarantees recover the gate: a watchdog timer and a window-blur flush.
+ */
+describe('enqueueReload - stuck-gate recovery', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    warnSpy.mockRestore();
+  });
+
+  it('watchdog force-flushes a reload parked by an unpaired beginBoardDrag(), and clears the gate', () => {
+    const reload = vi.fn();
+    beginBoardDrag(); // no paired endBoardDrag - simulates a mid-drag unmount
+    enqueueReload('board', reload);
+    expect(reload).not.toHaveBeenCalled();
+
+    // A reload cannot be parked indefinitely: the watchdog fires after 30s.
+    vi.advanceTimersByTime(30_000);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalled();
+
+    // The gate is cleared, so a subsequent reload runs immediately.
+    const laterReload = vi.fn();
+    enqueueReload('board', laterReload);
+    expect(laterReload).toHaveBeenCalledTimes(1);
+  });
+
+  it('a paired drag clears the watchdog: nothing fires after drag end', () => {
+    const reload = vi.fn();
+    beginBoardDrag();
+    enqueueReload('board', reload);
+    endBoardDrag();
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    // The watchdog timer was cleared by endBoardDrag, so advancing past it
+    // neither warns nor re-runs anything.
+    vi.advanceTimersByTime(60_000);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('re-arms the watchdog per drag (only the second, unpaired drag trips it)', () => {
+    beginBoardDrag();
+    endBoardDrag();
+    const reload = vi.fn();
+    beginBoardDrag();
+    enqueueReload('board', reload);
+
+    vi.advanceTimersByTime(30_000);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('window-blur flush releases a reload parked during a drag', () => {
+    const reload = vi.fn();
+    beginBoardDrag();
+    enqueueReload('board', reload);
+    expect(reload).not.toHaveBeenCalled();
+
+    flushDragGateOnWindowBlur();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('window-blur flush is a no-op when no drag is active', () => {
+    const reload = vi.fn();
+    flushDragGateOnWindowBlur();
+    expect(warnSpy).not.toHaveBeenCalled();
+    // The gate is not active, so a reload runs immediately as usual.
+    enqueueReload('board', reload);
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });

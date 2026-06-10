@@ -52,6 +52,23 @@ const SAFE_CHANNELS = new Set<string>([
   'diagnostics:logAppend',
 ]);
 
+/**
+ * Outbound main -> renderer push channels whose args are safe to log in
+ * full. These are the agent-driven board invalidation pushes; their
+ * payloads are task / swimlane id + title + columnName + projectId, the
+ * same data class already allowed inbound via `task:list`. Kept separate
+ * from `SAFE_CHANNELS` because the traffic direction differs and the
+ * default-deny audit story stays clean per set.
+ */
+const SAFE_PUSH_CHANNELS = new Set<string>([
+  'task:createdByAgent',
+  'task:updatedByAgent',
+  'task:deletedByAgent',
+  'swimlane:updatedByAgent',
+  'backlog:changedByAgent',
+  'backlog:labelColorsChanged',
+]);
+
 const REDACTED = (channel: string) => ({ redacted: true as const, channel });
 
 interface IpcRecorderOptions {
@@ -60,10 +77,12 @@ interface IpcRecorderOptions {
 }
 
 let installed = false;
+let recorderOptions: IpcRecorderOptions | null = null;
 
 export function installIpcRecorder(options: IpcRecorderOptions): void {
   if (installed) return;
   installed = true;
+  recorderOptions = options;
 
   // Save the original implementation so we can delegate to it. Binding is
   // important because `ipcMain.handle` uses `this` internally.
@@ -114,6 +133,35 @@ export function installIpcRecorder(options: IpcRecorderOptions): void {
   }) as typeof ipcMain.handle;
 }
 
+/**
+ * Record an outbound main -> renderer push (`webContents.send`). The IPC
+ * recorder's `ipcMain.handle` patch only sees inbound invocations, so
+ * pushes are invisible without this explicit hook. Call it from the send
+ * chokepoint right after the send (or instead of it, with
+ * `outcome.dropped`, when the window was destroyed and the push never
+ * left). No-op until `installIpcRecorder` has run and the
+ * `developer.recordIpcTraffic` toggle is on, mirroring the inbound gate.
+ */
+export function recordPush(
+  channel: string,
+  args: unknown[],
+  outcome?: { dropped: true },
+): void {
+  if (!recorderOptions || !recorderOptions.enabled()) return;
+  const safe = SAFE_PUSH_CHANNELS.has(channel);
+  const entry: IpcLogEntry = {
+    ts: new Date().toISOString(),
+    channel,
+    direction: 'out',
+    args: safe ? args : REDACTED(channel),
+    durationMs: 0,
+    ...(outcome?.dropped
+      ? { error: { name: 'PushDropped', message: 'mainWindow destroyed; push not delivered' } }
+      : {}),
+  };
+  writeEntry(recorderOptions.getProjectRoot(), entry);
+}
+
 function writeEntry(projectRoot: string | null, entry: IpcLogEntry): void {
   if (!projectRoot) return;
   const date = entry.ts.slice(0, 10);
@@ -127,5 +175,16 @@ function writeEntry(projectRoot: string | null, entry: IpcLogEntry): void {
   queueAppend(file, JSON.stringify(entry) + '\n');
 }
 
-/** Exported for unit tests only. */
-export const __INTERNAL = { SAFE_CHANNELS };
+/**
+ * Exported for unit tests only. `resetForTest` lets the suite clear the
+ * install latch + captured options between `vi.resetModules` cycles so a
+ * `recordPush` call before install is exercised as a true no-op.
+ */
+export const __INTERNAL = {
+  SAFE_CHANNELS,
+  SAFE_PUSH_CHANNELS,
+  resetForTest(): void {
+    installed = false;
+    recorderOptions = null;
+  },
+};

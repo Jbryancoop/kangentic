@@ -168,7 +168,7 @@ export function registerDiagnosticsTools(server: McpServer, resolver: RequestRes
     'kangentic_get_ipc_log',
     {
       description:
-        'Read recent IPC handler invocations from `<projectRoot>/.kangentic/logs/ipc-<YYYY-MM-DD>.jsonl`. Each entry has channel, args, result, durationMs, and (on failure) error. Only available when Settings → Developer → Record IPC Traffic is on. Channels carrying secrets (settings writes, MCP config, auth) are stored as `{ redacted: true, channel }`. Pass `project` to inspect another project.',
+        'Read recent IPC traffic from `<projectRoot>/.kangentic/logs/ipc-<YYYY-MM-DD>.jsonl`. Each entry has channel, args, result, durationMs, and (on failure) error. Inbound `ipcMain.handle` invocations (renderer -> main) leave `direction` absent; outbound `webContents.send` pushes (main -> renderer, e.g. `task:createdByAgent` board-invalidation events) set `direction: "out"` and, when the push was dropped because the window was destroyed, an `error` with name `PushDropped`. Only available when Settings → Developer → Record IPC Traffic is on. Channels carrying secrets (settings writes, MCP config, auth) are stored as `{ redacted: true, channel }`. Pass `project` to inspect another project.',
       inputSchema: z.object({
         date: z
           .string()

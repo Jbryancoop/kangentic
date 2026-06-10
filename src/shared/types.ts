@@ -2580,21 +2580,35 @@ export interface ProcessMetrics {
 }
 
 /**
- * One IPC handler invocation. Persisted as NDJSON to
+ * One IPC traffic record. Persisted as NDJSON to
  * `<projectRoot>/.kangentic/logs/ipc-<YYYY-MM-DD>.jsonl` only when the
  * `developer.recordIpcTraffic` toggle is on. Channels in the
  * known-sensitive allowlist (settings writes, MCP config, auth) appear
  * with `args: { redacted: true, channel }` instead of the real payload.
+ *
+ * Two directions are recorded: inbound `ipcMain.handle` invocations
+ * (renderer -> main) and outbound `webContents.send` pushes (main ->
+ * renderer). Inbound entries leave `direction` absent so existing log
+ * readers see no change; outbound pushes set `direction: 'out'`.
  */
 export interface IpcLogEntry {
   ts: string;
   channel: string;
+  /**
+   * Traffic direction. Absent or `'in'` means an inbound `ipcMain.handle`
+   * invocation; `'out'` means a main -> renderer `webContents.send` push.
+   */
+  direction?: 'in' | 'out';
   /** Either the captured args array or a redaction placeholder. */
   args: unknown[] | { redacted: true; channel: string };
   /** Either the captured result or a redaction placeholder. Omitted on error. */
   result?: unknown | { redacted: true; channel: string };
+  /** Handler round-trip time in ms. Always `0` for outbound pushes (no round trip to measure). */
   durationMs: number;
-  /** When set, the handler threw; `result` is omitted. */
+  /**
+   * When set, the handler threw, or (for an outbound push) the push was
+   * dropped because the renderer window was destroyed. `result` is omitted.
+   */
   error?: { name: string; message: string };
 }
 

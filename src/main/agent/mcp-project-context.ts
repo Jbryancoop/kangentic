@@ -4,15 +4,36 @@
  * notifications) that the in-process MCP HTTP server fires when an
  * agent tool call mutates the board.
  */
+import type { BrowserWindow } from 'electron';
 import { IPC } from '../../shared/ipc-channels';
 import { getProjectDb } from '../db/database';
 import { autoSpawnForTask } from '../ipc/helpers';
 import { handleTaskMove } from '../ipc/handlers/task-move';
 import { WorktreeManager } from '../git/worktree-manager';
+import { recordPush } from '../diagnostics/ipc-recorder';
 import type { CommandContext } from './commands';
 import type { IpcContext } from '../ipc/ipc-context';
 import type { AppConfig } from '../../shared/types';
 import { RequestResolver } from './mcp-http/project-resolver';
+
+/**
+ * Send a main -> renderer push, guarding against a destroyed window and
+ * mirroring the send into the IPC traffic recorder. This is the single
+ * chokepoint for the agent-driven board-invalidation pushes issued from
+ * `buildCommandContextForProject`, so the dev IPC log
+ * (`kangentic_get_ipc_log`) sees the whole outbound pipeline that the
+ * renderer-side board reload depends on. A dropped push (window destroyed)
+ * is still recorded, with a `PushDropped` marker, so a lost event leaves a
+ * trace instead of vanishing silently.
+ */
+function sendToRenderer(mainWindow: BrowserWindow, channel: string, ...args: unknown[]): void {
+  if (mainWindow.isDestroyed()) {
+    recordPush(channel, args, { dropped: true });
+    return;
+  }
+  mainWindow.webContents.send(channel, ...args);
+  recordPush(channel, args);
+}
 
 /**
  * Resolve a project ID to a CommandContext, or return null if the project
@@ -32,11 +53,9 @@ export function buildCommandContextForProject(
     getProjectPath: () => projectPath,
 
     onTaskCreated: (task, columnName, swimlaneId) => {
-      if (!ipcContext.mainWindow.isDestroyed()) {
-        ipcContext.mainWindow.webContents.send(
-          IPC.TASK_CREATED_BY_AGENT, task.id, task.title, columnName, projectId,
-        );
-      }
+      sendToRenderer(
+        ipcContext.mainWindow, IPC.TASK_CREATED_BY_AGENT, task.id, task.title, columnName, projectId,
+      );
       // Auto-spawn fire-and-forget so the tool call returns immediately
       // and Claude doesn't block on a multi-second PTY spawn.
       autoSpawnForTask(ipcContext, projectId, task, swimlaneId).catch((err) => {
@@ -45,11 +64,7 @@ export function buildCommandContextForProject(
     },
 
     onTaskUpdated: (task) => {
-      if (!ipcContext.mainWindow.isDestroyed()) {
-        ipcContext.mainWindow.webContents.send(
-          IPC.TASK_UPDATED_BY_AGENT, task.id, task.title, projectId,
-        );
-      }
+      sendToRenderer(ipcContext.mainWindow, IPC.TASK_UPDATED_BY_AGENT, task.id, task.title, projectId);
     },
 
     onTaskDeleted: (task) => {
@@ -79,11 +94,7 @@ export function buildCommandContextForProject(
         });
       }
 
-      if (!ipcContext.mainWindow.isDestroyed()) {
-        ipcContext.mainWindow.webContents.send(
-          IPC.TASK_DELETED_BY_AGENT, task.id, task.title, projectId,
-        );
-      }
+      sendToRenderer(ipcContext.mainWindow, IPC.TASK_DELETED_BY_AGENT, task.id, task.title, projectId);
     },
 
     onTaskMove: async (input) => {
@@ -92,32 +103,22 @@ export function buildCommandContextForProject(
       const movedTask = getProjectDb(projectId)
         .prepare('SELECT id, title FROM tasks WHERE id = ?')
         .get(input.taskId) as { id: string; title: string } | undefined;
-      if (movedTask && !ipcContext.mainWindow.isDestroyed()) {
-        ipcContext.mainWindow.webContents.send(
-          IPC.TASK_UPDATED_BY_AGENT, movedTask.id, movedTask.title, projectId,
-        );
+      if (movedTask) {
+        sendToRenderer(ipcContext.mainWindow, IPC.TASK_UPDATED_BY_AGENT, movedTask.id, movedTask.title, projectId);
       }
     },
 
     onSwimlaneUpdated: (swimlane) => {
-      if (!ipcContext.mainWindow.isDestroyed()) {
-        ipcContext.mainWindow.webContents.send(
-          IPC.SWIMLANE_UPDATED_BY_AGENT, swimlane.id, swimlane.name, projectId,
-        );
-      }
+      sendToRenderer(ipcContext.mainWindow, IPC.SWIMLANE_UPDATED_BY_AGENT, swimlane.id, swimlane.name, projectId);
     },
 
     onBacklogChanged: () => {
-      if (!ipcContext.mainWindow.isDestroyed()) {
-        ipcContext.mainWindow.webContents.send(IPC.BACKLOG_CHANGED_BY_AGENT, projectId);
-      }
+      sendToRenderer(ipcContext.mainWindow, IPC.BACKLOG_CHANGED_BY_AGENT, projectId);
     },
 
     onLabelColorsChanged: (colors) => {
       ipcContext.configManager.save({ backlog: { labelColors: colors } } as Partial<AppConfig>);
-      if (!ipcContext.mainWindow.isDestroyed()) {
-        ipcContext.mainWindow.webContents.send(IPC.BACKLOG_LABEL_COLORS_CHANGED);
-      }
+      sendToRenderer(ipcContext.mainWindow, IPC.BACKLOG_LABEL_COLORS_CHANGED);
     },
   };
 }

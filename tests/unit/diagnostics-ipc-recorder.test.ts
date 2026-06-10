@@ -181,3 +181,88 @@ describe('ipc-recorder', () => {
     expect(entry.result).toBeUndefined();
   });
 });
+
+describe('ipc-recorder - outbound push recording', () => {
+  it('SAFE_PUSH_CHANNELS contains the agent-driven board-invalidation channels', async () => {
+    const { __INTERNAL } = await import('../../src/main/diagnostics/ipc-recorder');
+    expect(__INTERNAL.SAFE_PUSH_CHANNELS.has('task:createdByAgent')).toBe(true);
+    expect(__INTERNAL.SAFE_PUSH_CHANNELS.has('swimlane:updatedByAgent')).toBe(true);
+    expect(__INTERNAL.SAFE_PUSH_CHANNELS.has('backlog:changedByAgent')).toBe(true);
+    // A mutating inbound channel is not a safe push channel.
+    expect(__INTERNAL.SAFE_PUSH_CHANNELS.has('config:set')).toBe(false);
+  });
+
+  it('records a push with direction "out", full args, and zero duration when enabled', async () => {
+    const { installIpcRecorder, recordPush } = await import('../../src/main/diagnostics/ipc-recorder');
+    installIpcRecorder({
+      getProjectRoot: () => tempDirectory,
+      enabled: () => true,
+    });
+
+    recordPush('task:createdByAgent', ['task-id', 'Fix the bug', 'To Do', 'project-id']);
+
+    const entries = await readJsonlEntries('task:createdByAgent');
+    expect(entries).toHaveLength(1);
+    const entry = entries[0] as {
+      direction: string;
+      args: unknown;
+      durationMs: number;
+      error?: unknown;
+    };
+    expect(entry.direction).toBe('out');
+    expect(entry.args).toEqual(['task-id', 'Fix the bug', 'To Do', 'project-id']);
+    expect(entry.durationMs).toBe(0);
+    expect(entry.error).toBeUndefined();
+  });
+
+  it('does not write a push when enabled() is false', async () => {
+    const { installIpcRecorder, recordPush } = await import('../../src/main/diagnostics/ipc-recorder');
+    installIpcRecorder({
+      getProjectRoot: () => tempDirectory,
+      enabled: () => false,
+    });
+
+    recordPush('task:createdByAgent', ['task-id', 'Fix the bug', 'To Do', 'project-id']);
+
+    expect(await readJsonlEntries()).toEqual([]);
+  });
+
+  it('marks a dropped push (window destroyed) with a PushDropped error', async () => {
+    const { installIpcRecorder, recordPush } = await import('../../src/main/diagnostics/ipc-recorder');
+    installIpcRecorder({
+      getProjectRoot: () => tempDirectory,
+      enabled: () => true,
+    });
+
+    recordPush('task:createdByAgent', ['task-id', 'Fix the bug', 'To Do', 'project-id'], { dropped: true });
+
+    const entries = await readJsonlEntries('task:createdByAgent');
+    expect(entries).toHaveLength(1);
+    const entry = entries[0] as { direction: string; error: { name: string; message: string } };
+    expect(entry.direction).toBe('out');
+    expect(entry.error.name).toBe('PushDropped');
+  });
+
+  it('redacts args for a push channel not on the SAFE_PUSH_CHANNELS allowlist', async () => {
+    const { installIpcRecorder, recordPush } = await import('../../src/main/diagnostics/ipc-recorder');
+    installIpcRecorder({
+      getProjectRoot: () => tempDirectory,
+      enabled: () => true,
+    });
+
+    recordPush('session:data', ['secret terminal output']);
+
+    const entries = await readJsonlEntries('session:data');
+    expect(entries).toHaveLength(1);
+    const entry = entries[0] as { args: { redacted: boolean; channel: string } };
+    expect(entry.args).toEqual({ redacted: true, channel: 'session:data' });
+  });
+
+  it('is a no-op when recordPush is called before installIpcRecorder', async () => {
+    const { recordPush } = await import('../../src/main/diagnostics/ipc-recorder');
+    // No install in this test; vi.resetModules in beforeEach gives a fresh
+    // module with recorderOptions still null.
+    recordPush('task:createdByAgent', ['task-id', 'Fix the bug', 'To Do', 'project-id']);
+    expect(await readJsonlEntries()).toEqual([]);
+  });
+});

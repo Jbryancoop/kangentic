@@ -53,16 +53,20 @@ export function useAgentDrivenInvalidation(): void {
     let pendingBoardReload: ReturnType<typeof setTimeout> | null = null;
     let pendingBacklogReload: ReturnType<typeof setTimeout> | null = null;
     const scheduleBoardReload = () => {
+      console.debug('[agent-push] scheduling board reload (250ms debounce)', { superseded: pendingBoardReload !== null });
       if (pendingBoardReload !== null) clearTimeout(pendingBoardReload);
       pendingBoardReload = setTimeout(() => {
         pendingBoardReload = null;
+        console.debug('[agent-push] board reload debounce fired, enqueueing loadBoard');
         enqueueReload('board', () => useBoardStore.getState().loadBoard());
       }, 250);
     };
     const scheduleBacklogReload = () => {
+      console.debug('[agent-push] scheduling backlog reload (250ms debounce)', { superseded: pendingBacklogReload !== null });
       if (pendingBacklogReload !== null) clearTimeout(pendingBacklogReload);
       pendingBacklogReload = setTimeout(() => {
         pendingBacklogReload = null;
+        console.debug('[agent-push] backlog reload debounce fired, enqueueing loadBacklog');
         enqueueReload('backlog', () => useBacklogStore.getState().loadBacklog());
       }, 250);
     };
@@ -81,7 +85,13 @@ export function useAgentDrivenInvalidation(): void {
     if (tasks?.onCreatedByAgent) {
       cleanups.push(tasks.onCreatedByAgent((_taskId, taskTitle, columnName, createdByAgentProjectId) => {
         const activeProjectId = useProjectStore.getState().currentProject?.id;
-        if (!createdByAgentProjectId || createdByAgentProjectId === activeProjectId) {
+        const matchesActiveProject = !createdByAgentProjectId || createdByAgentProjectId === activeProjectId;
+        console.debug('[agent-push] task:createdByAgent received', {
+          pushProjectId: createdByAgentProjectId,
+          activeProjectId,
+          action: matchesActiveProject ? 'reload' : 'invalidate-cache',
+        });
+        if (matchesActiveProject) {
           scheduleBoardReload();
           scheduleBacklogReload();
         } else {
@@ -99,7 +109,13 @@ export function useAgentDrivenInvalidation(): void {
     if (tasks?.onUpdatedByAgent) {
       cleanups.push(tasks.onUpdatedByAgent((_taskId, taskTitle, updatedByAgentProjectId) => {
         const activeProjectId = useProjectStore.getState().currentProject?.id;
-        if (!updatedByAgentProjectId || updatedByAgentProjectId === activeProjectId) {
+        const matchesActiveProject = !updatedByAgentProjectId || updatedByAgentProjectId === activeProjectId;
+        console.debug('[agent-push] task:updatedByAgent received', {
+          pushProjectId: updatedByAgentProjectId,
+          activeProjectId,
+          action: matchesActiveProject ? 'reload' : 'invalidate-cache',
+        });
+        if (matchesActiveProject) {
           scheduleBoardReload();
         } else {
           invalidateProject(updatedByAgentProjectId);
@@ -114,7 +130,13 @@ export function useAgentDrivenInvalidation(): void {
     if (tasks?.onDeletedByAgent) {
       cleanups.push(tasks.onDeletedByAgent((_taskId, taskTitle, deletedByAgentProjectId) => {
         const activeProjectId = useProjectStore.getState().currentProject?.id;
-        if (!deletedByAgentProjectId || deletedByAgentProjectId === activeProjectId) {
+        const matchesActiveProject = !deletedByAgentProjectId || deletedByAgentProjectId === activeProjectId;
+        console.debug('[agent-push] task:deletedByAgent received', {
+          pushProjectId: deletedByAgentProjectId,
+          activeProjectId,
+          action: matchesActiveProject ? 'reload' : 'invalidate-cache',
+        });
+        if (matchesActiveProject) {
           scheduleBoardReload();
         } else {
           invalidateProject(deletedByAgentProjectId);
@@ -130,7 +152,13 @@ export function useAgentDrivenInvalidation(): void {
     if (swimlanes?.onUpdatedByAgent) {
       cleanups.push(swimlanes.onUpdatedByAgent((_swimlaneId, swimlaneName, updatedByAgentProjectId) => {
         const activeProjectId = useProjectStore.getState().currentProject?.id;
-        if (!updatedByAgentProjectId || updatedByAgentProjectId === activeProjectId) {
+        const matchesActiveProject = !updatedByAgentProjectId || updatedByAgentProjectId === activeProjectId;
+        console.debug('[agent-push] swimlane:updatedByAgent received', {
+          pushProjectId: updatedByAgentProjectId,
+          activeProjectId,
+          action: matchesActiveProject ? 'reload' : 'invalidate-cache',
+        });
+        if (matchesActiveProject) {
           scheduleBoardReload();
         } else {
           invalidateProject(updatedByAgentProjectId);
@@ -146,7 +174,13 @@ export function useAgentDrivenInvalidation(): void {
     if (backlog?.onChangedByAgent) {
       cleanups.push(backlog.onChangedByAgent((changedProjectId) => {
         const activeProjectId = useProjectStore.getState().currentProject?.id;
-        if (changedProjectId && changedProjectId !== activeProjectId) {
+        const isBackgroundProject = changedProjectId && changedProjectId !== activeProjectId;
+        console.debug('[agent-push] backlog:changedByAgent received', {
+          pushProjectId: changedProjectId,
+          activeProjectId,
+          action: isBackgroundProject ? 'invalidate-cache' : 'reload',
+        });
+        if (isBackgroundProject) {
           invalidateProject(changedProjectId);
           return;
         }
