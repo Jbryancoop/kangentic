@@ -154,7 +154,9 @@ Task moved between active columns (e.g., Planning → Code Review)
   → If auto_command configured on target: suspend and resume with command as prompt
 
 Task moved to Done
-  → Confirmation dialog (suppressible via skipDoneWorktreeConfirm)
+  → Confirmation dialog ONLY when the worktree has uncommitted files or unpushed
+    commits (or the git probe fails). A clean move is recoverable (branch +
+    session preserved, worktree restored on resume) and proceeds without asking.
   → Session suspended (PTY killed, DB record preserved)
   → Status: suspended
   → Local worktree directory deleted; worktree_path cleared in DB

@@ -42,13 +42,6 @@ async function launch(
   const page = await context.newPage();
 
   const preConfigScript = `
-    window.__mockConfigOverrides = Object.assign(
-      window.__mockConfigOverrides || {},
-      { skipDoneWorktreeConfirm: true }
-    );
-    if (typeof window.electronAPI !== 'undefined' && window.electronAPI.config) {
-      void window.electronAPI.config.set({ skipDoneWorktreeConfirm: true });
-    }
     window.__mockPreConfigure(function (state) {
       var ts = new Date().toISOString();
       state.projects.push({

@@ -130,14 +130,12 @@ export function BoardDialogs() {
         return (
           <ConfirmDialog
             title="Move to Done?"
-            variant={hasPendingChanges ? 'danger' : 'warning'}
+            // This dialog only opens when the probe found pending changes (or
+            // failed); a clean Done move is recoverable and skips confirmation
+            // entirely, so there is no "don't ask again" escape hatch here.
+            variant="danger"
             confirmLabel="Move"
             cancelLabel="Cancel"
-            // Hide the "don't ask again" escape hatch when there is real work
-            // at risk. The skip preference must never silence a destructive
-            // worktree delete - only a clean Done move should be skippable.
-            showDontAskAgain={!hasPendingChanges}
-            dontAskAgainLabel="Delete automatically in the future"
             message={
               <div className="space-y-2">
                 <p className="font-medium text-fg break-words">
@@ -153,7 +151,7 @@ export function BoardDialogs() {
                       )}
                       {unpushedCommitCount > 0 && (
                         <li>
-                          {unpushedCommitCount} unpushed commit{unpushedCommitCount !== 1 ? 's' : ''} will be lost
+                          {unpushedCommitCount} commit{unpushedCommitCount !== 1 ? 's' : ''} exist{unpushedCommitCount !== 1 ? '' : 's'} only on the local branch
                         </li>
                       )}
                     </ul>
@@ -193,10 +191,7 @@ export function BoardDialogs() {
                 </p>
               </div>
             }
-            onConfirm={(dontAskAgain) => {
-              if (dontAskAgain) updateConfig({ skipDoneWorktreeConfirm: true });
-              void confirmPendingDone();
-            }}
+            onConfirm={() => void confirmPendingDone()}
             onCancel={cancelPendingDone}
           />
         );

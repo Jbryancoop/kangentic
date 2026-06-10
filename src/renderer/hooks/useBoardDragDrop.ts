@@ -21,7 +21,6 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useBoardStore } from '../stores/board-store';
-import { useConfigStore } from '../stores/config-store';
 import { useToastStore } from '../stores/toast-store';
 import { beginBoardDrag, endBoardDrag } from '../lib/session-update-coalescer';
 import type { Task, Swimlane as SwimlaneType } from '../../shared/types';
@@ -80,6 +79,22 @@ function getInsertionIndex(
   }
 
   return pointerY < midY ? overIndex : overIndex + 1;
+}
+
+/**
+ * Compute the FlyingCard start rect from dnd-kit's measured initial rect plus
+ * the drag delta, so the card mounts exactly where the DragOverlay was released.
+ */
+function rectFromInitial(
+  initialRect: { left: number; top: number; width: number; height: number },
+  delta: { x: number; y: number },
+): { left: number; top: number; width: number; height: number } {
+  return {
+    left: initialRect.left + delta.x,
+    top: initialRect.top + delta.y,
+    width: initialRect.width,
+    height: initialRect.height,
+  };
 }
 
 export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDragDropParams): UseBoardDragDropResult {
@@ -418,46 +433,25 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
       .sort((a, b) => a.position - b.position);
     const targetPosition = getInsertionIndex(event, laneTasks, swimlaneIds);
 
-    // Done target: defer moveTask and fly the card into the drop zone.
-    // Moving to Done deletes the local worktree (branch + session preserved),
-    // so a confirmation dialog runs first. The user-config skip flag only
-    // suppresses the dialog when the worktree is clean - any uncommitted edits
-    // or unpushed commits force an unskippable confirm, since the worktree
-    // delete would destroy that work.
+    // Done target: fly the card into the drop zone immediately, then persist.
+    // Moving to Done deletes the local worktree directory, but the branch and
+    // session records are preserved and restored on resume, so a clean move is
+    // fully recoverable and needs no confirmation. We only confirm when the
+    // worktree has uncommitted files or unpushed commits (or the probe fails),
+    // since the directory delete would discard uncommitted work.
     const doneLane = swimlanes.find((swimlane) => swimlane.role === 'done');
     if (doneLane && targetSwimlaneId === doneLane.id && originalSwimlane) {
       const task = state.tasks.find((candidate) => candidate.id === taskId);
       if (!task) return;
 
-      // Hide the card from its source column synchronously, before the async
-      // git probe below. On release dnd-kit restores the original sortable card
-      // to full opacity in its source lane; for a worktree-backed task it would
-      // otherwise sit fully visible there for the ~100ms checkPendingChanges
-      // round-trip (and any gap before setCompletingTask runs), reading as a
-      // flash back to the source column. tasksPerLane filters completingTaskIds,
-      // so adding it now drops the card from every lane this same tick. The
-      // guard is released after the move settles (moveTask's finally) or on
-      // cancel (cancelPendingDone). See
+      // Hide the card from its source column synchronously. On release dnd-kit
+      // restores the original sortable card to full opacity in its source lane;
+      // tasksPerLane filters completingTaskIds, so adding it now drops the card
+      // from every lane this same tick. The guard is released after the move
+      // settles (moveTask's finally) or on cancel (cancelCompletion). See
       // .claude/rules/board-completing-task-chokepoint.md.
       addCompletingTaskId(taskId);
 
-      // Probe for unsaved work whenever a worktree exists. A missing
-      // worktree means there is nothing destructive to confirm - the move is
-      // purely an archive operation, and the dialog has nothing to warn about.
-      let pendingChanges = { uncommittedFileCount: 0, unpushedCommitCount: 0, hasPendingChanges: false };
-      if (task.worktree_path) {
-        try {
-          pendingChanges = await window.electronAPI.git.checkPendingChanges({ checkPath: task.worktree_path });
-        } catch {
-          // Treat git failures as "potentially has changes" - safer to ask
-          // than to silently destroy. Mirrors the To Do path in task-slice.ts.
-          pendingChanges = { uncommittedFileCount: 0, unpushedCommitCount: 0, hasPendingChanges: true };
-        }
-      }
-
-      const skipConfirm =
-        !task.worktree_path
-        || (useConfigStore.getState().config.skipDoneWorktreeConfirm && !pendingChanges.hasPendingChanges);
       const directInput = { taskId, targetSwimlaneId, targetPosition };
 
       // Capture where the DragOverlay was at drop time. Prefer dnd-kit's
@@ -468,34 +462,67 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
       // force the Done drop to bypass setCompletingTask, silently skipping
       // both the FlyingCard fly and the grow-in animation.
       const initialRect = active.rect.current.initial ?? stashedStartRect;
-      if (!initialRect) {
-        if (skipConfirm) {
-          await moveTask(directInput);
+
+      // No worktree: nothing destructive to confirm. Fly immediately and let
+      // the move persist when the animation finishes (gate pre-approved).
+      if (!task.worktree_path) {
+        if (initialRect) {
+          setCompletingTask({
+            taskId,
+            targetSwimlaneId,
+            targetPosition,
+            originSwimlaneId: originalSwimlane,
+            task,
+            startRect: rectFromInitial(initialRect, event.delta),
+          });
         } else {
-          requestDoneConfirmDirect(task, directInput, pendingChanges);
+          await moveTask(directInput);
         }
         return;
       }
 
-      const startRect = {
-        left: initialRect.left + event.delta.x,
-        top: initialRect.top + event.delta.y,
-        width: initialRect.width,
-        height: initialRect.height,
+      // Worktree-backed: mount the FlyingCard NOW (gated) so there is no blank
+      // window, then probe for unsaved work CONCURRENTLY with the fly. The gate
+      // holds back persistence until the fly finishes AND the probe clears (or
+      // the user confirms the dialog). The no-rect fallback can't animate, so it
+      // awaits the probe before deciding, as before.
+      const worktreePath = task.worktree_path;
+      const probe = async () => {
+        try {
+          return await window.electronAPI.git.checkPendingChanges({ checkPath: worktreePath });
+        } catch {
+          // Treat git failures as "potentially has changes" - safer to ask
+          // than to silently destroy. Mirrors the To Do path in task-slice.ts.
+          return { uncommittedFileCount: 0, unpushedCommitCount: 0, hasPendingChanges: true };
+        }
       };
+
+      if (!initialRect) {
+        const pendingChanges = await probe();
+        if (pendingChanges.hasPendingChanges) {
+          requestDoneConfirmDirect(task, directInput, pendingChanges);
+        } else {
+          await moveTask(directInput);
+        }
+        return;
+      }
+
       const completing = {
         taskId,
         targetSwimlaneId,
         targetPosition,
         originSwimlaneId: originalSwimlane,
         task,
-        startRect,
+        startRect: rectFromInitial(initialRect, event.delta),
       };
+      setCompletingTask(completing, { gated: true });
 
-      if (skipConfirm) {
-        setCompletingTask(completing);
-      } else {
+      const pendingChanges = await probe();
+      if (pendingChanges.hasPendingChanges) {
+        // Dialog appears mid-flight; confirm approves the gate, cancel restores.
         requestDoneConfirmAnimated(completing, pendingChanges);
+      } else {
+        useBoardStore.getState().approveCompletion(taskId);
       }
       return;
     }

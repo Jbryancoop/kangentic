@@ -3,21 +3,15 @@
  * WORKTREE-backed task dropped on Done.
  *
  * Distinct from move-to-done-reload-no-source-flash.spec.ts (a racing
- * loadBoard()): here the flash comes from the git probe. handleDragEnd's Done
- * path awaits window.electronAPI.git.checkPendingChanges(...) before calling
- * setCompletingTask whenever the task has a worktree_path. On release dnd-kit
- * restores the original sortable card to full opacity in its source lane, so for
- * the whole ~100ms probe round-trip the card sits fully visible there - the
- * flash. Tasks with no worktree skip the await and never flashed, which is why
- * /preview (worktree_path: null fixtures) looked clean while real dogfooding
- * tasks janked.
- *
- * The fix hides the card synchronously on drop (addCompletingTaskId, filtered by
- * KanbanBoard's tasksPerLane chokepoint) BEFORE the await. This spec seeds a
- * worktree task, slows the mock git probe so the await window is wide, drags to
- * Done, and asserts the source-lane card never returns to full opacity once the
- * drag has begun. Without the fix the card sits at opacity 1 during the probe
- * (red); with it the card is filtered out the same tick (green).
+ * loadBoard()): here the flash comes from the git probe window. On drop,
+ * setCompletingTask fires SYNCHRONOUSLY (the FlyingCard mounts immediately),
+ * while checkPendingChanges runs CONCURRENTLY. The card is removed from
+ * state.tasks at the same tick via addCompletingTaskId, so the source lane
+ * never shows it again. This spec seeds a worktree task, slows the mock git
+ * probe so the concurrent window is wide (400ms), drags to Done, and asserts
+ * the source-lane card never returns to full opacity once the drag has begun.
+ * Without the synchronous hide the card would sit at opacity 1 during the probe
+ * window (red); with it the card is filtered out the same commit (green).
  */
 import { test, expect } from '@playwright/test';
 import { chromium, type Browser, type Page } from '@playwright/test';
@@ -42,15 +36,8 @@ async function launch(): Promise<{ browser: Browser; page: Page }> {
   const page = await context.newPage();
 
   const preConfigScript = `
-    window.__mockConfigOverrides = Object.assign(
-      window.__mockConfigOverrides || {},
-      { skipDoneWorktreeConfirm: true }
-    );
-    if (typeof window.electronAPI !== 'undefined' && window.electronAPI.config) {
-      void window.electronAPI.config.set({ skipDoneWorktreeConfirm: true });
-    }
-    // Slow the git probe so the await window is observable, matching a real
-    // worktree's ~100ms checkPendingChanges round-trip.
+    // Slow the git probe so the concurrent window is observable (clean result,
+    // so no dialog appears - the card flies without interruption).
     window.__mockCheckPendingChangesDelayMs = ${PROBE_DELAY_MS};
     window.__mockPreConfigure(function (state) {
       var ts = new Date().toISOString();

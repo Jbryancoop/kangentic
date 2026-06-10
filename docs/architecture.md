@@ -483,12 +483,12 @@ All stores in `src/renderer/stores/`. They call `window.electronAPI.*` for IPC a
 
 ### BoardStore (`board-store.ts`)
 
-State: `tasks`, `swimlanes`, `archivedTasks`, `loading`, `completingTask`, `recentlyArchivedId`
+State: `tasks`, `swimlanes`, `archivedTasks`, `loading`, `completingTask`, `completingTaskIds`, `completionGates`, `recentlyArchivedId`
 
 - **Optimistic updates** -- all mutations update UI immediately, then sync via IPC. Errors revert via full `loadBoard()`.
 - **Stale move protection** -- `moveGeneration` counter prevents older async reloads from clobbering newer moves.
 - **Session cascade** -- after task move, reloads sessions to detect spawns/kills from transition engine. Auto-activates new sessions with toast notification.
-- **Completion animation** -- `setCompletingTask()` captures DOM rect, `finalizeCompletion()` triggers the actual move.
+- **Completion animation** -- `setCompletingTask()` mounts the FlyingCard with the captured drop rect; a per-task completion gate joins the fly finishing (`markCompletionAnimationDone`) and the move being approved (`approveCompletion`, after a clean worktree probe or a confirmed dialog), and `persistCompletion` runs the actual move once both signals land.
 
 ### SessionStore (`session-store.ts`)
 

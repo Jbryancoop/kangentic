@@ -22,7 +22,7 @@
  * Test strategy:
  *   - Task has worktree_path so checkPendingChanges IS called
  *   - checkPendingChanges returns clean (hasPendingChanges: false) so the
- *     dialog is suppressed under skipDoneWorktreeConfirm: true
+ *     animated path fires without a dialog (clean drops never show the dialog)
  *   - A Zustand subscriber installed before the drag records whether
  *     setCompletingTask was ever called (completingTaskSetCount > 0) and
  *     whether recentlyArchivedId reached the dragged task's id
@@ -46,17 +46,9 @@ async function launch(): Promise<{ browser: Browser; page: Page }> {
   const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
   const page = await context.newPage();
 
-  // skipDoneWorktreeConfirm: true so the animated path fires without a dialog.
-  // checkPendingChanges returns clean (hasPendingChanges: false) so skipConfirm
-  // evaluates to true even though a worktree exists.
+  // checkPendingChanges returns clean (hasPendingChanges: false) so the
+  // animated path fires without a dialog - clean drops never show the dialog.
   const preConfigScript = `
-    window.__mockConfigOverrides = Object.assign(
-      window.__mockConfigOverrides || {},
-      { skipDoneWorktreeConfirm: true }
-    );
-    if (typeof window.electronAPI !== 'undefined' && window.electronAPI.config) {
-      void window.electronAPI.config.set({ skipDoneWorktreeConfirm: true });
-    }
     window.__mockPreConfigure(function (state) {
       var ts = new Date().toISOString();
       state.projects.push({
@@ -213,10 +205,11 @@ async function dragTaskToColumn(page: Page, taskTitle: string, targetColumn: str
 }
 
 test.describe('Move to Done - worktree-path rect fallback', () => {
-  test('setCompletingTask fires when worktree_path is non-null and checkPendingChanges returns clean', async () => {
+  test('setCompletingTask fires when worktree_path is non-null and the probe returns clean', async () => {
     // This test covers the most representative failure mode of the original bug.
-    // With worktree_path set, checkPendingChanges is called, which caused a
-    // structural-sharing re-render mid-drag that cleared dnd-kit's initial rect.
+    // With worktree_path set, checkPendingChanges is called concurrently with
+    // setCompletingTask (which fires synchronously on drop). The probe causes a
+    // structural-sharing re-render mid-drag that could clear dnd-kit's initial rect.
     // The fix (dragStartRectRef snapshot) ensures setCompletingTask is still
     // called even when active.rect.current.initial is null at drop time.
     const { browser, page } = await launch();
@@ -249,11 +242,10 @@ test.describe('Move to Done - worktree-path rect fallback', () => {
     }
   });
 
-  test('checkPendingChanges is called for a task with a non-null worktree_path', async () => {
-    // Guards against a regression where the worktree guard is skipped
-    // (e.g. someone short-circuits based on the config flag alone before
-    // calling checkPendingChanges). If the IPC never fires, we cannot detect
-    // dirty worktrees and the safety net is silently removed.
+  test('the probe always fires for worktree tasks', async () => {
+    // Guards against a regression where the worktree probe is short-circuited
+    // before calling checkPendingChanges. If the IPC never fires, dirty
+    // worktrees cannot be detected and the safety net is silently removed.
     const { browser, page } = await launch();
 
     try {
@@ -275,7 +267,7 @@ test.describe('Move to Done - worktree-path rect fallback', () => {
 
       await dragTaskToColumn(page, 'Worktree Animate Me', 'Done');
 
-      // No dialog because skipDoneWorktreeConfirm=true AND clean worktree.
+      // No dialog because the probe returns clean (hasPendingChanges: false).
       // (intentional fixed wait - we cannot poll for non-occurrence)
       await page.waitForTimeout(1000);
       await expect(page.locator('text=Move to Done?')).toBeHidden();

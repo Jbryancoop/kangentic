@@ -65,7 +65,6 @@ These settings appear in both App Settings (as defaults) and Project Settings (a
 | `animationsEnabled` | boolean | `true` | Enable CSS keyframe animations (idle pulse, dialog fades, status bar pulses). Global-only. |
 | `statusBarVisible` | boolean | `true` | Show the status bar at the bottom of the window. Global-only. |
 | `skipDeleteConfirm` | boolean | `false` | Skip confirmation dialog on task delete. Written by the delete dialog's "don't ask again" checkbox. No longer surfaced in the Settings panel. |
-| `skipDoneWorktreeConfirm` | boolean | `false` | Skip the confirmation dialog when a task moves to Done. Written by the dialog's "don't ask again" checkbox. No longer surfaced in the Settings panel. |
 | `autoFocusIdleSession` | boolean | `false` | Auto-switch to session tab when agent goes idle. Idle tabs are always highlighted regardless of this setting. |
 | `restoreWindowPosition` | boolean | `true` | Remember window size and position between launches. Global-only. |
 | `hasCompletedFirstRun` | boolean | `false` | Whether the user has completed first-run onboarding. Auto-set, not shown in UI. |

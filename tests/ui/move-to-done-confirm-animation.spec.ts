@@ -1,33 +1,29 @@
 /**
  * Regression test: the animated fly path runs after the worktree-delete confirm
- * dialog is confirmed (requestDoneConfirmAnimated -> confirmPendingDone animated branch).
+ * dialog is confirmed (approveCompletion unlocks the gate set by the drop).
  *
  * Gap covered: the existing move-to-done-confirm.spec.ts only checks dialog
- * appearance/disappearance and the config flag; it does NOT assert that
- * `setCompletingTask` was actually called when the user clicks Move, and
- * therefore would NOT catch a regression where `confirmPendingDone`'s animated
- * branch was silently changed to call `moveTask` directly (skipping the fly
- * animation).
- *
- * The move-to-done-worktree-rect-fallback.spec.ts covers the skip=true
- * (no-dialog) animated path. This spec covers the skip=false animated path,
- * i.e. the path through the confirm dialog gate.
+ * appearance/disappearance; it does NOT assert that setCompletingTask was
+ * called before the dialog opened (the card is already in-flight) and that
+ * approveCompletion releases the persistence gate. This spec guards two things:
+ *   1. The card is already mounted (completingTaskSetCount >= 1) before the
+ *      user clicks Move - the FlyingCard mounts on drop, not on confirm.
+ *   2. The task is NOT archived until after the user confirms - the persistence
+ *      gate must hold while the dialog is open (dirty probe path).
  *
  * Test strategy:
  *   - Task has worktree_path non-null (so checkPendingChanges fires)
  *   - window.__mockPendingChangesResult forces hasPendingChanges: true so the
- *     confirm dialog always opens, even when skipDoneWorktreeConfirm is true
- *   - A Zustand subscriber installed before the drag records whether
- *     setCompletingTask was ever called (completingTaskSetCount > 0) and
- *     whether recentlyArchivedId reached the dragged task's id
- *   - The test drags to Done, confirms the dialog appears, clicks Move, then
- *     polls for both conditions and asserts the task landed in archivedTasks
+ *     confirm dialog always opens (dirty probes always require confirmation)
+ *   - A Zustand subscriber records completingTaskSetCount and recentlyArchivedId
+ *   - The test drags to Done, asserts the dialog is open AND the task is not yet
+ *     archived (gate held), clicks Move, then polls for archive completion
  *
  * Red-green reasoning:
- *   If confirmPendingDone's animated branch did NOT call setCompletingTask (e.g.
- *   someone swapped it to `await get().moveTask(pending.input)` like the direct
- *   branch does), then completingTaskSetCount would stay at 0 and the first
- *   expect.poll would fail. The test is therefore falsifiable at the critical point.
+ *   If approveCompletion did NOT release the gate (e.g. the handler was swapped
+ *   to a no-op), the task would never appear in archivedTasks and the final
+ *   expect.poll would time out. The persistence-gate assertion would fail if
+ *   the task was archived before the dialog was confirmed.
  */
 import { test, expect } from '@playwright/test';
 import { chromium, type Browser, type Page } from '@playwright/test';
@@ -46,19 +42,9 @@ async function launch(): Promise<{ browser: Browser; page: Page }> {
   const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
   const page = await context.newPage();
 
-  // skipDoneWorktreeConfirm: true so the dialog would normally be suppressed.
-  // __mockPendingChangesResult overrides checkPendingChanges to return
-  // hasPendingChanges: true - this forces the confirm dialog open regardless of
-  // the skip flag (dirty worktrees always require confirmation even when the user
-  // has opted into silent auto-delete for clean moves).
+  // __mockPendingChangesResult forces hasPendingChanges: true so the confirm
+  // dialog always opens - dirty probes always require confirmation.
   const preConfigScript = `
-    window.__mockConfigOverrides = Object.assign(
-      window.__mockConfigOverrides || {},
-      { skipDoneWorktreeConfirm: true }
-    );
-    if (typeof window.electronAPI !== 'undefined' && window.electronAPI.config) {
-      void window.electronAPI.config.set({ skipDoneWorktreeConfirm: true });
-    }
     window.__mockPendingChangesResult = {
       hasPendingChanges: true,
       uncommittedFileCount: 1,
@@ -220,12 +206,13 @@ async function dragTaskToColumn(page: Page, taskTitle: string, targetColumn: str
 }
 
 test.describe('Move to Done - confirm dialog animated path', () => {
-  test('clicking Move after the confirm dialog triggers setCompletingTask and archives the task', async () => {
-    // This is the gap test: the confirm dialog opens (requestDoneConfirmAnimated)
-    // and the user confirms (confirmPendingDone animated branch). We assert that
-    // confirmPendingDone's animated branch actually called setCompletingTask
-    // (which hands off to FlyingCard) and that the task ultimately lands in
-    // archivedTasks via finalizeCompletion -> moveTask -> recentlyArchivedId.
+  test('clicking Move after the confirm dialog releases the gate and archives the task', async () => {
+    // Under the new model: on drop, setCompletingTask fires synchronously
+    // (FlyingCard mounts, card removed from tasks). The probe runs concurrently.
+    // Because the probe returns dirty, a "Move to Done?" dialog opens WHILE the
+    // FlyingCard is already mid-flight. The persistence gate holds (the task is
+    // NOT archived while the dialog is open). Clicking Move calls approveCompletion
+    // which releases the gate, finalizeCompletion runs moveTask, the task archives.
     const { browser, page } = await launch();
 
     try {
@@ -238,12 +225,27 @@ test.describe('Move to Done - confirm dialog animated path', () => {
 
       await dragTaskToColumn(page, 'Confirm Then Fly', 'Done');
 
-      // The confirm dialog MUST open because __mockPendingChangesResult has
-      // hasPendingChanges: true, which overrides skipDoneWorktreeConfirm.
+      // The confirm dialog MUST open because __mockPendingChangesResult returns
+      // hasPendingChanges: true (dirty probes always require confirmation).
       await expect(page.locator('text=Move to Done?')).toBeVisible({ timeout: 3000 });
       await expect(page.locator('text=1 uncommitted file will be lost')).toBeVisible();
 
-      // Click the Move/confirm button - same selector as move-to-done-confirm.spec.ts.
+      // FlyingCard mounts on DROP (before confirm), so completingTaskSetCount
+      // must already be >= 1 while the dialog is still open.
+      const probeDuringDialog = await readAnimationProbe(page);
+      expect(probeDuringDialog.completingTaskSetCount).toBeGreaterThanOrEqual(1);
+
+      // PERSISTENCE GATE: the task must NOT be archived while the dialog is
+      // open - the gate must hold until the user confirms.
+      const isArchivedBeforeConfirm = await page.evaluate(async (taskId: string) => {
+        const archived = await (window as unknown as {
+          electronAPI: { tasks: { listArchived: () => Promise<{ id: string }[]> } };
+        }).electronAPI.tasks.listArchived();
+        return archived.some((archivedTask) => archivedTask.id === taskId);
+      }, TASK_ID);
+      expect(isArchivedBeforeConfirm).toBe(false);
+
+      // Click the Move/confirm button to release the gate.
       await page.locator('button:has-text("Move")').first().click();
 
       // Dialog must close immediately.
@@ -257,11 +259,6 @@ test.describe('Move to Done - confirm dialog animated path', () => {
         .toBe(TASK_ID);
 
       const probe = await readAnimationProbe(page);
-      // setCompletingTask was called at least once, proving the animated entry
-      // path ran (confirmPendingDone animated branch -> setCompletingTask ->
-      // FlyingCard -> finalizeCompletion). If this is 0, the animated branch
-      // was bypassed and the animation was silently skipped.
-      expect(probe.completingTaskSetCount).toBeGreaterThanOrEqual(1);
       // recentlyArchivedId reached the task id, proving finalizeCompletion ran
       // the success path that sets recentlyArchivedId (drives .grow-in).
       expect(probe.seenRecentlyArchivedIds).toContain(TASK_ID);

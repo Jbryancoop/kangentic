@@ -110,7 +110,6 @@
     hotkeyOverrides: {},
     hasCompletedFirstRun: true,
     skipDeleteConfirm: false,
-    skipDoneWorktreeConfirm: false,
     skipBoardConfigConfirm: false,
     autoFocusIdleSession: false,
     autoNameAskedTaskIds: [],

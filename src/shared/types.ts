@@ -1118,7 +1118,6 @@ export interface AppConfig {
 
   hasCompletedFirstRun: boolean;
   skipDeleteConfirm: boolean;
-  skipDoneWorktreeConfirm: boolean;
   skipBoardConfigConfirm: boolean;
   autoFocusIdleSession: boolean;
   /** Task IDs that have already been offered an auto-rename suggestion. Persisted so a
@@ -1236,7 +1235,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   hasCompletedFirstRun: false,
   skipDeleteConfirm: false,
-  skipDoneWorktreeConfirm: false,
   skipBoardConfigConfirm: false,
   autoFocusIdleSession: false,
   autoNameAskedTaskIds: [],

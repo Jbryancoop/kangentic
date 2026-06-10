@@ -77,13 +77,21 @@ const SortableSwimlane = React.memo(function SortableSwimlane({ swimlane, tasks 
  *  the only element in motion on release - there is no snap-back-to-origin
  *  overlay clone competing with it.
  *
- *  Fallback timer guarantees finalizeCompletion() fires even when
- *  onTransitionEnd never does (drop zone not in DOM, propertyName mismatch,
- *  element scrolled offscreen). Without this, a missed transitionend leaves
- *  completingTask set forever and the card stuck on screen. */
+ *  Frame 0 matches the DragOverlay's last frame exactly (rotate(3deg) at opacity
+ *  0.9, see `.drag-overlay` in index.css) so the overlay->FlyingCard handoff has
+ *  no visible tilt/dim step; the fly un-rotates as part of the motion.
+ *
+ *  This card mounts the instant a Done drop is detected (setCompletingTask runs
+ *  before the worktree probe), but the move does NOT persist here. The card only
+ *  REPORTS that its fly finished via markCompletionAnimationDone; the completion
+ *  gate joins that with move approval (probe clean / dialog confirmed) and
+ *  persists once both land. The fallback timer guarantees the animation-done
+ *  signal fires even when onTransitionEnd never does (drop zone not in DOM,
+ *  propertyName mismatch, element scrolled offscreen), so a missed transitionend
+ *  can never leave completingTask set forever with the card stuck on screen. */
 function FlyingCard() {
   const completingTask = useBoardStore((s) => s.completingTask);
-  const finalizeCompletion = useBoardStore((s) => s.finalizeCompletion);
+  const markCompletionAnimationDone = useBoardStore((s) => s.markCompletionAnimationDone);
   const [flying, setFlying] = React.useState(false);
   const fallbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // Translate vector from the start rect to the Done drop-zone center, measured
@@ -136,22 +144,22 @@ function FlyingCard() {
       requestAnimationFrame(() => {
         setFlying(true);
         // When the drop zone isn't in the DOM, no transition will run and
-        // onTransitionEnd will never fire. Finalize immediately so the move
-        // still persists and the card unmounts. Otherwise arm a 700ms
-        // fallback (500ms transition + 200ms safety margin).
+        // onTransitionEnd will never fire. Signal animation-done immediately so
+        // the gate can persist (once approved) and the card unmounts. Otherwise
+        // arm a 700ms fallback (500ms transition + 200ms safety margin).
         if (!hasTarget) {
-          finalizeCompletion();
+          markCompletionAnimationDone(completingTask.taskId);
         } else {
           fallbackTimerRef.current = setTimeout(() => {
             fallbackTimerRef.current = null;
-            finalizeCompletion();
+            markCompletionAnimationDone(completingTask.taskId);
           }, 700);
         }
       });
     });
 
     return clearFallback;
-  }, [completingTask, finalizeCompletion, clearFallback]);
+  }, [completingTask, markCompletionAnimationDone, clearFallback]);
 
   if (!completingTask) return null;
 
@@ -177,15 +185,18 @@ function FlyingCard() {
     zIndex: 9999,
     pointerEvents: 'none',
     willChange: 'transform, opacity',
-    opacity: flying ? 0 : 0.85,
+    // Frame 0 (flying === false) matches `.drag-overlay` exactly (opacity 0.9,
+    // rotate(3deg)) so the overlay->FlyingCard swap is seamless; the fly then
+    // un-rotates and shrinks toward the Done drop zone.
+    opacity: flying ? 0 : 0.9,
     transition: reduceMotion
       ? 'opacity 150ms ease-out'
       : 'transform 500ms cubic-bezier(0.4, 0, 0.2, 1), opacity 500ms ease-in',
     transform: reduceMotion
       ? undefined
       : flying
-        ? `translate3d(${delta.dx}px, ${delta.dy}px, 0) scale(0.6)`
-        : 'translate3d(0, 0, 0) scale(1)',
+        ? `translate3d(${delta.dx}px, ${delta.dy}px, 0) scale(0.6) rotate(0deg)`
+        : 'translate3d(0, 0, 0) scale(1) rotate(3deg)',
   };
 
   return (
@@ -195,11 +206,11 @@ function FlyingCard() {
       onTransitionEnd={(e) => {
         // Transform and opacity share a duration and finish together in the
         // full-motion path; the reduced-motion path animates opacity only.
-        // finalizeCompletion is idempotent (clears completingTask at entry and
-        // returns early on re-entry), so a double fire is harmless.
+        // markCompletionAnimationDone is idempotent (no-op once the gate's
+        // animationDone flag is set), so a double fire is harmless.
         if (e.propertyName === 'transform' || e.propertyName === 'opacity') {
           clearFallback();
-          finalizeCompletion();
+          markCompletionAnimationDone(completingTask.taskId);
         }
       }}
     >
@@ -374,7 +385,9 @@ export function KanbanBoard() {
             useBoardDragDrop's resolveDropKeyframes. */}
         <DragOverlay dropAnimation={dropAnimation} style={{ pointerEvents: 'none', willChange: 'transform' }}>
           {activeTask ? (
-            <div className="drag-overlay" style={{ opacity: 0.9 }}>
+            // Appearance (opacity 0.9, rotate(3deg)) lives in `.drag-overlay`
+            // (index.css) so the FlyingCard frame 0 can match it exactly.
+            <div className="drag-overlay">
               <TaskCard task={activeTask} isDragOverlay />
             </div>
           ) : null}

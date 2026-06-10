@@ -24,6 +24,8 @@ export interface CompletingTask {
   startRect: { left: number; top: number; width: number; height: number };
 }
 
+export type { CompletionGate } from './completion-gate';
+
 /**
  * Done-drop confirmation payload. Two shapes:
  *   - `animated`: the usual drop flow, with a fly-into-Done animation.

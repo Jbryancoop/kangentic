@@ -10,7 +10,9 @@
  *
  *   1. finalizeCompletion releases completingTaskIds even when moveTask rejects.
  *   2. setCompletingTask atomically adds to completingTaskIds AND removes the
- *      task from state.tasks in a single set() call.
+ *      task from state.tasks in a single set() call. When called without the
+ *      { gated: true } second arg the move is pre-approved (ungated), so
+ *      finalizeCompletion persists immediately - matching direct store use.
  *   3. addCompletingTaskId / removeCompletingTaskId no-op on redundant calls
  *      (return same Set reference, don't allocate).
  *   4. setCompletingTask(null) does NOT clear completingTaskIds - only
@@ -46,10 +48,6 @@ async function launch(): Promise<{ browser: Browser; page: Page }> {
   const page = await context.newPage();
 
   const preConfigScript = `
-    window.__mockConfigOverrides = Object.assign(
-      window.__mockConfigOverrides || {},
-      { skipDoneWorktreeConfirm: true }
-    );
     window.__mockPreConfigure(function (state) {
       var ts = new Date().toISOString();
       state.projects.push({
@@ -473,7 +471,7 @@ test.describe('TaskCompletionSlice - state machine invariants', () => {
       expect(afterA.completingTaskIds).toContain(TASK_A_ID);
 
       // Trigger task B completing (this calls setCompletingTask, which calls
-      // finalizeCompletion on the prior completing task first)
+      // markCompletionAnimationDone on the prior completing task first)
       await buildCompletingTask(page, TASK_B_ID);
 
       const afterB = await readCompletionState(page);
@@ -583,9 +581,10 @@ test.describe('FlyingCard - timer and immediate-finalize paths', () => {
       await buildCompletingTask(page, TASK_A_ID);
 
       // Immediately replace with task B. setCompletingTask detects the in-flight
-      // prev task and calls finalizeCompletion() for it synchronously before
-      // setting the new task. The FlyingCard effect cleanup for task A then
-      // fires (clearing any armed timer) before the new effect for task B runs.
+      // prev task and calls markCompletionAnimationDone() for it synchronously
+      // before setting the new task (an ungated prior gate persists at once).
+      // The FlyingCard effect cleanup for task A then fires (clearing any armed
+      // timer) before the new effect for task B runs.
       await buildCompletingTask(page, TASK_B_ID);
 
       // Wait for both completions to settle
@@ -603,9 +602,10 @@ test.describe('FlyingCard - timer and immediate-finalize paths', () => {
       });
 
       // Exactly 2 tasks.move calls are expected: one for task A (via the
-      // synchronous finalizeCompletion triggered by setCompletingTask(B)) and
-      // one for task B (via its own fallback timer or transitionend). A stale
-      // timer firing after clearFallback would cause a third call.
+      // synchronous markCompletionAnimationDone triggered by setCompletingTask(B),
+      // which persists the pre-approved prior gate) and one for task B (via its
+      // own fallback timer or transitionend). A stale timer firing after
+      // clearFallback would cause a third call.
       expect(moveCallCount).toBeLessThanOrEqual(2);
 
       const final = await readCompletionState(page);

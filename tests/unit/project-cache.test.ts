@@ -70,7 +70,6 @@ function makeMinimalConfig(): AppConfig {
     backlog: { priorities: [], labelColors: {} },
     hasCompletedFirstRun: true,
     skipDeleteConfirm: false,
-    skipDoneWorktreeConfirm: false,
     skipBoardConfigConfirm: false,
     autoFocusIdleSession: false,
     autoNameAskedTaskIds: [],
