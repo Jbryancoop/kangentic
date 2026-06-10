@@ -36,7 +36,7 @@ import { spawnAgent } from '../../src/main/ipc/helpers/agent-spawn';
 const TASK_ID = 'task-aaa00001';
 const EXECUTING_LANE_ID = 'lane-executing';
 const FRESH_PTY_SESSION_ID = 'pty-fresh-1';
-const CONTINUATION = 'Your plan was approved. Proceed with the implementation.';
+const CONTINUATION = 'Proceed with implementing the approved plan.';
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {

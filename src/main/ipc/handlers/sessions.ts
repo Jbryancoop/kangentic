@@ -600,17 +600,21 @@ export function registerSessionHandlers(context: IpcContext): void {
     };
   });
 
-  // Auto-move task when agent exits plan mode (ExitPlanMode tool).
+  // Auto-move task once the user APPROVES the plan (ExitPlanMode completes).
+  // The upstream gate fires `plan-exit` only on the tool's PostToolUse, which
+  // the CLI emits solely on approval; a rejected plan emits no completion, so
+  // this handler never runs and the task stays in Planning.
   //
   // When the destination column changes the effective permission mode (the
   // common Planning -> Executing pipeline), the move suspends the PTY and
-  // respawns it with --resume plus the destination's CLI flags. The live
-  // ExitPlanMode approval dialog dies with the PTY, so the resumed session
-  // needs an explicit go-ahead: this continuation is delivered as the
-  // resume's first message. Plain English, agent-agnostic. A destination
-  // auto_command takes precedence over it.
+  // respawns it with --resume plus the destination's CLI flags. A bare
+  // --resume leaves the CLI idle waiting for input, so the resumed session
+  // needs an explicit first message: this continuation. Because the move now
+  // happens only after genuine approval, the wording is factually accurate.
+  // Plain English, agent-agnostic. A destination auto_command takes
+  // precedence over it.
   const PLAN_EXIT_CONTINUATION_PROMPT =
-    'Your plan was approved. Proceed with the implementation.';
+    'Proceed with implementing the approved plan.';
   context.sessionManager.on('plan-exit', async (sessionId: string) => {
     // Use the session's own projectId -- not the singleton, which may have
     // changed if the user switched projects while the agent was running.

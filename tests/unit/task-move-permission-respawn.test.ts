@@ -332,7 +332,7 @@ describe('handleTaskMove permission-mode delta respawn', () => {
     const taskRepo = makeTaskRepo();
     const context = makeContext(taskRepo, swimlaneRepo);
 
-    const continuation = 'Your plan was approved. Proceed with the implementation.';
+    const continuation = 'Proceed with implementing the approved plan.';
     await handleTaskMove(
       context as never,
       { taskId: 'task-aaa00001', targetSwimlaneId: EXECUTING_LANE_ID, targetPosition: 0 },

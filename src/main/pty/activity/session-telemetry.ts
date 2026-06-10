@@ -363,12 +363,14 @@ export class SessionTelemetry {
   }
 
   /**
-   * Detect `ExitPlanMode` tool invocations. Uses ToolStart (PreToolUse)
-   * because ExitPlanMode is a mode-transition tool that may not fire
-   * PostToolUse.
+   * Detect approved `ExitPlanMode` completions. Uses ToolEnd (PostToolUse)
+   * because the tool only resolves when the user approves the plan; on
+   * rejection ("keep planning") no PostToolUse fires and the session stays
+   * in plan mode. ToolStart fires at invocation, BEFORE the user decides,
+   * and must not trigger the handoff (it would fabricate approval).
    */
   private detectExitPlanMode(sessionId: string, event: SessionEvent): void {
-    if (event.type !== EventType.ToolStart) return;
+    if (event.type !== EventType.ToolEnd) return;
     if (event.tool !== AgentTool.ExitPlanMode) return;
     this.callbacks.onPlanExit(sessionId);
   }
@@ -536,7 +538,7 @@ export class SessionTelemetry {
    *   - `maybeSuppressPtyTracker` once a hooks_and_pty agent delivers a
    *     thinking signal
    *   - `detectExitPlanMode` fires plan-exit when ExitPlanMode tool
-   *     invoked
+   *     completes (user approved the plan)
    *   - activity engine processes the event (counters + predicate)
    *   - bg-shell watcher baseline re-anchors on BackgroundShellStart
    */

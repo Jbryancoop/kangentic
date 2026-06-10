@@ -137,10 +137,12 @@ When a suspended task moves to an active column:
   and `--effort`. A column move that changes the effective permission mode
   forces this suspend + respawn cycle, because no adapter can switch
   permission mode on a live session.
-- A plan-exit auto-move (Planning -> Executing) passes a continuation prompt
-  ("Your plan was approved. Proceed with the implementation.") delivered as
-  the resumed session's first message when the destination column has no
-  `auto_command`; the `auto_command` wins when present.
+- A plan-exit auto-move (Planning -> Executing), triggered when the user
+  approves the plan (the `ExitPlanMode` tool completes, not when the agent
+  merely invokes it), passes a continuation prompt
+  ("Proceed with implementing the approved plan.") delivered as the resumed
+  session's first message when the destination column has no `auto_command`;
+  the `auto_command` wins when present.
 
 ## Crash Recovery (Session Recovery)
 

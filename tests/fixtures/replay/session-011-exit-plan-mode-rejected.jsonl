@@ -1,0 +1,14 @@
+{"ts":1781042800000,"type":"session_start","hookContext":"{}"}
+{"ts":1781042805196,"type":"subagent_stop","detail":"Plan"}
+{"ts":1781042805357,"type":"tool_end","tool":"Agent"}
+{"ts":1781042871977,"type":"tool_start","tool":"Write","detail":"C:\\Users\\dev\\.claude\\plans\\task-title-planning-to-executing-crystalline-gadget.md"}
+{"ts":1781042878512,"type":"tool_end","tool":"Write"}
+{"ts":1781042887185,"type":"tool_start","tool":"ToolSearch","detail":"select:ExitPlanMode"}
+{"ts":1781042890057,"type":"tool_end","tool":"ToolSearch"}
+{"ts":1781042902356,"type":"tool_start","tool":"ExitPlanMode"}
+{"ts":1781042904088,"type":"idle","detail":"permission"}
+{"ts":1781042942979,"type":"prompt"}
+{"ts":1781042955965,"type":"tool_start","tool":"Read","detail":"C:\\Users\\dev\\Documents\\GitHub\\kangentic\\src\\main\\ipc\\handlers\\task-move.ts"}
+{"ts":1781042960495,"type":"tool_end","tool":"Read"}
+{"ts":1781042969451,"type":"tool_start","tool":"Edit","detail":"C:\\Users\\dev\\Documents\\GitHub\\kangentic\\src\\main\\ipc\\handlers\\task-move.ts"}
+{"ts":1781042970276,"type":"tool_end","tool":"Edit"}
