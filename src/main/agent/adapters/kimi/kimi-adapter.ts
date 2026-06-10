@@ -5,6 +5,7 @@ import { AgentDetector } from '../../shared/agent-detector';
 import { standardUnixFallbackPaths } from '../../shared/fallback-paths';
 import { KimiCommandBuilder } from './command-builder';
 import { KimiSessionHistoryParser } from './session-history-parser';
+import { migrateKimiProjectData } from './project-relocation';
 import { discoverKimiCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
@@ -231,6 +232,17 @@ export class KimiAdapter implements AgentAdapter {
       prompt: buildSummarizePrompt(prompt),
       cwd,
     });
+  }
+
+  /**
+   * Kimi keys sessions to md5(work_dir) under ~/.kimi/sessions/ and records
+   * work_dirs[].path in ~/.kimi/kimi.json, both outside the project folder.
+   * Rename the md5 directories and rewrite the work-dir paths so resume keeps
+   * working after a relocation. Best-effort and non-destructive; see
+   * migrateKimiProjectData.
+   */
+  async onProjectRelocated(oldPath: string, newPath: string): Promise<void> {
+    await migrateKimiProjectData(oldPath, newPath);
   }
 }
 

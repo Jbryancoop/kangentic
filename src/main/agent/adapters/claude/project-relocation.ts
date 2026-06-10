@@ -2,6 +2,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { toForwardSlash, replacePathPrefix } from '../../../../shared/paths';
+import {
+  collectRelocationPairs,
+  renameOrMergeDirectory,
+  atomicWriteFileWithBackup,
+  type RelocationPathPair,
+} from '../../shared/relocation-utils';
 import { claudeProjectSlug } from './transcript-parser';
 import { withClaudeJsonLock } from './trust-manager';
 
@@ -22,7 +28,7 @@ import { withClaudeJsonLock } from './trust-manager';
  * under `<project>/.kangentic/worktrees/`, so both stores hold one entry per
  * cwd. The worktrees move with the project folder, so we reconstruct their old
  * paths by listing the relocated folder; deleted worktrees that still have a
- * `~/.claude.json` key are caught by scanning the keys directly.
+ * `~/.claude.json` key are caught by passing those keys as additional candidates.
  *
  * Safety: best-effort and non-destructive. Directories are renamed or merged
  * (never deleted); `~/.claude.json` is backed up to `~/.claude.json.kangentic-backup`
@@ -44,81 +50,41 @@ export async function migrateClaudeProjectData(oldProjectPath: string, newProjec
   return withClaudeJsonLock(() => migrateClaudeProjectDataSync(oldProjectPath, newProjectPath));
 }
 
-interface PathPair {
-  oldAbsolute: string;
-  newAbsolute: string;
-}
-
 function migrateClaudeProjectDataSync(oldProjectPath: string, newProjectPath: string): void {
   const oldResolved = path.resolve(oldProjectPath);
   const newResolved = path.resolve(newProjectPath);
 
-  const pairs = collectMigrationPairs(oldResolved, newResolved);
+  const pairs = collectRelocationPairs(oldResolved, newResolved, readClaudeJsonProjectKeys());
   migrateTranscriptDirectories(pairs);
   rewriteClaudeJson(oldResolved, newResolved);
 }
 
 /**
- * Collect every (oldAbsolute, newAbsolute) pair whose Claude data must move:
- * the project root, every worktree found on disk under the relocated folder,
- * and every `~/.claude.json` projects key that resolves under the old project
- * path (catches worktrees deleted from disk whose keys/transcripts persist).
- * Deduplicated by the forward-slash form of the resolved old path.
+ * Read the `~/.claude.json` projects keys so worktrees deleted from disk (whose
+ * keys/transcripts persist) are still migrated. Returns [] when the file is
+ * missing or unparsable.
  */
-function collectMigrationPairs(oldResolved: string, newResolved: string): PathPair[] {
-  const pairs = new Map<string, PathPair>();
-  const addPair = (oldAbsolute: string, newAbsolute: string): void => {
-    pairs.set(toForwardSlash(path.resolve(oldAbsolute)), {
-      oldAbsolute: path.resolve(oldAbsolute),
-      newAbsolute: path.resolve(newAbsolute),
-    });
-  };
-
-  // 1. Project root.
-  addPair(oldResolved, newResolved);
-
-  // 2. Worktrees present on disk. They moved with the folder, so listing the
-  //    NEW location reconstructs the OLD paths via the same relative subpath.
-  try {
-    const worktreesRoot = path.join(newResolved, '.kangentic', 'worktrees');
-    for (const entry of fs.readdirSync(worktreesRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      addPair(
-        path.join(oldResolved, '.kangentic', 'worktrees', entry.name),
-        path.join(newResolved, '.kangentic', 'worktrees', entry.name),
-      );
-    }
-  } catch {
-    // No worktrees directory (or unreadable): nothing to add from disk.
-  }
-
-  // 3. ~/.claude.json keys under the old path (covers worktrees deleted from
-  //    disk). Exact prefix matching via replacePathPrefix, never slug-prefix
-  //    string matching (`.` also maps to `-`, ambiguous against siblings).
+function readClaudeJsonProjectKeys(): string[] {
   try {
     const claudeJsonPath = path.join(os.homedir(), '.claude.json');
     const data = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8')) as Record<string, unknown>;
     const projects = data.projects;
     if (projects && typeof projects === 'object') {
-      for (const key of Object.keys(projects)) {
-        const rewritten = replacePathPrefix(key, oldResolved, newResolved);
-        if (rewritten) addPair(key, rewritten);
-      }
+      return Object.keys(projects);
     }
   } catch {
     // Missing or unparsable ~/.claude.json: keys handled (or skipped) later.
   }
-
-  return [...pairs.values()];
+  return [];
 }
 
 /**
  * Rename each pair's transcript directory under `~/.claude/projects/` from the
  * old slug to the new slug. When the target already exists (the user opened
- * Claude at the new location before relocating in Kangentic), merge the source
- * entries in rather than skipping, so old transcripts are never orphaned.
+ * Claude at the new location before relocating in Kangentic), entries are merged
+ * in rather than skipped, so old transcripts are never orphaned.
  */
-function migrateTranscriptDirectories(pairs: PathPair[]): void {
+function migrateTranscriptDirectories(pairs: RelocationPathPair[]): void {
   const projectsRoot = path.join(os.homedir(), '.claude', 'projects');
 
   for (const pair of pairs) {
@@ -126,20 +92,7 @@ function migrateTranscriptDirectories(pairs: PathPair[]): void {
       const sourceDir = resolveSourceTranscriptDir(projectsRoot, pair.oldAbsolute);
       if (!sourceDir) continue; // No transcripts for this cwd; common, skip silently.
       const targetDir = path.join(projectsRoot, claudeProjectSlug(pair.newAbsolute));
-      if (sourceDir === targetDir) continue;
-
-      if (!fs.existsSync(targetDir)) {
-        // The existsSync guard is load-bearing on Windows: renaming a directory
-        // ONTO an existing directory fails there (EPERM/ENOTEMPTY). Only the
-        // absent-target case is a plain rename; the collision case merges below.
-        fs.renameSync(sourceDir, targetDir);
-        continue;
-      }
-
-      // Target exists: merge per entry. Transcript filenames are session UUIDs,
-      // so collisions are effectively impossible; any colliding entry is left
-      // in the source rather than overwritten.
-      mergeTranscriptDir(sourceDir, targetDir);
+      renameOrMergeDirectory(sourceDir, targetDir);
     } catch (err) {
       console.warn(`[CLAUDE_RELOCATE] Failed to migrate transcripts for ${pair.oldAbsolute}:`, err);
     }
@@ -163,21 +116,6 @@ function resolveSourceTranscriptDir(projectsRoot: string, oldAbsolute: string): 
   return null;
 }
 
-function mergeTranscriptDir(sourceDir: string, targetDir: string): void {
-  for (const entry of fs.readdirSync(sourceDir)) {
-    const targetEntry = path.join(targetDir, entry);
-    if (fs.existsSync(targetEntry)) continue; // Keep the existing target entry.
-    fs.renameSync(path.join(sourceDir, entry), targetEntry);
-  }
-  // Remove the source only if everything moved out (rmdir fails if non-empty).
-  try {
-    fs.rmdirSync(sourceDir);
-  } catch {
-    // Source not empty (a colliding entry stayed behind, or a nested
-    // subdirectory): leave the source directory in place.
-  }
-}
-
 /**
  * Rewrite `~/.claude.json` projects keys from old paths to new paths, backing
  * the file up first and writing atomically. Keys are re-emitted in forward-slash
@@ -186,11 +124,9 @@ function mergeTranscriptDir(sourceDir: string, targetDir: string): void {
 function rewriteClaudeJson(oldResolved: string, newResolved: string): void {
   const claudeJsonPath = path.join(os.homedir(), '.claude.json');
 
-  let original: string;
   let data: Record<string, unknown>;
   try {
-    original = fs.readFileSync(claudeJsonPath, 'utf-8');
-    data = JSON.parse(original) as Record<string, unknown>;
+    data = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf-8')) as Record<string, unknown>;
   } catch {
     return; // Missing or unparsable: leave it untouched. Transcripts already moved.
   }
@@ -222,25 +158,5 @@ function rewriteClaudeJson(oldResolved: string, newResolved: string): void {
   }
   data.projects = rebuilt;
 
-  try {
-    fs.copyFileSync(claudeJsonPath, `${claudeJsonPath}.kangentic-backup`);
-  } catch (err) {
-    console.warn('[CLAUDE_RELOCATE] Failed to back up ~/.claude.json; aborting key rewrite:', err);
-    return; // Without a backup, do not risk the in-place rewrite.
-  }
-
-  // Atomic write: serialize to a temp file then rename over the original.
-  // fs.renameSync replaces an existing destination on win32/darwin/linux.
-  const tempPath = `${claudeJsonPath}.kangentic-tmp`;
-  try {
-    fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf-8');
-    fs.renameSync(tempPath, claudeJsonPath);
-  } catch (err) {
-    console.warn('[CLAUDE_RELOCATE] Failed to rewrite ~/.claude.json:', err);
-    try {
-      fs.rmSync(tempPath, { force: true });
-    } catch {
-      // Best-effort temp cleanup.
-    }
-  }
+  atomicWriteFileWithBackup(claudeJsonPath, JSON.stringify(data, null, 2), { logTag: '[CLAUDE_RELOCATE]' });
 }

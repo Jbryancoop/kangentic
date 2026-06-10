@@ -1,6 +1,7 @@
 import { DroidDetector } from './detector';
 import { DroidCommandBuilder } from './command-builder';
 import { captureSessionIdFromFilesystem, locateSessionFile } from './session-id-capture';
+import { migrateDroidProjectData } from './project-relocation';
 import { discoverDroidCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
@@ -177,5 +178,15 @@ export class DroidAdapter implements AgentAdapter {
       cwd,
       promptVia: 'arg',
     });
+  }
+
+  /**
+   * Droid keys its session files (~/.factory/sessions/<cwd-slug>/) to the
+   * absolute project path, outside the project folder. Rename the slug
+   * directory so sessions stay locatable after a relocation. Best-effort and
+   * non-destructive; see migrateDroidProjectData.
+   */
+  async onProjectRelocated(oldPath: string, newPath: string): Promise<void> {
+    await migrateDroidProjectData(oldPath, newPath);
   }
 }

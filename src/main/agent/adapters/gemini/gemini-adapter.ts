@@ -2,6 +2,7 @@ import { GeminiDetector } from './detector';
 import { GeminiCommandBuilder } from './command-builder';
 import { removeHooks as removeGeminiHooks } from './hook-manager';
 import { GeminiSessionHistoryParser } from './session-history-parser';
+import { migrateGeminiProjectData } from './project-relocation';
 import { GeminiStatusParser } from './status-parser';
 import { discoverGeminiCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
@@ -216,5 +217,16 @@ export class GeminiAdapter implements AgentAdapter {
       prompt: buildSummarizePrompt(prompt),
       cwd,
     });
+  }
+
+  /**
+   * Gemini keys per-project data through ~/.gemini/projects.json (path ->
+   * slug), with chats/history under ~/.gemini/tmp|history/<slug>/ and trust in
+   * ~/.gemini/trustedFolders.json. Rewrite the registry key, markers, and trust
+   * entry so sessions stay resumable after a relocation. Best-effort and
+   * non-destructive; see migrateGeminiProjectData.
+   */
+  async onProjectRelocated(oldPath: string, newPath: string): Promise<void> {
+    await migrateGeminiProjectData(oldPath, newPath);
   }
 }

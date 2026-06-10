@@ -15,7 +15,7 @@ import path from 'node:path';
 // (which would defeat the lazy load and re-trigger the eager native
 // binding load).
 let cachedDatabaseConstructor: typeof DatabaseType | null = null;
-function loadBetterSqlite3(): typeof DatabaseType | null {
+export function loadBetterSqlite3(): typeof DatabaseType | null {
   if (cachedDatabaseConstructor) return cachedDatabaseConstructor;
   try {
     const moduleName = 'better-sqlite3';
@@ -287,7 +287,7 @@ function sessionIdExists(dbPath: string, sessionId: string): boolean {
  * platform (verified on Windows 11 with OpenCode 1.14.25 - the docs
  * also list this as the canonical location for macOS/Linux).
  */
-function openCodeDbPath(): string {
+export function openCodeDbPath(): string {
   return path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
 }
 

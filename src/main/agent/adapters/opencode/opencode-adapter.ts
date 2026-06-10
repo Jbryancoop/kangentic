@@ -4,6 +4,7 @@ import path from 'node:path';
 import { OpenCodeDetector } from './detector';
 import { OpenCodeCommandBuilder } from './command-builder';
 import { OpenCodeSessionHistoryParser } from './session-history-parser';
+import { migrateOpenCodeProjectData } from './project-relocation';
 import { removeHooks as removeOpenCodeHooks } from './hook-manager';
 import { discoverOpenCodeCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
@@ -344,5 +345,16 @@ export class OpenCodeAdapter implements AgentAdapter {
       prompt: buildSummarizePrompt(prompt),
       cwd,
     });
+  }
+
+  /**
+   * OpenCode stores sessions in a global SQLite DB
+   * (~/.local/share/opencode/opencode.db) with absolute directory columns.
+   * Rewrite the path prefix in those columns so the per-directory session
+   * filter keeps matching after a relocation. Best-effort and non-destructive;
+   * see migrateOpenCodeProjectData.
+   */
+  async onProjectRelocated(oldPath: string, newPath: string): Promise<void> {
+    await migrateOpenCodeProjectData(oldPath, newPath);
   }
 }

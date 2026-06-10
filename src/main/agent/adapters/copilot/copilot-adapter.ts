@@ -4,6 +4,7 @@ import { CopilotCommandBuilder } from './command-builder';
 import { removeSessionConfig } from './hook-manager';
 import { CopilotStatusParser } from './status-parser';
 import { CopilotStreamParser } from './stream-parser';
+import { migrateCopilotProjectData } from './project-relocation';
 import { discoverCopilotCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
@@ -207,5 +208,15 @@ export class CopilotAdapter implements AgentAdapter {
       cwd,
       promptVia: 'arg',
     });
+  }
+
+  /**
+   * Copilot records each session's working directory in
+   * ~/.copilot/session-state/<uuid>/workspace.yaml; v1.0.52+ restores resume in
+   * that saved cwd. Rewrite the cwd / git_root fields so resume reopens the
+   * moved project. Best-effort and version-fragile; see migrateCopilotProjectData.
+   */
+  async onProjectRelocated(oldPath: string, newPath: string): Promise<void> {
+    await migrateCopilotProjectData(oldPath, newPath);
   }
 }

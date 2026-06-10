@@ -22,11 +22,13 @@ import type { SessionHistoryParseResult } from '../../../../shared/types';
  *           wire.jsonl        wire-protocol event stream (when --print
  *                             or interactive runs - NOT only with --wire)
  *
- * The work_dir → hash algorithm is internal to Kimi and not stable
- * across versions. We never compute it ourselves: we glob across all
- * hash directories under `~/.kimi/sessions/` and match on the session
- * UUID, which is unique. This is robust against the user opening the
- * same directory under different paths (symlinks, drive letters).
+ * The work_dir → hash is the md5 hex of the literal absolute work-dir
+ * path (verified empirically and against kimi-cli's `metadata.py`; see
+ * `project-relocation.ts`, which computes it to rename session dirs on
+ * relocation). The locator below deliberately does NOT rely on it: it
+ * globs across all hash directories under `~/.kimi/sessions/` and matches
+ * on the session UUID, which is unique and robust against the user opening
+ * the same directory under different paths (symlinks, drive letters).
  */
 export class KimiSessionHistoryParser {
   /**

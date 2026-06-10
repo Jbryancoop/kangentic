@@ -2,18 +2,15 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { resolveForwardSlash } from '../../../../shared/paths';
+import { createSerialLock } from '../../shared/relocation-utils';
 
 // Module-level promise chain serializing all ~/.qwen/trustedFolders.json
 // access. Prevents concurrent read-modify-write races when multiple tasks
 // are spawned simultaneously.
-let qwenTrustLock: Promise<unknown> = Promise.resolve();
-
-function withQwenTrustLock<T>(operation: () => T): Promise<T> {
-  const previous = qwenTrustLock;
-  const result = previous.then(operation, () => operation());
-  qwenTrustLock = result.catch(() => {});
-  return result;
-}
+// Exported so the relocation migration rewrites trustedFolders.json under the
+// same lock as ensureWorktreeTrust, preventing a concurrent spawn from racing
+// the key rewrite.
+export const withQwenTrustLock = createSerialLock();
 
 /**
  * Pre-populate Qwen Code's trusted-folders entry for a worktree path so

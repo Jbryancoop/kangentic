@@ -2,6 +2,7 @@ import { CodexDetector } from './detector';
 import { CodexCommandBuilder } from './command-builder';
 import { removeHooks as removeCodexHooks } from './hook-manager';
 import { CodexSessionHistoryParser } from './session-history-parser';
+import { migrateCodexProjectData } from './project-relocation';
 import { CodexStatusParser } from './status-parser';
 import { discoverCodexCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
@@ -228,5 +229,15 @@ export class CodexAdapter implements AgentAdapter {
       prompt: buildSummarizePrompt(prompt),
       cwd,
     });
+  }
+
+  /**
+   * Codex resolves resume by session id, so its rollout JSONLs survive a move
+   * untouched. The one path-keyed store that breaks is the per-project trust
+   * header in ~/.codex/config.toml; rewrite it so the relocated project stays
+   * trusted. Best-effort and non-destructive; see migrateCodexProjectData.
+   */
+  async onProjectRelocated(oldPath: string, newPath: string): Promise<void> {
+    await migrateCodexProjectData(oldPath, newPath);
   }
 }

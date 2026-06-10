@@ -31,15 +31,15 @@ const SESSION_FILE_PATTERN = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-
  * Droid uses as the directory name under `~/.factory/sessions/`.
  *
  * Empirically Droid preserves user-provided casing in the slug (e.g.
- * `C:\Users\tyler` -> `-C-Users-tyler`), so this helper does the same
+ * `C:\Users\dev` -> `-C-Users-dev`), so this helper does the same
  * -- no case normalization on Windows. NTFS case-insensitivity means
  * a directory match still resolves correctly even if the spawn cwd's
  * casing varies between launches.
  */
 export function cwdToSessionSlug(cwd: string): string {
   // Replace separators and the drive-letter colon, then collapse runs
-  // of consecutive dashes. Empirically `C:\Users\tyler` becomes
-  // `-C-Users-tyler` (single dash), not `-C--Users-tyler` -- Droid
+  // of consecutive dashes. Empirically `C:\Users\dev` becomes
+  // `-C-Users-dev` (single dash), not `-C--Users-tyler` -- Droid
   // collapses the colon+backslash into a single separator.
   const replaced = cwd.replace(/[:\\/]+/g, '-');
   // Ensure leading dash on POSIX (where the leading `/` already maps,

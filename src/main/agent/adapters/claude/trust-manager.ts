@@ -2,19 +2,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { toForwardSlash } from '../../../../shared/paths';
+import { createSerialLock } from '../../shared/relocation-utils';
 
 // Module-level promise chain serializing all ~/.claude.json access.
 // Both ensureWorktreeTrust and ensureMcpServerTrust target the same file,
 // so one lock covers both. Prevents concurrent read-modify-write races
 // when multiple tasks are spawned simultaneously.
-let claudeJsonLock: Promise<unknown> = Promise.resolve();
-
-export function withClaudeJsonLock<T>(operation: () => T): Promise<T> {
-  const previous = claudeJsonLock;
-  const result = previous.then(operation, () => operation());
-  claudeJsonLock = result.catch(() => {});
-  return result;
-}
+export const withClaudeJsonLock = createSerialLock();
 
 /**
  * Pre-populate Claude Code's trust entry for a worktree path so the

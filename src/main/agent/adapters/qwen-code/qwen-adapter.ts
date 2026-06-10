@@ -5,6 +5,7 @@ import { QwenSessionHistoryParser } from './session-history-parser';
 import { QwenStatusParser } from './status-parser';
 import { discoverQwenCapabilities } from './capability-discovery';
 import { ensureWorktreeTrust } from './trust-manager';
+import { migrateQwenProjectData } from './project-relocation';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
@@ -240,5 +241,16 @@ export class QwenAdapter implements AgentAdapter {
       prompt: buildSummarizePrompt(prompt),
       cwd,
     });
+  }
+
+  /**
+   * Qwen keys session chats (~/.qwen/projects/<slug>/), shell history
+   * (~/.qwen/tmp/<hash>/), and trust (~/.qwen/trustedFolders.json) to the
+   * absolute project path, all outside the project folder. Migrate them so
+   * sessions stay resumable after a relocation. Best-effort and non-destructive;
+   * see migrateQwenProjectData.
+   */
+  async onProjectRelocated(oldPath: string, newPath: string): Promise<void> {
+    await migrateQwenProjectData(oldPath, newPath);
   }
 }

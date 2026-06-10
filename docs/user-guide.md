@@ -462,7 +462,7 @@ The sidebar shows all your projects. Click to switch between them. Each project 
 
 The selected project shows action buttons (Open, Settings, Delete) directly on the row. Right-click any project to open a context menu with Rename, Open in Explorer, Project Settings, and Delete. Inline rename is supported via the context menu - press Enter to save, Escape to cancel.
 
-If a project's folder is moved or renamed while Kangentic is closed, opening it shows a "Project Folder Not Found" dialog with a "Locate Folder..." button to re-point the project at its new location. Project Settings > General > Change does the same thing on demand. Because tasks and board history are keyed by project id, they are preserved across a relocation. Claude Code's session transcripts and per-project settings (stored outside the project folder, keyed by the old path) are migrated automatically, so suspended sessions still resume at the new location.
+If a project's folder is moved or renamed while Kangentic is closed, opening it shows a "Project Folder Not Found" dialog with a "Locate Folder..." button to re-point the project at its new location. Project Settings > General > Change does the same thing on demand. Because tasks and board history are keyed by project id, they are preserved across a relocation. Each agent's session data and per-project settings that live outside the project folder keyed by the old path (Claude transcripts, Codex/Gemini/Qwen trust and chats, OpenCode's session DB, Kimi/Droid session dirs, Copilot workspaces) are migrated automatically, so suspended sessions still resume at the new location. See [Project relocation](agent-integration.md#project-relocation) for the per-agent details.
 
 ### Idle Badges
 

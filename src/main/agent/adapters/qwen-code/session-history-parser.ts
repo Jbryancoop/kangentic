@@ -195,16 +195,17 @@ function toNumber(value: unknown): number | undefined {
  * byte-for-byte.
  */
 export function qwenChatsDir(cwd: string): string {
-  return path.join(os.homedir(), '.qwen', 'projects', sanitizeCwd(cwd), 'chats');
+  return path.join(os.homedir(), '.qwen', 'projects', qwenProjectSlug(cwd), 'chats');
 }
 
 /**
  * Match `sanitizeCwd` from the real Qwen Code source so our adapter
- * scans the same directory the CLI writes to. Exported (via the
- * module-level wrapper above) only as needed; tests import it via the
- * same chats-dir helper.
+ * scans the same directory the CLI writes to. Lowercases the path on
+ * Windows (case-insensitive NTFS) and replaces every non-alphanumeric
+ * character with `-`. Exported so the relocation migration computes the
+ * exact same `~/.qwen/projects/<slug>/` directory name the CLI uses.
  */
-function sanitizeCwd(cwd: string): string {
+export function qwenProjectSlug(cwd: string): string {
   const normalized = process.platform === 'win32' ? cwd.toLowerCase() : cwd;
   return normalized.replace(/[^a-zA-Z0-9]/g, '-');
 }

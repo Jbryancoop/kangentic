@@ -45,7 +45,7 @@ Every agent implements the `AgentAdapter` interface. Each adapter lives in `src/
 | `getExitSequence?()` | `() => string[]` | Sequence of strings to write to the PTY for a graceful exit. Default is `['\x03']` (Ctrl+C only). Claude overrides with `['\x03', '/exit\r']` to flush conversation state. |
 | `attachSession?(context)` | `(SessionContext) => SessionAttachment \| void` | Per-session lifecycle hook for adapters that need work outside the declarative `runtime` strategy (out-of-band CLI queries, file watchers, etc.). The returned `dispose` is called on session end. |
 | `summarize?(prompt, cliPath, cwd)` | `(string, string, string) => Promise<string>` | One-shot summarization for the auto-name-tasks-from-prompt feature. Spawns the CLI in non-interactive `--print` mode. Adapters without a clean headless mode (Aider, Warp) omit this. |
-| `onProjectRelocated?(oldPath, newPath)` | `(string, string) => Promise<void>` | Migrate per-project data the agent keeps OUTSIDE the project folder, keyed by the absolute path, when a Kangentic project is relocated. Called best-effort by `relocateProject` (the `project:relocate` IPC handler) after the stored DB paths are rewritten, while the project's own sessions are suspended. Claude renames its `~/.claude/projects/<slug>/` transcript directories (project root plus worktrees) and rewrites the matching `~/.claude.json` `projects` keys, backing the file up to `~/.claude.json.kangentic-backup` first. Implementations must be non-destructive and never block relocation. Adapters whose per-project data lives inside the project folder omit this. |
+| `onProjectRelocated?(oldPath, newPath)` | `(string, string) => Promise<void>` | Migrate per-project data the agent keeps OUTSIDE the project folder, keyed by the absolute path, when a Kangentic project is relocated. Called best-effort by `relocateProject` (the `project:relocate` IPC handler) after the stored DB paths are rewritten, while the project's own sessions are suspended. Implemented by Claude, Codex, Gemini, Qwen, Copilot, OpenCode, Kimi, and Droid (per-agent details in [Project relocation](#project-relocation) below); the shared mechanics (path-pair collection, directory rename/merge, backup + atomic write, serial lock) live in `src/main/agent/shared/relocation-utils.ts`. Implementations must be non-destructive and never block relocation. Aider, Cursor, and Warp omit this (their resumable state is in-project or absent). |
 | `probeAuth?()` | `() => Promise<boolean \| null>` | See the methods table above. |
 | `discoverCapabilities?(cliPath)` | `(string) => Promise<AgentCapabilities>` | Probe the live CLI for adapter-specific knobs (e.g. parsing `--help` for valid effort levels and the presence of a `--model` flag). Result is attached to `AgentDetectionInfo.capabilities` and read by the renderer to gate optional UI controls (Model and Effort dropdowns on `EditColumnDialog`). Implementations must never throw - return an empty object on parse failure so the rest of detection still succeeds. |
 | `getInjectionSequence?(spec)` | `(SettingsChangeSpec) => string[]` | Translate a column-level settings change (model / effort) into the writes the `TerminalSubmitScheduler` should push onto the live PTY. Sibling of `getExitSequence` - both return `string[]` of writes. Claude returns `['/model X', '/effort Y']` for changed fields. Adapters with no live-swap slash return `[]` and the caller falls back to suspend+respawn. |
@@ -899,6 +899,32 @@ Tracked upstream at [Factory-AI/factory#TBD](https://github.com/Factory-AI/facto
 #### Out of scope: post-hoc JSONL replay
 
 Reading `<uuid>.settings.json` after session exit was considered as a "good enough" fallback for cost/token totals. Rejected because (a) the file schema is undocumented and observed to differ across Droid 0.10x point releases, (b) post-hoc data does not solve the live-spinner UX, only the final-row UX, and (c) Factory has signaled willingness to add a streaming channel - see upstream FR.
+
+## Project relocation
+
+When a Kangentic project folder is moved or renamed, the `project:relocate` IPC handler
+(`src/main/ipc/handlers/project-relocate.ts`) rewrites the stored DB paths and then calls the
+optional `onProjectRelocated(oldPath, newPath)` hook on every registered adapter (best-effort,
+per-adapter try/catch, while the project's sessions are suspended). Each adapter migrates the
+per-project data its CLI keys to the absolute path OUTSIDE the project folder, so sessions stay
+resumable. The shared mechanics (path-pair collection across the project root plus on-disk
+worktrees, directory rename/merge, backup + atomic write, serial lock) live in
+`src/main/agent/shared/relocation-utils.ts`; per-adapter logic lives in each adapter's
+`project-relocation.ts`.
+
+| Agent | What migrates | Documented residue / notes |
+|-------|---------------|----------------------------|
+| Claude | `~/.claude/projects/<slug>/` transcript dirs and `~/.claude.json` `projects` keys (backup `~/.claude.json.kangentic-backup`). | - |
+| Qwen Code | `~/.qwen/projects/<slug>/` chats, `~/.qwen/tmp/<sha256>/` history, and `~/.qwen/trustedFolders.json` keys. | - |
+| Droid | `~/.factory/sessions/<cwd-slug>/` session dirs. | Best-effort: Droid is closed source, so resume resolution around the slug dir is not authoritatively documented. |
+| OpenCode | `session.directory`/`session.path`, `project.worktree`, `project_directory.directory` columns in `~/.local/share/opencode/opencode.db` (one transaction). | No file backup (live WAL DB; rollback = status quo). `project.sandboxes` left untouched. Project id is git-derived, so sessions are never orphaned, only re-scoped. |
+| Gemini | `~/.gemini/projects.json` key, `.project_root` markers under `tmp/`+`history/<slug>/`, and `~/.gemini/trustedFolders.json` keys; slug dirs renamed opportunistically on a basename change. | When the new-basename slug is already taken, the old slug is kept (Gemini still resolves via the registry, but Kangentic's basename-keyed chat locator cannot find the old chats - a pre-existing Gemini basename-collision limitation). |
+| Codex | `[projects.'<path>']` trust headers in `~/.codex/config.toml` (line-based, preserving quote / `\\?\` prefix / separator style). | Rollout JSONLs under `~/.codex/sessions/` are intentionally NOT touched: `codex resume <id>` resolves by session id, so resume already survives a move. Only the cwd-filtered resume picker shows residue (it has an `--all` escape hatch). |
+| Kimi | `~/.kimi/sessions/<md5(work_dir)>/` dirs (and `<kaos>_<md5>` variants) and `~/.kimi/kimi.json` `work_dirs[].path`. | md5 is computed over the resolved native-separator path (Kangentic spawns Kimi with a forward-slashed `-w`, but Kimi normalizes to native before hashing). |
+| Copilot | `cwd` / `git_root` lines in `~/.copilot/session-state/<uuid>/workspace.yaml`. | Best-effort and version-fragile (v1.0.52+ resumes in the saved cwd). The `~/.copilot/session-store.db` cache is left untouched, so picker/search residue is accepted. |
+| Aider | None. | History (`.aider.chat.history.md`) lives inside the project folder and moves with it. |
+| Cursor | None. | No cwd-keyed external session store Kangentic depends on. |
+| Oz (Warp) | None. | No resumable on-disk session state. |
 
 ## Prompt Templates
 
