@@ -3,9 +3,12 @@
   "version": "0.22.1",
   "description": "Install and launch Kangentic -- visual agent orchestration for Claude Code",
   "bin": {
-    "kangentic": "./bin/kangentic.js"
+    "kangentic": "bin/kangentic.js"
   },
-  "repository": "https://github.com/Kangentic/kangentic",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kangentic/kangentic.git"
+  },
   "keywords": [
     "kangentic",
     "kanban",
