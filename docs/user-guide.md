@@ -568,8 +568,8 @@ General:
 
 Task detail (whichever panel is open):
 
-- **Mod+Shift+M** - Maximize the command terminal or task detail dialog
-- **Mod+Shift+W** - Close the command terminal or task detail dialog
+- **Mod+Shift+M** - Maximize the command terminal, the task detail dialog (view or edit mode), or a create dialog (New Task / New Backlog Task)
+- **Mod+Shift+W** - Close the command terminal, the task detail dialog, or a create dialog (New Task / New Backlog Task). Escape also closes any modal.
 - **Mod+Shift+B** - Toggle the browser pane inside the task detail dialog
 - **Mod+Shift+G** - Toggle the changes (diff) panel inside the task detail dialog
 

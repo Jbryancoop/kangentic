@@ -14,9 +14,12 @@ interface TerminalTabProps {
   sessionId: string;
   taskId: string;
   active: boolean;
+  /** Let Escape bubble (to close the containing dialog) when the mouse pointer
+   *  is outside the terminal. Set by the task detail dialog. */
+  releaseEscapeWhenPointerOutside?: boolean;
 }
 
-export function TerminalTab({ sessionId, taskId, active }: TerminalTabProps) {
+export function TerminalTab({ sessionId, taskId, active, releaseEscapeWhenPointerOutside }: TerminalTabProps) {
   const config = useConfigStore((s) => s.config);
   const hasFirstOutput = useSessionStore((s) => !!s.sessionFirstOutput[sessionId]);
   const hasUsage = useSessionStore((s) => !!s.sessionUsage[sessionId]);
@@ -51,6 +54,7 @@ export function TerminalTab({ sessionId, taskId, active }: TerminalTabProps) {
     scrollbackLines: config.terminal.scrollbackLines,
     cursorStyle: config.terminal.cursorStyle,
     shellName: sessionShell,
+    releaseEscapeWhenPointerOutside,
   });
 
   // Sync suppressDataRef with overlay state: suppress all PTY data while overlay is showing.

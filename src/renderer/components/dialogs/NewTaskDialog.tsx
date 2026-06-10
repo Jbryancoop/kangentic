@@ -3,10 +3,14 @@ import { Plus, X, Info } from 'lucide-react';
 import { useBoardStore } from '../../stores/board-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useProjectStore } from '../../stores/project-store';
+import { useSessionStore } from '../../stores/session-store';
 import { useAllExistingLabels } from '../../hooks/useAllExistingLabels';
 import { useToastStore } from '../../stores/toast-store';
+import { useKeybinding } from '../../hooks/useKeybinding';
 import { NameFromPromptButton } from '../NameFromPromptButton';
 import { BaseDialog } from './BaseDialog';
+import { ConfirmDialog } from './ConfirmDialog';
+import { maximizedDialogLayout, MaximizeToggleButton } from './dialog-maximize';
 import { BranchPicker } from './BranchPicker';
 import { WorktreeChip } from './WorktreeChip';
 import { AdvancedOverridesSection } from './AdvancedOverridesSection';
@@ -32,6 +36,11 @@ interface NewTaskDialogProps {
   onClose: () => void;
 }
 
+// Non-task sentinel key for the maximize toggle (the create dialog has no task
+// yet). Mirrors CommandBarOverlay's COMMAND_TERMINAL_ENTITY_ID precedent so the
+// flag lives in the same `maximizedTasks` store set and survives HMR.
+const NEW_TASK_ENTITY_ID = 'new-task-dialog';
+
 export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
   const createTask = useBoardStore((s) => s.createTask);
   const defaultBaseBranch = useConfigStore((s) => s.config.git.defaultBaseBranch);
@@ -39,6 +48,9 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
   const currentProject = useProjectStore((s) => s.currentProject);
   const labelColors = useConfigStore((s) => s.config.backlog?.labelColors) ?? {};
   const priorities = useConfigStore((s) => s.config.backlog?.priorities) ?? DEFAULT_PRIORITY_CONFIG;
+  const isMaximized = useSessionStore((s) => s.maximizedTasks.has(NEW_TASK_ENTITY_ID));
+  const toggleMaximized = useSessionStore((s) => s.toggleMaximized);
+  const handleToggleMaximized = useCallback(() => toggleMaximized(NEW_TASK_ENTITY_ID), [toggleMaximized]);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState(0);
@@ -109,9 +121,25 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
 
   const isDirty = title.trim() !== '' || description.trim() !== '' || customBranchName.trim() !== '' || attachments.length > 0 || labels.length > 0 || priority !== 0 || agentOverride !== '' || modelOverride !== '' || effortOverride !== '';
 
+  // Guard close gestures (X, Escape, backdrop, Ctrl+Shift+W) so unsaved work is
+  // not lost: when the form is dirty, ask before discarding. Returns true to let
+  // the caller proceed with the close, false when a confirm was shown instead.
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const handleCloseAttempt = useCallback(() => {
+    if (confirmDiscard) return false;
+    if (isDirty) { setConfirmDiscard(true); return false; }
+    return true;
+  }, [confirmDiscard, isDirty]);
+
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  // Reuse the shared panel.maximize / panel.close bindings (capture phase,
+  // mirroring the task detail dialog and command terminal). panel.close and
+  // Escape both route through the dirty-changes guard. No ad-hoc keydown listener.
+  useKeybinding('panel.maximize', handleToggleMaximized, { capture: true });
+  useKeybinding('panel.close', () => { if (handleCloseAttempt()) onClose(); }, { capture: true });
 
   // Cleanup object URLs on unmount
   useEffect(() => {
@@ -269,15 +297,26 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
     onClose();
   };
 
+  const { dialogClassName, backdropPositionClass, backdropClassName, contentRadiusClass } =
+    maximizedDialogLayout(isMaximized, 'w-[840px] max-w-[90vw]');
+
   return (
     <>
       <form onSubmit={handleSubmit}>
         <BaseDialog
           onClose={onClose}
-          preventBackdropClose={isDirty}
+          onCloseRequest={handleCloseAttempt}
           title="New Task"
           icon={<Plus size={14} className="text-fg-muted" />}
-          className="w-[700px]"
+          headerRight={
+            <MaximizeToggleButton isMaximized={isMaximized} onToggle={handleToggleMaximized} />
+          }
+          className={dialogClassName}
+          backdropPositionClass={backdropPositionClass}
+          backdropClassName={backdropClassName}
+          contentRadiusClass={contentRadiusClass}
+          bodyClassName="flex-1 flex flex-col"
+          closeHotkeyActionId="panel.close"
           footer={
             <div className="flex items-center justify-end gap-3">
               <button
@@ -298,7 +337,7 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
           }
         >
           <div
-            className="space-y-3 relative"
+            className="space-y-3 relative flex flex-col flex-1"
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
@@ -320,6 +359,7 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
               onPaste={handlePaste}
               testId="task-description"
               mentionSearchCwd={currentProject?.path ?? null}
+              className="flex-1"
             />
 
             {/* Thumbnail strip */}
@@ -443,6 +483,19 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
           </div>
         </BaseDialog>
       </form>
+
+      {/* Discard-unsaved-changes confirmation (close gestures route here when dirty) */}
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard unsaved changes?"
+          variant="warning"
+          confirmLabel="Discard"
+          cancelLabel="Keep editing"
+          message="Closing now will discard this new task and its unsaved changes."
+          onConfirm={() => { setConfirmDiscard(false); onClose(); }}
+          onCancel={() => setConfirmDiscard(false)}
+        />
+      )}
 
       {/* Full-size preview overlay (images only) */}
       {previewAttachment && isImageMediaType(previewAttachment.media_type) && (

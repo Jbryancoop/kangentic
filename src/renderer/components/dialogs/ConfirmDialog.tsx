@@ -60,6 +60,7 @@ export function ConfirmDialog({
       title={title}
       icon={<AlertTriangle size={16} className={iconStyles[variant]} />}
       zIndex="z-[60]"
+      trapFocus
       footer={
         <div className="flex items-center">
           {showDontAskAgain && (

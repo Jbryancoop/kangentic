@@ -1,7 +1,23 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import { useFormattedCombo } from '../../hooks/useKeybinding';
 
 type Phase = 'entering' | 'visible' | 'exiting';
+
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(', ');
+
+/** Visible, tabbable descendants of a container, in DOM order. */
+function getFocusable(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+    .filter((element) => element.offsetParent !== null || element === document.activeElement);
+}
 
 interface BaseDialogProps {
   onClose: () => void;
@@ -20,6 +36,15 @@ interface BaseDialogProps {
 
   // Body
   rawBody?: boolean;              // skip px-4 py-4 wrapper, render children directly
+  // Extra classes appended to the non-raw body wrapper. Pass a flex-column
+  // class (e.g. 'flex-1 flex flex-col') so children can absorb height when the
+  // dialog is maximized. Ignored when rawBody is set.
+  bodyClassName?: string;
+  // Keybinding action id whose combo is shown on the standard-header X button
+  // tooltip (e.g. 'panel.close'). The consumer must bind that action itself.
+  // Escape always closes the dialog (the hidden `dialog.dismiss` action) and is
+  // deliberately not advertised here. When omitted, the tooltip is just 'Close'.
+  closeHotkeyActionId?: string;
 
   // Behavior
   preventBackdropClose?: boolean; // When true, clicking the backdrop does not close the dialog
@@ -29,6 +54,17 @@ interface BaseDialogProps {
   // dirty-changes confirm) without leaving the dialog visually faded out.
   // Takes precedence over preventBackdropClose.
   onBackdropClick?: () => void;
+  // Unified close-intent hook. When set, every BaseDialog-owned close gesture
+  // (the standard-header X button, Escape, and a backdrop click) routes here.
+  // Return true to proceed with the normal animated close; return false to
+  // cancel it (e.g. the consumer is showing a "discard unsaved changes?"
+  // confirm instead). Takes precedence over preventBackdropClose / onBackdropClick.
+  onCloseRequest?: () => boolean;
+  // Move focus into the dialog on open and keep Tab / Shift+Tab cycling within
+  // it, restoring focus on close. Use for modals layered over another dialog
+  // (e.g. a confirm). Do NOT use for a dialog that embeds a terminal, where Tab
+  // belongs to the PTY.
+  trapFocus?: boolean;
 
   // Content mouse tracking (for callers that need hover state)
   onContentMouseEnter?: () => void;
@@ -58,7 +94,11 @@ export function BaseDialog({
   footer,
   preventBackdropClose,
   onBackdropClick,
+  onCloseRequest,
+  trapFocus,
   rawBody,
+  bodyClassName,
+  closeHotkeyActionId,
   onContentMouseEnter,
   onContentMouseLeave,
   className = 'w-[400px]',
@@ -69,18 +109,77 @@ export function BaseDialog({
   testId,
 }: BaseDialogProps) {
   const [phase, setPhase] = useState<Phase>('entering');
+  // Show the consumer's bound close hotkey (e.g. panel.close = Ctrl+Shift+W) on
+  // the standard-header X tooltip. Empty id resolves to '' so the tooltip falls
+  // back to plain 'Close'. Escape (the hidden universal closer) is never shown.
+  const closeCombo = useFormattedCombo(closeHotkeyActionId ?? '');
+
+  const contentRef = useRef<HTMLDivElement>(null);
 
   const requestClose = useCallback(() => {
     if (phase !== 'exiting') setPhase('exiting');
   }, [phase]);
 
+  // A close gesture routed through the consumer's guard (onCloseRequest). The
+  // guard returns true to proceed with the animated close, false to cancel
+  // (e.g. it opened a discard confirm). Without a guard, animate-close directly.
+  const requestCloseViaGuard = useCallback(() => {
+    if (onCloseRequest) {
+      if (onCloseRequest()) requestClose();
+    } else {
+      requestClose();
+    }
+  }, [onCloseRequest, requestClose]);
+
+  // Focus trap for modals layered over another dialog (e.g. a confirm). On open,
+  // pull focus into the dialog if it is not already inside; on close, restore it
+  // to the element that had it. The Tab cycling itself is handled in onKeyDown.
+  useEffect(() => {
+    if (!trapFocus) return;
+    const content = contentRef.current;
+    if (!content) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    if (!content.contains(document.activeElement)) {
+      const focusables = getFocusable(content);
+      (focusables[0] ?? content).focus();
+    }
+    return () => {
+      if (previouslyFocused && document.contains(previouslyFocused)) previouslyFocused.focus();
+    };
+  }, [trapFocus]);
+
+  const handleContentKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!trapFocus || event.key !== 'Tab') return;
+    const content = contentRef.current;
+    if (!content) return;
+    const focusables = getFocusable(content);
+    if (focusables.length === 0) { event.preventDefault(); return; }
+    const firstFocusable = focusables[0];
+    const lastFocusable = focusables[focusables.length - 1];
+    const activeElement = document.activeElement;
+    if (event.shiftKey) {
+      if (activeElement === firstFocusable || !content.contains(activeElement)) { event.preventDefault(); lastFocusable.focus(); }
+    } else if (activeElement === lastFocusable || !content.contains(activeElement)) {
+      event.preventDefault();
+      firstFocusable.focus();
+    }
+  }, [trapFocus]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !preventBackdropClose) requestClose();
+      if (e.key !== 'Escape') return;
+      // Route through the consumer's close-intent guard when present (e.g. a
+      // dirty-changes confirm); otherwise close unless the backdrop is locked.
+      // An embedded terminal that wants Escape (pointer over the PTY) consumes
+      // the event itself, so this bubble-phase listener never sees it; see
+      // enableTerminalClipboard.
+      if (onCloseRequest) { requestCloseViaGuard(); return; }
+      if (preventBackdropClose) return;
+      requestClose();
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [requestClose, preventBackdropClose]);
+  }, [requestClose, preventBackdropClose, onCloseRequest, requestCloseViaGuard]);
 
   const backdropMouseDown = useRef(false);
 
@@ -109,7 +208,9 @@ export function BaseDialog({
       onMouseDown={(e) => { backdropMouseDown.current = e.target === e.currentTarget; }}
       onMouseUp={(e) => {
         if (e.target === e.currentTarget && backdropMouseDown.current) {
-          if (onBackdropClick) {
+          if (onCloseRequest) {
+            requestCloseViaGuard();
+          } else if (onBackdropClick) {
             onBackdropClick();
           } else if (!preventBackdropClose) {
             requestClose();
@@ -119,9 +220,12 @@ export function BaseDialog({
       }}
     >
       <div
+        ref={contentRef}
         onMouseDown={(e) => e.stopPropagation()}
         onMouseEnter={onContentMouseEnter}
         onMouseLeave={onContentMouseLeave}
+        onKeyDown={trapFocus ? handleContentKeyDown : undefined}
+        tabIndex={trapFocus ? -1 : undefined}
         style={{ animation: contentAnimation }}
         className={`bg-surface-raised border border-edge ${contentRadiusClass} shadow-2xl flex flex-col overflow-visible ${className}`}
         {...(testId ? { 'data-testid': testId } : {})}
@@ -133,7 +237,10 @@ export function BaseDialog({
             <h3 className="text-sm font-semibold text-fg flex-1 min-w-0">{title}</h3>
             {headerRight}
             <button
-              onClick={requestClose}
+              type="button"
+              onClick={requestCloseViaGuard}
+              title={closeCombo ? `Close (${closeCombo})` : 'Close'}
+              aria-label="Close dialog"
               className="p-1.5 text-fg-faint hover:text-fg-tertiary hover:bg-surface-hover rounded transition-colors flex-shrink-0"
             >
               <X size={16} />
@@ -154,7 +261,7 @@ export function BaseDialog({
             {children}
           </div>
         ) : (
-          <div className="px-4 py-4">
+          <div className={`px-4 py-4 ${bodyClassName ?? ''}`}>
             {children}
           </div>
         )}

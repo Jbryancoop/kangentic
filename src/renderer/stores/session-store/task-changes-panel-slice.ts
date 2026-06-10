@@ -18,7 +18,12 @@ export interface TaskChangesPanelSlice {
   dividerRatio: Record<string, number>;
   /** Task IDs whose Browser pane is open (persists across dialog open/close). */
   browserOpenTasks: Set<string>;
-  /** Task IDs whose detail dialog is maximized (persists across dialog open/close). */
+  /**
+   * Entity IDs whose dialog is maximized (persists across dialog open/close).
+   * Keyed by task ID for the task detail dialog, and by a non-task sentinel id
+   * for the command terminal ('command-terminal') and the create dialogs
+   * ('new-task-dialog', 'new-backlog-task-dialog').
+   */
   maximizedTasks: Set<string>;
   toggleChangesOpen: (taskId: string) => void;
   setChangesSelectedFile: (taskId: string, filePath: string | null) => void;

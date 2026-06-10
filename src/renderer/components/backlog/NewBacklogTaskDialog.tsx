@@ -1,12 +1,16 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Plus, X } from 'lucide-react';
 import { BaseDialog } from '../dialogs/BaseDialog';
+import { ConfirmDialog } from '../dialogs/ConfirmDialog';
+import { maximizedDialogLayout, MaximizeToggleButton } from '../dialogs/dialog-maximize';
 import { Select } from '../settings/shared';
 import { LabelInput } from '../LabelInput';
 import { useConfigStore } from '../../stores/config-store';
 import { useProjectStore } from '../../stores/project-store';
+import { useSessionStore } from '../../stores/session-store';
 import { useToastStore } from '../../stores/toast-store';
 import { useAllExistingLabels } from '../../hooks/useAllExistingLabels';
+import { useKeybinding } from '../../hooks/useKeybinding';
 import { DescriptionEditor } from '../DescriptionEditor';
 import { MAX_ATTACHMENT_BYTES, MEDIA_TYPE_EXT, resolveMediaType, isImageMediaType, getFileTypeIcon, getExtension } from '../dialogs/attachment-utils';
 import { compressClipboardImage } from '../dialogs/image-compress';
@@ -43,9 +47,17 @@ interface NewBacklogTaskDialogProps {
   onUpdate?: (input: BacklogTaskUpdateInput) => Promise<unknown>;
 }
 
+// Non-task sentinel key for the maximize toggle (the backlog dialog has no task
+// row). One key covers both create and edit-backlog modes; it is one surface.
+// Mirrors CommandBarOverlay's COMMAND_TERMINAL_ENTITY_ID precedent.
+const NEW_BACKLOG_TASK_ENTITY_ID = 'new-backlog-task-dialog';
+
 export function NewBacklogTaskDialog({ onClose, onCreate, editTask, onUpdate }: NewBacklogTaskDialogProps) {
   const isEditMode = !!editTask;
   const currentProject = useProjectStore((state) => state.currentProject);
+  const isMaximized = useSessionStore((state) => state.maximizedTasks.has(NEW_BACKLOG_TASK_ENTITY_ID));
+  const toggleMaximized = useSessionStore((state) => state.toggleMaximized);
+  const handleToggleMaximized = useCallback(() => toggleMaximized(NEW_BACKLOG_TASK_ENTITY_ID), [toggleMaximized]);
   const [title, setTitle] = useState(editTask?.title ?? '');
   const [description, setDescription] = useState(editTask?.description ?? '');
   const [priority, setPriority] = useState(editTask?.priority ?? 0);
@@ -76,9 +88,25 @@ export function NewBacklogTaskDialog({ onClose, onCreate, editTask, onUpdate }: 
       attachments.length > 0
     : title.trim() !== '' || description.trim() !== '' || labels.length > 0 || priority !== 0 || attachments.length > 0;
 
+  // Guard close gestures (X, Escape, backdrop, Ctrl+Shift+W) so unsaved work is
+  // not lost: when the form is dirty, ask before discarding. Returns true to let
+  // the caller proceed with the close, false when a confirm was shown instead.
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const handleCloseAttempt = useCallback(() => {
+    if (confirmDiscard) return false;
+    if (isDirty) { setConfirmDiscard(true); return false; }
+    return true;
+  }, [confirmDiscard, isDirty]);
+
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  // Reuse the shared panel.maximize / panel.close bindings (capture phase),
+  // mirroring the task detail dialog and command terminal. panel.close and
+  // Escape both route through the dirty-changes guard. No ad-hoc keydown listener.
+  useKeybinding('panel.maximize', handleToggleMaximized, { capture: true });
+  useKeybinding('panel.close', () => { if (handleCloseAttempt()) onClose(); }, { capture: true });
 
   // Cleanup object URLs on unmount using ref to avoid stale closure
   useEffect(() => {
@@ -281,15 +309,26 @@ export function NewBacklogTaskDialog({ onClose, onCreate, editTask, onUpdate }: 
     }
   };
 
+  const { dialogClassName, backdropPositionClass, backdropClassName, contentRadiusClass } =
+    maximizedDialogLayout(isMaximized, 'w-[840px] max-w-[90vw]');
+
   return (
     <>
       <form onSubmit={handleSubmit}>
         <BaseDialog
           onClose={onClose}
-          preventBackdropClose={isDirty}
+          onCloseRequest={handleCloseAttempt}
           title={isEditMode ? 'Edit Backlog Task' : 'New Backlog Task'}
           icon={<Plus size={14} className="text-fg-muted" />}
-          className="w-[700px]"
+          headerRight={
+            <MaximizeToggleButton isMaximized={isMaximized} onToggle={handleToggleMaximized} />
+          }
+          className={dialogClassName}
+          backdropPositionClass={backdropPositionClass}
+          backdropClassName={backdropClassName}
+          contentRadiusClass={contentRadiusClass}
+          bodyClassName="flex-1 flex flex-col"
+          closeHotkeyActionId="panel.close"
           testId="new-backlog-task-dialog"
           footer={
             <div className="flex items-center justify-end gap-3">
@@ -312,7 +351,7 @@ export function NewBacklogTaskDialog({ onClose, onCreate, editTask, onUpdate }: 
           }
         >
           <div
-            className="space-y-3 relative"
+            className="space-y-3 relative flex flex-col flex-1"
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
@@ -333,6 +372,7 @@ export function NewBacklogTaskDialog({ onClose, onCreate, editTask, onUpdate }: 
               onPaste={handlePaste}
               testId="backlog-task-description"
               mentionSearchCwd={currentProject?.path ?? null}
+              className="flex-1"
             />
 
             {/* Thumbnail strip */}
@@ -426,6 +466,21 @@ export function NewBacklogTaskDialog({ onClose, onCreate, editTask, onUpdate }: 
           </div>
         </BaseDialog>
       </form>
+
+      {/* Discard-unsaved-changes confirmation (close gestures route here when dirty) */}
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard unsaved changes?"
+          variant="warning"
+          confirmLabel="Discard"
+          cancelLabel="Keep editing"
+          message={isEditMode
+            ? 'Closing now will discard your unsaved edits to this backlog task.'
+            : 'Closing now will discard this new backlog task and its unsaved changes.'}
+          onConfirm={() => { setConfirmDiscard(false); onClose(); }}
+          onCancel={() => setConfirmDiscard(false)}
+        />
+      )}
 
       {/* Full-size preview overlay (images only) */}
       {previewAttachment && isImageMediaType(previewAttachment.media_type) && (

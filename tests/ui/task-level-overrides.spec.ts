@@ -301,10 +301,10 @@ test.describe('NewTaskDialog Advanced - Agent picker (multi-agent fixture)', () 
     expect(codexOptionTexts).toEqual(expect.arrayContaining(['gpt-5', 'gpt-5-mini']));
     expect(codexOptionTexts).not.toContain('opus');
 
-    // Close the suggestion popover, then click Cancel (the dirty agent
-    // selection blocks Escape-to-close via the unsaved-work confirm).
+    // Escape closes the suggestion popover and (the form is dirty) opens the
+    // discard confirm; Discard then closes the dialog.
     await multiPage.keyboard.press('Escape');
-    await multiPage.locator('button:has-text("Cancel")').click();
+    await multiPage.locator('button:has-text("Discard")').click();
     await multiPage.locator('input[placeholder="Task title"]').waitFor({ state: 'hidden', timeout: 2000 });
   });
 
@@ -468,10 +468,10 @@ test.describe('NewTaskDialog Advanced - grouped model dropdown (suffixed fixture
     await groupedPage.locator('[data-model-pinned-option]').click();
     await expect(modelInput).toHaveValue('claude-haiku-4-5-20251001');
 
-    // Close the suggestion popover, then click Cancel (the dirty model
-    // selection can block Escape-to-close via the unsaved-work confirm).
+    // Escape closes the suggestion popover and (the form is dirty) opens the
+    // discard confirm; Discard then closes the dialog.
     await groupedPage.keyboard.press('Escape');
-    await groupedPage.locator('button:has-text("Cancel")').click();
+    await groupedPage.locator('button:has-text("Discard")').click();
     await groupedPage.locator('input[placeholder="Task title"]').waitFor({ state: 'hidden', timeout: 2000 });
   });
 });

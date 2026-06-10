@@ -168,6 +168,11 @@ async function handlePaste(
  * the conflict checker can warn against assigning them to a global/dialog action.
  * Keep the two in sync; `tests/unit/keybindings-registry.test.ts` locks the set.
  *
+ * `releaseEscapeWhenPointerOutside` (used by the task detail dialog) makes the
+ * terminal decline Escape while the mouse pointer is outside its bounds, so the
+ * event bubbles up and the containing dialog can close. While the pointer is
+ * over the terminal, Escape is sent to the agent's TUI as usual.
+ *
  * Call after `terminal.open(el)`.
  */
 export function enableTerminalClipboard(
@@ -176,9 +181,24 @@ export function enableTerminalClipboard(
   onWrite?: (data: string) => void,
   shellName?: string,
   sessionId?: string,
+  releaseEscapeWhenPointerOutside?: boolean,
 ): void {
   terminal.attachCustomKeyEventHandler((event) => {
     if (event.type !== 'keydown') return true;
+
+    // Escape policy for a terminal embedded in a dialog (task detail). The
+    // pointer-over-terminal test uses the live `:hover` state (el or any of its
+    // descendants hovered):
+    // - pointer outside the terminal: decline the key (return false) so it
+    //   bubbles to the dialog and closes it. The agent does not receive Escape.
+    // - pointer over the terminal: keep Escape for the agent's TUI and
+    //   stopPropagation so the dialog's document listener does not also close it
+    //   (xterm does not stop propagation on its own).
+    if (releaseEscapeWhenPointerOutside && event.key === 'Escape') {
+      if (!el.matches(':hover')) return false;
+      event.stopPropagation();
+      return true;
+    }
 
     const isCopy =
       ((event.ctrlKey || event.metaKey) && event.key === 'c' && terminal.hasSelection()) ||

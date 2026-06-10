@@ -26,18 +26,20 @@ async function openNewTaskDialog() {
 }
 
 test.describe('New Task Dialog Layout', () => {
-  test('dialog renders at wider width (700px)', async () => {
+  test('dialog renders at wider width (840px)', async () => {
     await openNewTaskDialog();
-    const dialog = page.locator('.w-\\[700px\\]');
+    const dialog = page.locator('.w-\\[840px\\]');
     await expect(dialog).toBeVisible();
     await page.keyboard.press('Escape');
   });
 
-  test('textarea container has fixed height', async () => {
+  test('textarea container has a minimum height floor', async () => {
     await openNewTaskDialog();
     const textarea = page.locator('textarea');
     await expect(textarea).toBeVisible();
-    const container = page.locator('.h-\\[280px\\]');
+    // The editor body grows to fill a maximized dialog (flex-1) but keeps a
+    // 280px floor when the dialog is windowed.
+    const container = page.locator('.min-h-\\[280px\\]');
     await expect(container).toBeVisible();
     await page.keyboard.press('Escape');
   });
@@ -241,17 +243,61 @@ test.describe('Image Attachments', () => {
 });
 
 test.describe('Escape Key Protection', () => {
-  test('escape does not close dialog when form is dirty', async () => {
+  test('escape on a dirty form prompts to discard; Keep editing stays, Discard closes', async () => {
     await openNewTaskDialog();
     const titleInput = page.locator('input[placeholder="Task title"]');
     await titleInput.fill('Some task title');
 
-    // Escape should NOT close the dialog because the form is dirty
+    // Escape on a dirty form shows a discard confirmation instead of closing.
     await page.keyboard.press('Escape');
+    const confirmHeading = page.locator('h3:has-text("Discard unsaved changes?")');
+    await expect(confirmHeading).toBeVisible();
+
+    // "Keep editing" dismisses the confirm and leaves the form open.
+    await page.locator('button:has-text("Keep editing")').click();
+    await expect(confirmHeading).not.toBeVisible();
     await expect(titleInput).toBeVisible();
 
-    // Clean up via Cancel button
-    await page.locator('button:has-text("Cancel")').click();
+    // Escape again, then "Discard" closes the whole dialog.
+    await page.keyboard.press('Escape');
+    await expect(confirmHeading).toBeVisible();
+    await page.locator('button:has-text("Discard")').click();
+    await expect(titleInput).not.toBeVisible();
+  });
+
+  test('discard confirm traps focus: Tab stays within the confirm, not the background form', async () => {
+    await openNewTaskDialog();
+    const titleInput = page.locator('input[placeholder="Task title"]');
+    await titleInput.fill('Focus trap task');
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('h3:has-text("Discard unsaved changes?")')).toBeVisible();
+
+    // Reads whether focus is inside the confirm dialog and not on the background
+    // title input. The confirm content is the nearest shadow-2xl ancestor of its
+    // heading.
+    const focusState = () => page.evaluate(() => {
+      const heading = Array.from(document.querySelectorAll('h3'))
+        .find((h) => h.textContent?.includes('Discard unsaved changes?'));
+      const container = heading?.closest('.shadow-2xl') ?? null;
+      const active = document.activeElement;
+      const onBackgroundTitle = active instanceof HTMLInputElement && active.placeholder === 'Task title';
+      return { inConfirm: !!container && container.contains(active), onBackgroundTitle };
+    });
+
+    // Focus moved into the confirm on open.
+    await expect.poll(async () => (await focusState()).inConfirm).toBe(true);
+
+    // Tabbing repeatedly never escapes to the background form.
+    for (let pressCount = 0; pressCount < 4; pressCount++) {
+      await page.keyboard.press('Tab');
+      const state = await focusState();
+      expect(state.inConfirm).toBe(true);
+      expect(state.onBackgroundTitle).toBe(false);
+    }
+
+    await page.locator('button:has-text("Discard")').click();
+    await expect(titleInput).not.toBeVisible();
   });
 
   test('escape closes dialog when form is clean', async () => {
@@ -272,5 +318,106 @@ test.describe('Escape Key Protection', () => {
     // Whitespace-only description is not dirty (isDirty uses trim())
     await page.keyboard.press('Escape');
     await expect(textarea).not.toBeVisible();
+  });
+
+  test('backdrop click on dirty form routes through onCloseRequest and shows discard confirm (not close)', async () => {
+    // BaseDialog.onCloseRequest precedence: backdrop click on a dirty dialog
+    // must route through the consumer's guard, showing the discard confirm
+    // instead of closing. This proves the backdrop path of onCloseRequest.
+    await openNewTaskDialog();
+    const titleInput = page.locator('input[placeholder="Task title"]');
+    await titleInput.fill('Backdrop test task');
+
+    // The dialog content box is the shadow-2xl ancestor of the title input.
+    // Click outside the content box but inside the backdrop overlay to trigger
+    // the backdrop handler.
+    const contentBox = await titleInput.evaluate((el) => {
+      const container = el.closest('.shadow-2xl');
+      return container?.getBoundingClientRect() ?? null;
+    });
+    if (!contentBox) throw new Error('Content box not found');
+
+    // Click well outside the content box (20px from the left edge of the viewport).
+    await page.mouse.click(20, contentBox.top + contentBox.height / 2);
+
+    // The discard confirm must appear because the form is dirty.
+    const confirmHeading = page.locator('h3:has-text("Discard unsaved changes?")');
+    await expect(confirmHeading).toBeVisible();
+
+    // The backdrop click must NOT have closed the dialog.
+    await expect(titleInput).toBeVisible();
+
+    // Discard cleans up.
+    await page.locator('button:has-text("Discard")').click();
+    await expect(titleInput).not.toBeVisible();
+  });
+
+  test('backdrop click on a clean form closes it (no confirm shown)', async () => {
+    // When the form is clean, onCloseRequest returns true, so the backdrop click
+    // proceeds to close the dialog without a confirm.
+    await openNewTaskDialog();
+    const titleInput = page.locator('input[placeholder="Task title"]');
+
+    // Form is clean - click the backdrop.
+    const contentBox = await titleInput.evaluate((el) => {
+      const container = el.closest('.shadow-2xl');
+      return container?.getBoundingClientRect() ?? null;
+    });
+    if (!contentBox) throw new Error('Content box not found');
+
+    await page.mouse.click(20, contentBox.top + contentBox.height / 2);
+
+    // Dialog must close without a confirm.
+    await expect(titleInput).not.toBeVisible();
+    await expect(page.locator('h3:has-text("Discard unsaved changes?")')).not.toBeVisible();
+  });
+});
+
+test.describe('Focus Trap - Shift+Tab Wrap', () => {
+  test('Shift+Tab from the first focusable in the confirm wraps to the last; never reaches the background form', async () => {
+    await openNewTaskDialog();
+    const titleInput = page.locator('input[placeholder="Task title"]');
+    await titleInput.fill('Shift-Tab focus wrap task');
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('h3:has-text("Discard unsaved changes?")')).toBeVisible();
+
+    // Helper that probes whether focus is inside the confirm dialog and whether
+    // it has escaped to the background title input.
+    const focusState = () => page.evaluate(() => {
+      const heading = Array.from(document.querySelectorAll('h3'))
+        .find((h) => h.textContent?.includes('Discard unsaved changes?'));
+      const container = heading?.closest('.shadow-2xl') ?? null;
+      const active = document.activeElement;
+      const onBackgroundTitle =
+        active instanceof HTMLInputElement && active.placeholder === 'Task title';
+      return {
+        inConfirm: !!container && container.contains(active),
+        onBackgroundTitle,
+        activeTagName: active?.tagName ?? null,
+      };
+    });
+
+    // Focus should be inside the confirm on open.
+    await expect.poll(async () => (await focusState()).inConfirm).toBe(true);
+
+    // Tab forward once to move to a known position (e.g. the last button if
+    // focus was on the first). Then Shift+Tab to probe the backward wrap.
+    await page.keyboard.press('Tab');
+    let state = await focusState();
+    expect(state.inConfirm).toBe(true);
+    expect(state.onBackgroundTitle).toBe(false);
+
+    // Shift+Tab repeatedly - focus must stay in the confirm and never escape.
+    for (let pressCount = 0; pressCount < 4; pressCount++) {
+      await page.keyboard.press('Shift+Tab');
+      state = await focusState();
+      expect(state.inConfirm).toBe(true, `Shift+Tab press ${pressCount + 1} escaped the confirm`);
+      expect(state.onBackgroundTitle).toBe(false, `Shift+Tab press ${pressCount + 1} landed on the background title input`);
+    }
+
+    // Confirm the "Discard" button by clicking to clean up.
+    await page.locator('button:has-text("Discard")').click();
+    await expect(titleInput).not.toBeVisible();
   });
 });

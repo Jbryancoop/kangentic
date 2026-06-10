@@ -159,11 +159,12 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   {
     id: 'dialog.dismiss',
     label: 'Dismiss Dialog',
-    description: 'Close the active dialog. Handled by each dialog; not rebindable.',
+    description: 'Hidden universal closer: Escape closes any open modal. Always on, not rebindable, not shown in the list. The visible, rebindable close hotkey is panel.close.',
     group: 'General',
     scope: 'dialog',
     defaultCombo: 'Escape',
     rebindable: false,
+    hidden: true,
   },
   {
     id: 'boardManager.save',
@@ -182,7 +183,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   {
     id: 'panel.maximize',
     label: 'Maximize',
-    description: 'Maximize the command terminal or the task detail dialog (whichever is open).',
+    description: 'Maximize the open panel: the command terminal, the task detail dialog (view or edit mode), or a create dialog (New Task / New Backlog Task).',
     group: 'Task Detail',
     scope: 'panel',
     defaultCombo: 'Mod+Shift+M',
@@ -191,7 +192,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   {
     id: 'panel.close',
     label: 'Close',
-    description: 'Close the command terminal or the task detail dialog (whichever is open).',
+    description: 'Close the open panel: the command terminal, the task detail dialog, or a create dialog (New Task / New Backlog Task). Escape also closes any modal.',
     group: 'Task Detail',
     scope: 'panel',
     defaultCombo: 'Mod+Shift+W',

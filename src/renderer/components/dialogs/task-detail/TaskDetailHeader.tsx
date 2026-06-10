@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useCopyDisplayId } from './useCopyDisplayId';
-import { X, Trash2, Pencil, Loader2, FolderGit2, FolderOpen, GitPullRequest, GitCompare, ArrowRightLeft, ChevronRight, ChevronLeft, CirclePause, CirclePlay, Clock, SquareChevronRight, Zap, Archive, Inbox, Copy, Check, Globe, RefreshCw, Maximize2, Minimize2 } from 'lucide-react';
+import { X, Trash2, Pencil, Loader2, FolderGit2, FolderOpen, GitPullRequest, GitCompare, ArrowRightLeft, ChevronRight, ChevronLeft, CirclePause, CirclePlay, Clock, SquareChevronRight, Zap, Archive, Inbox, Copy, Check, Globe, RefreshCw } from 'lucide-react';
 import { usePopoverPosition } from '../../../hooks/usePopoverPosition';
 import { useFormattedCombo } from '../../../hooks/useKeybinding';
 import { getSwimlaneIcon } from '../../../utils/swimlane-icons';
@@ -9,6 +9,7 @@ import { Pill } from '../../Pill';
 import { IsolatedBadge } from '../../IsolatedBadge';
 import { KebabMenu, KebabMenuItem, KebabMenuDivider } from '../../KebabMenu';
 import { CommandPalettePopover } from './CommandPalettePopover';
+import { MaximizeToggleButton } from '../dialog-maximize';
 import { PriorityBadge } from '../../backlog/PriorityBadge';
 import { useConfigStore } from '../../../stores/config-store';
 import { useToastStore } from '../../../stores/toast-store';
@@ -83,7 +84,6 @@ export function TaskDetailHeader({
   const { copied: displayIdCopied, copy: copyDisplayId } = useCopyDisplayId(task.display_id);
   const defaultBaseBranch = useConfigStore((s) => s.config.git.defaultBaseBranch);
   const worktreeBaseBranch = task.base_branch || defaultBaseBranch || null;
-  const maximizeCombo = useFormattedCombo('panel.maximize');
   const closeCombo = useFormattedCombo('panel.close');
   const browserCombo = useFormattedCombo('taskDetail.toggleBrowser');
   const changesCombo = useFormattedCombo('taskDetail.toggleChanges');
@@ -316,15 +316,11 @@ export function TaskDetailHeader({
 
       {/* Divider + Maximize + Close */}
       <div className="w-px h-5 bg-surface-hover flex-shrink-0" />
-      <button
-        onClick={onToggleMaximized}
-        data-testid="task-detail-maximize"
-        aria-label={isMaximized ? 'Restore dialog' : 'Maximize dialog'}
-        title={`${isMaximized ? 'Restore' : 'Maximize'} (${maximizeCombo})`}
-        className="p-1.5 text-fg-faint hover:text-fg-tertiary hover:bg-surface-hover rounded transition-colors flex-shrink-0"
-      >
-        {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-      </button>
+      <MaximizeToggleButton
+        isMaximized={isMaximized}
+        onToggle={onToggleMaximized}
+        testId="task-detail-maximize"
+      />
       <button
         onClick={onClose}
         data-testid="task-detail-close"

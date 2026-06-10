@@ -12,6 +12,11 @@ interface DescriptionEditorProps {
   placeholder?: string;
   textareaRef?: RefObject<HTMLTextAreaElement | null>;
   mentionSearchCwd?: string | null;
+  /**
+   * Extra classes for the editor root. Pass `flex-1` so the editor absorbs the
+   * available height inside a flex-column dialog body (e.g. when maximized).
+   */
+  className?: string;
 }
 
 export function DescriptionEditor({
@@ -22,6 +27,7 @@ export function DescriptionEditor({
   placeholder = 'Describe the task for the agent...',
   textareaRef,
   mentionSearchCwd = null,
+  className,
 }: DescriptionEditorProps) {
   const [showPreview, setShowPreview] = useState(false);
   const [textareaFocused, setTextareaFocused] = useState(false);
@@ -36,8 +42,8 @@ export function DescriptionEditor({
   });
 
   return (
-    <div className="rounded border border-edge-input overflow-hidden focus-within:border-accent">
-      <div className="flex items-center border-b border-edge-input">
+    <div className={`rounded border border-edge-input overflow-hidden focus-within:border-accent flex flex-col ${className ?? ''}`}>
+      <div className="flex items-center border-b border-edge-input flex-shrink-0">
         <button
           type="button"
           onClick={() => setShowPreview(false)}
@@ -61,7 +67,7 @@ export function DescriptionEditor({
           Preview
         </button>
       </div>
-      <div className="relative w-full bg-surface h-[280px] overflow-hidden">
+      <div className="relative w-full bg-surface flex-1 min-h-[280px] overflow-hidden">
         {showPreview ? (
           <div
             className="absolute inset-0 px-3 py-2 overflow-y-auto"

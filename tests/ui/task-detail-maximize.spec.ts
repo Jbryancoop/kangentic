@@ -6,7 +6,8 @@
  * - Ctrl/Cmd+Shift+M keyboard toggle (maximize/restore)
  * - Ctrl/Cmd+Shift+W closes the dialog
  * - Ctrl/Cmd+Shift+B toggles the Browser pane when canShowBrowser is true
- * - Edit-mode guard: maximize hotkey is suppressed while editing
+ * - Edit mode: maximize button is present and the hotkey maximizes/restores
+ * - Create dialog (New Task): maximize button + hotkey toggle the layout
  * - BaseDialog default-prop non-regression: plain consumers keep inset-0 / rounded-lg
  */
 import { test, expect } from '@playwright/test';
@@ -221,10 +222,16 @@ test.describe('Task Detail: maximize / restore', () => {
     await expect(dialog).not.toBeVisible();
   });
 
-  test('Ctrl+Shift+M is suppressed in edit mode (maximize guard)', async () => {
+  // The terminal-aware Escape policy (view mode: Escape over the PTY goes to the
+  // agent, Escape with the pointer elsewhere closes the dialog) is covered
+  // deterministically in tests/unit/terminal-escape-release.test.ts. Driving the
+  // real xterm focus + :hover + propagation from the UI tier is flaky, so it is
+  // verified manually instead.
+
+  test('edit mode: maximize button is present and Ctrl+Shift+M toggles the layout', async () => {
     // A To Do task with no session opens in edit mode (initialEdit=true, forced
-    // by the component when role='todo' and hasSessionContext=false). The guard
-    // `!isEditing` means Ctrl+Shift+M must not apply the maximized layout.
+    // by the component when role='todo' and hasSessionContext=false). Maximize
+    // is now available in edit mode (the #184 gate was removed).
     const card = page
       .locator('[data-swimlane-name="To Do"]')
       .locator('text=Edit Mode Task')
@@ -237,58 +244,138 @@ test.describe('Task Detail: maximize / restore', () => {
     // To Do tasks open in edit mode - a title input is visible.
     await expect(page.locator('input[placeholder="Task title"]')).toBeVisible();
 
-    // Record the backdrop classes BEFORE pressing the hotkey.
-    const backdropBefore = await dialog.evaluate((el) => el.parentElement?.className ?? '');
-
-    // Ctrl+Shift+M must not switch to maximized layout while in edit mode.
-    await page.keyboard.press('Control+Shift+M');
-
-    // Intentional fixed wait: we cannot poll for non-occurrence.
-    // 500ms is enough for React to process any state change if the guard failed.
-    await page.waitForTimeout(500);
-
-    const backdropAfter = await dialog.evaluate((el) => el.parentElement?.className ?? '');
-    // Backdrop must still be full-window (inset-0), not the maximized inset.
-    expect(backdropAfter).toContain('inset-0');
-    expect(backdropAfter).not.toContain('top-10');
-    // The dialog content must not have received w-full h-full (maximize layout).
+    // The maximize button is surfaced in the edit header.
+    const maximizeButton = page.locator('[data-testid="task-detail-maximize"]');
+    await expect(maximizeButton).toBeVisible();
+    await expect(maximizeButton).toHaveAttribute('title', /^Maximize/);
     await expect(dialog).not.toHaveClass(/w-full/);
 
-    // Classes unchanged from before the keypress.
-    expect(backdropAfter).toBe(backdropBefore);
+    // Ctrl+Shift+M maximizes: content fills the screen, backdrop insets.
+    await page.keyboard.press('Control+Shift+M');
+    await expect(maximizeButton).toHaveAttribute('title', /^Restore/);
+    await expect(dialog).toHaveClass(/w-full/);
+    await expect(dialog).toHaveClass(/h-full/);
+    await expect(dialog).toHaveClass(/rounded-none/);
+    const backdropMaximized = await dialog.evaluate((el) => el.parentElement?.className ?? '');
+    expect(backdropMaximized).toContain('top-10');
+    expect(backdropMaximized).toContain('bottom-9');
+
+    // Restore via the hotkey so maximizedTasks state does not leak into the next
+    // test (the flag persists across dialog open/close, keyed by task id).
+    await page.keyboard.press('Control+Shift+M');
+    await expect(maximizeButton).toHaveAttribute('title', /^Maximize/);
+    await expect(dialog).not.toHaveClass(/w-full/);
 
     // Close the dialog to leave a clean state for the next test.
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
   });
 
-  test('BaseDialog default props: non-maximize consumer keeps inset-0 and rounded-lg', async () => {
-    // The New Task dialog uses BaseDialog with no backdropPositionClass or
-    // contentRadiusClass overrides. This test proves the new optional props
-    // default safely and do not affect plain consumers of BaseDialog.
+  test('edit mode: discarding unsaved changes confirms, layered over the still-visible dialog', async () => {
+    const card = page
+      .locator('[data-swimlane-name="To Do"]')
+      .locator('text=Edit Mode Task')
+      .first();
+    await card.click();
+
+    const dialog = page.locator('[data-testid="task-detail-dialog"]');
+    await dialog.waitFor({ state: 'visible', timeout: 5000 });
+
+    const titleInput = page.locator('input[placeholder="Task title"]');
+    await titleInput.fill('Edit Mode Task (changed)');
+
+    // Escape on a dirty edit form shows the discard confirm ON TOP, with the
+    // edit dialog still mounted/visible behind it (not replaced).
+    await page.keyboard.press('Escape');
+    const confirmHeading = page.locator('h3:has-text("Discard unsaved changes?")');
+    await expect(confirmHeading).toBeVisible();
+    await expect(dialog).toBeVisible();
+
+    // Keep editing returns to the form with the edit intact.
+    await page.locator('button:has-text("Keep editing")').click();
+    await expect(confirmHeading).not.toBeVisible();
+    await expect(titleInput).toHaveValue('Edit Mode Task (changed)');
+
+    // Discard abandons the edit and closes the dialog (no save).
+    await page.keyboard.press('Escape');
+    await expect(confirmHeading).toBeVisible();
+    await page.locator('button:has-text("Discard")').click();
+    await expect(dialog).not.toBeVisible();
+  });
+
+  test('New Task create dialog: maximize button and Ctrl+Shift+M toggle the layout', async () => {
     const todoColumn = page.locator('[data-swimlane-name="To Do"]');
     await todoColumn.locator('text=Add task').click();
 
     // Wait for the dialog to mount.
-    await page.locator('input[placeholder="Task title"]').waitFor({ state: 'visible', timeout: 5000 });
-
-    // The content element has data-testid="task-description" inside it;
-    // find the content box by walking up from a known inner element.
     const titleInput = page.locator('input[placeholder="Task title"]');
-    const contentBox = titleInput.locator('xpath=ancestor::div[contains(@class,"rounded-lg")][1]');
-    await expect(contentBox).toBeVisible();
-    await expect(contentBox).toHaveClass(/rounded-lg/);
-    // Must not have the maximized corners class.
-    await expect(contentBox).not.toHaveClass(/rounded-none/);
+    await titleInput.waitFor({ state: 'visible', timeout: 5000 });
 
-    // The backdrop is the fixed full-screen overlay wrapping the content box.
-    const backdropClass = await contentBox.evaluate((el) => el.parentElement?.className ?? '');
-    expect(backdropClass).toContain('inset-0');
-    // Must not have the maximized inset.
-    expect(backdropClass).not.toContain('top-10');
+    // The content box is the rounded dialog container around the title input.
+    const contentBox = titleInput.locator('xpath=ancestor::div[contains(@class,"shadow-2xl")][1]');
+    await expect(contentBox).toHaveClass(/w-\[840px\]/);
+    await expect(contentBox).toHaveClass(/rounded-lg/);
+    const backdropWindowed = await contentBox.evaluate((el) => el.parentElement?.className ?? '');
+    expect(backdropWindowed).toContain('inset-0');
+    expect(backdropWindowed).not.toContain('top-10');
+
+    // The standard-header close button advertises the panel.close hotkey
+    // (Escape is the hidden universal closer and is deliberately not shown).
+    const closeButton = page.locator('[aria-label="Close dialog"]');
+    await expect(closeButton).toHaveAttribute('title', /^Close \(/);
+
+    // Maximize via the header button.
+    const maximizeButton = page.locator('[data-testid="dialog-maximize"]');
+    await expect(maximizeButton).toBeVisible();
+    await maximizeButton.click();
+    await expect(maximizeButton).toHaveAttribute('title', /^Restore/);
+    await expect(contentBox).toHaveClass(/w-full/);
+    await expect(contentBox).toHaveClass(/h-full/);
+    await expect(contentBox).toHaveClass(/rounded-none/);
+    const backdropMaximized = await contentBox.evaluate((el) => el.parentElement?.className ?? '');
+    expect(backdropMaximized).toContain('top-10');
+    expect(backdropMaximized).toContain('bottom-9');
+
+    // Restore via the hotkey so the sentinel-keyed flag does not leak.
+    await page.keyboard.press('Control+Shift+M');
+    await expect(maximizeButton).toHaveAttribute('title', /^Maximize/);
+    await expect(contentBox).toHaveClass(/w-\[840px\]/);
 
     // Dismiss the dialog.
     await page.keyboard.press('Escape');
-    await expect(page.locator('input[placeholder="Task title"]')).not.toBeVisible();
+    await expect(titleInput).not.toBeVisible();
+  });
+
+  test('BaseDialog default props: non-maximize consumer keeps inset-0 and rounded-lg', async () => {
+    // The delete-confirm dialog (ConfirmDialog) uses BaseDialog with no
+    // backdropPositionClass or contentRadiusClass overrides. This proves the
+    // optional maximize props default safely for plain BaseDialog consumers.
+    const card = page
+      .locator('[data-swimlane-name="To Do"]')
+      .locator('text=Edit Mode Task')
+      .first();
+    await card.click();
+
+    const editDialog = page.locator('[data-testid="task-detail-dialog"]');
+    await editDialog.waitFor({ state: 'visible', timeout: 5000 });
+
+    // To Do tasks show a Delete button in the edit footer; it opens ConfirmDialog.
+    await page.locator('button:has-text("Delete")').first().click();
+
+    // The confirm dialog heading identifies the plain BaseDialog consumer.
+    const heading = page.locator('h3:has-text("Delete task")');
+    await heading.waitFor({ state: 'visible', timeout: 5000 });
+    const contentBox = heading.locator('xpath=ancestor::div[contains(@class,"shadow-2xl")][1]');
+    await expect(contentBox).toHaveClass(/rounded-lg/);
+    await expect(contentBox).not.toHaveClass(/rounded-none/);
+
+    const backdropClass = await contentBox.evaluate((el) => el.parentElement?.className ?? '');
+    expect(backdropClass).toContain('inset-0');
+    expect(backdropClass).not.toContain('top-10');
+
+    // Dismiss the confirm dialog, then the edit dialog.
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await expect(editDialog).not.toBeVisible();
   });
 });

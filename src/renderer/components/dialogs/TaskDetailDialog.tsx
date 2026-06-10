@@ -9,6 +9,7 @@ import { useKeybinding } from '../../hooks/useKeybinding';
 import { PriorityBadge } from '../backlog/PriorityBadge';
 import { BaseDialog } from './BaseDialog';
 import { ConfirmDialog } from './ConfirmDialog';
+import { maximizedDialogLayout, MaximizeToggleButton } from './dialog-maximize';
 import {
   TaskDetailHeader,
   TaskDetailEditForm,
@@ -59,6 +60,8 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   const [modelOverride, setModelOverride] = useState(task.model_override ?? '');
   const [effortOverride, setEffortOverride] = useState(task.effort_override ?? '');
   const [isEditing, setIsEditing] = useState(!!initialEdit);
+  // Discard-confirm guard for closing edit mode with unsaved changes.
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const changesOpen = useSessionStore((s) => s.changesOpenTasks.has(task.id));
   const toggleChangesOpen = useSessionStore((s) => s.toggleChangesOpen);
   // Browser pane toggle persists across dialog open/close, mirroring the
@@ -139,26 +142,48 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   // transition even if displayState briefly reports 'exited'.
   const hasSessionContext = sessionState.hasSessionContext || actions.toggling;
 
-  // Dialog sizing depends on session/edit/maximize state. Maximize only
-  // applies in the view header (edit mode uses the small standard header,
-  // which has no maximize button).
+  // Dialog sizing depends on session/edit/maximize state. Maximize applies in
+  // both the view header and the edit header (the edit standard header surfaces
+  // the maximize button via `headerRight`).
   const needsLargeDialog = hasSessionContext || changesOpen || browserOpen;
-  const isDialogMaximized = !isEditing && isMaximized;
-  const dialogSizeClass = isDialogMaximized
-    ? 'w-full h-full'
-    : isEditing || !needsLargeDialog
-      ? (sessionState.isQueued ? 'w-[520px] h-[320px]' : 'w-[700px]')
-      : 'w-[90vw] h-[85vh]';
-  // When maximized, inset the backdrop to the content area between the title
-  // bar (h-10 = 40px) and status bar (h-9 = 36px) so the app's window
-  // controls and live stats stay visible and clickable. Drop the backdrop
-  // padding so the dialog fills that region.
-  const backdropPositionClass = isDialogMaximized ? 'inset-x-0 top-10 bottom-9' : 'inset-0';
-  const backdropPadding = isDialogMaximized ? '' : 'p-6';
-  // Square the corners when maximized so the border meets the screen edges flush.
-  const contentRadiusClass = isDialogMaximized ? 'rounded-none' : 'rounded-lg';
+  const isDialogMaximized = isMaximized;
+  const windowedSizeClass = isEditing || !needsLargeDialog
+    ? (sessionState.isQueued ? 'w-[520px] h-[320px]' : 'w-[840px] max-w-[90vw]')
+    : 'w-[90vw] h-[85vh]';
+  // Shared maximize layout: when maximized the content fills the area between
+  // the app title bar and status bar, the backdrop padding is dropped, and the
+  // corners are squared so the border meets the screen edges flush.
+  const { dialogClassName: dialogSizeClass, backdropPositionClass, backdropClassName: backdropPadding, contentRadiusClass } =
+    maximizedDialogLayout(isDialogMaximized, windowedSizeClass);
 
   const handleToggleMaximized = useCallback(() => toggleMaximized(task.id), [toggleMaximized, task.id]);
+
+  // Unsaved-changes detection for edit mode: any editable field differing from
+  // the persisted task counts as dirty (mirrors the fields handleCancel reverts,
+  // including the branch config).
+  const isEditDirty = useMemo(() => (
+    title !== task.title
+    || description !== task.description
+    || prUrl !== (task.pr_url ?? '')
+    || priority !== (task.priority ?? 0)
+    || agentOverride !== (task.agent_override ?? '')
+    || modelOverride !== (task.model_override ?? '')
+    || effortOverride !== (task.effort_override ?? '')
+    || JSON.stringify(labels) !== JSON.stringify(task.labels ?? [])
+    || branchConfig.baseBranch !== (task.base_branch || '')
+    || branchConfig.customBranchName !== (task.branch_name || '')
+    || branchConfig.useWorktree !== (task.use_worktree != null ? Boolean(task.use_worktree) : null)
+  ), [title, description, prUrl, priority, agentOverride, modelOverride, effortOverride, labels, branchConfig.baseBranch, branchConfig.customBranchName, branchConfig.useWorktree, task]);
+
+  // Guard close gestures (X, Escape, backdrop, Ctrl+Shift+W) while editing with
+  // unsaved changes: ask before discarding. Returns true to let the caller
+  // proceed with the close, false when a confirm was shown instead. View mode
+  // (or a clean edit form) always proceeds.
+  const handleCloseAttempt = useCallback(() => {
+    if (confirmDiscard) return false;
+    if (isEditing && isEditDirty) { setConfirmDiscard(true); return false; }
+    return true;
+  }, [confirmDiscard, isEditing, isEditDirty]);
 
   const handleToggleBrowser = useCallback(() => {
     // Mutually exclusive with the changes panel for the 2-col layout.
@@ -244,14 +269,16 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   // CAPTURE phase so we intercept before the embedded xterm consumes the
   // Ctrl-letter control chars (Ctrl+X = 0x18, Ctrl+B = 0x02, Ctrl+M = CR); a
   // bubble-phase listener never fires for those while the terminal has focus. We
-  // deliberately do NOT bind Escape; BaseDialog keeps its own document-level
-  // Escape-to-close listener (we never pass preventBackdropClose), which still
-  // dismisses the dialog when focus is outside the terminal. A focused xterm
-  // consumes Escape first, so it stays available to the Claude TUI. The browser
-  // toggle (Mod+Shift+B) shadows the global board/backlog toggle while the
-  // dialog is open, which works because this capture-phase listener runs first.
-  useKeybinding('panel.maximize', () => toggleMaximized(task.id), { capture: true, enabled: !isEditing });
-  useKeybinding('panel.close', () => onClose(), { capture: true });
+  // deliberately do NOT bind Escape; BaseDialog owns the Escape listener. In
+  // view mode the embedded terminal consumes Escape only while the mouse pointer
+  // is over the PTY (see enableTerminalClipboard), so Escape reaches the agent's
+  // TUI there; with the pointer elsewhere it bubbles up and closes the dialog.
+  // In edit mode Escape routes through onCloseRequest, which confirms before
+  // discarding unsaved edits. The browser toggle (Mod+Shift+B) shadows the
+  // global board/backlog toggle while the dialog is open, which works because
+  // this capture-phase listener runs first.
+  useKeybinding('panel.maximize', () => toggleMaximized(task.id), { capture: true });
+  useKeybinding('panel.close', () => { if (handleCloseAttempt()) onClose(); }, { capture: true });
   useKeybinding('taskDetail.toggleBrowser', () => handleToggleBrowser(), { capture: true, enabled: canShowBrowser });
   useKeybinding('taskDetail.toggleChanges', () => handleToggleChanges(), { capture: true, enabled: sessionState.canShowChanges });
 
@@ -366,6 +393,16 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
               </span>
             ),
             icon: <Pencil size={14} className="text-fg-muted" />,
+            headerRight: (
+              <MaximizeToggleButton
+                isMaximized={isDialogMaximized}
+                onToggle={handleToggleMaximized}
+                testId="task-detail-maximize"
+              />
+            ),
+            bodyClassName: 'flex-1 flex flex-col',
+            // Route close gestures through the unsaved-changes guard while editing.
+            onCloseRequest: handleCloseAttempt,
           }
           : { header: customHeader, rawBody: true }
         )}
@@ -460,6 +497,20 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
           />
         )}
       </BaseDialog>
+
+      {/* Discard-unsaved-changes confirm, layered on top of the edit dialog
+          (which stays visible behind it). */}
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard unsaved changes?"
+          variant="warning"
+          confirmLabel="Discard"
+          cancelLabel="Keep editing"
+          message="Closing now will discard your unsaved edits to this task."
+          onConfirm={() => { setConfirmDiscard(false); onClose(); }}
+          onCancel={() => setConfirmDiscard(false)}
+        />
+      )}
 
       {/* Enable worktree confirmation */}
       {actions.showEnableWorktreeConfirm && (

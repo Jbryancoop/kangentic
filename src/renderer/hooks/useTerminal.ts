@@ -57,6 +57,9 @@ interface UseTerminalOptions {
   scrollbackLines?: number;
   cursorStyle?: 'block' | 'underline' | 'bar';
   shellName?: string;
+  /** Let Escape bubble (to close the containing dialog) when the mouse pointer
+   *  is outside the terminal. Used by the task detail dialog. */
+  releaseEscapeWhenPointerOutside?: boolean;
 }
 
 /** Restore a saved scroll position (from HMR) or pin to the bottom.
@@ -126,7 +129,7 @@ export function useTerminal(options: UseTerminalOptions) {
     writeBatcherRef.current = batcher;
 
     // Enable Ctrl+C copy (when text selected), Ctrl+V paste, and Ctrl+Enter newline
-    enableTerminalClipboard(terminal, terminalRef.current, batcher.schedule, options.shellName, options.sessionId ?? undefined);
+    enableTerminalClipboard(terminal, terminalRef.current, batcher.schedule, options.shellName, options.sessionId ?? undefined, options.releaseEscapeWhenPointerOutside);
 
     terminal.onScroll(() => {
       const buffer = terminal.buffer.active;

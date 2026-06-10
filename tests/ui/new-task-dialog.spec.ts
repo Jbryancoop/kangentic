@@ -285,7 +285,11 @@ test.describe('To Do Edit Branch Config', () => {
     const saveButton = page.locator('button:has-text("Save")');
     await expect(saveButton).toBeDisabled();
 
+    // The edit form is dirty (custom branch typed), so Escape opens the discard
+    // confirm; Discard closes it and leaves a clean state for the next test.
     await page.keyboard.press('Escape');
+    await page.locator('button:has-text("Discard")').click();
+    await page.locator('[data-testid="task-detail-dialog"]').waitFor({ state: 'hidden', timeout: 3000 });
   });
 
   test('cancel resets custom branch name', async () => {

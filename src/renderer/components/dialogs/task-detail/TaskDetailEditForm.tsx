@@ -79,7 +79,7 @@ export function TaskDetailEditForm({
 
   return (
     <div
-      className="space-y-3 relative"
+      className="space-y-3 relative flex flex-col flex-1"
       onDragOver={attachments.handleAttachmentDragOver}
       onDragLeave={attachments.handleAttachmentDragLeave}
       onDrop={attachments.handleAttachmentDrop}
@@ -101,6 +101,7 @@ export function TaskDetailEditForm({
         onPaste={attachments.handleAttachmentPaste}
         testId="task-description"
         mentionSearchCwd={task.worktree_path ?? currentProject?.path ?? null}
+        className="flex-1"
       />
       <AttachmentThumbnails
         attachments={attachments.savedAttachments}

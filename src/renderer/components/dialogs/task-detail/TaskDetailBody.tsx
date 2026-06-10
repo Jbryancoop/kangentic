@@ -197,6 +197,7 @@ export function TaskDetailBody({
                   sessionId={sessionId}
                   taskId={task.id}
                   active={true}
+                  releaseEscapeWhenPointerOutside={true}
                 />
               </div>
             </div>
