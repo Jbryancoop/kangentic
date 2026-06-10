@@ -50,8 +50,17 @@ test.describe('task.create hotkey (Ctrl+N)', () => {
     await expect(titleInput).toBeVisible({ timeout: 3000 });
 
     // Close the dialog before leaving.
-    await page.keyboard.press('Escape');
-    await expect(titleInput).toBeHidden({ timeout: 2000 });
+    // Use document-level dispatch: page.keyboard.press('Escape') would be
+    // captured by the xterm widget inside the dialog and never reach the
+    // dialog's Escape listener. This is the same pattern used by the
+    // closeTaskDialog helper in task-detail-split-divider.spec.ts.
+    await page.evaluate(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await expect.poll(
+      () => titleInput.isVisible().catch(() => false),
+      { timeout: 3000 },
+    ).toBe(false);
   });
 
   test('the dialog opened by Ctrl+N targets the To Do (role=todo) lane', async () => {

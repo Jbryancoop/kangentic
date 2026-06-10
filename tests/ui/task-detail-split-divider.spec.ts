@@ -171,6 +171,42 @@ async function getStoredDividerRatio(page: Page, taskId: string): Promise<number
   }, taskId);
 }
 
+/**
+ * Set the divider ratio for a task via the Zustand session store.
+ *
+ * This drives the hook's re-sync path (the useEffect that reads storedRatio
+ * and calls setRatio when isResizing is false). Calling this before a drag
+ * guarantees a known flex-basis starting point, making drag-direction
+ * assertions immune to whatever ratio a prior test left behind.
+ *
+ * The dialog must be open and the Changes panel visible before calling this,
+ * otherwise the hook is not mounted and the flex-basis won't update.
+ */
+async function setStoredDividerRatioAndWait(page: Page, taskId: string, ratio: number): Promise<void> {
+  await page.evaluate(
+    ([id, value]: [string, number]) => {
+      const stores = (window as unknown as {
+        __zustandStores?: {
+          session: {
+            getState: () => {
+              setDividerRatio: (taskId: string, ratio: number) => void;
+            };
+          };
+        };
+      }).__zustandStores;
+      if (!stores) throw new Error('__zustandStores not available');
+      stores.session.getState().setDividerRatio(id, value);
+    },
+    [taskId, ratio] as [string, number],
+  );
+  // Wait for the hook's useEffect to flush the store update into local state
+  // and for the DOM flex-basis to reflect the new ratio.
+  await expect.poll(
+    async () => getTerminalPaneFlexBasisPercent(page),
+    { timeout: 3000 },
+  ).toBeCloseTo(ratio * 100, 0);
+}
+
 // ---------------------------------------------------------------------------
 // Suite 1: Divider presence
 // ---------------------------------------------------------------------------
@@ -296,9 +332,9 @@ test.describe('Task Detail split divider: drag to resize', () => {
     const divider = page.locator('[data-testid="task-detail-split-divider"]');
     await divider.waitFor({ state: 'visible', timeout: 3000 });
 
-    // Record the baseline flex-basis (should be near 50% on first open).
-    const baselineBasis = await getTerminalPaneFlexBasisPercent(page);
-    expect(baselineBasis).toBeCloseTo(50, 0);
+    // Establish a known starting ratio of 50% via the store so this test
+    // is not affected by any ratio left over from a prior run or test.
+    await setStoredDividerRatioAndWait(page, TASK_ID, 0.5);
 
     // Compute a target X position well to the right of the current divider
     // position (a large rightward delta so the effect is unambiguous).
@@ -307,10 +343,9 @@ test.describe('Task Detail split divider: drag to resize', () => {
     const startX = dividerBox!.x + dividerBox!.width / 2;
     const startY = dividerBox!.y + dividerBox!.height / 2;
 
-    // Determine a target: 200px to the right of the current divider position.
-    // The container is 1920px wide (viewport), so the terminal was at ~960px;
-    // moving to ~1160px should yield roughly (1160/1920) * 100 ~ 60% -> clamped
-    // to 60% which is still within [25%, 75%].
+    // Drag 200px to the right. At a 1920-wide viewport, the divider starts at
+    // ~960px; 200px right takes it to ~1160px, yielding ~60.4% which is within
+    // [25%, 75%] and is unambiguously greater than 50%.
     const targetX = startX + 200;
 
     await page.mouse.move(startX, startY);
@@ -319,31 +354,43 @@ test.describe('Task Detail split divider: drag to resize', () => {
     await page.mouse.up();
 
     // After mouseup, the store is updated and the local ratio state syncs.
-    // The terminal pane flex-basis must be larger than the baseline 50%.
+    // The terminal pane flex-basis must be larger than the known 50% start.
     await expect.poll(
       async () => getTerminalPaneFlexBasisPercent(page),
       { timeout: 3000 },
-    ).toBeGreaterThan(baselineBasis);
+    ).toBeGreaterThan(50);
 
     await closeTaskDialog(page);
   });
 
   test('dragging the divider left decreases the terminal pane flex-basis', async () => {
+    // This test is fully self-contained: it opens the Changes panel itself and
+    // pre-sets the divider ratio to a known 60% via the store before dragging.
+    // Previously this test relied on the previous test having left the panel
+    // open and the ratio at an unknown post-drag value, which caused flake when
+    // the previous test's drag produced a value too close to the clamp boundary.
     await openTaskDialog(page);
 
-    // Changes panel is still open from previous test (store persists).
+    // Open the Changes panel (may already be open if store persisted from the
+    // previous test, but clicking the toggle when already open closes it, so
+    // we check first via the divider visibility).
     const divider = page.locator('[data-testid="task-detail-split-divider"]');
-    await divider.waitFor({ state: 'visible', timeout: 3000 });
+    if (!(await divider.isVisible().catch(() => false))) {
+      await page.locator('[data-testid="changes-toggle"]').click();
+      await divider.waitFor({ state: 'visible', timeout: 3000 });
+    }
 
-    const basisBeforeDrag = await getTerminalPaneFlexBasisPercent(page);
-    expect(basisBeforeDrag).toBeGreaterThan(25);
+    // Pre-set the ratio to 60% so we have a known, unambiguous starting point.
+    // A 200px leftward drag from a 60% position yields a value well below 60%.
+    await setStoredDividerRatioAndWait(page, TASK_ID, 0.6);
 
     const dividerBox = await divider.boundingBox();
     expect(dividerBox).not.toBeNull();
     const startX = dividerBox!.x + dividerBox!.width / 2;
     const startY = dividerBox!.y + dividerBox!.height / 2;
 
-    // Move 200px to the left.
+    // Move 200px to the left. From ~60% (~1152px of 1920), this targets
+    // ~952px which yields ~49.6% - clearly less than 60%.
     const targetX = startX - 200;
 
     await page.mouse.move(startX, startY);
@@ -351,19 +398,29 @@ test.describe('Task Detail split divider: drag to resize', () => {
     await page.mouse.move(targetX, startY, { steps: 10 });
     await page.mouse.up();
 
+    // Assert the result is less than the known 60% start. Using toBeGreaterThan
+    // on the negative: new value < 60%.
     await expect.poll(
       async () => getTerminalPaneFlexBasisPercent(page),
       { timeout: 3000 },
-    ).toBeLessThan(basisBeforeDrag);
+    ).toBeLessThan(60);
 
     await closeTaskDialog(page);
   });
 
   test('ratio is clamped: dragging far left does not take terminal below 25%', async () => {
+    // Fully self-contained: opens Changes panel explicitly and sets a known
+    // starting ratio before dragging. Does not rely on previous test state.
     await openTaskDialog(page);
 
     const divider = page.locator('[data-testid="task-detail-split-divider"]');
-    await divider.waitFor({ state: 'visible', timeout: 3000 });
+    if (!(await divider.isVisible().catch(() => false))) {
+      await page.locator('[data-testid="changes-toggle"]').click();
+      await divider.waitFor({ state: 'visible', timeout: 3000 });
+    }
+
+    // Pre-set to 50% for a clean, predictable starting position.
+    await setStoredDividerRatioAndWait(page, TASK_ID, 0.5);
 
     const dividerBox = await divider.boundingBox();
     expect(dividerBox).not.toBeNull();
@@ -385,10 +442,18 @@ test.describe('Task Detail split divider: drag to resize', () => {
   });
 
   test('ratio is clamped: dragging far right does not take terminal above 75%', async () => {
+    // Fully self-contained: opens Changes panel explicitly and sets a known
+    // starting ratio before dragging. Does not rely on previous test state.
     await openTaskDialog(page);
 
     const divider = page.locator('[data-testid="task-detail-split-divider"]');
-    await divider.waitFor({ state: 'visible', timeout: 3000 });
+    if (!(await divider.isVisible().catch(() => false))) {
+      await page.locator('[data-testid="changes-toggle"]').click();
+      await divider.waitFor({ state: 'visible', timeout: 3000 });
+    }
+
+    // Pre-set to 50% for a clean, predictable starting position.
+    await setStoredDividerRatioAndWait(page, TASK_ID, 0.5);
 
     const dividerBox = await divider.boundingBox();
     expect(dividerBox).not.toBeNull();

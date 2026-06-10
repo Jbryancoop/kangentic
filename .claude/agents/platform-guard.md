@@ -35,9 +35,10 @@ You scan Kangentic code for cross-platform pitfalls that slip past CI (which onl
 
 ## First Step: Load Context
 
-Read the cross-platform skill for the full pitfall catalog:
+Read the cross-platform skill for the full pitfall catalog, and the rule it enforces:
 
 - `.claude/skills/cross-platform/SKILL.md`
+- `.claude/rules/cross-platform-parity.md` - the convention this agent enforces for code, plus the test-authoring conventions (no cross-test state leakage, no pixel-exact assertions) whose mechanical backstop is CI running the UI tier on Linux.
 
 ## Checks to Perform
 
