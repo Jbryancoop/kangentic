@@ -42,7 +42,7 @@ To roll back to a previous version, run `npx kangentic@X.Y.Z` with the desired v
 2. **Tag push triggers `release.yml`** -- requires approval from the `release` environment (Settings > Environments). Builds all platforms (Linux x64, Windows x64, macOS arm64), signs binaries (when signing secrets are configured), creates a **draft** GitHub Release with artifacts attached.
 3. **Run the [release smoke checklist](release-checklist.md)** against the draft build before publishing. Automated tests use mock CLI fixtures, so this manual gate is the only place real model latency, real tool calls, and conversation continuity across resume get exercised. Failure here blocks publish.
 4. **Review and publish the draft release** at [github.com/Kangentic/kangentic/releases](https://github.com/Kangentic/kangentic/releases). Paste the release notes from `/release` output. Publishing is a manual gate.
-5. **Publishing triggers `npm-publish.yml`** -- publishes the launcher package to npm.
+5. **The `publish-npm` job in `release.yml`** publishes the launcher package to npm after `publish-release` succeeds, using Trusted Publishing (OIDC) -- no token required.
 6. **`npx kangentic`** now downloads the new version's signed binaries.
 
 ### Commit Conventions
@@ -75,7 +75,11 @@ Signing only activates when the corresponding env vars are present. Local dev bu
 | `AZURE_SIGNING_ENDPOINT` | Regional endpoint (e.g., `https://eus.codesigning.azure.net/`) |
 | `AZURE_SIGNING_ACCOUNT` | Trusted Signing account name |
 | `AZURE_CERT_PROFILE` | Certificate profile name |
-| `NPM_TOKEN` | npm access token for publishing launcher |
+
+The launcher publishes to npm via Trusted Publishing (OIDC), so no npm token secret is
+required. The `publish-npm` job proves its identity to npm per-run with a short-lived OIDC
+token (`id-token: write`). Configure the trusted publisher on npmjs.com for the `kangentic`
+package: GitHub Actions, org `Kangentic`, repo `kangentic`, workflow `release.yml`.
 
 ### macOS Auto-Update Requires Signing
 
@@ -94,8 +98,7 @@ Electron's `autoUpdater` on macOS only works with signed apps (Electron docs: "m
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `ci.yml` | Push to main, PRs | Typecheck, unit tests, UI tests |
-| `release.yml` | Tag push (`v*`) or `workflow_dispatch` | Build + sign + create draft GitHub Release |
-| `npm-publish.yml` | Release published | Publish launcher to npm |
+| `release.yml` | Tag push (`v*`) or `workflow_dispatch` | Build + sign + draft GitHub Release, then publish + set notes + publish launcher to npm (via OIDC trusted publishing) |
 
 ### CI Build Matrix
 
