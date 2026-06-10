@@ -251,10 +251,33 @@ describe('OpenCode Adapter', () => {
       expect(fromOutput?.(sample)).toBe(REAL_SESSION_ID);
     });
 
-    it('captures native ses_* ID embedded in --session resume hints', () => {
+    it('ignores a bare --session flag echo (our resume command, not an agent banner)', () => {
+      // A `--session <id>` flag in the scrollback is a COMMAND line, not the
+      // agent announcing its id: it appears when the shell echoes our own
+      // resume invocation. Capturing from it would re-capture an id we already
+      // know, and - the real bug - lets a stale id leak in (see the PSReadLine
+      // case below). The labeled-banner-only match requires a `:`/`=` separator,
+      // which a bare flag form lacks.
       const fromOutput = adapter.runtime.sessionId?.fromOutput;
       const sample = `Resume with: opencode --session '${REAL_SESSION_ID}'`;
-      expect(fromOutput?.(sample)).toBe(REAL_SESSION_ID);
+      expect(fromOutput?.(sample)).toBeNull();
+    });
+
+    it('ignores a stale --session <uuid> from a PSReadLine history autosuggestion (flaky-capture regression)', () => {
+      // On Windows, PSReadLine renders a ghosted command-history suggestion into
+      // the PTY before the agent runs. A prior run's resume command
+      // (`opencode --session <stale-uuid>`) thus appears in the scrollback ahead
+      // of the real `session id: ses_...` banner. The scanner must skip the
+      // flag-form echo and capture only the announced banner; otherwise it
+      // resumes the wrong (stale) session. This is the exact bug that flaked the
+      // OpenCode session-ID capture E2E test.
+      const fromOutput = adapter.runtime.sessionId?.fromOutput;
+      const staleAutosuggestion =
+        '> & "C:\\path\\mock-opencode.cmd" --session 1f7e3f94-29ed-4640-a012-c892ee8186a8';
+      expect(fromOutput?.(staleAutosuggestion)).toBeNull();
+      // And the same buffer once the real banner arrives: the banner wins.
+      const withBanner = `${staleAutosuggestion}\r\nsession id: ${REAL_SESSION_ID}`;
+      expect(fromOutput?.(withBanner)).toBe(REAL_SESSION_ID);
     });
 
     it('strips ANSI before pattern matching the native ID', () => {

@@ -37,6 +37,7 @@ function makeSession(status: Session['status']): Session {
     startedAt: new Date().toISOString(),
     exitCode: null,
     resuming: false,
+    agentSessionId: null,
   };
 }
 

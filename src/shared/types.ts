@@ -310,6 +310,14 @@ export interface Session {
    * SessionRecord.isolated_swimlane_id.
    */
   isolatedSwimlaneId?: string | null;
+  /**
+   * Agent-reported session ID (the value passed to `--resume`). Known at spawn
+   * for caller-owned-ID adapters (Claude, Kimi, Qwen); set by the capture
+   * pipeline once the agent emits it over the PTY or via hooks (OpenCode,
+   * Codex, Gemini, Droid). Null until captured. Mirrors the persisted
+   * SessionRecord.agent_session_id for the live session.
+   */
+  agentSessionId: string | null;
 }
 
 // === Session Persistence (DB) ===

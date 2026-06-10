@@ -94,10 +94,12 @@ let cwd = null;
 let prompt = null;
 let resumed = false;
 
+let hadWorkDir = false;
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === '-w' || arg === '--work-dir') {
     cwd = args[++i] ?? null;
+    hadWorkDir = true;
   } else if (arg === '--session' || arg === '--resume' || arg === '-S' || arg === '-r') {
     sessionId = args[++i] ?? null;
   } else if (arg === '--prompt' || arg === '--command' || arg === '-p' || arg === '-c') {
@@ -251,7 +253,16 @@ function writeWireEvents() {
   fs.writeFileSync(wirePath, lines.join('\n') + '\n', { flag });
 }
 
-writeWireEvents();
+// Only a real work-dir spawn (-w) registers a resumable session on disk. A
+// bare probe invocation (agent detection / readiness check) carries no -w and
+// inherits the app's cwd; writing a wire.jsonl for it would plant a stray
+// session under the app-cwd hash that the mtime-windowed filesystem capture
+// scan (KimiSessionHistoryParser.captureSessionIdFromFilesystem) could pick up
+// ahead of the real session, poisoning the captured id. Real Kimi ties a
+// session to its work_dir, so gating on -w mirrors that.
+if (hadWorkDir) {
+  writeWireEvents();
+}
 
 // --- kimi.json racy read-modify-write (opt-in) ------------------------------
 // Real Kimi maintains ~/.kimi/kimi.json with a work_dirs[] array tracking the

@@ -41,7 +41,8 @@ import {
   setProjectDefaultAgent,
   waitForScrollback,
   waitForRunningSession,
-  waitForNoRunningSession,
+  waitForTaskSessionNotRunning,
+  waitForAgentSessionId,
   getTaskIdByTitle,
   getSwimlaneIds,
   moveTaskIpc,
@@ -135,8 +136,6 @@ interface CaptureCase {
   }): Promise<string> | string;
   /** Best-effort cleanup of any planted files. */
   cleanup?(tmpDir: string): void;
-  /** How long to wait between plant and suspend so the capture path can fire. */
-  postPlantWaitMs?: number;
 }
 
 async function runCaptureCase(
@@ -161,12 +160,16 @@ async function runCaptureCase(
     page,
   });
 
-  if (captureCase.postPlantWaitMs) {
-    await page.waitForTimeout(captureCase.postPlantWaitMs);
-  }
+  // Conditional wait (replaces fixed post-plant sleeps): block until the
+  // capture pipeline has round-tripped the expected ID onto the live session.
+  // This is exactly the precondition the suspend->resume below depends on, so
+  // waiting for it directly removes both the flake and the wasted fixed delay.
+  await waitForAgentSessionId(page, taskId, expectedUuid);
 
   await moveTaskIpc(page, taskId, swimlaneIds.done);
-  await waitForNoRunningSession(page);
+  // Scope the suspend-completion wait to THIS task so the assertion is not
+  // coupled to other cases' still-alive keep-alive mocks in the shared run.
+  await waitForTaskSessionNotRunning(page, taskId);
 
   await page.evaluate(async ({ taskId: id, swimlaneId }) => {
     await window.electronAPI.tasks.unarchive({ id, targetSwimlaneId: swimlaneId });
@@ -196,6 +199,14 @@ async function runCaptureCase(
 
   expect(resumedMatch).toBeTruthy();
   expect(resumedMatch![1]).toBe(expectedUuid);
+
+  // Tear down the resumed keep-alive mock before the next case runs. Each mock
+  // stays alive ~30s; without this, resumed PTYs accumulate across cases and
+  // can approach maxConcurrentSessions, and leave a running session that would
+  // confuse a later global wait. Move back to Done and wait (scoped) for it to
+  // suspend.
+  await moveTaskIpc(page, taskId, swimlaneIds.done);
+  await waitForTaskSessionNotRunning(page, taskId);
 
   captureCase.cleanup?.(tmpDir);
 }
@@ -262,7 +273,6 @@ test.describe('Agent session-ID capture pipeline', () => {
       spawnMarker: 'MOCK_CODEX_SESSION:',
       resumeMarker: 'MOCK_CODEX_RESUMED:',
       uuidPattern: /MOCK_CODEX_RESUMED:([a-f0-9-]+)/,
-      postPlantWaitMs: 1500,
       resolveExpectedUuid: ({ tmpDir }) => {
         plantedPath = writeCodexRolloutFile(tmpDir);
         return KNOWN_CODEX_UUID;
@@ -281,7 +291,6 @@ test.describe('Agent session-ID capture pipeline', () => {
       spawnMarker: 'MOCK_DROID_SESSION:',
       resumeMarker: 'MOCK_DROID_RESUMED:',
       uuidPattern: /MOCK_DROID_RESUMED:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
-      postPlantWaitMs: 1500,
       resolveExpectedUuid: ({ spawnScrollback }) => {
         const match = spawnScrollback.match(
           /MOCK_DROID_SESSION:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
@@ -298,7 +307,6 @@ test.describe('Agent session-ID capture pipeline', () => {
       spawnMarker: 'MOCK_GEMINI_SESSION:',
       resumeMarker: 'MOCK_GEMINI_RESUMED:',
       uuidPattern: /MOCK_GEMINI_RESUMED:([a-f0-9-]+)/,
-      postPlantWaitMs: 1000,
       resolveExpectedUuid: ({ tmpDir }) => {
         const eventsPath = findGeminiEventsOutputPath(tmpDir);
         if (!eventsPath) throw new Error('Gemini settings missing events.jsonl hook path');
@@ -381,7 +389,6 @@ test.describe('Kimi filesystem fallback session-ID capture', () => {
       spawnMarker: 'MOCK_KIMI_SESSION:',
       resumeMarker: 'MOCK_KIMI_RESUMED:',
       uuidPattern: /MOCK_KIMI_RESUMED:([a-f0-9-]+)/,
-      postPlantWaitMs: 2000,
       resolveExpectedUuid: ({ spawnScrollback }) => {
         const match = spawnScrollback.match(/MOCK_KIMI_SESSION:([a-f0-9-]+)/);
         if (!match) throw new Error('mock-kimi did not emit a session marker');

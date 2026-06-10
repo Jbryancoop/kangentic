@@ -322,6 +322,61 @@ export async function waitForNoRunningSession(page: Page, timeoutMs = 15000): Pr
   }, null, { timeout: timeoutMs });
 }
 
+/**
+ * Wait until this task's session is no longer running (suspended/exited).
+ * Scoped to one task so a shared-Electron suite is not coupled to other
+ * tasks' still-alive mocks (e.g. a previous case's resumed keep-alive PTY).
+ * Treats "no session for the task" as not-running.
+ */
+export async function waitForTaskSessionNotRunning(page: Page, taskId: string, timeoutMs = 15000): Promise<void> {
+  // Manual poll via page.evaluate (which reliably awaits its async body),
+  // mirroring waitForScrollback. page.waitForFunction with an async predicate
+  // can treat the returned Promise as truthy and resolve on the first tick.
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const running = await page.evaluate(async (taskId) => {
+      const sessions: Session[] = await window.electronAPI.sessions.list();
+      const session = sessions.find((candidate) => candidate.taskId === taskId);
+      return !!session && session.status === 'running';
+    }, taskId);
+    if (!running) return;
+    await page.waitForTimeout(200);
+  }
+  throw new Error(`Timed out waiting for task ${taskId} session to stop running`);
+}
+
+/**
+ * Poll until this task's session reports the expected captured agent session
+ * ID. This is the conditional wait that replaces fixed post-plant sleeps: it
+ * asserts the capture pipeline actually round-tripped the ID onto the live
+ * session before the test suspends and resumes.
+ *
+ * Implemented as a manual poll via page.evaluate (which reliably awaits its
+ * async body). page.waitForFunction with an async predicate can treat the
+ * returned Promise as a truthy value and resolve on the first tick without
+ * ever observing a false condition - which silently no-ops this wait.
+ */
+export async function waitForAgentSessionId(
+  page: Page,
+  taskId: string,
+  expectedId: string,
+  timeoutMs = 15000,
+): Promise<void> {
+  const start = Date.now();
+  let lastSeen: string | null = null;
+  while (Date.now() - start < timeoutMs) {
+    lastSeen = await page.evaluate(async (taskId) => {
+      const sessions: Session[] = await window.electronAPI.sessions.list();
+      return sessions.find((candidate) => candidate.taskId === taskId)?.agentSessionId ?? null;
+    }, taskId);
+    if (lastSeen === expectedId) return;
+    await page.waitForTimeout(200);
+  }
+  throw new Error(
+    `Timed out waiting for agentSessionId=${expectedId} on task ${taskId} (last seen: ${lastSeen})`,
+  );
+}
+
 /** Look up the task ID for a given title via IPC. */
 export async function getTaskIdByTitle(page: Page, title: string): Promise<string> {
   const taskId = await page.evaluate(async (taskTitle) => {

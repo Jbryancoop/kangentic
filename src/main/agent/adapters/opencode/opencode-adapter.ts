@@ -26,12 +26,21 @@ import { ActivityDetection } from '../../../../shared/types';
 const NATIVE_SESSION_ID = '(ses_[A-Za-z0-9_-]{16,64})';
 const UUID_SESSION_ID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const ID_ALTERNATION = `(?:${NATIVE_SESSION_ID}|${UUID_SESSION_ID})`;
+// Match only OpenCode's *announced* session banner: a label (`session id`,
+// `session`, `sid`) followed by a REQUIRED `:` or `=` separator and the id.
+//
+// The separator is the load-bearing part. The PTY scrollback also contains the
+// shell command line, which carries the id behind a `--session <id>` / `--resume
+// <id>` FLAG: our own resume invocation, and - critically on Windows - a
+// PSReadLine command-history autosuggestion echoing a stale `--session <uuid>`
+// from a prior run. A flag form is `session` + whitespace + id with NO `:`/`=`,
+// so requiring the separator excludes it while still matching the real banner
+// `session id: ses_...`. Without this the scanner captured the stale flag id and
+// resumed the wrong session (the flaky-capture bug this regex fixes). There is
+// deliberately no separate `--session` flag-form matcher: a bare flag in PTY
+// output is always a command echo, never the agent announcing its id.
 const LABELED_SESSION_ID_REGEX = new RegExp(
-  `(?:session(?:[ _-]?id)?|sid)["']?\\s*[:=]?\\s*["']?${ID_ALTERNATION}["']?`,
-  'i',
-);
-const FLAG_FORM_SESSION_ID_REGEX = new RegExp(
-  `--session[\\s=]+['"]?${ID_ALTERNATION}['"]?`,
+  `(?:session(?:[ _-]?id)?|sid)["']?\\s*[:=]\\s*["']?${ID_ALTERNATION}["']?`,
   'i',
 );
 const ANSI_ESCAPE_REGEX = /\x1b\[[0-9;?]*[a-zA-Z]/g;
@@ -200,12 +209,16 @@ export class OpenCodeAdapter implements AgentAdapter {
    * - sessionId.fromHook: extracts `sessionID` from the
    *   `event.properties.info.id` field captured by the plugin on
    *   `session.created` and stored in `hookContext`.
-   * - sessionId.fromOutput: scans every PTY chunk for an OpenCode
-   *   session ID adjacent to common labels. The native ID format
-   *   (verified empirically on v1.14.25) is `ses_<26 alphanumeric>`,
-   *   e.g. `ses_2349b5c91ffeKd6qajuUTR4clq`. We also accept canonical
-   *   UUID format defensively in case a future release changes shape
-   *   or another OpenCode-derived tool adopts the runtime.
+   * - sessionId.fromOutput: scans every PTY chunk for OpenCode's
+   *   announced session banner - a label (`session id`, `session`,
+   *   `sid`) plus a REQUIRED `:`/`=` separator plus the id. The native
+   *   ID format (verified empirically on v1.14.25) is
+   *   `ses_<26 alphanumeric>`, e.g. `ses_2349b5c91ffeKd6qajuUTR4clq`;
+   *   canonical UUIDs are also accepted defensively. The separator
+   *   requirement deliberately excludes a bare `--session <id>` flag in
+   *   the scrollback (our own resume command echo, or a PSReadLine
+   *   history autosuggestion on Windows), which would otherwise poison
+   *   the capture with a stale id.
    * - sessionId.fromFilesystem: reads the `~/.local/share/opencode/opencode.db`
    *   SQLite database (WAL-friendly readonly handle) and matches a
    *   `session` row whose `directory` equals our cwd and whose
@@ -245,9 +258,6 @@ export class OpenCodeAdapter implements AgentAdapter {
 
         const labeled = clean.match(LABELED_SESSION_ID_REGEX);
         if (labeled) return labeled[1] ?? labeled[2] ?? null;
-
-        const flagForm = clean.match(FLAG_FORM_SESSION_ID_REGEX);
-        if (flagForm) return flagForm[1] ?? flagForm[2] ?? null;
 
         return null;
       },

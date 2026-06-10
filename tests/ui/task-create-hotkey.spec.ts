@@ -54,12 +54,19 @@ test.describe('task.create hotkey (Ctrl+N)', () => {
     // captured by the xterm widget inside the dialog and never reach the
     // dialog's Escape listener. This is the same pattern used by the
     // closeTaskDialog helper in task-detail-split-divider.spec.ts.
-    await page.evaluate(() => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    });
+    //
+    // Re-dispatch Escape on every poll iteration: the dialog mounts its keydown
+    // listener in a React effect that can attach a tick after the input becomes
+    // visible, so a single Escape fired immediately can be missed under load and
+    // leave the dialog open forever. Polling the dispatch itself is robust.
     await expect.poll(
-      () => titleInput.isVisible().catch(() => false),
-      { timeout: 3000 },
+      async () => {
+        await page.evaluate(() => {
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        });
+        return titleInput.isVisible().catch(() => false);
+      },
+      { timeout: 5000, intervals: [100, 200, 300] },
     ).toBe(false);
   });
 

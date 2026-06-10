@@ -34,6 +34,11 @@ export interface ManagedSession {
   transient: boolean;
   /** Swimlane this session is isolated to (null = main session). Drives the Main/Isolated badge. */
   isolatedSwimlaneId?: string | null;
+  /** Agent-reported session ID (the value passed to `--resume`). Known at
+   *  spawn for caller-owned-ID adapters (Claude, Kimi, Qwen); set later by the
+   *  capture pipeline for adapters that emit it over the PTY or via hooks
+   *  (OpenCode, Codex, Gemini, Droid). Null until captured. */
+  agentSessionId?: string | null;
   /** Sequence of strings to write to PTY for graceful exit before force-killing. */
   exitSequence: string[];
   /** Agent adapter for adapter-specific behavior (readiness detection, parsing,
@@ -76,6 +81,7 @@ export function toSession(session: ManagedSession): Session {
     resuming: session.resuming,
     transient: session.transient || undefined,
     isolatedSwimlaneId: session.isolatedSwimlaneId,
+    agentSessionId: session.agentSessionId ?? null,
   };
 }
 

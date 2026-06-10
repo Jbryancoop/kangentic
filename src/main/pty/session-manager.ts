@@ -149,6 +149,12 @@ export class SessionManager extends EventEmitter {
         // recoverStaleSessionId() handles both cases - emit unconditionally.
         const session = this.registry.get(sessionId);
         if (!session) return;
+        // Reflect the captured ID on the live Session so the renderer (and
+        // tests) can observe it via sessions.list() without a DB round-trip.
+        if (session.agentSessionId !== agentReportedId) {
+          session.agentSessionId = agentReportedId;
+          this.emit('session-changed', sessionId, toSession(session));
+        }
         this.emit('agent-session-id', sessionId, session.taskId, session.projectId, agentReportedId);
         // Hand off to the session-history reader if the adapter declares
         // a native history hook. Fire-and-forget - the reader logs any

@@ -1133,6 +1133,7 @@
           exitCode: null,
           resuming: true,
           isolatedSwimlaneId: null,
+          agentSessionId: null,
         };
         sessions.push(newSession);
         // Default activity to 'idle' on spawn (matches real backend behavior)
@@ -1296,6 +1297,7 @@
           resuming: false,
           transient: true,
           isolatedSwimlaneId: null,
+          agentSessionId: null,
         };
         sessions.push(session);
         return { session: session, branch: input.branch || 'main' };

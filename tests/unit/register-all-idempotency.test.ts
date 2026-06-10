@@ -175,6 +175,12 @@ describe('registerAllIpc idempotency', () => {
     vi.resetModules();
   });
 
+  // These tests vi.resetModules() then re-import the entire main-process IPC
+  // graph (even with everything mocked, vitest re-transforms the module tree).
+  // The default 5s timeout is too tight when the machine is under load (a
+  // dogfooding `npm start` plus the full 4773-test suite starve CPU and the
+  // re-import alone can exceed 5s). The explicit 30s timeout on each test keeps
+  // them green under load; they still complete in ~1s when run scoped.
   it('first call initializes context and registers handlers', async () => {
     const { registerAllIpc, getSessionManager } = await import('../../src/main/ipc/register-all');
     const { registerProjectHandlers } = await import('../../src/main/ipc/handlers/projects');
@@ -197,7 +203,7 @@ describe('registerAllIpc idempotency', () => {
 
     // Context is initialized (wrappers don't throw)
     expect(() => getSessionManager()).not.toThrow();
-  });
+  }, 30000);
 
   it('second call updates mainWindow without re-registering handlers', async () => {
     const { registerAllIpc } = await import('../../src/main/ipc/register-all');
@@ -243,7 +249,7 @@ describe('registerAllIpc idempotency', () => {
     expect(registerBacklogHandlers).toHaveBeenCalledTimes(1);
     expect(registerGitDiffHandlers).toHaveBeenCalledTimes(1);
     expect(registerSystemHandlers).toHaveBeenCalledTimes(1);
-  });
+  }, 30000);
 
   it('second call preserves existing services', async () => {
     const { registerAllIpc, getSessionManager, getTerminalSubmitScheduler, getBoardConfigManager } = await import('../../src/main/ipc/register-all');
@@ -265,5 +271,5 @@ describe('registerAllIpc idempotency', () => {
     expect(sessionManager2).toBe(sessionManager1);
     expect(scheduler2).toBe(scheduler1);
     expect(boardConfigManager2).toBe(boardConfigManager1);
-  });
+  }, 30000);
 });

@@ -930,6 +930,7 @@ describe('SESSION_RESUME Phase 1 self-heal (live session already exists)', () =>
       startedAt: new Date().toISOString(),
       exitCode: null,
       resuming: false,
+      agentSessionId: null,
     };
     context.sessionManager.getSession.mockImplementation(() => liveSession);
 
