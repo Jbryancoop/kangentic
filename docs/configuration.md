@@ -369,7 +369,7 @@ On load, the ConfigManager auto-migrates legacy permission mode values:
 
 - `dangerously-skip` → `bypassPermissions`
 - `bypass-permissions` → `bypassPermissions`
-- `manual` → `default` (removed as a separate mode)
-- `project-settings` → `default`
+- `manual` → `acceptEdits` (removed as a separate mode)
+- `project-settings` → `acceptEdits`
 
-Same migration runs on swimlane records in the DB.
+A parallel normalization runs on swimlane and session records in the DB. Note the swimlane normalization maps the removed `manual` and `project-settings` values to `default` rather than `acceptEdits` (see [Database - Migration Strategy](database.md#migration-strategy)).

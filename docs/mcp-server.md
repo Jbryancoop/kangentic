@@ -27,11 +27,11 @@ Claude Code agent calls MCP tool (e.g. kangentic_create_task)
 |-----------|------|---------|
 | MCP HTTP Server | `src/main/agent/mcp-http-server.ts` | In-process Node `http` server using `@modelcontextprotocol/sdk` Streamable HTTP transport. Binds 127.0.0.1, random `:0` port, random per-launch token validated via `X-Kangentic-Token`. |
 | Task Tools | `src/main/agent/mcp-http/task-tools.ts` | Board/task/column mutations + related reads (`kangentic_create_task`, `kangentic_move_task`, `kangentic_update_task`, `kangentic_link_pr`, `kangentic_update_column`, `kangentic_delete_task`, `kangentic_list_columns`, `kangentic_find_task`, `kangentic_get_current_task`, etc.). |
-| Session Tools | `src/main/agent/mcp-http/session-tools.ts` | Session inspection, backlog, read-only SQL (`kangentic_list_sessions`, `kangentic_get_transcript`, `kangentic_query_db`, `kangentic_list_backlog`, etc.). |
+| Session Tools | `src/main/agent/mcp-http/session-tools.ts` | Session inspection, backlog, read-only SQL (`kangentic_list_sessions`, `kangentic_get_transcript`, `kangentic_get_session_files`, `kangentic_get_session_events`, `kangentic_query_db`, `kangentic_list_backlog`, etc.). |
 | Project Tools | `src/main/agent/mcp-http/project-tools.ts` | Multi-project discovery (`kangentic_list_projects`). |
-| Search Tools | `src/main/agent/mcp-http/search-tools.ts` | Unified board+backlog search and cross-project search (`kangentic_search_tasks`, `kangentic_search_everything`). |
+| Search Tools | `src/main/agent/mcp-http/search-tools.ts` | Cross-project unified search (`kangentic_search_everything`). The board-scoped `kangentic_search_tasks` lives in `task-tools.ts`. |
 | Diagnostics Tools | `src/main/agent/mcp-http/diagnostics-tools.ts` | Read-only product tools backing crash records, persistent console logs, process metrics, IPC traffic recordings, and worktree state. Annotated `readOnlyHint: true, idempotentHint: true` per the MCP spec. |
-| Command Handlers | `src/main/agent/commands/` | Per-domain handlers shared by the HTTP tools: task, inventory, search, analytics, backlog, handoff commands. |
+| Command Handlers | `src/main/agent/commands/` | Per-domain handlers shared by the HTTP tools: task, column, inventory, search, analytics, backlog, handoff, inspect (`get_transcript`, `query_db`), and session-files (`get_session_files`, `get_session_events`) commands. |
 | Column Resolver | `src/main/agent/commands/column-resolver.ts` | Shared case-insensitive column name to swimlane lookup used by multiple handlers. |
 | MCP Config Delivery | `src/main/agent/adapters/claude/command-builder.ts` | Writes session `mcp.json` (with the per-launch URL + token) and adds `--mcp-config` flag to CLI command. |
 | Trust Manager | `src/main/agent/adapters/claude/trust-manager.ts` | Pre-approves kangentic MCP server in `~/.claude.json`. |
@@ -321,13 +321,38 @@ Get the most recent handoff record for a task. Returns metadata about the cross-
 
 ### kangentic_get_transcript
 
-Get a session transcript for a task or session. At least one of `taskId` or `sessionId` must be provided. Defaults to the structured Claude conversation parsed from `~/.claude/projects/<slug>/<sessionId>.jsonl` and rendered as markdown - ideal for cross-agent context handoff. Pass `format="raw"` for the ANSI-stripped PTY scrollback (works for any agent).
+Get a session transcript for a task or session. At least one of `taskId` or `sessionId` must be provided. Returns the structured agent conversation parsed from the agent's native session history (for Claude, `~/.claude/projects/<slug>/<sessionId>.jsonl`) rendered as markdown - ideal for cross-agent context handoff. The underlying handler can also emit the ANSI-stripped PTY scrollback, but the MCP tool does not currently expose a `format` parameter for it.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `taskId` | string | No | Task ID (returns transcript for the task's latest session) |
 | `sessionId` | string | No | Session ID (returns transcript for a specific session) |
-| `format` | `'structured'` \| `'raw'` | No | `structured` (default) returns the parsed Claude conversation as markdown - Claude sessions only. `raw` returns the ANSI-stripped terminal scrollback for any agent. |
+| `project` | string | No | Project selector (name or UUID). Defaults to the URL-path project. |
+
+### kangentic_get_session_files
+
+Get the absolute paths to every per-session file: `events.jsonl` (activity log), `status.json` (usage/metrics), `settings.json`, `commands.jsonl` (MCP queue), `mcp.json`, the `responses/` directory, and the agent's native session history file (Claude JSONL, Codex JSONL, or Gemini JSON). Session directories are keyed by Kangentic PTY session id under `.kangentic/sessions/<id>/`. Each file entry includes an `exists` flag. Provide either `taskId` or `sessionId`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `taskId` | string | No | Task ID. Picks the latest session for the task by default. |
+| `sessionId` | string | No | Kangentic session UUID (the `sessions.id` column). |
+| `sessionIndex` | number | No | When `taskId` is given, which session to pick: `0` = newest (default), `1` = previous, etc. Ordered `started_at DESC`. |
+| `project` | string | No | Project selector (name or UUID). Defaults to the URL-path project. |
+
+### kangentic_get_session_events
+
+Read parsed events from a session's `events.jsonl` activity log without locating or opening the file yourself. Each line is a JSON event emitted by the Claude Code hook bridge (`PreToolUse`, `PostToolUse`, `Stop`, `Notification`, etc.). Useful for idle-detection debugging, tracing tool usage, or replaying what an agent did. Provide either `taskId` or `sessionId`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `taskId` | string | No | Task ID. Picks the latest session by default. |
+| `sessionId` | string | No | Kangentic session UUID (the `sessions.id` column). |
+| `sessionIndex` | number | No | When `taskId` is given, which session to pick: `0` = newest (default). |
+| `tail` | number | No | Return the last N matching events. Default 200, hard cap 2000. |
+| `since` | number | No | Epoch milliseconds. Only return events with `timestamp >= since`. |
+| `eventTypes` | string[] | No | Only return events whose `hook_event_name` or `type` is in this list (e.g. `["PreToolUse", "Stop", "Notification"]`). |
+| `project` | string | No | Project selector (name or UUID). Defaults to the URL-path project. |
 
 ### kangentic_query_db
 

@@ -4,7 +4,7 @@ Kangentic runs on Windows, macOS, and Linux. This document covers platform-speci
 
 ## Shell Resolution
 
-Platform-specific detection order in `src/main/pty/shell-resolver.ts`:
+Platform-specific detection order in `src/main/pty/spawn/shell-resolver.ts`:
 
 ### Windows
 
@@ -26,7 +26,7 @@ Default: `$SHELL` env var, or bash as fallback. Final fallback: `/bin/sh`.
 
 ## Shell-Specific Adaptations
 
-Adaptations applied in `SessionManager.doSpawn()` and `adaptCommandForShell()`:
+Adaptations applied during the spawn flow (`src/main/pty/lifecycle/session-spawn-flow.ts`) via `adaptCommandForShell()` (exported from `src/shared/paths.ts`):
 
 | Shell | Args | Command Adaptation |
 |-------|------|-------------------|

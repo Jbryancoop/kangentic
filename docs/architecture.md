@@ -438,7 +438,7 @@ Events watcher uses byte offset tracking to only read new lines (no full re-read
 
 ### Shell Resolution
 
-Platform-specific detection order in `src/main/pty/shell-resolver.ts`:
+Platform-specific detection order in `src/main/pty/spawn/shell-resolver.ts`:
 
 | Platform | Order |
 |----------|-------|
@@ -464,8 +464,8 @@ Shell-specific adaptations:
 | Event debounce | 50 ms | Event log + activity state watch |
 | Graceful shutdown | 2000 ms | `suspendAll()` timeout (exists in code but NOT used during app quit; synchronous shutdown kills PTYs immediately) |
 | Idle timeout check | 60000 ms | Polling interval for `checkIdleTimeouts()` |
-| Stale thinking threshold | 45000 ms | If no activity signal for 45s while in "thinking" state, emit synthetic idle event |
-| Stale thinking check | 15000 ms | How often the stale thinking timer polls |
+
+Stale-thinking detection is no longer a `SessionManager` constant. It now lives in the activity engine watchdog (`src/main/pty/activity/engine/`), which emits a synthetic idle transition after `DEFAULT_STALE_THINKING_TIMEOUT_MS` (180000 ms) of no activity signal while in the "thinking" state. The engine is event-driven, so there is no separate polling timer. See [Activity Detection](activity-detection.md).
 
 ## Session Queue
 

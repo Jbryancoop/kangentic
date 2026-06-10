@@ -167,8 +167,8 @@ Each adapter declares one strategy via its `runtime.activity` field (constructed
 | Kind | Hooks fire? | PTY fallback? | Used by | Semantics |
 |------|-------------|---------------|---------|-----------|
 | `hooks` | Yes (sole source of truth) | No | Claude Code | Activity state is driven exclusively by hook deliveries. PTY traffic is ignored for state transitions. |
-| `pty` | No | Yes | Aider, Cursor, Warp, Droid, Codex (today) | No hook protocol available. The PTY tracker emits `forceIdle` after a silence window, optionally short-circuited by an adapter-supplied `detectIdle(data)` regex that matches the agent's input prompt. |
-| `hooks_and_pty` | Yes (primary) | Yes (fallback) | Gemini, Qwen, Kimi, OpenCode, Copilot | Hooks are authoritative when they fire; the PTY tracker is auto-suppressed on the first hook event and re-engages only if hooks stop arriving. |
+| `pty` | No | Yes | Aider, Cursor, Warp, Droid, Codex, Kimi (today) | No hook protocol available. The PTY tracker emits `forceIdle` after a silence window, optionally short-circuited by an adapter-supplied `detectIdle(data)` regex that matches the agent's input prompt. Kimi gets authoritative `TurnBegin`/`TurnEnd` transitions from `runtime.sessionHistory` (wire.jsonl), not the hook pipeline. |
+| `hooks_and_pty` | Yes (primary) | Yes (fallback) | Gemini, Qwen, OpenCode, Copilot | Hooks are authoritative when they fire; the PTY tracker is auto-suppressed on the first hook event and re-engages only if hooks stop arriving. |
 
 Both `pty` and `hooks_and_pty` may pass an optional `detectIdle(data: string) => boolean` for instant idle detection from the input-prompt regex. Without it, idle is inferred from a silence timer.
 

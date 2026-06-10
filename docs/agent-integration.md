@@ -168,7 +168,7 @@ Graceful exit sequences written to the PTY during `SessionManager.suspend()`:
 | Qwen Code | `Ctrl+C`, `/quit` | Same TUI shutdown as Gemini (fork) |
 | Cursor CLI | `Ctrl+C` | No graceful exit needed |
 | GitHub Copilot CLI | `Ctrl+C`, `/exit` | Same TUI exit pattern as Claude |
-| Aider | `Ctrl+C` | No session resume, clean exit sufficient |
+| Aider | `Ctrl+C`, `/exit` | `/exit` lets Aider flush `.aider.chat.history.md` before termination |
 | Oz CLI (Warp) | `Ctrl+C` | No session resume mechanism |
 | Kimi Code | `Ctrl+C`, `/exit` | Conventional TUI quit; flushes context.jsonl / wire.jsonl |
 | Droid | `Ctrl+C`, `/quit` | Triggers clean shutdown of the Ink TUI |
@@ -541,7 +541,7 @@ Important shape constraints (verified against /anomalyco/opencode docs):
 
 ### Permission Modes
 
-The `permissions` list (`plan`, `default`, `acceptEdits`, `bypassPermissions`) is **informational** today - all four modes produce the same CLI invocation. There is no `--dangerously-skip-permissions` flag in TUI mode (it exists only on the non-interactive `opencode run` subcommand), and no per-mode flag set. Users who want auto-approval must enable it in `opencode.json`. The default mode is `acceptEdits`.
+The `permissions` list exposes two entries in OpenCode's own vocabulary: `plan` (label "Plan", OpenCode's built-in read-only agent) and `acceptEdits` (label "Build", full tool access). The stored `PermissionMode` enum values are reused for compatibility, so a swimlane set to `acceptEdits` under Claude continues to mean "Build" under OpenCode. Both entries are **informational** today - they produce the same CLI invocation. There is no `--dangerously-skip-permissions` flag in TUI mode (it exists only on the non-interactive `opencode run` subcommand), and no per-mode flag set. Historical values outside this list (`default`, `bypassPermissions`, `dontAsk`, `auto`) are still accepted by `mapPermissionModeToAgent` for backward compatibility with mixed-agent projects. Users who want auto-approval must enable it in `opencode.json`. The default mode is `acceptEdits`.
 
 ### Settings Merge
 

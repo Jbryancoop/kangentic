@@ -144,7 +144,7 @@ When a suspended task moves to an active column:
 
 ## Crash Recovery (Session Recovery)
 
-On project open (`session-recovery.ts`):
+On project open (`src/main/engine/session-startup/`):
 
 1. **Prune orphaned worktrees** -- delete tasks whose worktree directories were removed externally
 2. **Mark crash recovery** -- leftover `running` DB records become `orphaned` (skip records with live PTYs to handle re-entrant calls)

@@ -41,7 +41,7 @@ Click **Advanced** in the New Task dialog (or in the task detail edit form for a
 | Field | Description |
 |-------|-------------|
 | **Agent** | Pick a specific agent CLI (Claude, Codex, etc.) for this task. Defaults to the destination column's agent override, then the project default. Hidden when only one agent is detected on the machine. |
-| **Model** | Adapter-specific model identifier (e.g. `opus`, `sonnet`, `claude-opus-4-7`). The dropdown is fed by the shared model cache, which learns new model IDs the moment any agent reports one live. |
+| **Model** | Adapter-specific model identifier (e.g. `opus`, `sonnet`, `claude-opus-4-8`). The dropdown is fed by the shared model cache. For Claude, the list is populated both by scanning past session transcripts and by harvesting the CLI's own `/model` picker through a hidden background probe, so newly shipped models surface without first being used in a session. |
 | **Effort** | Adapter-specific reasoning tier (Claude: `low`, `medium`, `high`, `xhigh`, `max`). Only shown when the agent reports effort levels. |
 
 A per-task pick **stays with the task across column moves** - column settings are ignored once a task carries its own override. Changing the Agent resets Model + Effort because the previous picks were valid for the previous agent's capability matrix.
@@ -460,7 +460,9 @@ When the max concurrent sessions limit is reached, new sessions are queued autom
 
 The sidebar shows all your projects. Click to switch between them. Each project has its own board, columns, and sessions. Drag projects to reorder them. The order persists across app restarts. New projects appear at the top.
 
-The selected project shows action buttons (Open, Settings, Delete) directly on the row. Right-click any project to open a context menu with Rename, Open in Explorer, Project Settings, and Delete. Inline rename is supported via the context menu - press Enter to save, Escape to cancel.
+The selected project shows action buttons (Open, Settings, Delete) directly on the row. Right-click any project to open a context menu with Rename, Open in Explorer, Change Directory, Project Settings, and Delete. Inline rename is supported via the context menu - press Enter to save, Escape to cancel.
+
+If a project's folder is moved or renamed while Kangentic is closed, opening it shows a "Project Folder Not Found" dialog with a "Locate Folder..." button to re-point the project at its new location. Change Directory does the same thing on demand. Because tasks and board history are keyed by project id, they are preserved across a relocation.
 
 ### Idle Badges
 
@@ -550,11 +552,32 @@ Token and cost values pulse briefly when they change. The selected period persis
 
 ## Keyboard Shortcuts
 
-- **Ctrl+Shift+P** / **Cmd+Shift+P** - Toggle the Command Terminal overlay
-- **Ctrl+Shift+F** / **Cmd+Shift+F** - Open the global search palette
-- **Ctrl+F** / **Cmd+F** - Open the global search palette (alternate binding; suppressed while typing in a text field)
+Every shortcut is declared in a central registry and is **rebindable** under Settings > Hotkeys, which also flags conflicts and combos already claimed by the OS or another app. `Mod` below is Cmd on macOS and Ctrl on every other platform.
+
+General:
+
+- **Mod+Shift+S** - Toggle the settings panel
+- **Mod+Shift+B** - Switch between Board and Backlog view
+- **Mod+Shift+E** - Toggle the project sidebar
+- **Mod+Shift+J** - Toggle the bottom terminal panel
+- **Mod+Shift+P** - Toggle the Command Terminal overlay
+- **Mod+Shift+F** - Open Quick Find (cross-project search palette)
+- **Mod+F** - Find on Board (focuses board search; opens Quick Find when not on the board)
+- **Mod+N** - New Task on the board
 - **Escape** - Close any open dialog or the search palette
-- Standard OS shortcuts for copy, paste, etc. in the terminal
+
+Task detail (whichever panel is open):
+
+- **Mod+Shift+M** - Maximize the command terminal or task detail dialog
+- **Mod+Shift+W** - Close the command terminal or task detail dialog
+- **Mod+Shift+B** - Toggle the browser pane inside the task detail dialog
+- **Mod+Shift+G** - Toggle the changes (diff) panel inside the task detail dialog
+
+Terminal:
+
+- **Mod+C** / **Mod+Shift+C** - Copy selected text (with no selection, Ctrl+C cancels the running command)
+- **Mod+V** / **Mod+Shift+V** - Paste text or an image into the terminal
+- Standard OS shortcuts for the rest of terminal editing
 
 ## Tips
 
