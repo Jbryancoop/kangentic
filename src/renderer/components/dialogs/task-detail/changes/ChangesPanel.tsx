@@ -47,6 +47,13 @@ class DiffErrorBoundary extends React.Component<
 
 interface ChangesPanelProps {
   entityId: string;
+  /**
+   * Key under which diff scroll positions are remembered. Defaults to
+   * `entityId`. The task-detail panel and the standalone TaskChangesDialog pass
+   * the same `task.id` here so scroll memory is shared between them even though
+   * their `entityId`s differ.
+   */
+  scrollKey?: string;
   projectPath: string;
   worktreePath?: string;
   baseBranch: string;
@@ -66,7 +73,17 @@ interface ContentCacheEntry {
   generation: number;
 }
 
-export function ChangesPanel({ entityId, projectPath, worktreePath, baseBranch, emptyMessage, panelMode, onExpand, onCollapse, onClose }: ChangesPanelProps) {
+/** Displayed file content paired with the path it was fetched for. The path
+ *  lets the DiffViewer tell whether the original/modified props it received
+ *  actually belong to its `filePath` prop (the stale-content window that opens
+ *  between a file switch and the new content's fetch resolving). */
+interface DisplayedFileContent {
+  result: GitFileContentResult;
+  filePath: string;
+}
+
+export function ChangesPanel({ entityId, scrollKey, projectPath, worktreePath, baseBranch, emptyMessage, panelMode, onExpand, onCollapse, onClose }: ChangesPanelProps) {
+  const effectiveScrollKey = scrollKey ?? entityId;
   const showPanelControls = Boolean(panelMode && (onExpand || onCollapse || onClose));
   const controlsHeader = showPanelControls && (
     <div className="flex items-center justify-end gap-1 px-2 py-1 border-b border-edge flex-shrink-0">
@@ -108,7 +125,7 @@ export function ChangesPanel({ entityId, projectPath, worktreePath, baseBranch, 
   const selectedFile = useSessionStore((state) => state.changesSelectedFile[entityId] ?? null);
   const setChangesSelectedFile = useSessionStore((state) => state.setChangesSelectedFile);
   const setSelectedFile = useCallback((filePath: string | null) => setChangesSelectedFile(entityId, filePath), [entityId, setChangesSelectedFile]);
-  const [fileContent, setFileContent] = useState<GitFileContentResult | null>(null);
+  const [fileContent, setFileContent] = useState<DisplayedFileContent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [viewMode, setViewMode] = useState<'split' | 'inline'>('split');
@@ -159,7 +176,7 @@ export function ChangesPanel({ entityId, projectPath, worktreePath, baseBranch, 
     const cached = contentCacheRef.current.get(filePath);
     if (cached) {
       // Always serve cached content immediately (stale-while-revalidate)
-      setFileContent(cached.result);
+      setFileContent({ result: cached.result, filePath });
       if (cached.generation === cacheGenerationRef.current) {
         return; // Fresh entry - no refetch needed
       }
@@ -178,7 +195,7 @@ export function ChangesPanel({ entityId, projectPath, worktreePath, baseBranch, 
         // Only update UI if this file is still selected and content actually changed
         if (selectedFileRef.current === filePath &&
             (freshResult.original !== cached.result.original || freshResult.modified !== cached.result.modified)) {
-          setFileContent(freshResult);
+          setFileContent({ result: freshResult, filePath });
         }
       }).catch(() => {
         // Background refetch failed - stale content remains visible
@@ -200,9 +217,16 @@ export function ChangesPanel({ entityId, projectPath, worktreePath, baseBranch, 
         oldPath: file.oldPath,
       });
       contentCacheRef.current.set(filePath, { result, generation: cacheGenerationRef.current });
-      setFileContent(result);
+      // Guard against a slow fetch resolving after the user switched away: only
+      // display this result if its file is still selected, mirroring the
+      // background-refetch path above.
+      if (selectedFileRef.current === filePath) {
+        setFileContent({ result, filePath });
+      }
     } catch {
-      setFileContent({ original: '', modified: '', language: 'plaintext' });
+      if (selectedFileRef.current === filePath) {
+        setFileContent({ result: { original: '', modified: '', language: 'plaintext' }, filePath });
+      }
     }
   }, [worktreePath, projectPath, baseBranch]);
 
@@ -316,10 +340,12 @@ export function ChangesPanel({ entityId, projectPath, worktreePath, baseBranch, 
           ) : (
             <DiffErrorBoundary>
               <DiffViewer
-                original={fileContent?.original ?? ''}
-                modified={fileContent?.modified ?? ''}
-                language={fileContent?.language ?? 'plaintext'}
+                original={fileContent?.result.original ?? ''}
+                modified={fileContent?.result.modified ?? ''}
+                language={fileContent?.result.language ?? 'plaintext'}
                 filePath={selectedFile}
+                contentFilePath={fileContent?.filePath ?? null}
+                scrollKey={effectiveScrollKey}
                 status={selectedFileEntry?.status ?? 'M'}
                 viewMode={viewMode}
                 onViewModeChange={setViewMode}

@@ -49,6 +49,7 @@ export function TaskChangesDialog({ task, onClose }: TaskChangesDialogProps) {
           >
             <ChangesPanel
               entityId={`dialog-${task.id}`}
+              scrollKey={task.id}
               projectPath={projectPath}
               worktreePath={task.worktree_path}
               baseBranch={task.base_branch || defaultBaseBranch || 'main'}

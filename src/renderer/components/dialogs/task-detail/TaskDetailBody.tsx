@@ -154,6 +154,7 @@ export function TaskDetailBody({
       >
         <ChangesPanel
           entityId={task.id}
+          scrollKey={task.id}
           projectPath={projectPath}
           worktreePath={task.worktree_path ?? undefined}
           baseBranch={task.base_branch || defaultBaseBranch || 'main'}

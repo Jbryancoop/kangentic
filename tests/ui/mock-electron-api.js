@@ -1588,9 +1588,41 @@
         return ['main', 'develop', 'feature/auth', 'feature/dashboard', 'fix/login-bug'];
       },
       diffFiles: async function () {
+        // Test hook: seed a diff fixture via window.__mockGitDiff = { files: [...] }
+        // where each file is { path, status, binary?, insertions?, deletions?,
+        // original, modified, language? }. Default stays empty.
+        var fixture = (typeof window !== 'undefined' && window.__mockGitDiff) || null;
+        if (fixture && Array.isArray(fixture.files)) {
+          var totalInsertions = 0;
+          var totalDeletions = 0;
+          var files = fixture.files.map(function (entry) {
+            totalInsertions += entry.insertions || 0;
+            totalDeletions += entry.deletions || 0;
+            return {
+              path: entry.path,
+              status: entry.status || 'M',
+              binary: entry.binary || false,
+              insertions: entry.insertions || 0,
+              deletions: entry.deletions || 0,
+              oldPath: entry.oldPath,
+            };
+          });
+          return { files: files, totalInsertions: totalInsertions, totalDeletions: totalDeletions };
+        }
         return { files: [], totalInsertions: 0, totalDeletions: 0 };
       },
-      fileContent: async function () {
+      fileContent: async function (request) {
+        var fixture = (typeof window !== 'undefined' && window.__mockGitDiff) || null;
+        if (fixture && Array.isArray(fixture.files)) {
+          var match = fixture.files.find(function (entry) { return entry.path === (request && request.filePath); });
+          if (match) {
+            return {
+              original: match.original || '',
+              modified: match.modified || '',
+              language: match.language || 'plaintext',
+            };
+          }
+        }
         return { original: '', modified: '', language: 'plaintext' };
       },
       subscribeDiff: function () {},
