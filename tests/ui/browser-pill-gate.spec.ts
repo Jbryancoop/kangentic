@@ -148,18 +148,19 @@ test.describe('Browser pill gate', () => {
       await expect(browserPill).toBeVisible();
       await expect(changesPill).toBeVisible();
 
-      // Open Changes first.
+      // Open Changes first. The expand control is present only while the
+      // Changes panel is open (split mode), so it doubles as the open signal.
       await changesPill.click();
-      await expect(page.locator('[data-testid="changes-close"]')).toBeVisible();
+      await expect(page.locator('[data-testid="changes-expand"]')).toBeVisible();
 
       // Now open Browser -- closes Changes (mutual exclusion).
       await browserPill.click();
       await expect(page.locator('[data-testid="browser-pane"]')).toBeVisible();
-      await expect(page.locator('[data-testid="changes-close"]')).toBeHidden();
+      await expect(page.locator('[data-testid="changes-expand"]')).toBeHidden();
 
       // Re-open Changes -- closes Browser.
       await changesPill.click();
-      await expect(page.locator('[data-testid="changes-close"]')).toBeVisible();
+      await expect(page.locator('[data-testid="changes-expand"]')).toBeVisible();
       await expect(page.locator('[data-testid="browser-pane"]')).toBeHidden();
     } finally {
       await browser.close();

@@ -1,6 +1,6 @@
 import '../../../../monacoConfig';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, ChevronsLeftRight, ChevronsRightLeft, X } from 'lucide-react';
+import { RefreshCw, ChevronsLeftRight, ChevronsRightLeft } from 'lucide-react';
 import { FileTreePanel } from './FileTreePanel';
 import { DiffViewer } from './DiffViewer';
 import { useSessionStore } from '../../../../stores/session-store';
@@ -61,11 +61,11 @@ interface ChangesPanelProps {
   emptyMessage?: string;
   /** Current panel layout mode (task-detail only - distinct from the internal
    *  DiffViewer split/inline `viewMode` state below). When provided along with
-   *  handlers, the panel renders an expand/collapse/close header. */
+   *  a handler, the panel renders an expand-or-collapse control in the diff
+   *  toolbar (and a fallback row when no diff is mounted). */
   panelMode?: 'split' | 'expanded';
   onExpand?: () => void;
   onCollapse?: () => void;
-  onClose?: () => void;
 }
 
 interface ContentCacheEntry {
@@ -82,41 +82,37 @@ interface DisplayedFileContent {
   filePath: string;
 }
 
-export function ChangesPanel({ entityId, scrollKey, projectPath, worktreePath, baseBranch, emptyMessage, panelMode, onExpand, onCollapse, onClose }: ChangesPanelProps) {
+export function ChangesPanel({ entityId, scrollKey, projectPath, worktreePath, baseBranch, emptyMessage, panelMode, onExpand, onCollapse }: ChangesPanelProps) {
   const effectiveScrollKey = scrollKey ?? entityId;
-  const showPanelControls = Boolean(panelMode && (onExpand || onCollapse || onClose));
-  const controlsHeader = showPanelControls && (
-    <div className="flex items-center justify-end gap-1 px-2 py-1 border-b border-edge flex-shrink-0">
-      {panelMode === 'split' && onExpand && (
-        <button
-          onClick={onExpand}
-          title="Expand changes"
-          className="p-1 rounded text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors"
-          data-testid="changes-expand"
-        >
-          <ChevronsLeftRight size={14} />
-        </button>
-      )}
-      {panelMode === 'expanded' && onCollapse && (
-        <button
-          onClick={onCollapse}
-          title="Collapse to split"
-          className="p-1 rounded text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors"
-          data-testid="changes-collapse"
-        >
-          <ChevronsRightLeft size={14} />
-        </button>
-      )}
-      {onClose && (
-        <button
-          onClick={onClose}
-          title="Close changes"
-          className="p-1 rounded text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors"
-          data-testid="changes-close"
-        >
-          <X size={14} />
-        </button>
-      )}
+  // The task-detail embed passes panelMode + a handler; the standalone
+  // TaskChangesDialog passes neither, so it never shows these controls. Expand
+  // and collapse are mutually exclusive: only one is relevant per mode.
+  const panelControls =
+    panelMode === 'split' && onExpand ? (
+      <button
+        onClick={onExpand}
+        title="Expand changes"
+        className="p-1.5 rounded text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors"
+        data-testid="changes-expand"
+      >
+        <ChevronsLeftRight size={16} />
+      </button>
+    ) : panelMode === 'expanded' && onCollapse ? (
+      <button
+        onClick={onCollapse}
+        title="Collapse to split view"
+        className="p-1.5 rounded text-fg-muted hover:text-fg hover:bg-surface-hover transition-colors"
+        data-testid="changes-collapse"
+      >
+        <ChevronsRightLeft size={16} />
+      </button>
+    ) : null;
+  // When no diff is mounted (no file selected, empty diff, or a fetch error)
+  // the controls have no toolbar to live in, so render a minimal row to keep a
+  // pointer-reachable collapse affordance available in expanded mode.
+  const fallbackControlsRow = panelControls && (
+    <div className="flex items-center justify-end px-3 py-1.5 border-b border-edge flex-shrink-0">
+      {panelControls}
     </div>
   );
   const [files, setFiles] = useState<GitDiffFileEntry[]>([]);
@@ -296,14 +292,17 @@ export function ChangesPanel({ entityId, scrollKey, projectPath, worktreePath, b
 
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-2 p-4">
-        <span className="text-xs text-red-400">{error}</span>
-        <button
-          onClick={fetchFiles}
-          className="text-xs px-3 py-1 rounded bg-surface-raised hover:bg-surface-raised/80 text-fg-secondary transition-colors"
-        >
-          Retry
-        </button>
+      <div className="flex flex-col h-full">
+        {fallbackControlsRow}
+        <div className="flex flex-col items-center justify-center flex-1 gap-2 p-4">
+          <span className="text-xs text-red-400">{error}</span>
+          <button
+            onClick={fetchFiles}
+            className="text-xs px-3 py-1 rounded bg-surface-raised hover:bg-surface-raised/80 text-fg-secondary transition-colors"
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
@@ -318,7 +317,6 @@ export function ChangesPanel({ entityId, scrollKey, projectPath, worktreePath, b
 
   return (
     <div className="flex flex-col h-full">
-      {controlsHeader}
       <div className="flex-1 min-h-0 flex">
         {/* File tree - left panel */}
         <div className="w-[220px] flex-shrink-0 border-r border-edge overflow-hidden">
@@ -334,8 +332,11 @@ export function ChangesPanel({ entityId, scrollKey, projectPath, worktreePath, b
         {/* Diff viewer - right panel */}
         <div className="flex-1 min-h-0">
           {!selectedFile ? (
-            <div className="flex items-center justify-center h-full text-xs text-fg-disabled">
-              Select a file to view changes
+            <div className="flex flex-col h-full">
+              {fallbackControlsRow}
+              <div className="flex items-center justify-center flex-1 text-xs text-fg-disabled">
+                Select a file to view changes
+              </div>
             </div>
           ) : (
             <DiffErrorBoundary>
@@ -350,6 +351,7 @@ export function ChangesPanel({ entityId, scrollKey, projectPath, worktreePath, b
                 viewMode={viewMode}
                 onViewModeChange={setViewMode}
                 binary={selectedFileEntry?.binary ?? false}
+                trailingControls={panelControls ?? undefined}
               />
             </DiffErrorBoundary>
           )}

@@ -256,8 +256,8 @@ test.describe('Task Detail split divider: presence', () => {
     const divider = page.locator('[data-testid="task-detail-split-divider"]');
     await expect(divider).toBeVisible();
 
-    // Close the Changes panel.
-    await page.locator('[data-testid="changes-close"]').click();
+    // Close the Changes panel (the pill now owns close).
+    await page.locator('[data-testid="changes-toggle"]').click();
     await expect(divider).not.toBeVisible();
 
     await closeTaskDialog(page);
@@ -280,7 +280,7 @@ test.describe('Task Detail split divider: presence', () => {
     await expect(page.locator('[data-testid="task-detail-split-divider"]')).toBeVisible();
 
     // Close Changes panel to leave clean state for the next suite.
-    await page.locator('[data-testid="changes-close"]').click();
+    await page.locator('[data-testid="changes-toggle"]').click();
 
     await closeTaskDialog(page);
   });
@@ -605,7 +605,7 @@ test.describe('Task Detail split divider: shared ratio across panel views', () =
 
     // Close Changes and open Browser pane. Both panels toggle the SAME
     // dividerRatio key in the store, so the basis must not change.
-    await page.locator('[data-testid="changes-close"]').click();
+    await page.locator('[data-testid="changes-toggle"]').click();
     await expect(divider).not.toBeVisible();
 
     const browserToggle = page.locator('[data-testid="browser-toggle"]');

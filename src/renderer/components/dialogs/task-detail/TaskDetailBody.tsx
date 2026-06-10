@@ -75,7 +75,6 @@ export function TaskDetailBody({
   const projectDefaultAgent = useProjectStore((state) => state.currentProject?.default_agent ?? null);
   const changesViewMode = useSessionStore((state) => state.changesViewMode[task.id] ?? 'split');
   const setChangesViewMode = useSessionStore((state) => state.setChangesViewMode);
-  const toggleChangesOpen = useSessionStore((state) => state.toggleChangesOpen);
   // Draggable terminal / right-panel split. One shared ratio per task across
   // both the Browser and Changes views, so switching tabs never moves it.
   const splitContainerRef = useRef<HTMLDivElement>(null);
@@ -84,7 +83,6 @@ export function TaskDetailBody({
   const changesExpanded = changesOpen && changesViewMode === 'expanded';
   const handleChangesExpand = () => setChangesViewMode(task.id, 'expanded');
   const handleChangesCollapse = () => setChangesViewMode(task.id, 'split');
-  const handleChangesClose = () => toggleChangesOpen(task.id);
   const taskLabels = task.labels ?? [];
   const taskPriority = task.priority ?? 0;
   const hasLabelsOrPriority = taskPriority > 0 || taskLabels.length > 0;
@@ -161,7 +159,6 @@ export function TaskDetailBody({
           panelMode={changesViewMode}
           onExpand={handleChangesExpand}
           onCollapse={handleChangesCollapse}
-          onClose={handleChangesClose}
         />
       </Suspense>
     </div>

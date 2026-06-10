@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { DiffEditor } from '@monaco-editor/react';
 import type { DiffOnMount, Monaco, MonacoDiffEditor } from '@monaco-editor/react';
 import { Loader2, Columns2, Rows2, FileCode } from 'lucide-react';
@@ -27,6 +27,10 @@ interface DiffViewerProps {
   viewMode: 'split' | 'inline';
   onViewModeChange: (mode: 'split' | 'inline') => void;
   binary: boolean;
+  /** Extra controls rendered at the right edge of the toolbar, after a divider
+   *  (e.g. the task-detail expand/collapse buttons). Omitted by the standalone
+   *  TaskChangesDialog, which has no panel-layout controls. */
+  trailingControls?: ReactNode;
 }
 
 const STATUS_LABELS: Record<GitDiffStatus, { label: string; colorClass: string }> = {
@@ -58,6 +62,7 @@ export function DiffViewer({
   viewMode,
   onViewModeChange,
   binary,
+  trailingControls,
 }: DiffViewerProps) {
   const theme = useConfigStore((state) => state.config.theme);
   const themeBase = NAMED_THEMES.find((namedTheme) => namedTheme.id === theme)?.base ?? 'dark';
@@ -197,22 +202,30 @@ export function DiffViewer({
         <div className="ml-auto flex items-center gap-1">
           <button
             onClick={() => onViewModeChange('split')}
-            className={`p-1 rounded transition-colors ${
+            className={`p-1.5 rounded transition-colors ${
               viewMode === 'split' ? 'bg-surface-raised text-fg' : 'text-fg-muted hover:text-fg'
             }`}
             title="Side by side"
+            data-testid="diff-view-split"
           >
-            <Columns2 size={14} />
+            <Columns2 size={16} />
           </button>
           <button
             onClick={() => onViewModeChange('inline')}
-            className={`p-1 rounded transition-colors ${
+            className={`p-1.5 rounded transition-colors ${
               viewMode === 'inline' ? 'bg-surface-raised text-fg' : 'text-fg-muted hover:text-fg'
             }`}
             title="Inline"
+            data-testid="diff-view-inline"
           >
-            <Rows2 size={14} />
+            <Rows2 size={16} />
           </button>
+          {trailingControls && (
+            <>
+              <div className="w-px h-4 bg-edge mx-1" aria-hidden="true" />
+              {trailingControls}
+            </>
+          )}
         </div>
       </div>
 

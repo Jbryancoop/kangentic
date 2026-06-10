@@ -1,9 +1,10 @@
 /**
- * UI tests for the Task Detail Changes panel expand/collapse/close controls.
+ * UI tests for the Task Detail Changes panel expand / collapse controls.
  *
  * Opens a dialog on a task with an active session (so TaskDetailBody renders,
- * not the edit form) and exercises the new split / expanded view-mode controls
- * added in the task-detail-changes branch.
+ * not the edit form) and exercises the split / expanded view-mode controls that
+ * live in the changes pane (the panel has no close button: the header Changes
+ * pill owns closing).
  */
 import { test, expect } from '@playwright/test';
 import { chromium, type Browser, type Page } from '@playwright/test';
@@ -104,8 +105,8 @@ test.afterAll(async () => {
   await browser?.close();
 });
 
-test.describe('Task Detail Changes panel: expand / collapse / close', () => {
-  test('controls toggle between split and expanded, close returns to terminal-only', async () => {
+test.describe('Task Detail Changes panel: expand / collapse', () => {
+  test('controls toggle between split and expanded; the pill closes the panel', async () => {
     // Open the task detail dialog
     const card = page
       .locator('[data-swimlane-name="Code Review"]')
@@ -123,30 +124,31 @@ test.describe('Task Detail Changes panel: expand / collapse / close', () => {
     // Panel not yet open -> no panel controls rendered
     await expect(page.locator('[data-testid="changes-expand"]')).not.toBeVisible();
     await expect(page.locator('[data-testid="changes-collapse"]')).not.toBeVisible();
-    await expect(page.locator('[data-testid="changes-close"]')).not.toBeVisible();
 
-    // Open Changes -> defaults to split view: expand + close controls appear
+    // The colliding panel-local close X is gone: closing is owned by the pill.
+    await expect(page.locator('[data-testid="changes-close"]')).toHaveCount(0);
+
+    // Open Changes -> defaults to split view: expand control appears
     await changesPill.click();
     await expect(page.locator('[data-testid="changes-expand"]')).toBeVisible();
-    await expect(page.locator('[data-testid="changes-close"]')).toBeVisible();
     await expect(page.locator('[data-testid="changes-collapse"]')).not.toBeVisible();
+    // No panel-local close even while the panel is open.
+    await expect(page.locator('[data-testid="changes-close"]')).toHaveCount(0);
 
     // Expand -> collapse control replaces expand
     await page.locator('[data-testid="changes-expand"]').click();
     await expect(page.locator('[data-testid="changes-collapse"]')).toBeVisible();
     await expect(page.locator('[data-testid="changes-expand"]')).not.toBeVisible();
-    await expect(page.locator('[data-testid="changes-close"]')).toBeVisible();
 
     // Collapse -> back to split view
     await page.locator('[data-testid="changes-collapse"]').click();
     await expect(page.locator('[data-testid="changes-expand"]')).toBeVisible();
     await expect(page.locator('[data-testid="changes-collapse"]')).not.toBeVisible();
 
-    // Close -> Changes panel disappears entirely; pill remains but controls gone
-    await page.locator('[data-testid="changes-close"]').click();
+    // The pill closes the Changes panel entirely; controls disappear, pill stays.
+    await changesPill.click();
     await expect(page.locator('[data-testid="changes-expand"]')).not.toBeVisible();
     await expect(page.locator('[data-testid="changes-collapse"]')).not.toBeVisible();
-    await expect(page.locator('[data-testid="changes-close"]')).not.toBeVisible();
     await expect(changesPill).toBeVisible();
 
     // Re-opening Changes after close always returns to split (not expanded)
@@ -154,6 +156,9 @@ test.describe('Task Detail Changes panel: expand / collapse / close', () => {
     await expect(page.locator('[data-testid="changes-expand"]')).toBeVisible();
     await expect(page.locator('[data-testid="changes-collapse"]')).not.toBeVisible();
 
+    // Close the panel and dialog so state does not leak to other tests.
+    await changesPill.click();
     await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
   });
 });

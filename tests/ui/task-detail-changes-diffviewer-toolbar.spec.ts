@@ -1,0 +1,202 @@
+/**
+ * UI tests for the DiffViewer `trailingControls` path inside ChangesPanel.
+ *
+ * Intent: when a file IS selected (i.e. `selectedFile` is truthy in
+ * ChangesPanel), the `panelControls` node is forwarded as `trailingControls`
+ * to the DiffViewer toolbar rather than being rendered in the `fallbackControlsRow`.
+ * This is distinct from the fallback-row path exercised by the other changes-panel
+ * specs, where `git.diffFiles` returns `{ files: [] }` and no file is ever selected.
+ *
+ * To exercise this path we seed `window.__mockGitDiff` (the test hook in
+ * mock-electron-api.js) with a single modified file entry carrying its diff
+ * content. ChangesPanel auto-selects the first file, fetches its content, and
+ * mounts DiffViewer with the expand/collapse control in the toolbar.
+ *
+ * Monaco concern: @monaco-editor/react loads inside a real headless Chromium
+ * context here, but the toolbar renders synchronously before Monaco initializes,
+ * so all assertions are on toolbar buttons only.
+ */
+import { test, expect } from '@playwright/test';
+import { chromium, type Browser, type Page } from '@playwright/test';
+import path from 'node:path';
+import { waitForViteReady } from './helpers';
+
+const MOCK_SCRIPT = path.join(__dirname, 'mock-electron-api.js');
+const VITE_URL = `http://localhost:${process.env.PLAYWRIGHT_VITE_PORT || '5173'}`;
+
+async function launchWithState(preConfigScript: string): Promise<{ browser: Browser; page: Page }> {
+  await waitForViteReady(VITE_URL);
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+  const page = await context.newPage();
+
+  await page.addInitScript({ path: MOCK_SCRIPT });
+  await page.addInitScript(preConfigScript);
+
+  await page.goto(VITE_URL);
+  await page.waitForLoadState('load');
+  await page.waitForSelector('text=Kangentic', { timeout: 15000 });
+
+  return { browser, page };
+}
+
+const PROJECT_ID = 'proj-diffviewer-toolbar';
+const TASK_ID = 'task-diffviewer-toolbar';
+const SESSION_ID = 'sess-diffviewer-toolbar';
+
+const preConfig = `
+  window.__mockPreConfigure(function (state) {
+    var ts = new Date().toISOString();
+
+    state.projects.push({
+      id: '${PROJECT_ID}',
+      name: 'DiffViewer Toolbar Test',
+      path: '/mock/diffviewer-toolbar-test',
+      github_url: null,
+      default_agent: 'claude',
+      last_opened: ts,
+      created_at: ts,
+    });
+
+    var laneIds = {};
+    state.DEFAULT_SWIMLANES.forEach(function (s, i) {
+      var id = 'lane-tv-' + s.name.toLowerCase().replace(/\\s+/g, '-');
+      laneIds[s.name] = id;
+      state.swimlanes.push(Object.assign({}, s, { id: id, position: i, created_at: ts }));
+    });
+
+    // Running session so TaskDetailBody (not the edit form) is rendered and
+    // the Changes pill appears in TaskDetailHeader.
+    state.sessions.push({
+      id: '${SESSION_ID}',
+      taskId: '${TASK_ID}',
+      projectId: '${PROJECT_ID}',
+      pid: 8888,
+      status: 'running',
+      shell: 'bash',
+      cwd: '/mock/diffviewer-toolbar-test',
+      startedAt: ts,
+      exitCode: null,
+    });
+
+    state.tasks.push({
+      id: '${TASK_ID}',
+      display_id: 1,
+      title: 'DiffViewer Toolbar Task',
+      description: 'Task used to exercise the DiffViewer trailingControls path',
+      swimlane_id: laneIds['Code Review'],
+      position: 0,
+      agent: 'claude',
+      session_id: '${SESSION_ID}',
+      worktree_path: '/mock/worktrees/diffviewer-toolbar',
+      branch_name: 'feature/diffviewer-toolbar',
+      pr_number: null,
+      pr_url: null,
+      base_branch: 'main',
+      archived_at: null,
+      created_at: ts,
+      updated_at: ts,
+    });
+
+    return { currentProjectId: '${PROJECT_ID}' };
+  });
+`;
+
+let browser: Browser;
+let page: Page;
+
+test.beforeAll(async () => {
+  const result = await launchWithState(preConfig);
+  browser = result.browser;
+  page = result.page;
+  await page.locator('[data-swimlane-name="Code Review"]').waitFor({ state: 'visible', timeout: 10000 });
+});
+
+test.afterAll(async () => {
+  // Clear any lingering mock override so it does not bleed into other specs
+  // if the browser context is somehow shared.
+  await page.evaluate(() => {
+    (window as unknown as Record<string, unknown>).__mockGitDiff = null;
+  });
+  await browser?.close();
+});
+
+test.describe('DiffViewer toolbar: trailingControls rendered when a file is selected', () => {
+  test('expand control appears in the DiffViewer toolbar (alongside split/inline buttons) when a file is auto-selected', async () => {
+    // Seed git.diffFiles to return a real file (with content) so ChangesPanel
+    // auto-selects it and DiffViewer mounts. The __mockGitDiff hook stays active
+    // until cleared. Setting it here (before the Changes panel is opened) ensures
+    // the panel opens with a selected file.
+    await page.evaluate(() => {
+      (window as unknown as { __mockGitDiff: unknown }).__mockGitDiff = {
+        files: [
+          {
+            path: 'src/renderer/components/Foo.tsx',
+            status: 'M',
+            insertions: 5,
+            deletions: 2,
+            binary: false,
+            original: 'const a = 1;\n',
+            modified: 'const a = 2;\n',
+            language: 'typescript',
+          },
+        ],
+      };
+    });
+
+    // Open the task detail dialog.
+    const card = page
+      .locator('[data-swimlane-name="Code Review"]')
+      .locator('text=DiffViewer Toolbar Task')
+      .first();
+    await card.click();
+
+    const dialog = page.locator('[data-testid="task-detail-dialog"]');
+    await dialog.waitFor({ state: 'visible', timeout: 5000 });
+
+    // Open the Changes panel via the pill.
+    const changesPill = page.locator('[data-testid="changes-toggle"]');
+    await expect(changesPill).toBeVisible();
+    await changesPill.click();
+
+    // ChangesPanel auto-selects the first file (src/renderer/components/Foo.tsx).
+    // Once selected, DiffViewer is mounted and its toolbar renders with
+    // the split/inline toggles AND the trailingControls (expand button in split
+    // mode). We wait for the toolbar split button to appear as a proxy for "toolbar
+    // is mounted" - it renders synchronously before Monaco initializes.
+    await expect(page.locator('[data-testid="diff-view-split"]')).toBeVisible({ timeout: 8000 });
+    await expect(page.locator('[data-testid="diff-view-inline"]')).toBeVisible();
+
+    // The expand button must be present IN the DiffViewer toolbar: it is a sibling
+    // of diff-view-split / diff-view-inline inside the same toolbar container.
+    // This is the trailingControls path; the fallbackControlsRow is NOT rendered
+    // when a file is selected.
+    await expect(page.locator('[data-testid="changes-expand"]')).toBeVisible();
+    await expect(page.locator('[data-testid="changes-collapse"]')).not.toBeVisible();
+
+    // Clicking expand in the DiffViewer toolbar collapses to show the collapse
+    // control (same as the fallback-row path - the button renders identically).
+    await page.locator('[data-testid="changes-expand"]').click();
+    await expect(page.locator('[data-testid="changes-collapse"]')).toBeVisible();
+    await expect(page.locator('[data-testid="changes-expand"]')).not.toBeVisible();
+
+    // The split/inline toggles are still present (they are siblings in the same
+    // toolbar row - trailingControls does not replace them).
+    await expect(page.locator('[data-testid="diff-view-split"]')).toBeVisible();
+    await expect(page.locator('[data-testid="diff-view-inline"]')).toBeVisible();
+
+    // Collapse back to split view via the toolbar collapse button.
+    await page.locator('[data-testid="changes-collapse"]').click();
+    await expect(page.locator('[data-testid="changes-expand"]')).toBeVisible();
+
+    // Clear the mock so it does not persist into any follow-up calls.
+    await page.evaluate(() => {
+      (window as unknown as Record<string, unknown>).__mockGitDiff = null;
+    });
+
+    // Clean up: close changes panel, then dialog.
+    await changesPill.click();
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+  });
+});
