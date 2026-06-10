@@ -282,4 +282,22 @@ export interface AgentAdapter {
    */
   summarize?(prompt: string, cliPath: string, cwd: string): Promise<string>;
 
+  /**
+   * Optional: notify the adapter that a Kangentic project moved from `oldPath`
+   * to `newPath`. Agents that keep per-project data OUTSIDE the project folder,
+   * keyed by the absolute project path, must migrate it here so sessions stay
+   * resumable after a relocation (Claude renames its `~/.claude/projects/<slug>/`
+   * transcript directories and rewrites the matching `~/.claude.json` keys).
+   *
+   * Called best-effort by `relocateProject` after the stored DB paths are
+   * rewritten and `git worktree repair` has run, while the project's own
+   * sessions are suspended and before the renderer reopens the project. The
+   * caller wraps each invocation in try/catch, but implementations should also
+   * be internally fault-tolerant: a failure must never block relocation, and
+   * must degrade to leaving data in place (never destructive). Adapters whose
+   * per-project data lives inside the project folder (so it moves with it) omit
+   * this method.
+   */
+  onProjectRelocated?(oldPath: string, newPath: string): Promise<void>;
+
 }

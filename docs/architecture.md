@@ -42,7 +42,7 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `project:setGroup` | invoke | Assign a project to a group (or clear group assignment) |
 | `project:rename` | invoke | Rename a project |
 | `project:setDefaultAgent` | invoke | Set the default agent CLI for a project |
-| `project:relocate` | invoke | Re-point a project at a new folder on disk (preserves tasks and history) |
+| `project:relocate` | invoke | Re-point a project at a new folder on disk (preserves tasks and history; migrates agent per-project data via the `onProjectRelocated` adapter hook) |
 | `project:autoOpened` | on | Event: project auto-opened on launch |
 | `project:pathMissing` | on | Event: a registered project path no longer exists on disk |
 

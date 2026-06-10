@@ -460,9 +460,9 @@ When the max concurrent sessions limit is reached, new sessions are queued autom
 
 The sidebar shows all your projects. Click to switch between them. Each project has its own board, columns, and sessions. Drag projects to reorder them. The order persists across app restarts. New projects appear at the top.
 
-The selected project shows action buttons (Open, Settings, Delete) directly on the row. Right-click any project to open a context menu with Rename, Open in Explorer, Change Directory, Project Settings, and Delete. Inline rename is supported via the context menu - press Enter to save, Escape to cancel.
+The selected project shows action buttons (Open, Settings, Delete) directly on the row. Right-click any project to open a context menu with Rename, Open in Explorer, Project Settings, and Delete. Inline rename is supported via the context menu - press Enter to save, Escape to cancel.
 
-If a project's folder is moved or renamed while Kangentic is closed, opening it shows a "Project Folder Not Found" dialog with a "Locate Folder..." button to re-point the project at its new location. Change Directory does the same thing on demand. Because tasks and board history are keyed by project id, they are preserved across a relocation.
+If a project's folder is moved or renamed while Kangentic is closed, opening it shows a "Project Folder Not Found" dialog with a "Locate Folder..." button to re-point the project at its new location. Project Settings > General > Change does the same thing on demand. Because tasks and board history are keyed by project id, they are preserved across a relocation. Claude Code's session transcripts and per-project settings (stored outside the project folder, keyed by the old path) are migrated automatically, so suspended sessions still resume at the new location.
 
 ### Idle Badges
 

@@ -173,13 +173,14 @@ Claude does **not** participate in the `sessionHistory` pipeline. Telemetry come
 
 A previous version of this adapter ran a parallel `runtime.sessionHistory` parser against the same JSONL file for cumulative token counts. It was removed because the hook output is strictly richer (it carries Claude Code's own `display_name` and the real `context_window_size`, including the 1M-context variant), and a second source raced against it - the task card visibly flashed a raw model id and a different window size between messages. The hook pipeline alone now owns model identity, window size, token counts, and cost.
 
-The `<projectSlug>` is computed by `claudeProjectSlug()` (exported from `transcript-parser.ts`). It is NOT a hash - it is the cwd with every `/`, `\`, `:`, and `.` character replaced individually by `-`. Each character is replaced one-for-one (not collapsed), so `C:\Users` produces `C--Users` (one dash from `:`, one from `\`).
+The `<projectSlug>` is computed by `claudeProjectSlug()` (exported from `transcript-parser.ts`), reproducing Claude Code's own algorithm: replace every non-alphanumeric character (so `/`, `\`, `:`, `.`, `_`, spaces, and unicode all become `-`), one-for-one and not collapsed, so `C:\Users` produces `C--Users` (one dash from `:`, one from `\`). If the sanitized result exceeds 200 characters it is truncated to 200 and a `-<base36 hash>` suffix (a Java-style string hash of the original, un-sanitized path) is appended to disambiguate; paths whose sanitized form is at most 200 characters (the overwhelming case) carry no suffix.
 
 | cwd | Slug |
 |---|---|
 | `C:\Users\dev\project` | `C--Users-dev-project` |
 | `/home/dev/project` | `-home-dev-project` |
 | `C:\Users\dev\my.app` | `C--Users-dev-my-app` |
+| `/home/dev/my_project` | `-home-dev-my-project` |
 | `C:\Users\dev\proj\.kangentic\worktrees\feature-x` | `C--Users-dev-proj--kangentic-worktrees-feature-x` |
 
 ## Claude status-file pipeline (`runtime.statusFile`)

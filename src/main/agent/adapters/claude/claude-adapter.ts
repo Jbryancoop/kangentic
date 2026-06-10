@@ -4,6 +4,7 @@ import { CommandBuilder } from './command-builder';
 import { ClaudeStatusParser } from './status-parser';
 import { locateClaudeTranscriptFile } from './transcript-parser';
 import { ensureWorktreeTrust, ensureMcpServerTrust } from './trust-manager';
+import { migrateClaudeProjectData } from './project-relocation';
 import { removeHooks as removeClaudeHooks } from './hook-manager';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
 import { discoverClaudeStaticCapabilities, rescanClaudeModels } from './capability-discovery';
@@ -204,5 +205,16 @@ export class ClaudeAdapter implements AgentAdapter {
     if (spec.modelChanged && spec.model) sequence.push(`/model ${spec.model}`);
     if (spec.effortChanged && spec.effort) sequence.push(`/effort ${spec.effort}`);
     return sequence;
+  }
+
+  /**
+   * Claude keys its session transcripts (~/.claude/projects/<slug>/) and its
+   * per-project state (~/.claude.json projects keys) to the absolute project
+   * path, both outside the project folder. Migrate them so sessions stay
+   * resumable after a relocation. Best-effort and non-destructive; see
+   * migrateClaudeProjectData.
+   */
+  async onProjectRelocated(oldPath: string, newPath: string): Promise<void> {
+    await migrateClaudeProjectData(oldPath, newPath);
   }
 }

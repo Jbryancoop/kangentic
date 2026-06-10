@@ -9,7 +9,7 @@ import { toForwardSlash } from '../../../../shared/paths';
 // when multiple tasks are spawned simultaneously.
 let claudeJsonLock: Promise<unknown> = Promise.resolve();
 
-function withClaudeJsonLock<T>(operation: () => T): Promise<T> {
+export function withClaudeJsonLock<T>(operation: () => T): Promise<T> {
   const previous = claudeJsonLock;
   const result = previous.then(operation, () => operation());
   claudeJsonLock = result.catch(() => {});

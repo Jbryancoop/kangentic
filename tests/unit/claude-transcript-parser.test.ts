@@ -27,6 +27,26 @@ describe('claudeProjectSlug', () => {
   it('does not collapse adjacent separators', () => {
     expect(claudeProjectSlug('C:\\x')).toBe('C--x');
   });
+
+  it('replaces underscores and spaces (every non-alphanumeric char)', () => {
+    expect(claudeProjectSlug('/home/dev/my_project')).toBe('-home-dev-my-project');
+    expect(claudeProjectSlug('/home/dev/my project')).toBe('-home-dev-my-project');
+  });
+
+  it('truncates to 200 chars and appends a base36 hash suffix when too long', () => {
+    const longPath = `/home/dev/${'a'.repeat(300)}`;
+    const slug = claudeProjectSlug(longPath);
+    const sanitized = longPath.replace(/[^a-zA-Z0-9]/g, '-');
+    // h = (h << 5) - h + charCode | 0 over the original string.
+    let hash = 0;
+    for (let index = 0; index < longPath.length; index++) {
+      hash = (hash << 5) - hash + longPath.charCodeAt(index);
+      hash = hash | 0;
+    }
+    const expected = `${sanitized.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
+    expect(slug).toBe(expected);
+    expect(slug.startsWith(sanitized.slice(0, 200))).toBe(true);
+  });
 });
 
 function writeFixture(lines: object[]): string {

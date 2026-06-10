@@ -44,6 +44,23 @@ export function isUncPath(p: string): boolean {
   return /^[\\/]{2}[^\\/]/.test(p);
 }
 
+/**
+ * Replace `oldPrefix` with `newPrefix` in `target` when `target` is the
+ * prefix itself or a path under it. Returns null when the target is not
+ * under the old prefix (different drive, sibling directory, unrelated path).
+ *
+ * Uses `path.relative` rather than string comparison so Windows drive-letter
+ * case and separator differences don't break the match.
+ */
+export function replacePathPrefix(target: string, oldPrefix: string, newPrefix: string): string | null {
+  const relative = path.relative(oldPrefix, target);
+  if (relative === '') return newPrefix;
+  // The isAbsolute guard is load-bearing: on Windows, a target on a
+  // DIFFERENT DRIVE yields an absolute path (not a '..' traversal).
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return path.join(newPrefix, relative);
+}
+
 // ---------------------------------------------------------------------------
 // Shell-specific executable path conversion (Windows only)
 // ---------------------------------------------------------------------------

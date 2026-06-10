@@ -140,19 +140,26 @@ test.describe('Project Sidebar Actions', () => {
 });
 
 test.describe('Project Relocation', () => {
-  test('context menu Change Directory confirms and updates the project path', async () => {
+  test('settings General tab Change confirms and updates the project path', async () => {
     // The folder picker returns the new location (consume-once override).
     await page.evaluate(() => {
       (window as Record<string, unknown>).__mockFolderPath = '/mock/new-location/TestProject';
     });
 
+    // Relocation lives in Project Settings > General (the context-menu entry
+    // was removed). Open it from the right-click menu.
     await page.locator('.truncate.font-medium:text("TestProject")').first().click({ button: 'right' });
-    await page.locator('[data-testid="project-context-change-directory"]').click();
+    await page.locator('.fixed.bg-surface-raised').locator('text=Project Settings').click();
+    await page.locator('h2:has-text("Settings")').waitFor({ state: 'visible', timeout: 3000 });
+    await page.getByRole('button', { name: 'General', exact: true }).click();
+    await page.getByTestId('project-location-change').click();
 
-    // Confirm dialog shows both the old and the new path
+    // Confirm dialog shows both the old and the new path. Scope to the
+    // dialog's From/To lines: the General tab behind it also renders the old
+    // path, so a bare getByText would match two elements.
     await expect(page.getByRole('heading', { name: 'Change Project Directory' })).toBeVisible();
-    await expect(page.getByText('/mock/projects/TestProject')).toBeVisible();
-    await expect(page.getByText('/mock/new-location/TestProject')).toBeVisible();
+    await expect(page.locator('p', { hasText: 'From:' })).toContainText('/mock/projects/TestProject');
+    await expect(page.locator('p', { hasText: 'To:' })).toContainText('/mock/new-location/TestProject');
 
     await page.getByRole('button', { name: 'Change Directory', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Change Project Directory' })).toBeHidden();

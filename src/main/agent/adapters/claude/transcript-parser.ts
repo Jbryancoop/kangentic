@@ -3,14 +3,42 @@ import os from 'node:os';
 import path from 'node:path';
 import type { TranscriptEntry, TranscriptBlock } from '../../../../shared/types';
 
+// Maximum slug length before Claude Code truncates and appends a hash suffix.
+// Matches the `jgH`/`NmK` constant in the shipped CLI (Claude Code 2.x).
+const CLAUDE_SLUG_MAX_LENGTH = 200;
+
 /**
- * Compute Claude Code's `~/.claude/projects/<slug>/` directory name
- * from a cwd. Replace every `/`, `\`, `:`, and `.` character with `-`.
- * Each character is replaced individually (not collapsed), so
- * `C:\Users` becomes `C--Users` (one dash from `:`, one from `\`).
+ * Java-style string hash (`h = h * 31 + charCode | 0`) over the ORIGINAL,
+ * un-sanitized path string. Claude Code uses this to disambiguate slugs that
+ * collide after truncation. Reproduced exactly from the shipped CLI.
+ */
+function claudeStringHash(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index++) {
+    hash = (hash << 5) - hash + value.charCodeAt(index);
+    hash = hash | 0;
+  }
+  return hash;
+}
+
+/**
+ * Compute Claude Code's `~/.claude/projects/<slug>/` directory name from a cwd.
+ *
+ * The algorithm was extracted from the shipped Claude Code CLI binary
+ * (verified against Claude Code 2.x, 2026-06) and validated against the local
+ * transcript directories: replace EVERY non-alphanumeric character with `-`
+ * (so `/`, `\`, `:`, `.`, `_`, spaces, and unicode all become `-`); if the
+ * result exceeds 200 characters, truncate to 200 and append `-<base36 hash>`
+ * where the hash is taken over the original path string.
+ *
+ * Because both `/` and `\` map to `-`, the slug is separator-agnostic for any
+ * path whose sanitized form is at most 200 characters (the overwhelming case).
  */
 export function claudeProjectSlug(cwd: string): string {
-  return cwd.replace(/[/\\:.]/g, '-');
+  const sanitized = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (sanitized.length <= CLAUDE_SLUG_MAX_LENGTH) return sanitized;
+  const suffix = Math.abs(claudeStringHash(cwd)).toString(36);
+  return `${sanitized.slice(0, CLAUDE_SLUG_MAX_LENGTH)}-${suffix}`;
 }
 
 /**

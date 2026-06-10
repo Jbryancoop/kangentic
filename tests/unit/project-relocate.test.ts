@@ -18,6 +18,9 @@
  *   - Runtime state fixups: worktree queue cleared, recoveredProjects entry
  *     dropped, currentProjectPath + board config watcher updated when the
  *     relocated project is the current one.
+ *   - Agent adapters' onProjectRelocated hook is invoked best-effort for every
+ *     registered adapter that implements it, with (oldPath, newPath); a hook
+ *     that throws does not fail relocation.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -47,6 +50,7 @@ const isGitRepoMock = vi.hoisted(() => vi.fn(() => false));
 const applySuspendDbWritesMock = vi.hoisted(() => vi.fn());
 const abortInFlightResumeMock = vi.hoisted(() => vi.fn());
 const clearQueueMock = vi.hoisted(() => vi.fn());
+const onProjectRelocatedMock = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock('../../src/main/git/original-fs', () => ({
   default: {
@@ -90,12 +94,25 @@ vi.mock('../../src/main/ipc/handlers/session-reconcile', () => ({
 vi.mock('../../src/main/ipc/handlers/session-resume-controllers', () => ({
   abortInFlightResume: abortInFlightResumeMock,
 }));
+// The handler statically imports agentRegistry; mock it so vitest does not load
+// every real adapter (better-sqlite3 / node-pty transitive deps cannot load
+// here). One adapter implements the hook, one does not - exercising the skip.
+vi.mock('../../src/main/agent/agent-registry', () => ({
+  agentRegistry: {
+    list: () => ['claude', 'aider'],
+    get: (name: string) =>
+      name === 'claude'
+        ? { name: 'claude', onProjectRelocated: onProjectRelocatedMock }
+        : { name: 'aider' },
+  },
+}));
 
 // ---------------------------------------------------------------------------
 // Import under test (after mocks)
 // ---------------------------------------------------------------------------
 
-import { relocateProject, replacePathPrefix } from '../../src/main/ipc/handlers/project-relocate';
+import { relocateProject } from '../../src/main/ipc/handlers/project-relocate';
+import { replacePathPrefix } from '../../src/shared/paths';
 import type { IpcContext } from '../../src/main/ipc/ipc-context';
 import type { Project, Session } from '../../src/shared/types';
 
@@ -338,5 +355,19 @@ describe('relocateProject', () => {
     const context = makeContext();
     await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
     expect(runGitWithTimeoutMock).not.toHaveBeenCalled();
+  });
+
+  it('invokes each adapter onProjectRelocated hook once with (oldPath, newPath)', async () => {
+    const context = makeContext();
+    await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
+    expect(onProjectRelocatedMock).toHaveBeenCalledTimes(1);
+    expect(onProjectRelocatedMock).toHaveBeenCalledWith(OLD_PATH, NEW_PATH);
+  });
+
+  it('does not fail relocation when an adapter hook throws', async () => {
+    onProjectRelocatedMock.mockRejectedValueOnce(new Error('migration exploded'));
+    const context = makeContext();
+    const result = await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
+    expect(result.path).toBe(NEW_PATH);
   });
 });

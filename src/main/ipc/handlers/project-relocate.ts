@@ -11,25 +11,10 @@ import { isLiveSession } from '../../pty/session-registry';
 import { applySuspendDbWrites } from './session-reconcile';
 import { abortInFlightResume } from './session-resume-controllers';
 import { trackEvent } from '../../analytics/analytics';
+import { agentRegistry } from '../../agent/agent-registry';
+import { replacePathPrefix } from '../../../shared/paths';
 import type { Project } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
-
-/**
- * Replace `oldPrefix` with `newPrefix` in `target` when `target` is the
- * prefix itself or a path under it. Returns null when the target is not
- * under the old prefix (different drive, sibling directory, unrelated path).
- *
- * Uses `path.relative` rather than string comparison so Windows drive-letter
- * case and separator differences don't break the match.
- */
-export function replacePathPrefix(target: string, oldPrefix: string, newPrefix: string): string | null {
-  const relative = path.relative(oldPrefix, target);
-  if (relative === '') return newPrefix;
-  // The isAbsolute guard is load-bearing: on Windows, a target on a
-  // DIFFERENT DRIVE yields an absolute path (not a '..' traversal).
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return path.join(newPrefix, relative);
-}
 
 /**
  * Platform-correct path equality via `path.relative` (case-insensitive on
@@ -52,7 +37,10 @@ function isSamePath(first: string, second: string): boolean {
  *    `sessions.cwd` prefixes.
  * 4. Best-effort `git worktree repair` (a moved repo's worktree metadata
  *    holds stale absolute paths).
- * 5. Reset per-path runtime state so the next open re-derives everything.
+ * 5. Notify each agent adapter so it can migrate per-project data it keeps
+ *    OUTSIDE the project folder keyed by absolute path (e.g. Claude's
+ *    ~/.claude/projects transcripts and ~/.claude.json keys).
+ * 6. Reset per-path runtime state so the next open re-derives everything.
  *
  * The renderer re-opens the project afterwards (when it was the current one),
  * which re-attaches the board config watcher, rewrites the MCP config, and
@@ -133,6 +121,21 @@ export async function relocateProject(context: IpcContext, projectId: string, ne
       await runGitWithTimeout(resolved, ['worktree', 'repair', ...existingWorktreePaths], { timeoutMs: 30_000 });
     } catch (err) {
       console.warn('[PROJECT_RELOCATE] git worktree repair failed (non-fatal):', err);
+    }
+  }
+
+  // Give each agent adapter a chance to migrate per-project data it keeps
+  // outside the project folder (e.g. Claude's ~/.claude/projects transcripts
+  // and ~/.claude.json keys). Best-effort: a failure must not fail relocation.
+  // The project folder is already at `resolved`, so an adapter can list its
+  // worktrees to reconstruct old paths.
+  for (const adapterName of agentRegistry.list()) {
+    const adapter = agentRegistry.get(adapterName);
+    if (!adapter?.onProjectRelocated) continue;
+    try {
+      await adapter.onProjectRelocated(oldPath, resolved);
+    } catch (err) {
+      console.warn(`[PROJECT_RELOCATE] ${adapterName} onProjectRelocated failed (non-fatal):`, err);
     }
   }
 
