@@ -152,6 +152,14 @@ type MoveSpawnPlan = {
    * dropped continuation.
    */
   continuationPrompt: string | undefined;
+  /**
+   * Recovery move out of Done: spawnAgent must resume the session WITHOUT
+   * injecting the destination column's auto_command. Required (not optional) so
+   * every plan-return site threads it through explicitly; a new respawn sub-case
+   * that forgets it is a compile error, not a silently-injected command on a
+   * restore. See spawnAgent's `suppressAutoCommand`.
+   */
+  suppressAutoCommand: boolean;
 };
 
 export async function handleTaskMove(
@@ -207,6 +215,12 @@ export async function handleTaskMove(
       // starting from To Do. Non-To Do sources are resuming previously-started
       // work, so re-sending the original description would duplicate context.
       const skipPromptTemplate = fromLane?.role !== 'todo';
+
+      // Recovery move: the first move OUT of Done (whatever the destination)
+      // resumes the session idle without injecting the destination column's
+      // auto_command. The user is restoring the task to inspect it; the next
+      // move injects per column config. See spawnAgent's `suppressAutoCommand`.
+      const suppressAutoCommand = fromLane?.role === 'done';
 
       // Move the task in the database
       tasks.move(input);
@@ -451,6 +465,7 @@ export async function handleTaskMove(
             resolvedProjectId,
             resolvedProjectPath,
             continuationPrompt: options?.continuationPrompt,
+            suppressAutoCommand,
           };
         }
 
@@ -554,6 +569,7 @@ export async function handleTaskMove(
                 resolvedProjectId,
                 resolvedProjectPath,
                 continuationPrompt: options?.continuationPrompt,
+                suppressAutoCommand,
               };
             }
           }
@@ -637,6 +653,7 @@ export async function handleTaskMove(
               resolvedProjectId,
               resolvedProjectPath,
               continuationPrompt: options?.continuationPrompt,
+              suppressAutoCommand,
             };
           }
 
@@ -703,6 +720,7 @@ export async function handleTaskMove(
         resolvedProjectId,
         resolvedProjectPath,
         continuationPrompt: options?.continuationPrompt,
+        suppressAutoCommand,
       };
     });
 
@@ -713,7 +731,7 @@ export async function handleTaskMove(
     // will spawn for the destination column.
     if (isShuttingDown()) return;
 
-    const { task, fromSwimlaneId, originalPosition, toLane, skipPromptTemplate, resolvedProjectId, resolvedProjectPath, continuationPrompt } = plan;
+    const { task, fromSwimlaneId, originalPosition, toLane, skipPromptTemplate, resolvedProjectId, resolvedProjectPath, continuationPrompt, suppressAutoCommand } = plan;
 
     // === Phase 2 (unlocked, slow) ===
     // All async operations below receive the abort signal so a newer move
@@ -818,7 +836,7 @@ export async function handleTaskMove(
           const sessionRepoPhase3 = new SessionRepository(dbPhase3);
           const engine = createTransitionEngine(context, actionsPhase3, tasksPhase3, sessionRepoPhase3, attachmentsPhase3, resolvedProjectId, resolvedProjectPath);
           if (toLane) {
-            await spawnAgent({ context, engine, tasks: tasksPhase3, sessionRepo: sessionRepoPhase3, task: current, fromSwimlaneId, toLane, skipPromptTemplate, signal, projectId: resolvedProjectId, projectPath: resolvedProjectPath, continuationPrompt });
+            await spawnAgent({ context, engine, tasks: tasksPhase3, sessionRepo: sessionRepoPhase3, task: current, fromSwimlaneId, toLane, skipPromptTemplate, signal, projectId: resolvedProjectId, projectPath: resolvedProjectPath, continuationPrompt, suppressAutoCommand });
           }
         } finally {
           clearSpawnProgress(context.mainWindow, task.id);

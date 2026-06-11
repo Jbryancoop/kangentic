@@ -143,6 +143,17 @@ When a suspended task moves to an active column:
   ("Proceed with implementing the approved plan.") delivered as the resumed
   session's first message when the destination column has no `auto_command`;
   the `auto_command` wins when present.
+- The **first move OUT of Done** (the recovery / restore move, whatever the
+  destination column) resumes the session WITHOUT injecting the destination
+  column's `auto_command`. Restoring a Done task is usually to inspect the
+  session or ask a question, so the column automation (e.g. `/merge-back`)
+  sits idle until the next move. This is unconditional and matches crash
+  recovery, which also resumes command-free. The drag-out-of-Done path
+  (`TASK_UNARCHIVE` / `TASK_BULK_UNARCHIVE`) suppresses it directly; a
+  non-archived Done-out move (MCP `move_task`, legacy rows) suppresses it via
+  `spawnAgent`'s `suppressAutoCommand`, set by `handleTaskMove` when
+  `fromLane.role === 'done'`. Model / effort / permission-mode settings still
+  apply on the recovery move. The next move injects per column config as usual.
 
 ## Crash Recovery (Session Recovery)
 

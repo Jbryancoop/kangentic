@@ -15,6 +15,12 @@
  * passes { continuationPrompt } as handleTaskMove's options parameter and it
  * must reach spawnAgent via the MoveSpawnPlan.
  *
+ * And the suppressAutoCommand threading: a move whose source lane has
+ * role='done' (the first move OUT of Done, e.g. an MCP move_task or legacy
+ * row) must reach spawnAgent with suppressAutoCommand=true so the recovery
+ * resume is idle; a normal move (non-Done source) must pass false so the next
+ * move of a restored task injects per column config.
+ *
  * Harness modeled on task-move-isolation-switch.test.ts; the config mock
  * additionally exposes agent.permissionMode because the new branch resolves
  * the effective target mode through it.
@@ -199,6 +205,7 @@ function makeContext(taskRepo: unknown, swimlaneRepo: unknown) {
 
 const PLANNING_LANE_ID = 'lane-planning';
 const EXECUTING_LANE_ID = 'lane-executing';
+const DONE_LANE_ID = 'lane-done';
 
 function makeLanes(executingOverrides: Partial<Swimlane> = {}) {
   const planningLane = makeSwimlane(PLANNING_LANE_ID, { permission_mode: 'plan' });
@@ -231,6 +238,32 @@ function makeTaskRepo() {
     list: vi.fn(() => [makeTask()]),
     archive: vi.fn(),
   };
+}
+
+/**
+ * A non-archived task sitting in a Done-role lane (MCP move_task / legacy row)
+ * dragged to an active lane. The Done move suspended the session, so Phase 1
+ * sees session_id=null and the move reaches Priority 4 -> Phase 3 spawnAgent.
+ * The target lane carries an auto_command to prove it is suppressed on the
+ * recovery move (the spawnAgent unit tests assert the no-injection effect).
+ */
+function makeDoneOutSetup() {
+  const doneLane = makeSwimlane(DONE_LANE_ID, { role: 'done' });
+  const executingLane = makeSwimlane(EXECUTING_LANE_ID, { auto_command: '/merge-back' });
+  const swimlaneRepo = {
+    getById: vi.fn((id: string) => (id === DONE_LANE_ID ? doneLane : id === EXECUTING_LANE_ID ? executingLane : null)),
+    list: vi.fn(() => [doneLane, executingLane]),
+  };
+  const taskRepo = {
+    getById: vi.fn()
+      .mockReturnValueOnce(makeTask({ swimlane_id: DONE_LANE_ID, session_id: null }))
+      .mockReturnValue(makeTask({ swimlane_id: EXECUTING_LANE_ID, session_id: null })),
+    move: vi.fn(),
+    update: vi.fn(),
+    list: vi.fn(() => [makeTask()]),
+    archive: vi.fn(),
+  };
+  return { swimlaneRepo, taskRepo };
 }
 
 describe('handleTaskMove permission-mode delta respawn', () => {
@@ -359,6 +392,36 @@ describe('handleTaskMove permission-mode delta respawn', () => {
     expect(mockSpawnAgent).toHaveBeenCalledTimes(1);
     const spawnArg = mockSpawnAgent.mock.calls[0][0] as { continuationPrompt?: string };
     expect(spawnArg.continuationPrompt).toBeUndefined();
+  });
+
+  it('suppresses auto_command on the first move OUT of Done (recovery move)', async () => {
+    const { swimlaneRepo, taskRepo } = makeDoneOutSetup();
+    const context = makeContext(taskRepo, swimlaneRepo);
+
+    await handleTaskMove(context as never, {
+      taskId: 'task-aaa00001', targetSwimlaneId: EXECUTING_LANE_ID, targetPosition: 0,
+    });
+
+    expect(mockSpawnAgent).toHaveBeenCalledTimes(1);
+    const spawnArg = mockSpawnAgent.mock.calls[0][0] as { suppressAutoCommand?: boolean };
+    expect(spawnArg.suppressAutoCommand).toBe(true);
+  });
+
+  it('does NOT suppress auto_command on a normal move (source lane is not Done)', async () => {
+    // The SECOND move of a restored task: source is a normal active lane, so
+    // the destination column's auto_command injects as usual.
+    const { swimlaneRepo } = makeLanes();
+    setActiveRecord('plan'); // permission delta plan -> auto respawns via Phase 3
+    const taskRepo = makeTaskRepo();
+    const context = makeContext(taskRepo, swimlaneRepo);
+
+    await handleTaskMove(context as never, {
+      taskId: 'task-aaa00001', targetSwimlaneId: EXECUTING_LANE_ID, targetPosition: 0,
+    });
+
+    expect(mockSpawnAgent).toHaveBeenCalledTimes(1);
+    const spawnArg = mockSpawnAgent.mock.calls[0][0] as { suppressAutoCommand?: boolean };
+    expect(spawnArg.suppressAutoCommand).toBe(false);
   });
 
   it('no permission delta leaves the live-injection path intact', async () => {

@@ -19,7 +19,7 @@
  *     - worktree error branch: ensureTaskWorktree throws, returns task, no spawn
  *     - checkout error branch: ensureTaskBranchCheckout throws, returns task, no spawn
  *     - no done-lane branch: skips transition engine when no role='done' lane
- *     - happy path: calls engine.executeTransition + schedules auto-command
+ *     - recovery move: calls engine.executeTransition but suppresses auto-command
  *     - resumeSuspendedSession fallback: called when no session_id after transition
  *     - withTaskLock serialization: concurrent calls for the same id serialize;
  *       different ids run independently
@@ -28,7 +28,7 @@
  *     - auto_spawn=false lane skips spawn for every task in the batch
  *     - per-task worktree error is caught; subsequent tasks still process
  *     - per-iteration lock is independent per id (different ids don't block)
- *     - auto-command scheduled when finalTask.session_id and auto_command both set
+ *     - recovery move: auto-command suppressed for every restored task
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -108,12 +108,10 @@ vi.mock('../../src/main/config/config-manager', () => ({
 const mockGetProjectRepos = vi.fn();
 const mockEnsureTaskWorktree = vi.fn(async () => null);
 const mockEnsureTaskBranchCheckout = vi.fn(async () => {});
-const mockBuildAutoCommandVars = vi.fn(() => ({}));
 const mockCreateTransitionEngine = vi.fn();
 
 vi.mock('../../src/main/ipc/helpers', () => ({
   getProjectRepos: (...args: unknown[]) => mockGetProjectRepos(...args),
-  buildAutoCommandVars: (...args: unknown[]) => mockBuildAutoCommandVars(...args),
   ensureTaskWorktree: (...args: unknown[]) => mockEnsureTaskWorktree(...args),
   ensureTaskBranchCheckout: (...args: unknown[]) => mockEnsureTaskBranchCheckout(...args),
   createTransitionEngine: (...args: unknown[]) => mockCreateTransitionEngine(...args),
@@ -568,7 +566,10 @@ describe('task-archive handlers', () => {
       expect(engine.resumeSuspendedSession).not.toHaveBeenCalled();
     });
 
-    it('schedules auto-command when finalTask has session_id and lane has auto_command', async () => {
+    it('does NOT schedule auto-command on restore even when lane has auto_command (recovery move)', async () => {
+      // Unarchive is always the FIRST move out of Done. The destination
+      // column's auto_command is intentionally suppressed so the session
+      // resumes idle for the user to inspect; the next normal move injects.
       const autoCommandLane = createMockSwimlane('lane-auto', {
         auto_spawn: true,
         auto_command: '/run-tests',
@@ -593,12 +594,10 @@ describe('task-archive handlers', () => {
         targetSwimlaneId: 'lane-auto',
       });
 
-      expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
-        'task-auto-cmd',
-        'session-xyz',
-        ['/run-tests'],
-        { freshlySpawned: true },
-      );
+      // The transition still runs (model/effort/permission config applies),
+      // but no auto_command keystroke is scheduled on the recovery move.
+      expect(engine.executeTransition).toHaveBeenCalled();
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
     });
 
     it('does NOT schedule auto-command when lane has no auto_command', async () => {
@@ -829,7 +828,10 @@ describe('task-archive handlers', () => {
       expect(engine.executeTransition).toHaveBeenCalledTimes(2);
     });
 
-    it('schedules auto-command per task when finalTask has session_id and lane has auto_command', async () => {
+    it('does NOT schedule auto-command per task on bulk restore even when lane has auto_command (recovery move)', async () => {
+      // Bulk unarchive (Completed Tasks dialog restore) is also a first move
+      // out of Done per task, so the destination auto_command is suppressed for
+      // every restored task.
       const autoCommandLane = createMockSwimlane('lane-auto-bulk', {
         auto_spawn: true,
         auto_command: '/run-ci',
@@ -864,19 +866,7 @@ describe('task-archive handlers', () => {
         'lane-auto-bulk',
       );
 
-      expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledTimes(2);
-      expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
-        'task-bulk-cmd-a',
-        'session-task-bulk-cmd-a',
-        ['/run-ci'],
-        { freshlySpawned: true },
-      );
-      expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
-        'task-bulk-cmd-b',
-        'session-task-bulk-cmd-b',
-        ['/run-ci'],
-        { freshlySpawned: true },
-      );
+      expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
     });
 
     it('skips auto-command when task has no session_id after resumeSuspendedSession', async () => {

@@ -4,14 +4,12 @@ import { SessionRepository } from '../../db/repositories/session-repository';
 import { getProjectDb } from '../../db/database';
 import {
   getProjectRepos,
-  buildAutoCommandVars,
   ensureTaskWorktree,
   ensureTaskBranchCheckout,
   createTransitionEngine,
   resolveSpawnOverrides,
 } from '../helpers';
 import { guardActiveNonWorktreeSessions } from './task-move';
-import { interpolateTemplate } from '../../agent/shared';
 import { withTaskLock } from '../task-lifecycle-lock';
 import type { IpcContext } from '../ipc-context';
 
@@ -91,12 +89,13 @@ export function registerTaskArchiveHandlers(context: IpcContext): void {
             }
           }
 
-          // Schedule auto-command for freshly spawned session
-          if (finalTask?.session_id && toLane?.auto_command) {
-            const vars = buildAutoCommandVars(finalTask);
-            const interpolated = interpolateTemplate(toLane.auto_command, vars);
-            context.terminalSubmitScheduler.scheduleKeystrokes(finalTask.id, finalTask.session_id, [interpolated], { freshlySpawned: true });
-          }
+          // Recovery move: unarchive is always the FIRST move out of Done, so
+          // the destination column's auto_command is intentionally NOT injected
+          // here. The session resumes idle, ready for the user to inspect or ask
+          // a question. This matches startup recovery (resume-suspended.ts),
+          // which also resumes without injecting auto_command. The next normal
+          // move of this task injects per column config via handleTaskMove ->
+          // spawnAgent.
         }
       }
 
@@ -166,11 +165,10 @@ export function registerTaskArchiveHandlers(context: IpcContext): void {
               }
             }
 
-            if (finalTask?.session_id && toLane?.auto_command) {
-              const vars = buildAutoCommandVars(finalTask);
-              const interpolated = interpolateTemplate(toLane.auto_command, vars);
-              context.terminalSubmitScheduler.scheduleKeystrokes(finalTask.id, finalTask.session_id, [interpolated], { freshlySpawned: true });
-            }
+            // Recovery move: unarchive is always the first move out of Done, so
+            // the destination column's auto_command is intentionally NOT injected
+            // here (see the single TASK_UNARCHIVE handler above). The session
+            // resumes idle; the next normal move injects per column config.
           }
         }
       });

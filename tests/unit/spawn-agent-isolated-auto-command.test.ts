@@ -44,7 +44,34 @@ vi.mock('../../src/main/agent/agent-registry', () => ({
   agentRegistry: { get: vi.fn(() => ({ sessionType: 'claude_agent' })) },
 }));
 
+// These mocks are only exercised by the handoff-branch describe block below.
+// They are harmless for the normal-path tests (those tests never enter hasHandoffContext).
+vi.mock('../../src/main/engine/spawn-progress', () => ({
+  emitSpawnProgress: vi.fn(),
+  emitSpawnWaiting: vi.fn(),
+  clearSpawnProgress: vi.fn(),
+  createProgressCallback: vi.fn(() => vi.fn()),
+  getInFlightSpawnProgress: vi.fn(() => ({})),
+}));
+
+vi.mock('../../src/main/db/database', () => ({
+  getProjectDb: vi.fn(() => ({})),
+}));
+
+vi.mock('../../src/main/db/repositories/handoff-repository', () => ({
+  HandoffRepository: class {
+    insert = vi.fn(() => ({ id: 'handoff-rec-1' }));
+    updateToSession = vi.fn();
+  },
+}));
+
+vi.mock('../../src/main/agent/handoff/session-history-reference', () => ({
+  buildSessionHistoryReference: vi.fn(() => '[handoff context: mock]'),
+}));
+
 import { spawnAgent } from '../../src/main/ipc/helpers/agent-spawn';
+import { resolveTargetAgent } from '../../src/main/engine/agent-resolver';
+import { agentRegistry } from '../../src/main/agent/agent-registry';
 
 const TASK_ID = 'task-aaa00001';
 const EXEC_LANE_ID = 'lane-exec';
@@ -134,6 +161,9 @@ function makeRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
  * (drives only the manual-pause guard + handoff probe). `resumeRecord` feeds the
  * isolation-scoped getLatestForTaskByTypeAndIsolation (drives the fix). getById
  * returns no-session first (so the fallback runs) then a freshly-spawned session.
+ *
+ * `projectId` is only set by handoff-branch tests; when undefined, `projectRepo`
+ * is never accessed by spawnAgent (it gates on `options.projectId`).
  */
 function makeDeps(args: {
   manualPauseRecord: SessionRecord | null;
@@ -156,12 +186,25 @@ function makeDeps(args: {
     resumeSuspendedSession: vi.fn(async () => {}),
   };
   const scheduleKeystrokes = vi.fn();
-  const context = { terminalSubmitScheduler: { scheduleKeystrokes } };
+  // mainWindow and projectRepo are only accessed when options.projectId is set
+  // (handoff path). They are present here so the same `context` shape works for
+  // both normal-path and handoff-path tests without requiring a cast.
+  const context = {
+    terminalSubmitScheduler: { scheduleKeystrokes },
+    mainWindow: { isDestroyed: vi.fn(() => false), webContents: { send: vi.fn() } },
+    projectRepo: { getById: vi.fn(() => null) },
+  };
 
   return { tasks, sessionRepo, engine, scheduleKeystrokes, context };
 }
 
-async function runSpawn(toLane: Swimlane, deps: ReturnType<typeof makeDeps>, skipPromptTemplate = false) {
+async function runSpawn(
+  toLane: Swimlane,
+  deps: ReturnType<typeof makeDeps>,
+  skipPromptTemplate = false,
+  suppressAutoCommand = false,
+  projectId?: string,
+) {
   await spawnAgent({
     context: deps.context as never,
     engine: deps.engine as never,
@@ -171,6 +214,8 @@ async function runSpawn(toLane: Swimlane, deps: ReturnType<typeof makeDeps>, ski
     fromSwimlaneId: EXEC_LANE_ID,
     toLane,
     skipPromptTemplate,
+    suppressAutoCommand,
+    projectId,
   });
 }
 
@@ -285,6 +330,147 @@ describe('spawnAgent auto_command injection (isolation-scoped resume check)', ()
     expect(deps.scheduleKeystrokes).toHaveBeenCalledTimes(1);
     expect(deps.scheduleKeystrokes).toHaveBeenCalledWith(
       TASK_ID, FRESH_PTY_SESSION_ID, ['/standup'], { freshlySpawned: true },
+    );
+  });
+});
+
+/**
+ * Recovery move out of Done: spawnAgent is called with suppressAutoCommand=true
+ * (handleTaskMove sets it when fromLane.role === 'done'). The destination
+ * column's auto_command must NOT be delivered, by either path, so the restored
+ * session resumes idle. A non-archived Done-out move (MCP move_task, legacy
+ * rows) reaches this fallback; the drag-out-of-Done path is covered separately
+ * in task-archive-handler.test.ts.
+ */
+describe('spawnAgent auto_command suppression on recovery move out of Done', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('resume-eligible destination: resumes with NO prompt and schedules no keystroke', async () => {
+    const normalLane = makeSwimlane(EXEC_LANE_ID, { session_target: 'main', auto_command: '/merge-back' });
+    const mainRecord = makeRecord({ id: 'rec-main', isolated_swimlane_id: null, agent_session_id: 'agent-main' });
+    const deps = makeDeps({ manualPauseRecord: mainRecord, resumeRecord: mainRecord });
+
+    // skipPromptTemplate=true (any non-To-Do source, which Done always is) +
+    // suppressAutoCommand=true.
+    await runSpawn(normalLane, deps, true, true);
+
+    // The session still resumes (config/overrides apply), but with no prompt.
+    expect(deps.engine.resumeSuspendedSession).toHaveBeenCalledTimes(1);
+    expect(resumePromptArg(deps.engine)).toBeUndefined();
+    expect(deps.scheduleKeystrokes).not.toHaveBeenCalled();
+  });
+
+  it('fresh-spawn outcome: no keystroke scheduled, session sits idle', async () => {
+    const normalLane = makeSwimlane(EXEC_LANE_ID, { session_target: 'main', auto_command: '/merge-back' });
+    // No resumable session -> the fallback spawns fresh. skipPromptTemplate=true
+    // means the fresh session is promptless, and suppression keeps it that way.
+    const deps = makeDeps({ manualPauseRecord: null, resumeRecord: undefined });
+
+    await runSpawn(normalLane, deps, true, true);
+
+    expect(resumePromptArg(deps.engine)).toBeUndefined();
+    expect(deps.scheduleKeystrokes).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Recovery move out of Done with the HANDOFF branch active.
+ *
+ * Scenario: a task's agent_override differs from the destination column's
+ * agent (e.g. Done -> a Codex column), so resolveTargetAgent returns
+ * isHandoff=true. The destination column also has handoff_context=true and
+ * an auto_command. suppressAutoCommand must silence the auto_command at the
+ * gated check on line 279 of agent-spawn.ts:
+ *
+ *   if (!options.suppressAutoCommand && toLane.auto_command?.trim()) {
+ *     ...scheduleKeystrokes(...)
+ *   }
+ *
+ * The existing recovery tests (describe block above) force isHandoff=false to
+ * reach the normal fallback; these tests specifically exercise the handoff branch
+ * (hasHandoffContext=true) to close the untested gap.
+ *
+ * Mock requirements to reach hasHandoffContext=true:
+ *   - resolveTargetAgent returns isHandoff=true (overridden per-test via mockReturnValueOnce)
+ *   - toLane.handoff_context !== false (set to true)
+ *   - options.projectId is defined (passed to runSpawn)
+ *   - sessionRepo.getLatestForTask returns non-null (manualPauseRecord set)
+ * tasks.getById must return a task WITH session_id so the post-spawn gate
+ * (currentTask?.session_id) is truthy and scheduleKeystrokes is reached.
+ */
+describe('spawnAgent auto_command suppression on recovery move out of Done (handoff branch)', () => {
+  const PROJECT_ID = 'proj-handoff-test';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Point the default agentRegistry.get to null so locateSessionHistoryFile is
+    // never called (the source-adapter branch gates on the returned object being
+    // truthy). Without this, the mock returns { sessionType: 'claude_agent' }
+    // which lacks locateSessionHistoryFile and would throw inside the try/catch,
+    // continuing cleanly but logging a spurious error. Returning null is cleaner.
+    vi.mocked(agentRegistry.get).mockReturnValue(null as never);
+  });
+
+  it('handoff branch + suppressAutoCommand=true: scheduleKeystrokes is NOT called', async () => {
+    // This is the required gap assertion: handoff path taken, suppression active,
+    // scheduleKeystrokes must be silent. Without the !options.suppressAutoCommand
+    // guard on line 279 of agent-spawn.ts, this test fails.
+    const codexLane = makeSwimlane('lane-codex', {
+      session_target: 'main',
+      auto_command: '/merge-back',
+      handoff_context: true,
+      agent_override: 'codex',
+    });
+    // manualPauseRecord non-null satisfies hasHandoffContext's getLatestForTask check.
+    // taskFields: { session_id: FRESH_PTY_SESSION_ID } ensures the post-spawn
+    // tasks.getById call returns a session-owning task (reaching the gate).
+    const priorRecord = makeRecord({ id: 'rec-claude', isolated_swimlane_id: null, agent_session_id: 'claude-session-1' });
+    const deps = makeDeps({
+      manualPauseRecord: priorRecord,
+      resumeRecord: undefined,
+      taskFields: { session_id: FRESH_PTY_SESSION_ID },
+    });
+
+    // Override the module-level mock for this single call: isHandoff=true forces
+    // the handoff branch. The default returns false, so existing tests are unaffected.
+    vi.mocked(resolveTargetAgent).mockReturnValueOnce({ agent: 'codex', isHandoff: true });
+
+    await runSpawn(codexLane, deps, true, true, PROJECT_ID);
+
+    // The handoff spawn ran (resumeSuspendedSession was called with the target agent).
+    expect(deps.engine.resumeSuspendedSession).toHaveBeenCalledTimes(1);
+    // The auto_command must NOT have been injected.
+    expect(deps.scheduleKeystrokes).not.toHaveBeenCalled();
+  });
+
+  it('handoff branch + suppressAutoCommand=false: scheduleKeystrokes IS called (positive companion)', async () => {
+    // Positive companion: same handoff setup but without suppression, confirming
+    // the gate works in both directions. Guards against accidentally removing it
+    // and having the suppression test pass vacuously.
+    const codexLane = makeSwimlane('lane-codex', {
+      session_target: 'main',
+      auto_command: '/merge-back',
+      handoff_context: true,
+      agent_override: 'codex',
+    });
+    const priorRecord = makeRecord({ id: 'rec-claude', isolated_swimlane_id: null, agent_session_id: 'claude-session-1' });
+    const deps = makeDeps({
+      manualPauseRecord: priorRecord,
+      resumeRecord: undefined,
+      taskFields: { session_id: FRESH_PTY_SESSION_ID },
+    });
+
+    vi.mocked(resolveTargetAgent).mockReturnValueOnce({ agent: 'codex', isHandoff: true });
+
+    // suppressAutoCommand=false (default): the auto_command must be scheduled.
+    await runSpawn(codexLane, deps, true, false, PROJECT_ID);
+
+    expect(deps.engine.resumeSuspendedSession).toHaveBeenCalledTimes(1);
+    expect(deps.scheduleKeystrokes).toHaveBeenCalledTimes(1);
+    expect(deps.scheduleKeystrokes).toHaveBeenCalledWith(
+      TASK_ID, FRESH_PTY_SESSION_ID, ['/merge-back'], { freshlySpawned: true },
     );
   });
 });

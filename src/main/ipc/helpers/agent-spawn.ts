@@ -122,6 +122,15 @@ export interface AgentSpawnOptions {
    * continue. The column's auto_command always wins when present.
    */
   continuationPrompt?: string;
+  /**
+   * Recovery move out of Done: resume the session but do NOT inject the
+   * destination column's auto_command (as prompt or keystroke). The session
+   * resumes idle, ready for the user to inspect; the NEXT move injects per
+   * column config. Set by handleTaskMove when fromLane.role === 'done'.
+   * Matches the unarchive (drag-out-of-Done) recovery contract in
+   * task-archive.ts and startup recovery in resume-suspended.ts.
+   */
+  suppressAutoCommand?: boolean;
 }
 
 /**
@@ -267,7 +276,7 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
         console.error('[spawnAgent] Failed to finalize handoff:', error);
       }
 
-      if (toLane.auto_command?.trim()) {
+      if (!options.suppressAutoCommand && toLane.auto_command?.trim()) {
         const vars = buildAutoCommandVars(currentTask);
         const interpolated = interpolateTemplate(toLane.auto_command, vars);
         context.terminalSubmitScheduler.scheduleKeystrokes(currentTask.id, currentTask.session_id, [interpolated], { freshlySpawned: true });
@@ -320,7 +329,13 @@ export async function spawnAgent(options: AgentSpawnOptions): Promise<void> {
   //     command appears - which reads as "the auto_command never ran".
   // Only a fresh spawn that DOES get a task template needs the post-spawn
   // keystroke, because the task description owns the prompt slot.
-  const interpolatedAutoCommand = toLane.auto_command?.trim()
+  // suppressAutoCommand (recovery move out of Done) zeroes out the command so
+  // everything downstream degrades naturally: deliverAutoCommandAsPrompt becomes
+  // false, resumePrompt falls back to the (Done-out: absent) continuationPrompt
+  // so the resume is promptless, and the post-spawn keystroke is skipped. A
+  // fresh-spawn outcome also sits idle because skipPromptTemplate is already
+  // true for any non-To-Do source.
+  const interpolatedAutoCommand = !options.suppressAutoCommand && toLane.auto_command?.trim()
     ? interpolateTemplate(toLane.auto_command, buildAutoCommandVars(currentTask))
     : undefined;
   const deliverAutoCommandAsPrompt = interpolatedAutoCommand !== undefined
