@@ -75,12 +75,17 @@ function makeWatcher(opts?: {
   rootPidMap?: Map<string, number>;
   shellCountMap?: Map<string, number>;
   pendingToolMap?: Map<string, number>;
+  namedShellMap?: Map<string, string[]>;
 }) {
   const probe = new MockProcessTreeProbe();
   const log: CallbackLog = { naturalExits: [], shellPidExited: [], rootDied: [], observedAlive: [] };
   const rootPids = opts?.rootPidMap ?? new Map<string, number>();
   const shellCounts = opts?.shellCountMap ?? new Map<string, number>();
   const pendingTools = opts?.pendingToolMap ?? new Map<string, number>();
+  // Named shell ids per session. Defaults to empty, so `getActiveShellCount`
+  // entries are all treated as anonymous (matching the pre-Tier-A behavior
+  // every existing test relies on).
+  const namedShells = opts?.namedShellMap ?? new Map<string, string[]>();
 
   const callbacks: BgShellWatcherCallbacks = {
     onNaturalExit(sessionId, exitedCount) {
@@ -101,6 +106,9 @@ function makeWatcher(opts?: {
     getActiveShellCount(sessionId) {
       return shellCounts.get(sessionId) ?? 0;
     },
+    getNamedShellIds(sessionId) {
+      return namedShells.get(sessionId) ?? [];
+    },
     getPendingToolCount(sessionId) {
       return pendingTools.get(sessionId) ?? 0;
     },
@@ -112,7 +120,7 @@ function makeWatcher(opts?: {
     pollIntervalMs: opts?.pollIntervalMs ?? 100,
   });
 
-  return { watcher, probe, log, rootPids, shellCounts, pendingTools };
+  return { watcher, probe, log, rootPids, shellCounts, pendingTools, namedShells };
 }
 
 describe('BgShellWatcher', () => {
@@ -1475,6 +1483,132 @@ describe('BgShellWatcher', () => {
       // Next cycle is back in balance (helper folded into preExisting) -> fires.
       await watcher.pollNow();
       expect(log.observedAlive).toEqual(['s1']);
+      watcher.dispose();
+    });
+  });
+
+  describe('Tier A PID capture and churn-proof liveness (bug A)', () => {
+    it('captures a named bg shell PID by tree-diff and confirms liveness even on an out-of-sync (surplus) cycle', async () => {
+      // Reproduces the empirical fix: a backgrounded `npx playwright test`
+      // spawns its own app-under-test shells (surplus), which the old
+      // in-sync-only keep-alive could not confirm liveness through. With Tier
+      // A the named shell's own PID is ground truth, so liveness is confirmed
+      // regardless of the count math.
+      const { watcher, probe, rootPids, shellCounts, namedShells, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, []); // no pre-existing helpers
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor: preExisting=0, helperPids={}
+
+      // Hook: a named bg shell starts; engine tracks it; OS spawns its bash.
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgA']);
+      watcher.noteBackgroundShellStarted('s1', 'bgA');
+      probe.trees.set(1234, [{ pid: 6000, ppid: 1234, comm: 'bash' }]);
+      await watcher.pollNow(); // captures 6000; in sync -> keep-alive
+      expect(log.observedAlive).toContain('s1');
+      expect(log.naturalExits).toHaveLength(0);
+
+      log.observedAlive.length = 0;
+
+      // Churn: the bg shell spawns an app-under-test shell (surplus). The old
+      // path would NOT confirm liveness on a surplus cycle; Tier A does,
+      // because the named PID 6000 is still in the tree.
+      probe.trees.set(1234, [
+        { pid: 6000, ppid: 1234, comm: 'bash' },
+        { pid: 7000, ppid: 1234, comm: 'bash' },
+      ]);
+      await watcher.pollNow();
+      expect(log.observedAlive).toContain('s1');
+      expect(log.naturalExits).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('adopts the foreground-tool PID memo when a tool auto-backgrounds', async () => {
+      // The captured path: a long foreground tool (pendingTools>0) spawns one
+      // shell; when Claude auto-backgrounds it, the start hook arrives and the
+      // watcher adopts the memoized PID directly (a fresh tree-diff would be
+      // ambiguous by then due to app churn).
+      const { watcher, probe, rootPids, shellCounts, namedShells, pendingTools, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, []);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor
+
+      // Foreground tool running; its bash (PID 6000) appears.
+      pendingTools.set('s1', 1);
+      probe.alive.add(6000);
+      probe.trees.set(1234, [{ pid: 6000, ppid: 1234, comm: 'bash' }]);
+      await watcher.pollNow(); // surplus-while-pending: memoize 6000
+
+      // Tool auto-backgrounds: engine promotes to named 'bgA', tool clears.
+      pendingTools.set('s1', 0);
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgA']);
+      watcher.noteBackgroundShellStarted('s1', 'bgA'); // adopts memo 6000
+
+      // App churn surplus, but Tier A confirms liveness via the captured PID.
+      probe.trees.set(1234, [
+        { pid: 6000, ppid: 1234, comm: 'bash' },
+        { pid: 7000, ppid: 1234, comm: 'bash' },
+      ]);
+      await watcher.pollNow();
+      expect(log.observedAlive).toContain('s1');
+      expect(log.naturalExits).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('deficit drains anonymous shells only, never a named shell (the engine guard refuses that anyway)', async () => {
+      // A named shell whose PID was never captured and whose OS shell exited
+      // (lost end hook): the count heuristic sees a deficit but must NOT fire
+      // a natural-exit, because an anonymous (count-based) decrement against a
+      // named shell is refused by the engine. The 5-min named cap reclaims it.
+      const { watcher, probe, rootPids, shellCounts, namedShells, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, []);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor preExisting=0
+
+      // Named shell tracked by the engine, no PID captured by the watcher.
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgA']);
+      probe.trees.set(1234, [{ pid: 6000, ppid: 1234, comm: 'bash' }]);
+      await watcher.pollNow(); // in sync
+
+      // The bg shell's OS process exits but the engine still tracks the named
+      // id (lost end hook). Deficit, but anonCount === 0.
+      probe.trees.set(1234, []);
+      await watcher.pollNow();
+      await watcher.pollNow(); // through the lag-tolerance window
+      expect(log.naturalExits).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('ambiguous tree-diff (more than one new candidate) gives up without firing or throwing', async () => {
+      const { watcher, probe, rootPids, shellCounts, namedShells, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, []);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor
+
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgA']);
+      watcher.noteBackgroundShellStarted('s1', 'bgA');
+      // Two new shells at once: the diff cannot attribute the PID.
+      probe.trees.set(1234, [
+        { pid: 6000, ppid: 1234, comm: 'bash' },
+        { pid: 7000, ppid: 1234, comm: 'bash' },
+      ]);
+      // Poll well past the retry budget: no capture, no natural-exit fire,
+      // no throw. The named shell falls back to the 5-min cap.
+      for (let cycle = 0; cycle < 5; cycle++) {
+        await watcher.pollNow();
+      }
+      expect(log.naturalExits).toHaveLength(0);
       watcher.dispose();
     });
   });

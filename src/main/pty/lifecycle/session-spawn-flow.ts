@@ -299,6 +299,14 @@ export async function performSpawn(
     // dead-code-eliminated in production via __KANGENTIC_DEV__.
     context.telemetry.activityEngine.markPtyChunk(id);
 
+    // Production stuck-pending-tools signal: a single timestamp write so a
+    // long quiet foreground tool (a test run streaming output with no hook
+    // event or status heartbeat for >5 min) is not force-idled. Unconditional
+    // and independent of the PtyActivityTracker suppression below, which
+    // silences PTY activity detection for hooks-based agents but must not
+    // silence this watchdog refresh.
+    context.telemetry.activityEngine.markPtyOutput(id);
+
     // Transient sessions (command terminal) have no DB row - the
     // TranscriptWriter's lazy init will fail silently on first flush
     // (caught by try/catch in flush()), so we skip them entirely.

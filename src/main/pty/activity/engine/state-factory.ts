@@ -16,6 +16,7 @@ export function createSessionEngineState(): SessionEngineState {
     permissionPending: false,
     permissionAwaitedToolId: null,
     lastSignalAt: null,
+    lastPtyOutputAt: null,
     currentTool: null,
     pendingToolStack: [],
     idleTimestamp: null,

@@ -4,6 +4,7 @@ import { PtyActivityTracker } from './pty-activity-tracker';
 import { ActivityEngine, ActivitySnapshotWriter, type ActivityEngineOptions, type ActivityStatsSnapshot } from './engine';
 import { BgShellWatcher } from './background-shell/watcher';
 import { createProcessTreeProbe, type ProcessTreeProbe } from './background-shell/process-tree';
+import { looksLikeShellId } from './background-shell/looks-like-shell-id';
 import { UsageAccumulator } from './usage-accumulator';
 import { PRCommandDetector } from './pr-command-detector';
 import { UserInterruptCoordinator } from './user-interrupt-coordinator';
@@ -182,6 +183,11 @@ export class SessionTelemetry {
             const state = this.activityEngine.getState(sessionId);
             if (!state) return 0;
             return state.activeBackgroundShellIds.size + state.anonymousBackgroundShellCount;
+          },
+          getNamedShellIds: (sessionId) => {
+            const state = this.activityEngine.getState(sessionId);
+            if (!state) return [];
+            return Array.from(state.activeBackgroundShellIds);
           },
           getPendingToolCount: (sessionId) => {
             const state = this.activityEngine.getState(sessionId);
@@ -565,6 +571,17 @@ export class SessionTelemetry {
       }
 
       this.activityEngine.processEvent(sessionId, event);
+
+      // Tier A PID capture: a named bg-shell start lets the watcher try to
+      // resolve the shell's OS PID (tree-diff or the foreground-tool memo) so
+      // it can confirm liveness even when the count heuristic is out of sync.
+      // Agent-agnostic (keyed on the generic event shape, not an agent name).
+      if (
+        event.type === EventType.BackgroundShellStart
+        && looksLikeShellId(event.detail)
+      ) {
+        this.bgShellWatcher?.noteBackgroundShellStarted(sessionId, event.detail);
+      }
     }
     if (cached.length > MAX_EVENTS_PER_SESSION) {
       const trimmed = cached.slice(-MAX_EVENTS_PER_SESSION);

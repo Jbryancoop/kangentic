@@ -181,6 +181,42 @@ describe('ActivityEngine replay tests', () => {
     });
   });
 
+  describe('session-012-auto-bg-named-shell-live', () => {
+    // Real capture of bug A (task #212). A foreground
+    // `npx playwright test --project=electron` auto-backgrounds to the NAMED
+    // shell `bx6k8r2cr`; the agent keeps working across several more turns
+    // but never fires a background_shell_end for it. The named shell must
+    // remain tracked the whole time (not spuriously dropped by an unrelated
+    // idle or end), so the predicate keeps the task active while the shell
+    // lives. The timing-driven hold split is covered in activity-engine.test.ts.
+    let result: ReplayResult;
+    beforeEach(() => {
+      const events = loadFixture('session-012-auto-bg-named-shell-live.jsonl');
+      result = replay(events);
+    });
+
+    it('keeps the named shell tracked through end of capture (never ended)', () => {
+      expect(result.finalState.activeBackgroundShellIds).toContain('bx6k8r2cr');
+      const total =
+        result.finalState.activeBackgroundShellIds.length
+        + result.finalState.anonymousBackgroundShellCount;
+      expect(total).toBe(1);
+    });
+
+    it('ends thinking, held only by the live named shell after the last turn', () => {
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.turnActive).toBe(false);
+      expect(result.finalState.pendingToolCount).toBe(0);
+      expect(result.finalState.subagentDepth).toBe(0);
+    });
+
+    it('never reclaimed the shell via a watchdog hatch during replay', () => {
+      // Replay advances no timers, so a bg-shell-hatch trigger would only
+      // appear if the engine spuriously dropped the shell. It must not.
+      expect(result.lastThinkingToIdleTrigger).not.toBe('timer:bg-shell-hatch');
+    });
+  });
+
   describe('session-002-many-bg-shells', () => {
     let result: ReplayResult;
     beforeEach(() => {

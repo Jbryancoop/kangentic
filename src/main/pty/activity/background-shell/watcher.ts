@@ -67,6 +67,14 @@ export interface BgShellWatcherCallbacks {
   getRootPid(sessionId: string): number | undefined;
   getActiveShellCount(sessionId: string): number;
   /**
+   * The engine's currently-tracked NAMED background shell ids (from
+   * `background_shell_start` hooks with a shell_id). The watcher derives the
+   * anonymous count as `getActiveShellCount - getNamedShellIds().length` and
+   * uses the named ids to drive Tier A PID liveness. The watcher does not own
+   * these - it observes them.
+   */
+  getNamedShellIds(sessionId: string): string[];
+  /**
    * In-flight tool count from the engine. The watcher uses this to
    * suppress baseline rebasing while a foreground tool is executing -
    * a `Bash`, `BashList`, or `BashOutput` invocation spawns a
@@ -112,6 +120,37 @@ interface SessionWatchState {
   /** Tier A: per-shellId tracked OS PIDs. */
   trackedShellPids: Map<string, number>;
   /**
+   * Topmost shell-like descendant PIDs that are NOT background work: the
+   * pre-existing helpers captured at the first-cycle anchor (agent CLI's
+   * MCP servers, statusline workers) plus any helper that materializes
+   * post-anchor on a `pendingTools === 0` surplus rebase. Used to exclude
+   * helpers when diffing the tree to capture a new bg shell's PID (Tier A).
+   * Pruned to live PIDs on healthy cycles (Windows reuses PIDs aggressively).
+   * Over-inclusive at resume (resumed bg shells are anonymous and never
+   * Tier-A capture candidates), which is acceptable.
+   */
+  helperPids: Set<number>;
+  /**
+   * Named bg shells (from `noteBackgroundShellStarted`) awaiting OS-PID
+   * capture, mapped to remaining retry cycles. Resolved by tree-diff: when
+   * exactly one topmost shell-like descendant is neither a helper nor
+   * already tracked, it is that shell's PID. Cleared on capture, on giving
+   * up (retries exhausted or persistently ambiguous), or when the engine
+   * stops reporting the id.
+   */
+  pendingCaptures: Map<string, number>;
+  /**
+   * A single new topmost shell-like PID observed while a foreground tool was
+   * running (`pendingTools > 0`). When that foreground tool auto-backgrounds
+   * (Claude promotes a long `Bash`/`PowerShell` to a background shell), its
+   * `background_shell_start` arrives via `noteBackgroundShellStarted` and we
+   * adopt this memo as the shell's PID immediately - the empirical
+   * auto-background path, where by promotion time app-under-test churn has
+   * made a fresh tree-diff ambiguous. Null when zero or several new shells
+   * are present (ambiguous), or after it is consumed.
+   */
+  candidateForegroundShellPid: number | null;
+  /**
    * Number of consecutive cycles where we've observed
    * `shellLikeCount < expected`. Used to delay natural-exit firing
    * by one cycle - guards against the bash-spawn-lag race where a
@@ -124,6 +163,14 @@ interface SessionWatchState {
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
+
+/**
+ * How many poll cycles a `noteBackgroundShellStarted` PID-capture attempt
+ * survives before giving up. Covers the 50-500ms OS spawn lag (a couple of
+ * 2s cycles). On give-up the shell is governed by the count heuristic plus
+ * the engine's 5-min named-shell cap.
+ */
+const PID_CAPTURE_RETRY_CYCLES = 3;
 
 export class BgShellWatcher {
   private readonly callbacks: BgShellWatcherCallbacks;
@@ -159,6 +206,9 @@ export class BgShellWatcher {
       // Anchored on the first cycle from the live probe.
       preExistingHelpers: null,
       trackedShellPids: new Map(),
+      helperPids: new Set(),
+      pendingCaptures: new Map(),
+      candidateForegroundShellPid: null,
       consecutiveDeficitCycles: 0,
     });
     this.maybeStartPolling();
@@ -180,6 +230,32 @@ export class BgShellWatcher {
     if (!state) return;
     if (!Number.isInteger(pid) || pid <= 0) return;
     state.trackedShellPids.set(shellId, pid);
+  }
+
+  /**
+   * A `background_shell_start` hook with a shell_id arrived (wired from
+   * `SessionTelemetry.ingestEvents`). Attempt to capture the shell's OS PID
+   * for Tier A liveness:
+   *   - If a foreground-tool shell PID was memoized this cycle window and is
+   *     still alive, that IS this shell (the auto-background path) - adopt it.
+   *   - Otherwise queue a tree-diff capture over the next few cycles.
+   * Either way Tier A liveness (`onShellsObservedAlive` even when the count
+   * heuristic is out of sync) only kicks in once the PID is captured; until
+   * then the count heuristic and the 5-min named cap govern.
+   */
+  noteBackgroundShellStarted(sessionId: string, shellId: string): void {
+    if (this.disposed) return;
+    const state = this.states.get(sessionId);
+    if (!state) return;
+    if (state.trackedShellPids.has(shellId)) return;
+    const memoPid = state.candidateForegroundShellPid;
+    if (memoPid !== null && this.probe.isAlive(memoPid)) {
+      state.trackedShellPids.set(shellId, memoPid);
+      state.candidateForegroundShellPid = null;
+      state.pendingCaptures.delete(shellId);
+      return;
+    }
+    state.pendingCaptures.set(shellId, PID_CAPTURE_RETRY_CYCLES);
   }
 
   /** Force one cycle of polling. Used by tests. */
@@ -271,7 +347,8 @@ export class BgShellWatcher {
     // walkDescendants is in-memory only; sub-millisecond regardless
     // of process count.
     const descendants = walkDescendants(allProcesses, state.rootPid);
-    const shellLikeCount = filterTopmostShellLikeDescendants(descendants, this.isShellLikeFn).length;
+    const topmostShellLike = filterTopmostShellLikeDescendants(descendants, this.isShellLikeFn);
+    const shellLikeCount = topmostShellLike.length;
 
     // PROBE-HEALTH GUARD: process-tree.ts:listAllProcesses returns []
     // on probe failure (PowerShell timeout, child crash, permission
@@ -303,9 +380,24 @@ export class BgShellWatcher {
     // tracked count at register time) so they don't get double-attributed
     // to "pre-existing" AND "engine-tracked". `trackedAtCycle` was
     // captured above and the engine state hasn't mutated since.
+    const liveDescendantPids = new Set(descendants.map((descendant) => descendant.pid));
+
     if (state.preExistingHelpers === null) {
       state.preExistingHelpers = Math.max(0, shellLikeCount - trackedAtCycle);
+      // Anchor the helper-PID baseline: every topmost shell-like descendant
+      // present before any bg work is, by definition, a pre-existing helper
+      // (over-inclusive at resume - see the field doc). New bg shells appear
+      // post-anchor and are diffed against this set for Tier A capture.
+      state.helperPids = new Set(topmostShellLike.map((descendant) => descendant.pid));
       return;
+    }
+
+    // Prune helper PIDs to those still alive (Windows reuses PIDs eagerly, so
+    // a dead helper's PID must not linger and shadow a future bg shell).
+    if (state.helperPids.size > 0) {
+      for (const pid of [...state.helperPids]) {
+        if (!liveDescendantPids.has(pid)) state.helperPids.delete(pid);
+      }
     }
 
     // Tier A: check tracked shell PIDs. Each Tier A exit corresponds
@@ -313,7 +405,6 @@ export class BgShellWatcher {
     // accordingly when onShellPidExited fires (engine deletes the id),
     // so the next `expected` calculation reflects the change.
     if (state.trackedShellPids.size > 0) {
-      const liveDescendantPids = new Set(descendants.map((d) => d.pid));
       for (const [shellId, pid] of state.trackedShellPids.entries()) {
         if (!liveDescendantPids.has(pid)) {
           state.trackedShellPids.delete(shellId);
@@ -329,6 +420,64 @@ export class BgShellWatcher {
     // reconciled via the pending-tools guard.
     const tracked = this.callbacks.getActiveShellCount(sessionId);
     const expected = state.preExistingHelpers + tracked;
+    const pendingToolsThisCycle = this.callbacks.getPendingToolCount(sessionId);
+    const namedIds = this.callbacks.getNamedShellIds(sessionId);
+    const anonCount = Math.max(0, tracked - namedIds.length);
+
+    // The foreground-shell memo is only valid while a foreground tool runs.
+    // Clear it once the window closes so a stale PID cannot be mis-adopted by
+    // a later, unrelated auto-background.
+    if (pendingToolsThisCycle === 0) {
+      state.candidateForegroundShellPid = null;
+    }
+
+    // Tier A PID capture: resolve queued `noteBackgroundShellStarted` ids by
+    // tree-diff. A candidate is a topmost shell-like descendant that is
+    // neither a known helper nor already tracked. Only auto-assign when the
+    // diff is unambiguous (exactly one pending id AND exactly one candidate);
+    // otherwise decrement the retry budget and fall back to the count
+    // heuristic + 5-min named cap. The foreground-tool memo (consumed in
+    // `noteBackgroundShellStarted`) covers the ambiguous auto-background case.
+    if (state.pendingCaptures.size > 0) {
+      const trackedPids = new Set(state.trackedShellPids.values());
+      const candidatePids = topmostShellLike
+        .map((descendant) => descendant.pid)
+        .filter((pid) => !state.helperPids.has(pid) && !trackedPids.has(pid));
+      for (const [shellId, retriesLeft] of [...state.pendingCaptures.entries()]) {
+        if (state.trackedShellPids.has(shellId)) {
+          state.pendingCaptures.delete(shellId);
+          continue;
+        }
+        if (state.pendingCaptures.size === 1 && candidatePids.length === 1) {
+          state.trackedShellPids.set(shellId, candidatePids[0]);
+          state.pendingCaptures.delete(shellId);
+        } else if (retriesLeft <= 1) {
+          state.pendingCaptures.delete(shellId);
+        } else {
+          state.pendingCaptures.set(shellId, retriesLeft - 1);
+        }
+      }
+    }
+
+    // Tier A liveness: when every tracked NAMED shell has a captured PID still
+    // alive in the tree (and there are no anonymous shells muddying the
+    // count), confirm liveness REGARDLESS of whether the count heuristic is in
+    // sync. This is the churn-proof path: a backgrounded `npx playwright test`
+    // that spawns/kills its own app-under-test shells makes the count oscillate
+    // (surplus then permanent deficit), but the named shell's own PID is the
+    // ground truth. Refreshing the grace anchor here keeps it active until it
+    // actually exits (caught by the Tier A PID-exit drain above).
+    let livenessConfirmed = false;
+    if (namedIds.length > 0 && anonCount === 0) {
+      const allNamedAlive = namedIds.every((shellId) => {
+        const pid = state.trackedShellPids.get(shellId);
+        return pid !== undefined && liveDescendantPids.has(pid);
+      });
+      if (allNamedAlive) {
+        this.callbacks.onShellsObservedAlive(sessionId);
+        livenessConfirmed = true;
+      }
+    }
 
     if (shellLikeCount > expected) {
       // Symmetric counterpart to the deficit-side rebase below: a
@@ -344,17 +493,30 @@ export class BgShellWatcher {
       // adopted these as anonymous bg shells and pinned the session in
       // `thinking` indefinitely (the empirical "phantom counter" bug).
       const surplus = shellLikeCount - expected;
-      const pendingTools = this.callbacks.getPendingToolCount(sessionId);
-      if (pendingTools > 0) {
+      const trackedPids = new Set(state.trackedShellPids.values());
+      const newPids = topmostShellLike
+        .map((descendant) => descendant.pid)
+        .filter((pid) => !state.helperPids.has(pid) && !trackedPids.has(pid));
+      if (pendingToolsThisCycle > 0) {
         // Foreground tool's transient bash. Don't rebase yet - it
         // will exit and rebalance against expected on its own. Crucially:
         // do NOT touch `preExistingHelpers` here, otherwise the foreground
         // bash gets baked into pre-existing and we lose the ability
         // to detect its exit naturally.
+        //
+        // Memoize a SINGLE new foreground shell PID so that, if Claude
+        // auto-backgrounds this tool, `noteBackgroundShellStarted` can adopt
+        // it as the bg shell's PID for Tier A liveness (the empirical
+        // auto-background path). Ambiguous (0 or >1 new) clears the memo.
+        state.candidateForegroundShellPid = newPids.length === 1 ? newPids[0] : null;
         state.consecutiveDeficitCycles = 0;
         return;
       }
+      // pendingTools === 0: a persistent helper materialized post-anchor.
+      // Fold it into the baseline AND remember its PID so it is excluded from
+      // future Tier A capture diffs.
       state.preExistingHelpers += surplus;
+      for (const pid of newPids) state.helperPids.add(pid);
       state.consecutiveDeficitCycles = 0;
       return;
     }
@@ -381,34 +543,31 @@ export class BgShellWatcher {
       // versus the foreground tool. Suppressing decrement while
       // pending tools exist defers the natural-exit attribution to a
       // cycle when no foreground noise is present.
-      const pendingTools = this.callbacks.getPendingToolCount(sessionId);
-      if (pendingTools > 0) {
+      if (pendingToolsThisCycle > 0) {
         return;
       }
 
       const delta = expected - shellLikeCount;
-      if (tracked > 0) {
-        // Drain tracked first when the engine has any tracked bg
-        // shells. A "tracked bg shell exited without firing
-        // BackgroundShellEnd" is far more common in production than
-        // "a helper churned while a tracked shell was alive" - the
-        // former covers every Claude `Bash run_in_background:true`
-        // exit on Windows where the end hook can be lost. Optimizing
-        // for the common case keeps the engine drainable.
-        //
-        // Trade-off: when a helper exits while a tracked shell is
-        // alive, this incorrectly drains the tracked counter. That
-        // was a pre-existing pre-fix behavior; the dynamic-helpers
-        // change in the surplus branch makes it slightly more
-        // reachable (helpers churn more) but still rare in practice
-        // (MCP servers / statusline workers stable post-anchor).
-        // Worst-case impact: engine briefly claims idle while bg
-        // shell still alive, recovered when its real
-        // BackgroundShellEnd hook arrives.
-        const reported = Math.min(delta, tracked);
+      if (anonCount > 0) {
+        // Drain ANONYMOUS shells only. A "bg shell exited without firing
+        // BackgroundShellEnd" is common on Windows (lost end hook), and
+        // anonymous shells have no PID identity for Tier A, so the count
+        // heuristic is their only reclaim path. Named shells are deliberately
+        // excluded: the engine's ambiguity guard refuses an anonymous
+        // (count-based) decrement against a named shell anyway, and named
+        // shells are governed by Tier A PID-exit + the 5-min named cap.
+        const reported = Math.min(delta, anonCount);
         if (reported > 0) {
           this.callbacks.onNaturalExit(sessionId, reported);
         }
+      } else if (namedIds.length > 0) {
+        // Only named shells are tracked and none has a captured PID to
+        // attribute this deficit to (helper churn under the bg shell, e.g.
+        // the app-under-test shells of a backgrounded E2E exiting). Do NOT
+        // rebase `preExistingHelpers` down and do NOT fire: the named shell
+        // is governed by Tier A liveness (above) + the 5-min cap, and
+        // shrinking the baseline here would corrupt the eventual re-sync once
+        // the named shell clears.
       } else {
         // No engine-tracked shells to attribute the exit to. A
         // pre-existing helper (MCP server, statusline worker)
@@ -424,8 +583,10 @@ export class BgShellWatcher {
       // the bg-shell sole-holder grace anchor for a long-running shell. Not
       // fired on the surplus branch above (ambiguous helper birth, returns
       // early) nor on a deficit (a possible exit must NOT refresh the grace).
+      // Skipped when Tier A liveness already confirmed this cycle (above) so
+      // the keep-alive is not double-fired.
       state.consecutiveDeficitCycles = 0;
-      if (tracked > 0) {
+      if (!livenessConfirmed && tracked > 0) {
         this.callbacks.onShellsObservedAlive(sessionId);
       }
     }

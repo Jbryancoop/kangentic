@@ -1024,6 +1024,11 @@ const StatusRow = memo(function StatusRow({ snapshot }: { snapshot: ActivityStat
   // means a screenshot of the overlay carries the answer to "how long
   // ago did anything actually happen" without needing a separate query.
   const signalLabel = formatSignalAge(snapshot.msSinceLastSignal);
+  // The stuck-pending-tools watchdog uses the FRESHER of lastSignalAt and
+  // lastPtyOutputAt, so a long quiet test run streaming PTY output is not
+  // force-idled. Surface PTY age too, so a screenshot shows why a session
+  // with a stale signal is still (correctly) thinking.
+  const ptyLabel = formatPtyAge(snapshot.msSincePtyOutput);
   return (
     <div className="flex items-center gap-2 min-w-0">
       <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium ${pillClasses}`}>
@@ -1036,6 +1041,14 @@ const StatusRow = memo(function StatusRow({ snapshot }: { snapshot: ActivityStat
           title="Wall-clock time since the engine last received an activity-proving signal (events.jsonl, status.json heartbeat). Watchdog deadlines fire `lastSignalAt + thresholdMs`."
         >
           {signalLabel}
+        </span>
+      )}
+      {ptyLabel && (
+        <span
+          className="text-[11px] font-mono text-fg-disabled tabular-nums truncate"
+          title="Wall-clock time since the last PTY output chunk. The stuck-pending-tools watchdog uses the fresher of this and the signal age, so a streaming foreground tool is not force-idled."
+        >
+          {ptyLabel}
         </span>
       )}
     </div>
@@ -1054,6 +1067,19 @@ export function formatSignalAge(ms: number | null): string | null {
   if (seconds < 60) return `${seconds.toFixed(1)}s since signal`;
   const minutes = seconds / 60;
   return `${minutes.toFixed(1)}m since signal`;
+}
+
+/**
+ * Format `msSincePtyOutput` as a compact human-readable age. Returns null
+ * when no PTY chunk has arrived yet (avoid a meaningless "0.0s" placeholder).
+ */
+export function formatPtyAge(ms: number | null): string | null {
+  if (ms === null) return null;
+  if (ms < 1000) return `${ms}ms since pty`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s since pty`;
+  const minutes = seconds / 60;
+  return `${minutes.toFixed(1)}m since pty`;
 }
 
 function statusPresentation(snapshot: ActivityStatsSnapshot): {

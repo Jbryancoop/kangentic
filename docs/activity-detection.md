@@ -247,29 +247,31 @@ Bypassed by:
 
 Configurable via `ActivityEngineOptions.idleStabilityWindowMs`. Tests set this to 0 for deterministic timing.
 
-## Three safety nets (the watchdog table)
+## Four safety nets (the watchdog table)
 
-The predicate handles the common case. Three timer-driven safety nets in `engine/watchdog.ts` catch hook-loss / orphan situations. Each is a `WatchdogHold` describing a state shape, threshold, reset action, and audit-log label. `findActiveWatchdogHold(state, holds)` picks the matching one each cycle.
+The predicate handles the common case. Four timer-driven safety nets in `engine/watchdog.ts` catch hook-loss / orphan situations. Each is a `WatchdogHold` describing a state shape, threshold, reset action, and audit-log label. `findActiveWatchdogHold(state, holds)` picks the matching one each cycle (first match wins).
 
-### 1. Stale-thinking watchdog (180s)
+### 1. Named bg-shell sole-holder cap (5 min)
 
-Held by `turnActive` alone (no tools, no subagent, no bg shells) for 180 seconds. The matching Idle/Stop hook never arrived. Emits synthetic `Idle/Timeout`, clears `turnActive`. Bypasses the stability window (the 180s already debounced any flicker).
+Once the turn is over and a NAMED background shell (`activeBackgroundShellIds`, declared by a `background_shell_start` hook with a shell_id) is the only holder of `thinking`, the engine reclaims it at the long 5-min cap (`timer:bg-shell-hatch`). A named shell is positive evidence of real agent-initiated work, so absence of watcher confirmation must EXTEND, not shorten, the hold. It is reclaimed sooner by positive exit evidence (a `BackgroundShellEnd` event or a Tier A PID death) or held active indefinitely by the watcher confirming its PID alive each cycle (`markBackgroundShellsAlive`, see below). The reset clears the bg-shell counters and emits idle through the stability window.
 
-### 2. Bg-shell sole-holder grace (30s)
+The deadline is anchored to when bg shells became the sole holder (`bgShellHoldSince`), NOT to `lastSignalAt`. An earlier design had the watcher refresh `lastSignalAt` every 2s while it saw any shell-like descendant; for an orphan whose exit the watcher could not attribute, that pulse pushed the deadline out forever and pinned the session `active` indefinitely (tasks #175/#180). Anchoring to the hold-start makes the deadline immovable by signal-only keep-alives; only watcher-confirmed liveness (`markBackgroundShellsAlive`) advances it. The original design used a single 30s grace for ALL bg shells, which false-idled a genuinely-running 10-min E2E at turn end when the watcher could not confirm it alive (tasks #210/#212); splitting named (5-min cap, Tier A liveness) from anonymous (30s grace) fixed that.
 
-Once the turn is over and a background shell is the ONLY holder of `thinking`, the engine flips to idle after a short grace (`timer:bg-shell-hatch`). Force-clears the bg-shell counters and emits idle through the stability window.
+### 2. Anonymous bg-shell sole-holder grace (30s)
 
-Crucially, the deadline is anchored to when bg shells became the sole holder (`bgShellHoldSince`), NOT to `lastSignalAt`. A `Bash(run_in_background:true)` that exits naturally fires no `BackgroundShellEnd` hook (agents almost never end their shells - see the watcher section), so an orphan can linger in the counter. An earlier design had the watcher refresh `lastSignalAt` every 2s while it saw any shell-like descendant, to keep a then-5-min hatch warm; for an orphan whose exit the watcher could not attribute, that pulse pushed the deadline out forever and pinned the session `active` indefinitely (empirically confirmed on tasks #175/#180). Anchoring to the hold-start makes the deadline immovable by any keep-alive.
+When only ANONYMOUS bg shells (`anonymousBackgroundShellCount`, no shell_id) hold `thinking` and the turn is over, the engine reclaims them after a short 30s grace (also `timer:bg-shell-hatch`). Anonymous shells are heuristic adoptions (resume-time descendants with no `background_shell_start` hook), so fast reclaim stays correct. Same anchor and reset as the named cap; only the threshold differs. The watcher's attributed drain (`onNaturalExit`, ~4s) still wins for clean exits; the grace is the backstop for the unattributable case.
 
-Once the turn is over the agent is idle (waiting for input), so a short grace is correct whether or not detached bg work is still running. The watcher's attributed drain (`onNaturalExit`, ~4s) still wins for clean exits; the grace is the backstop for the unattributable case.
+### 3. Stale-thinking watchdog (180s)
 
-### 3. Stuck-pending-tools watchdog (5 min)
+Held by `turnActive` alone (no tools, no subagent, no bg shells) for 180 seconds. The matching Idle/Stop hook never arrived. Emits synthetic `Idle/Timeout`, clears `turnActive`. Bypasses the stability window (the 180s already debounced any flicker). Anchored to `lastSignalAt`; PTY output does NOT defer it (idle TUI repaints must still time out).
 
-Held by `pendingToolCount > 0` alone for 5 minutes. Common cause: user pressed Ctrl+C, the agent killed the bash, but `PostToolUseFailure` didn't propagate. Without this hatch the engine would be stuck in `thinking` forever - the stale-thinking watchdog requires `pendingToolCount === 0` to fire, the bg-shell hatch requires bg shells, and the Idle clamp only works when Idle actually fires.
+### 4. Stuck-pending-tools watchdog (5 min)
 
-Resets `pendingToolCount`, the stack, `currentTool`, AND `turnActive` (the matching Stop hook for this turn was lost along with the PostToolUse). Goes through the stability window for the same reason as the bg-shell hatch.
+Held by `pendingToolCount > 0` alone for 5 minutes. Common cause: user pressed Ctrl+C, the agent killed the bash, but `PostToolUseFailure` didn't propagate. Without this hatch the engine would be stuck in `thinking` forever - the stale-thinking watchdog requires `pendingToolCount === 0` to fire, the bg-shell holds require bg shells, and the Idle clamp only works when Idle actually fires.
 
-Real long-running foreground tools rarely run 5 min in total silence - they emit nested ToolStart/End from sub-tools and subagents that refresh `lastSignalAt`.
+Resets `pendingToolCount`, the stack, `currentTool`, AND `turnActive` (the matching Stop hook for this turn was lost along with the PostToolUse). Goes through the stability window for the same reason as the bg-shell holds.
+
+This hold is anchored to the FRESHER of `lastSignalAt` and `lastPtyOutputAt` (`watchdogBaseTime`). A long quiet foreground tool (a single test run streaming output for >5 min with no nested hook events and a silent status heartbeat) used to be force-idled here, because for hooks-based agents the `PtyActivityTracker` is suppressed and PTY data never refreshed `lastSignalAt` (task #210, empirical `stuckPendingTools: 2`). `markPtyOutput` (called unconditionally on every PTY chunk by the spawn flow) refreshes `lastPtyOutputAt`, so streaming TUI output keeps a genuinely-running tool active; after Ctrl+C / a lost PostToolUse the CLI sits at a quiet prompt, output stops, and the hatch fires 5 min after the last chunk.
 
 ### Adding a new watchdog
 
@@ -285,7 +287,7 @@ Append to the table in `buildWatchdogHolds()`:
 }
 ```
 
-The predicates are mutually exclusive (each requires exactly one signal source non-zero, others zero) so order only matters when predicates could overlap.
+The predicates partition the state space, so `findActiveWatchdogHold` returns the first match. The two bg-shell holds share the `timer:bg-shell-hatch` trigger (the engine's anchor and compensation-counter logic key off the trigger string, so both behave as the same hold class with different thresholds). If a new hold's predicate could overlap an existing one, mind the table order.
 
 ## Ctrl+C user-interrupt synthesis (3s)
 
@@ -310,14 +312,16 @@ The watcher polls every 2 seconds. For each session with `activeShellCount > 0`:
 
 1. Check if the Claude CLI's root PID is alive. If dead, fire `onRootProcessDied` (engine forceIdle).
 2. Enumerate the Claude CLI's descendant processes via `ps` (POSIX) or `Get-CimInstance Win32_Process` (Windows).
-3. **Tier A (PID-aware):** for shells registered via `registerShellPid(shellId, pid)`, check `isAlive(pid)`. If dead, fire `onShellPidExited(shellId)` → engine removes by id.
-4. **Tier B (count heuristic):** filter descendants to "shell-like" basenames (bash, sh, cmd, pwsh, node, npm, npx, python, etc.). If the count dropped below the snapshot taken at the last `background_shell_start` AND the engine reports tracked shells, fire `onNaturalExit(delta)`. Engine drains anonymous count by delta.
+3. **Tier A (PID-aware):** when a named bg shell's OS PID is known (captured by tree-diff or the foreground-tool memo, see below), the watcher (a) fires `onShellPidExited(shellId)` → engine removes by id when the PID leaves the descendant tree, and (b) confirms liveness via `onShellsObservedAlive` → `markBackgroundShellsAlive` whenever every tracked named shell's PID is still present and there are no anonymous shells - even when the Tier B count is out of sync. This churn-proof liveness is what holds a backgrounded `npx playwright test` active while it spawns and kills its own app-under-test shells (tasks #210/#212).
+4. **Tier B (count heuristic):** filter descendants to "shell-like" basenames (bash, sh, cmd, pwsh). If the topmost shell-like count dropped below `preExistingHelpers + tracked` for 2 consecutive cycles AND no foreground tool is pending, fire `onNaturalExit(delta)` capped at the engine's ANONYMOUS count. Named shells are deliberately excluded from the count-based drain (the engine's ambiguity guard refuses an anonymous decrement against a named shell anyway); they are governed by Tier A PID-exit plus the 5-min named cap.
+
+**PID capture.** Tier A used to be dormant. It is now populated agent-agnostically: `SessionTelemetry.ingestEvents` calls `bgShellWatcher.noteBackgroundShellStarted(sessionId, shellId)` on every `background_shell_start` whose detail is id-shaped. The watcher resolves the OS PID two ways: (a) the **foreground-tool memo** - while a foreground tool runs (`pendingTools > 0`) the watcher remembers a single new shell-like PID, and adopts it immediately when that tool auto-backgrounds (the common case, where a fresh tree-diff would be ambiguous by promotion time); (b) **tree-diff** - on the next cycles, a topmost shell-like descendant that is neither a known helper (`helperPids`) nor already tracked, when unambiguous (exactly one candidate), is that shell's PID. Ambiguous or lagging captures retry a few cycles then give up, falling back to the count heuristic + 5-min cap.
 
 ### Identity tracking and unattributable ends
 
 A backgrounded Bash is tracked by id where possible. `PreToolUse` fires `background_shell_start` before Claude has assigned a shell id, so it counts anonymously (detail falls through to the command string). `PostToolUse` then re-emits `background_shell_start` carrying the assigned id from `tool_response` (field `shellId`, with `shell_id` / `backgroundTaskId` / `bash_id` as version fallbacks). The engine treats that as a **promotion**: it swaps one anonymous slot for a named slot keyed by the id, keeping the total count constant. A single backgrounded Bash is therefore tracked once, by id - not double-counted.
 
-The PostToolUse remap keys on the **extracted shell-id detail** (`setTypeWhenDetailMatches('^[\w-]{1,64}$', ...)`, the id-shape regex sibling of `setTypeWhenDetailContains`), not on `tool_input.run_in_background`. This covers a second, distinct launch path: a **foreground** Bash that exceeds Claude Code's 10-minute ceiling is auto-promoted to a background shell and returns control, **without** ever carrying `run_in_background: true` (#187). Its `PreToolUse` was therefore a plain `ToolStart` (not a `background_shell_start`), so `pendingToolCount` was incremented; but its `PostToolUse` `tool_response` still carries the assigned shell id (empirically `bjosycg6w` in session `3fc0dca7`, `events.jsonl` line 20). Keying on the shell-id detail promotes it correctly, and the engine's `BackgroundShellStart` handler **closes the in-flight pending tool** matched by `tool_use_id` (the tool moved to the background rather than ending) as it opens the named shell - otherwise the orphaned pending tool would stick the session `thinking` until the 5-min watchdog. The inverse risk - a normal foreground Bash mistaken for a backgrounded shell - is structurally avoided: this `PostToolUse` `extractDetail` sources only the `tool_response` shell-id fields, so a plain completion has no detail and never remaps, and a failed Bash flows through `PostToolUseFailure` (a separate directive set). Such a named shell is then held active by the watcher each cycle it sees the bash alive and reclaimed by the 30s sole-holder grace once it exits - the exact "10-min E2E" case the grace was built for.
+The PostToolUse remap keys on the **extracted shell-id detail** (`setTypeWhenDetailMatches('^[\w-]{1,64}$', ...)`, the id-shape regex sibling of `setTypeWhenDetailContains`), not on `tool_input.run_in_background`. This covers a second, distinct launch path: a **foreground** Bash that exceeds Claude Code's 10-minute ceiling is auto-promoted to a background shell and returns control, **without** ever carrying `run_in_background: true` (#187). Its `PreToolUse` was therefore a plain `ToolStart` (not a `background_shell_start`), so `pendingToolCount` was incremented; but its `PostToolUse` `tool_response` still carries the assigned shell id (empirically `bjosycg6w` in session `3fc0dca7`, `events.jsonl` line 20). Keying on the shell-id detail promotes it correctly, and the engine's `BackgroundShellStart` handler **closes the in-flight pending tool** matched by `tool_use_id` (the tool moved to the background rather than ending) as it opens the named shell - otherwise the orphaned pending tool would stick the session `thinking` until the 5-min watchdog. The inverse risk - a normal foreground Bash mistaken for a backgrounded shell - is structurally avoided: this `PostToolUse` `extractDetail` sources only the `tool_response` shell-id fields, so a plain completion has no detail and never remaps, and a failed Bash flows through `PostToolUseFailure` (a separate directive set). Such a named shell is then held active by the watcher's Tier A liveness each cycle it sees the bash's PID alive, and reclaimed by the Tier A PID-exit drain (or the 5-min named cap as backstop) once it exits - the exact "10-min E2E" case (tasks #210/#212).
 
 `background_shell_end` from `KillBash` carries the id and drains the matching named slot; without an id it drains the anonymous count. An **unattributable** end - one that matches no named slot AND has no anonymous slot to drain - is treated as a no-op that bumps the `unmatchedBgShellEnd` compensation counter, rather than draining an arbitrary named shell. This bounds the blast radius of any input-layer mistake: a spurious end (for example, a tool-blind remap that mislabels a foreground tool completion) can never silently decrement a real, id-tracked shell and trigger a premature idle. Remaps are tool-scoped at the source via the typed `setTypeWhen` builder (`whenTool`), so a foreground Agent/Task completion is never mapped to a bg-shell event in the first place.
 
@@ -333,7 +337,7 @@ The watcher only polls when at least one session has `getActiveShellCount() > 0`
 
 ### Kill switch
 
-Set `KANGENTIC_BG_SHELL_WATCHER=0` to disable the watcher. The 30s sole-holder grace remains as fallback.
+Set `KANGENTIC_BG_SHELL_WATCHER=0` to disable the watcher. The sole-holder holds remain as fallback (named shells reclaim at the 5-min cap, anonymous shells at the 30s grace), but without the watcher a genuinely-running named shell is no longer held past the cap (Tier A liveness needs the watcher).
 
 ## Resume reconciliation
 
@@ -381,7 +385,7 @@ The fuzz tests complement the deterministic replay fixtures by exercising input 
 
 The engine itself emits synthetic events into the activity log via the `onSyntheticEvent` callback for two cases:
 
-- **Watchdog Idle/Timeout:** when the 180s stale-thinking watchdog, the 30s bg-shell sole-holder grace, or the 5-min stuck-pending-tools hatch fires. Pushed BEFORE the matching `onActivityChange` so the log entry appears before the state change.
+- **Watchdog Idle/Timeout:** when the 180s stale-thinking watchdog, a bg-shell sole-holder hold (5-min named cap or 30s anonymous grace), or the 5-min stuck-pending-tools hatch fires. Pushed BEFORE the matching `onActivityChange` so the log entry appears before the state change.
 - **Natural-exit `BackgroundShellEnd`:** when the watcher infers a bg shell exited naturally. Detail is `IdleReason.NaturalExit` for `onNaturalExit` (anonymous) or the shell_id for `onShellPidExited` (Tier A).
 
 ## Test infrastructure
@@ -399,8 +403,8 @@ Three test tiers:
 
 ```ts
 interface ActivityEngineOptions {
-  bgShellEscapeHatchMs?: number;     // default 5 * 60_000 (stuck-pending-tools hatch)
-  bgShellOnlyGraceMs?: number;       // default 30_000 (bg-shell sole-holder grace)
+  bgShellEscapeHatchMs?: number;     // default 5 * 60_000 (stuck-pending-tools hatch AND named bg-shell cap)
+  bgShellOnlyGraceMs?: number;       // default 30_000 (anonymous bg-shell sole-holder grace)
   staleThinkingTimeoutMs?: number;   // default 180_000
   idleStabilityWindowMs?: number;    // default 400
   now?: () => number;                // testability

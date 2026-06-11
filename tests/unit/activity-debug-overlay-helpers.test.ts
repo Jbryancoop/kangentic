@@ -26,6 +26,7 @@ import {
   snapshotsContentEqual,
   triggerExplanation,
   formatSignalAge,
+  formatPtyAge,
   formatHHMMSS,
 } from '../../src/renderer/components/debug/ActivityDebugOverlay';
 import { pickWatchdog } from '../../src/renderer/components/debug/ActivityTimeline';
@@ -74,6 +75,8 @@ function makeSnapshot(overrides: Partial<ActivityStatsSnapshot> = {}): ActivityS
     permissionPending: false,
     msSinceLastSignal: null,
     lastSignalAt: null,
+    lastPtyOutputAt: null,
+    msSincePtyOutput: null,
     pendingIdleArmed: false,
     recentTransitions: [],
     compensationCounters: EMPTY_COMPENSATION_COUNTERS,
@@ -597,6 +600,47 @@ describe('formatSignalAge', () => {
 });
 
 // ---------------------------------------------------------------------------
+// formatPtyAge
+// ---------------------------------------------------------------------------
+
+describe('formatPtyAge', () => {
+  it('returns null for null input (no PTY chunk received yet)', () => {
+    expect(formatPtyAge(null)).toBeNull();
+  });
+
+  it('returns ms label for 0ms', () => {
+    expect(formatPtyAge(0)).toBe('0ms since pty');
+  });
+
+  it('returns ms label for sub-1000ms values', () => {
+    expect(formatPtyAge(500)).toBe('500ms since pty');
+    expect(formatPtyAge(999)).toBe('999ms since pty');
+  });
+
+  it('returns seconds label at exactly 1000ms boundary', () => {
+    // 1000ms = 1.0s, so the seconds branch applies (ms < 1000 is false)
+    expect(formatPtyAge(1000)).toBe('1.0s since pty');
+  });
+
+  it('returns seconds label for values in the 1000-59999ms range', () => {
+    expect(formatPtyAge(1400)).toBe('1.4s since pty');
+    expect(formatPtyAge(30000)).toBe('30.0s since pty');
+    expect(formatPtyAge(59999)).toBe('60.0s since pty');
+  });
+
+  it('returns minutes label at exactly 60000ms boundary', () => {
+    // 60000ms = 60s = 1.0m
+    expect(formatPtyAge(60000)).toBe('1.0m since pty');
+  });
+
+  it('returns minutes label for values >= 60000ms', () => {
+    expect(formatPtyAge(90000)).toBe('1.5m since pty');
+    expect(formatPtyAge(180000)).toBe('3.0m since pty');
+    expect(formatPtyAge(300000)).toBe('5.0m since pty');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // formatHHMMSS
 // ---------------------------------------------------------------------------
 
@@ -655,8 +699,10 @@ describe('pickWatchdog', () => {
     expect(pickWatchdog(snapshot)).toBeNull();
   });
 
-  describe('bg-shell-hatch branch (5 minutes)', () => {
-    it('returns bg-shell-hatch when thinking, turnActive=false, pendingTools=0, subagents=0, bgShells>0', () => {
+  describe('bg-shell-hatch branch (named vs anonymous)', () => {
+    it('returns the 5m named-shell cap when a named bg shell is the sole holder', () => {
+      // A hook-declared (named) bg shell is positive evidence of real work,
+      // so it is held to the long 5-min cap, not the short grace.
       const snapshot = makeSnapshot({
         activity: 'thinking' as ActivityState,
         turnActive: false,
@@ -671,7 +717,22 @@ describe('pickWatchdog', () => {
       expect(result?.thresholdMs).toBe(5 * 60_000);
     });
 
-    it('counts anonymousBackgroundShellCount toward the bgShells total', () => {
+    it('uses the 5m named cap when both named and anonymous shells are present', () => {
+      // Any named shell upgrades the whole hold to the long cap.
+      const snapshot = makeSnapshot({
+        activity: 'thinking' as ActivityState,
+        turnActive: false,
+        pendingToolCount: 0,
+        subagentDepth: 0,
+        backgroundShellIds: ['shell-1'],
+        anonymousBackgroundShellCount: 2,
+      });
+      const result = pickWatchdog(snapshot);
+      expect(result?.shortLabel).toBe('bg-shell-hatch 5m');
+      expect(result?.thresholdMs).toBe(5 * 60_000);
+    });
+
+    it('returns the 30s grace when only anonymous (heuristic) bg shells are held', () => {
       const snapshot = makeSnapshot({
         activity: 'thinking' as ActivityState,
         turnActive: false,
@@ -681,7 +742,8 @@ describe('pickWatchdog', () => {
         anonymousBackgroundShellCount: 2,
       });
       const result = pickWatchdog(snapshot);
-      expect(result?.shortLabel).toBe('bg-shell-hatch 5m');
+      expect(result?.shortLabel).toBe('bg-shell-hatch 30s');
+      expect(result?.thresholdMs).toBe(30_000);
     });
   });
 

@@ -26,7 +26,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ActivityEngine } from '../../src/main/pty/activity/engine';
-import type { TransitionRecord } from '../../src/main/pty/activity/engine';
+import type { TransitionRecord, ActivityStatsSnapshot } from '../../src/main/pty/activity/engine';
 import type { ActivityState, SessionEvent } from '../../src/shared/types';
 
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures', 'replay');
@@ -60,6 +60,13 @@ interface TimedItem {
 interface ReplayResult {
   transitions: TransitionRecord[];
   finalActivity: ActivityState;
+  /**
+   * Monotonic compensation counters at the end of replay. The watchdog
+   * hatches commit their idle THROUGH the stability window, so the committed
+   * transition carries the `timer:stability` trigger, not the hatch's own -
+   * these counters are the reliable signal that a hatch actually fired.
+   */
+  compensationCounters: ActivityStatsSnapshot['compensationCounters'];
 }
 
 function loadJsonlMaybe<T>(filePath: string): T[] {
@@ -173,10 +180,13 @@ export function replayBundle(bundle: TraceBundle): ReplayResult {
       applyStatusDelta(engine, sessionId, delta, previousStatus);
       previousStatus = delta;
     } else if (item.kind === 'pty') {
-      const state = engine.getState(sessionId);
-      if (state && state.activity === 'thinking') {
-        engine.markThinkingSignal(sessionId);
-      }
+      // Production-faithful: for hooks-based agents (Claude) the
+      // PtyActivityTracker is suppressed, so PTY data does NOT act as a
+      // generic thinking signal (markThinkingSignal). It DOES refresh the
+      // stuck-pending-tools watchdog base via markPtyOutput, which the spawn
+      // flow calls unconditionally on every chunk. This is what keeps a long
+      // quiet foreground test run from being force-idled.
+      engine.markPtyOutput(sessionId);
     }
   }
 
@@ -188,8 +198,11 @@ export function replayBundle(bundle: TraceBundle): ReplayResult {
   const snapshot = engine.getStatsSnapshot(sessionId);
   const transitions: TransitionRecord[] = snapshot ? [...snapshot.recentTransitions] : [];
   const finalActivity = snapshot?.activity ?? 'idle';
+  const compensationCounters = snapshot
+    ? { ...snapshot.compensationCounters }
+    : { staleThinking: 0, bgShellHatch: 0, stuckPendingTools: 0, forceThinking: 0, forceIdle: 0, unmatchedBgShellEnd: 0 };
   engine.dispose();
-  return { transitions, finalActivity };
+  return { transitions, finalActivity, compensationCounters };
 }
 
 function assertGoldenTransitions(directory: string, transitions: TransitionRecord[]): void {
@@ -255,6 +268,31 @@ describe('ActivityEngine trace-bundle replay', () => {
     };
     const merged = mergeStreams(bundle);
     expect(merged.map((item) => item.kind)).toEqual(['event', 'status', 'pty']);
+  });
+
+  // Real capture of bug B (task #210): a long quiet foreground
+  // `npx playwright test` (single PowerShell call, no nested hook events,
+  // ~466s) ran while the status heartbeat was silent for 638s. Pre-fix the
+  // 5-min stuck-pending-tools hatch force-idled it mid-run; post-fix the
+  // streaming PTY output (markPtyOutput) keeps the base fresh so the hatch
+  // never fires while the tool is genuinely running.
+  describe('session-013-stuck-foreground-e2e', () => {
+    let result: ReplayResult;
+    beforeEach(() => {
+      const bundle = loadTraceBundle(path.join(FIXTURES_DIR, 'session-013-stuck-foreground-e2e'));
+      result = replayBundle(bundle);
+    });
+
+    it('does not fire the stuck-pending-tools hatch while the foreground test streams output', () => {
+      // The hatch commits its idle through the stability window, so the
+      // compensation counter (not the transition trigger) is the reliable
+      // signal. Pre-fix this is 1 (force-idled mid-run); post-fix it is 0.
+      expect(result.compensationCounters.stuckPendingTools).toBe(0);
+    });
+
+    it('settles idle after the agent finishes (last turn ended cleanly)', () => {
+      expect(result.finalActivity).toBe('idle');
+    });
   });
 
   // Concrete regression fixture for Task #121 (plan-composition gap).

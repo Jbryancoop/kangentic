@@ -1,0 +1,5 @@
+{
+  "sessionId": "00000000-0000-0000-0000-000000000000",
+  "capturedAt": "2026-06-10",
+  "note": "task #210 long quiet foreground E2E force-idled by stuck-pending-tools (bug B); pty-chunks downsampled to 5s buckets"
+}

@@ -153,6 +153,7 @@ export class ActivityEngine {
     const state = this.states.get(sessionId);
     if (!state) return null;
     const lastSignalAt = state.lastSignalAt;
+    const lastPtyOutputAt = state.lastPtyOutputAt;
     return {
       sessionId,
       activity: state.activity,
@@ -165,6 +166,8 @@ export class ActivityEngine {
       permissionPending: state.permissionPending,
       msSinceLastSignal: lastSignalAt === null ? null : this.now() - lastSignalAt,
       lastSignalAt,
+      lastPtyOutputAt,
+      msSincePtyOutput: lastPtyOutputAt === null ? null : this.now() - lastPtyOutputAt,
       pendingIdleArmed: state.pendingIdleAt !== null,
       recentTransitions: state.recentTransitions.slice(),
       compensationCounters: { ...state.compensationCounters },
@@ -293,6 +296,7 @@ export class ActivityEngine {
     state.permissionPending = false;
     state.permissionAwaitedToolId = null;
     state.lastSignalAt = null;
+    state.lastPtyOutputAt = null;
     state.pendingToolCount = 0;
     state.pendingToolStack.length = 0;
     state.subagentDepth = 0;
@@ -352,6 +356,32 @@ export class ActivityEngine {
     if (state.bgShellHoldSince === null) return;
     state.bgShellHoldSince = this.now();
     this.scheduleTimer(sessionId, state);
+  }
+
+  /**
+   * Record a PTY output chunk for the stuck-pending-tools watchdog
+   * (Subsystem B/fix). Production behavior - NOT dev-gated, unlike
+   * `markPtyChunk`. Called on every PTY chunk from the spawn flow,
+   * independent of `PtyActivityTracker` suppression (which silences PTY
+   * activity detection for hooks-based agents like Claude). The single
+   * timestamp write lets the stuck-pending-tools hold treat streaming TUI
+   * output as proof the foreground tool is still running, so a long quiet
+   * test run (events and status-heartbeat both silent for >5 min while the
+   * tool streams output) is no longer force-idled.
+   *
+   * Deliberately does NOT reschedule the watchdog timer: at ~60Hz that
+   * would be wasteful churn. The armed timer re-reads the base time when it
+   * fires and re-arms if the threshold has not been reached (see
+   * `onTick`), so a forward-moving base is honored without per-chunk work.
+   * The bg-shell and stale-thinking holds ignore this field by design.
+   *
+   * No-op if the session is unknown.
+   */
+  markPtyOutput(sessionId: string): void {
+    if (this.disposed) return;
+    const state = this.states.get(sessionId);
+    if (!state) return;
+    state.lastPtyOutputAt = this.now();
   }
 
   /**
@@ -564,6 +594,39 @@ export class ActivityEngine {
 
   // ==== Timers: stability window, bg-shell sole-holder grace, stale-thinking watchdog ====
 
+  /**
+   * The anchor time a watchdog hold's deadline is measured from. Single
+   * source of truth shared by `scheduleTimer` (arming) and `onTick`
+   * (firing) so the two cannot drift.
+   *
+   * - bg-shell holds: `bgShellHoldSince` (signal-only keep-alives like
+   *   `markThinkingSignal` cannot push it out; only a watcher-confirmed
+   *   `markBackgroundShellsAlive` advances the anchor, so a phantom is
+   *   still reclaimed at its threshold).
+   * - stuck-pending-tools: the FRESHER of `lastSignalAt` and
+   *   `lastPtyOutputAt` - streaming TUI output keeps a genuinely-running
+   *   foreground tool from being force-idled even when hooks and the
+   *   status heartbeat are both silent.
+   * - everything else (stale-thinking): `lastSignalAt`.
+   *
+   * `fallback` is returned when the relevant anchor(s) are null.
+   */
+  private watchdogBaseTime(
+    state: SessionEngineState,
+    hold: WatchdogHold,
+    fallback: number,
+  ): number {
+    if (hold.trigger === 'timer:bg-shell-hatch') {
+      return state.bgShellHoldSince ?? fallback;
+    }
+    if (hold.trigger === 'timer:stuck-pending-tools') {
+      const signals = [state.lastSignalAt, state.lastPtyOutputAt]
+        .filter((timestamp): timestamp is number => timestamp !== null);
+      return signals.length > 0 ? Math.max(...signals) : fallback;
+    }
+    return state.lastSignalAt ?? fallback;
+  }
+
   private scheduleTimer(sessionId: string, state: SessionEngineState): void {
     this.clearTimer(sessionId);
     if (this.disposed) return;
@@ -597,13 +660,7 @@ export class ActivityEngine {
 
     if (state.activity !== 'thinking' || !hold) return;
 
-    // The bg-shell hatch is anchored to `bgShellHoldSince` so signal-only
-    // `markThinkingSignal` pulses cannot push it out (only a watcher-confirmed
-    // `markBackgroundShellsAlive` advances the anchor); all other holds key
-    // off `lastSignalAt`.
-    const baseTime = hold.trigger === 'timer:bg-shell-hatch'
-      ? (state.bgShellHoldSince ?? this.now())
-      : (state.lastSignalAt ?? this.now());
+    const baseTime = this.watchdogBaseTime(state, hold, this.now());
     const delay = Math.max(50, hold.thresholdMs - (this.now() - baseTime));
     this.armTimer(sessionId, delay);
   }
@@ -644,13 +701,7 @@ export class ActivityEngine {
     if (state.activity !== 'thinking') return;
 
     const hold = findActiveWatchdogHold(state, this.watchdogConfig);
-    // The bg-shell hatch is anchored to `bgShellHoldSince` so signal-only
-    // keep-alives (`markThinkingSignal`) cannot push it out; only a watcher-
-    // confirmed `markBackgroundShellsAlive` advances the anchor. Every other
-    // hold uses `lastSignalAt`.
-    const baseTime = hold?.trigger === 'timer:bg-shell-hatch'
-      ? (state.bgShellHoldSince ?? this.now())
-      : (state.lastSignalAt ?? 0);
+    const baseTime = hold ? this.watchdogBaseTime(state, hold, 0) : 0;
     const sinceSignal = this.now() - baseTime;
 
     if (hold && sinceSignal >= hold.thresholdMs) {

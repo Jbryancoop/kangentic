@@ -634,6 +634,32 @@ describe('ActivityEngine', () => {
       expect(transitions[0].activity).toBe('idle');
     });
 
+    it('forceIdle nulls lastPtyOutputAt so a stale PTY timestamp cannot defer the stuck-pending deadline', () => {
+      // markPtyOutput sets lastPtyOutputAt to a non-null timestamp. forceIdle
+      // must reset it to null; otherwise the watchdogBaseTime for the
+      // stuck-pending-tools hold would use the stale PTY time as its base and
+      // the watchdog would not fire until an additional 5 minutes past the force-idle.
+      // We verify via getStatsSnapshot which exposes both lastPtyOutputAt and
+      // msSincePtyOutput directly.
+
+      // Start the engine with a real clock so markPtyOutput produces a real timestamp.
+      engine.markPtyOutput(SESSION_ID);
+
+      // Confirm the PTY timestamp is set before force-idle.
+      const snapshotBeforeForceIdle = engine.getStatsSnapshot(SESSION_ID);
+      expect(snapshotBeforeForceIdle).not.toBeNull();
+      expect(snapshotBeforeForceIdle!.lastPtyOutputAt).not.toBeNull();
+      expect(snapshotBeforeForceIdle!.msSincePtyOutput).not.toBeNull();
+
+      engine.forceIdle(SESSION_ID);
+
+      // After forceIdle, both fields must be null.
+      const snapshotAfterForceIdle = engine.getStatsSnapshot(SESSION_ID);
+      expect(snapshotAfterForceIdle).not.toBeNull();
+      expect(snapshotAfterForceIdle!.lastPtyOutputAt).toBeNull();
+      expect(snapshotAfterForceIdle!.msSincePtyOutput).toBeNull();
+    });
+
     it('forceThinking clears permissionAwaitedToolId when a tracked toolId is pending', () => {
       // Drive the engine to permission state with a tracked awaited toolId so
       // the field is non-null before forceThinking fires. Starting from idle
@@ -1443,6 +1469,167 @@ describe('ActivityEngine', () => {
 
       // (c) unknown session: no throw.
       expect(() => engine.markBackgroundShellsAlive('unknown')).not.toThrow();
+    });
+  });
+
+  describe('bg-shell hold split by evidence quality (named cap vs anon grace)', () => {
+    // The default makeEngine aliases both thresholds to the same window, so
+    // these tests use a SPLIT config to distinguish a hook-declared (named)
+    // shell - held to the long 5-min cap - from an anonymous (heuristic)
+    // shell reclaimed fast at the short grace.
+    const SPLIT_GRACE_MS = 1_000;   // anonymous-only grace (30s analog)
+    const SPLIT_CAP_MS = 5_000;     // named-shell cap (5-min analog)
+
+    function makeSplitEngine() {
+      return makeEngine({
+        bgShellOnlyGraceMs: SPLIT_GRACE_MS,
+        bgShellEscapeHatchMs: SPLIT_CAP_MS,
+      });
+    }
+
+    it('holds a named bg shell past the short anon grace, reclaims it only at the long cap', () => {
+      const { engine } = makeSplitEngine();
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { detail: 'bx6k8r2cr' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      const stuck = engine.getState(SESSION_ID)!;
+      expect(stuck.activity).toBe('thinking');
+      expect(stuck.activeBackgroundShellIds.size).toBe(1);
+      expect(engine.getActivityReason(SESSION_ID)?.kind).toBe('background-shell');
+
+      // Past the short anon grace: a phantom ANONYMOUS shell would be gone by
+      // now, but a hook-declared named shell must still be held.
+      vi.advanceTimersByTime(SPLIT_GRACE_MS + TEST_STABILITY_WINDOW_MS + 50);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.bgShellHatch).toBe(0);
+
+      // Out to the long named cap: now reclaimed.
+      vi.advanceTimersByTime(SPLIT_CAP_MS + TEST_STABILITY_WINDOW_MS + 50);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(engine.getState(SESSION_ID)?.activeBackgroundShellIds.size).toBe(0);
+      expect(engine.getState(SESSION_ID)?.compensationCounters.bgShellHatch).toBe(1);
+    });
+
+    it('reclaims an anonymous-only bg shell fast at the short grace', () => {
+      const { engine } = makeSplitEngine();
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart)); // no detail -> anonymous
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.anonymousBackgroundShellCount).toBe(1);
+
+      vi.advanceTimersByTime(SPLIT_GRACE_MS + TEST_STABILITY_WINDOW_MS + 50);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.bgShellHatch).toBe(1);
+    });
+
+    it('reclaims a named shell promptly on positive exit evidence (BackgroundShellEnd), not via the cap', () => {
+      const { engine } = makeSplitEngine();
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { detail: 'bx6k8r2cr' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+      // Positive evidence the shell ended - reclaim well before the cap.
+      engine.markBackgroundShellEnded(SESSION_ID, 'bx6k8r2cr');
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 50);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      // Reclaimed by the event path, not the watchdog hatch.
+      expect(engine.getState(SESSION_ID)?.compensationCounters.bgShellHatch).toBe(0);
+    });
+
+    it('markBackgroundShellsAlive holds a named shell past the long cap (Tier A liveness)', () => {
+      const { engine } = makeSplitEngine();
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { detail: 'bx6k8r2cr' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+      // Watcher confirms the PID alive each cycle for 3x the cap.
+      const cycleMs = 1_000;
+      for (let elapsed = 0; elapsed < SPLIT_CAP_MS * 3; elapsed += cycleMs) {
+        vi.advanceTimersByTime(cycleMs);
+        engine.markBackgroundShellsAlive(SESSION_ID);
+      }
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.bgShellHatch).toBe(0);
+
+      // Confirmations stop (shell exited): reclaimed at the cap from the last.
+      vi.advanceTimersByTime(SPLIT_CAP_MS + TEST_STABILITY_WINDOW_MS + 50);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+    });
+
+    it('replay #212 (session-012): a live auto-backgrounded shell stays thinking past the short grace', () => {
+      // Real capture: foreground `npx playwright test --project=electron`
+      // auto-backgrounds to named shell `bx6k8r2cr`, the turn ends (idle),
+      // and no background_shell_end ever arrives - the named shell is the
+      // sole holder. Replay to that point and confirm it is NOT reclaimed at
+      // the short anon grace (the production bug), only at the long named cap.
+      const events = loadReplayFixture('session-012-auto-bg-named-shell-live.jsonl');
+      const startIndex = events.findIndex((entry) => entry.type === EventType.BackgroundShellStart);
+      expect(startIndex).toBeGreaterThan(0);
+      const idleIndex = events.findIndex(
+        (entry, index) => index > startIndex && entry.type === EventType.Idle,
+      );
+      expect(idleIndex).toBeGreaterThan(startIndex);
+
+      const { engine } = makeSplitEngine();
+      engine.initSession(SESSION_ID);
+      for (const captured of events.slice(0, idleIndex + 1)) {
+        engine.processEvent(SESSION_ID, captured);
+      }
+      const stuck = engine.getState(SESSION_ID)!;
+      expect(stuck.activity).toBe('thinking');
+      expect(stuck.turnActive).toBe(false);
+      expect(stuck.activeBackgroundShellIds.has('bx6k8r2cr')).toBe(true);
+      expect(engine.getActivityReason(SESSION_ID)?.kind).toBe('background-shell');
+
+      vi.advanceTimersByTime(SPLIT_GRACE_MS + TEST_STABILITY_WINDOW_MS + 50);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+      vi.advanceTimersByTime(SPLIT_CAP_MS + TEST_STABILITY_WINDOW_MS + 50);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.bgShellHatch).toBe(1);
+    });
+  });
+
+  describe('markPtyOutput defers the stuck-pending-tools hatch (long quiet foreground tool)', () => {
+    it('streaming PTY output keeps a pending tool thinking, then silence fires the hatch', () => {
+      const { engine } = makeEngine();
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'PowerShell' }));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+      // PTY output every 2s for 2x the hatch window - no hook/status signal.
+      const stepMs = 2_000;
+      for (let elapsed = 0; elapsed < TEST_BG_SHELL_HATCH_MS * 2; elapsed += stepMs) {
+        vi.advanceTimersByTime(stepMs);
+        engine.markPtyOutput(SESSION_ID);
+      }
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.stuckPendingTools).toBe(0);
+
+      // Output stops: after the hatch window of true silence, it fires.
+      vi.advanceTimersByTime(TEST_BG_SHELL_HATCH_MS + TEST_STABILITY_WINDOW_MS + 100);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.stuckPendingTools).toBe(1);
+    });
+
+    it('does NOT defer the stale-thinking watchdog (idle TUI repaints must still time out)', () => {
+      const { engine } = makeEngine();
+      engine.initSession(SESSION_ID);
+      // turnActive alone (no pending tool) -> stale-thinking hold.
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      vi.advanceTimersByTime(TEST_STALE_TIMEOUT_MS / 2);
+      engine.markPtyOutput(SESSION_ID); // must NOT push the stale-thinking deadline
+      vi.advanceTimersByTime(TEST_STALE_TIMEOUT_MS + 100);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.staleThinking).toBe(1);
     });
   });
 

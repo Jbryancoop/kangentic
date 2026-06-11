@@ -100,7 +100,7 @@ export interface WatchdogPick {
  * `findActiveWatchdogHold` in the engine. We re-derive it in the
  * renderer from the snapshot's predicate fields - the engine doesn't
  * surface "active hold" directly, and adding that would clutter the
- * snapshot type. If the engine adds a fourth hold or reorders
+ * snapshot type. If the engine adds a fifth hold or reorders
  * predicates, update here too. Thresholds match the engine's defaults.
  */
 export function pickWatchdog(snapshot: ActivityStatsSnapshot): WatchdogPick | null {
@@ -112,9 +112,21 @@ export function pickWatchdog(snapshot: ActivityStatsSnapshot): WatchdogPick | nu
     !snapshot.turnActive
     && snapshot.pendingToolCount === 0
     && snapshot.subagentDepth === 0
-    && bgShells > 0
+    && snapshot.backgroundShellIds.length > 0
   ) {
+    // A hook-declared (named) bg shell: held to the long 5-min cap unless
+    // the watcher confirms liveness (Tier A) or a positive exit arrives.
     return { thresholdMs: 5 * 60_000, shortLabel: 'bg-shell-hatch 5m' };
+  }
+  if (
+    !snapshot.turnActive
+    && snapshot.pendingToolCount === 0
+    && snapshot.subagentDepth === 0
+    && snapshot.backgroundShellIds.length === 0
+    && snapshot.anonymousBackgroundShellCount > 0
+  ) {
+    // Anonymous-only (heuristic) bg shells: reclaimed fast at the 30s grace.
+    return { thresholdMs: 30_000, shortLabel: 'bg-shell-hatch 30s' };
   }
   if (
     snapshot.pendingToolCount > 0

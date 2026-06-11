@@ -471,6 +471,11 @@ export type ActivityReason =
  *
  * IPC payload only - production renderer code uses `ActivityState` +
  * `ActivityReason`. Subscribed via `getActivityStats(sessionId)`.
+ *
+ * Keep the scalar fields in sync with the parallel `ActivityStatsSnapshot`
+ * in `src/main/pty/activity/engine/shapes.ts` (the engine-internal copy).
+ * There is no mechanical parity check yet, so a one-sided field add will
+ * not fail typecheck.
  */
 export interface ActivityStatsSnapshot {
   sessionId: string;
@@ -487,6 +492,13 @@ export interface ActivityStatsSnapshot {
    *  debug-overlay timeline render the active watchdog deadline as
    *  `lastSignalAt + thresholdMs`. Null when no signal yet. */
   lastSignalAt: number | null;
+  /** Wall-clock ms of the most recent PTY output chunk. The
+   *  stuck-pending-tools watchdog uses the fresher of this and
+   *  `lastSignalAt` so a streaming foreground tool is not force-idled.
+   *  Null when no chunk yet. */
+  lastPtyOutputAt: number | null;
+  /** ms since the most recent PTY output chunk, or null when no chunk yet. */
+  msSincePtyOutput: number | null;
   pendingIdleArmed: boolean;
   recentTransitions: ReadonlyArray<{
     ts: number;

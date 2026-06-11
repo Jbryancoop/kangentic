@@ -246,6 +246,17 @@ export interface SessionEngineState {
    */
   lastSignalAt: number | null;
   /**
+   * Wall-clock ms of the most recent PTY output chunk. Refreshed on every
+   * PTY chunk (production, unconditional - NOT gated by PtyActivityTracker
+   * suppression). Used ONLY by the stuck-pending-tools hold: while a
+   * foreground tool runs, the agent CLI's TUI streams spinner/output, so
+   * chatty PTY proves the tool is genuinely working even when no hook event
+   * or status heartbeat refreshes `lastSignalAt`. Deliberately does NOT feed
+   * the bg-shell hold (anchored to `bgShellHoldSince`) or the stale-thinking
+   * hold (idle TUI repaints must not defer it). Null until the first chunk.
+   */
+  lastPtyOutputAt: number | null;
+  /**
    * Most recent ToolStart's tool name. Sticky until the next ToolStart
    * or until pendingToolCount drops to 0. Surfaced in `ActivityReason`
    * for UI tooltips ("Running Bash"). DERIVED from `pendingToolStack` -
@@ -347,6 +358,10 @@ export interface TransitionRecord {
  * Snapshot exposed via `getStatsSnapshot` for the debug overlay
  * (Subsystem E). Implementation detail leakage is acceptable here -
  * this method is dev-tools-only.
+ *
+ * Keep the scalar fields in sync with the parallel `ActivityStatsSnapshot`
+ * in `src/shared/types.ts` (the IPC payload copy). There is no mechanical
+ * parity check yet, so a one-sided field add will not fail typecheck.
  */
 export interface ActivityStatsSnapshot {
   sessionId: string;
@@ -363,6 +378,11 @@ export interface ActivityStatsSnapshot {
    *  debug-overlay timeline render the active watchdog deadline as
    *  `lastSignalAt + thresholdMs`. Null when no signal yet. */
   lastSignalAt: number | null;
+  /** Wall-clock ms of the most recent PTY output chunk (stuck-pending-tools
+   *  hold base, alongside `lastSignalAt`). Null when no chunk yet. */
+  lastPtyOutputAt: number | null;
+  /** ms since the most recent PTY output chunk, or null when no chunk yet. */
+  msSincePtyOutput: number | null;
   pendingIdleArmed: boolean;
   recentTransitions: ReadonlyArray<TransitionRecord>;
   compensationCounters: CompensationCounters;

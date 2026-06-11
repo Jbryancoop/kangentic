@@ -38,6 +38,8 @@ function makeDummySnapshot(): ActivityStatsSnapshot {
     turnActive: false,
     permissionPending: false,
     msSinceLastSignal: null,
+    lastPtyOutputAt: null,
+    msSincePtyOutput: null,
     pendingIdleArmed: false,
     recentTransitions: [],
   };
