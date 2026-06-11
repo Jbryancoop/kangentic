@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { simpleGit } from 'simple-git';
 import { TaskRepository } from '../../db/repositories/task-repository';
 import { SessionRepository } from '../../db/repositories/session-repository';
 import { WorktreeManager } from '../../git/worktree-manager';
+import { readWorktreeHead } from '../../git/worktree-head';
 import { getProjectDb } from '../../db/database';
 import type { IpcContext } from '../ipc-context';
 
@@ -152,6 +152,16 @@ export async function cleanupTaskResources(
  * reads as "deleted-but-resumable". Moving out of Done re-creates the
  * worktree from the preserved branch via ensureTaskWorktree().
  *
+ * Before removal it reads the worktree's live HEAD and, if the agent renamed
+ * the branch inside the worktree, writes the real branch name back to
+ * `tasks.branch_name`. Agents rename branches to team conventions, so the
+ * stored slug can be stale; without this the Done dialog would name the wrong
+ * branch and, worse, restore (`createWorktree`) would re-attach to a branch
+ * that no longer exists and silently fork a fresh one from base, losing the
+ * committed work. The write-back happens BEFORE the removal attempt so a
+ * failed removal still leaves the corrected name persisted for the startup
+ * retry pass.
+ *
  * Returns true when the directory was actually removed and the DB field
  * was cleared, false when there was nothing to delete or the removal
  * failed. Callers use the return value for log classification; callers
@@ -159,10 +169,10 @@ export async function cleanupTaskResources(
  *
  * LOCK CONTRACT: callers MUST hold a `withTaskLock(taskId, ...)` for the
  * duration of this call. Crosses an await boundary and mutates per-task
- * state (`worktree_path`, plus filesystem state under the project's
- * worktrees directory). Without the lock, a concurrent ensureTaskWorktree
- * or cleanupTaskResources for the same task can interleave with the
- * removal and corrupt git's worktree metadata.
+ * state (`worktree_path`, `branch_name`, plus filesystem state under the
+ * project's worktrees directory). Without the lock, a concurrent
+ * ensureTaskWorktree or cleanupTaskResources for the same task can interleave
+ * with the removal and corrupt git's worktree metadata.
  *
  * Used by TASK_MOVE -> Done.
  */
@@ -175,14 +185,13 @@ export async function deleteTaskWorktree(
   const resolvedProjectPath = projectPath ?? context.currentProjectPath;
   if (!task.worktree_path || !resolvedProjectPath) return false;
 
-  // Capture the worktree HEAD before removal so the immutable commit anchor
-  // survives the Done transition - PR resolution can then match by commit even
-  // after the branch is renamed or the worktree is gone.
-  let capturedSha: string | null = null;
-  try {
-    capturedSha = (await simpleGit(task.worktree_path).revparse(['HEAD'])).trim() || null;
-  } catch {
-    // Best-effort; the worktree may already be in a bad state.
+  // Capture the worktree HEAD before removal: the immutable commit anchor
+  // survives the Done transition (PR resolution can match by commit after a
+  // rename), and the live branch name corrects a stale stored slug so both the
+  // Done dialog and the eventual restore name the branch the work lives on.
+  const { branch: capturedBranch, sha: capturedSha } = await readWorktreeHead(task.worktree_path);
+  if (capturedBranch && capturedBranch !== task.branch_name && tasks.getById(task.id)) {
+    tasks.update({ id: task.id, branch_name: capturedBranch });
   }
 
   let removed = false;

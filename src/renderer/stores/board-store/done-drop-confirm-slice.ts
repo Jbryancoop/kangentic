@@ -2,7 +2,7 @@ import { type StateCreator } from 'zustand';
 import type { GitPendingChangesResult, Task, TaskMoveInput } from '../../../shared/types';
 import type { BoardStore, CompletingTask, PendingDoneConfirm } from './types';
 
-export type PendingChangesInfo = Pick<GitPendingChangesResult, 'hasPendingChanges' | 'uncommittedFileCount' | 'unpushedCommitCount'>;
+export type PendingChangesInfo = Pick<GitPendingChangesResult, 'hasPendingChanges' | 'uncommittedFileCount' | 'unpushedCommitCount' | 'currentBranch'>;
 
 export interface DoneDropConfirmSlice {
   pendingDoneConfirm: PendingDoneConfirm | null;
@@ -46,6 +46,7 @@ export const createDoneDropConfirmSlice: StateCreator<BoardStore, [], [], DoneDr
         hasPendingChanges: pendingChanges.hasPendingChanges,
         uncommittedFileCount: pendingChanges.uncommittedFileCount,
         unpushedCommitCount: pendingChanges.unpushedCommitCount,
+        currentBranch: pendingChanges.currentBranch,
       });
     },
 
@@ -57,6 +58,7 @@ export const createDoneDropConfirmSlice: StateCreator<BoardStore, [], [], DoneDr
         hasPendingChanges: pendingChanges.hasPendingChanges,
         uncommittedFileCount: pendingChanges.uncommittedFileCount,
         unpushedCommitCount: pendingChanges.unpushedCommitCount,
+        currentBranch: pendingChanges.currentBranch,
       });
     },
 

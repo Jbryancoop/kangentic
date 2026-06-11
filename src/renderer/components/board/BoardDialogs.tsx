@@ -127,6 +127,14 @@ export function BoardDialogs() {
 
       {pendingDoneConfirm && (() => {
         const { hasPendingChanges, uncommittedFileCount, unpushedCommitCount } = pendingDoneConfirm;
+        // Prefer the worktree's live HEAD branch over the stored slug: agents
+        // rename branches inside the worktree, so the slug can be stale.
+        const displayBranch = pendingDoneConfirm.currentBranch ?? pendingDoneConfirm.task.branch_name;
+        const branchCode = displayBranch ? (
+          <code className="font-mono text-[11px] bg-surface px-1 py-0.5 rounded break-all">
+            {displayBranch}
+          </code>
+        ) : null;
         return (
           <ConfirmDialog
             title="Move to Done?"
@@ -141,43 +149,44 @@ export function BoardDialogs() {
                 <p className="font-medium text-fg break-words">
                   "{pendingDoneConfirm.task.title}"
                 </p>
-                {hasPendingChanges && (
-                  uncommittedFileCount > 0 || unpushedCommitCount > 0 ? (
-                    <ul className="list-disc list-inside text-red-400 font-medium">
-                      {uncommittedFileCount > 0 && (
-                        <li>
-                          {uncommittedFileCount} uncommitted file{uncommittedFileCount !== 1 ? 's' : ''} will be lost
-                        </li>
-                      )}
-                      {unpushedCommitCount > 0 && (
-                        <li>
-                          {unpushedCommitCount} commit{unpushedCommitCount !== 1 ? 's' : ''} exist{unpushedCommitCount !== 1 ? '' : 's'} only on the local branch
-                        </li>
-                      )}
-                    </ul>
-                  ) : (
-                    // Git probe failed; we don't know the exact damage, but we
-                    // know the worktree is suspect. Mirror MoveConfirmMessage's
-                    // fallback copy so the user still sees a danger signal.
-                    <p className="text-red-400 font-medium">
-                      Unable to verify pending changes. There may be unsaved work.
-                    </p>
-                  )
+                {/* Red is reserved for data the move genuinely destroys:
+                    uncommitted files (and the probe-failure fallback, where the
+                    worktree is suspect). */}
+                {uncommittedFileCount > 0 && (
+                  <ul className="list-disc list-inside text-red-400 font-medium" data-testid="done-confirm-uncommitted">
+                    <li>
+                      {uncommittedFileCount} uncommitted file{uncommittedFileCount !== 1 ? 's' : ''} will be lost
+                    </li>
+                  </ul>
+                )}
+                {hasPendingChanges && uncommittedFileCount === 0 && unpushedCommitCount === 0 && (
+                  // Git probe failed; we don't know the exact damage, but we
+                  // know the worktree is suspect. Mirror MoveConfirmMessage's
+                  // fallback copy so the user still sees a danger signal.
+                  <p className="text-red-400 font-medium">
+                    Unable to verify pending changes. There may be unsaved work.
+                  </p>
+                )}
+                {/* Unpushed commits are NOT lost on Done: the branch is
+                    preserved. Amber, not red, and worded to say so. */}
+                {unpushedCommitCount > 0 && (
+                  <ul className="list-disc list-inside text-yellow-400 font-medium" data-testid="done-confirm-unpushed">
+                    <li>
+                      {unpushedCommitCount} commit{unpushedCommitCount !== 1 ? 's' : ''} remain{unpushedCommitCount !== 1 ? '' : 's'} only on the local branch
+                      {branchCode && <> (kept on branch {branchCode})</>}
+                    </li>
+                  </ul>
                 )}
                 <ul className="space-y-1.5">
                   <li className="flex items-start gap-2">
                     <Check size={14} className="text-emerald-500 mt-0.5 shrink-0" aria-hidden />
                     <span>Local worktree will be deleted</span>
                   </li>
-                  {pendingDoneConfirm.task.branch_name && (
+                  {displayBranch && (
                     <li className="flex items-start gap-2">
                       <Check size={14} className="text-emerald-500 mt-0.5 shrink-0" aria-hidden />
                       <span>
-                        Branch{' '}
-                        <code className="font-mono text-[11px] bg-surface px-1 py-0.5 rounded break-all">
-                          {pendingDoneConfirm.task.branch_name}
-                        </code>{' '}
-                        will be unaffected
+                        Branch {branchCode} will be unaffected
                       </span>
                     </li>
                   )}
@@ -187,7 +196,7 @@ export function BoardDialogs() {
                   </li>
                 </ul>
                 <p className="text-fg-muted">
-                  If this task is resumed, session history and worktree will be restored.
+                  If this task is resumed, the worktree will be recreated from the branch's last commit.
                 </p>
               </div>
             }

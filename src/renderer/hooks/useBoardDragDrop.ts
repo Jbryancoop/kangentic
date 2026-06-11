@@ -516,7 +516,7 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
         } catch {
           // Treat git failures as "potentially has changes" - safer to ask
           // than to silently destroy. Mirrors the To Do path in task-slice.ts.
-          return { uncommittedFileCount: 0, unpushedCommitCount: 0, hasPendingChanges: true };
+          return { uncommittedFileCount: 0, unpushedCommitCount: 0, hasPendingChanges: true, currentBranch: null };
         }
       };
 

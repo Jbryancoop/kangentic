@@ -39,6 +39,9 @@ export type { CompletionGate } from './completion-gate';
  * is stored separately rather than recomputed from the counts, so the
  * git-failure fallback path (which knows the worktree is suspect but has no
  * counts to report) can still lock the dialog into its danger styling.
+ * `currentBranch` is the worktree's live HEAD branch (null on detached HEAD or
+ * probe failure); the dialog prefers it over the stored slug, which agents
+ * rename inside the worktree.
  */
 export type PendingDoneConfirm =
   | {
@@ -48,6 +51,7 @@ export type PendingDoneConfirm =
       hasPendingChanges: boolean;
       uncommittedFileCount: number;
       unpushedCommitCount: number;
+      currentBranch: string | null;
     }
   | {
       kind: 'direct';
@@ -56,6 +60,7 @@ export type PendingDoneConfirm =
       hasPendingChanges: boolean;
       uncommittedFileCount: number;
       unpushedCommitCount: number;
+      currentBranch: string | null;
     };
 
 /**

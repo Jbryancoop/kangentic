@@ -882,6 +882,12 @@ export interface GitPendingChangesResult {
   hasPendingChanges: boolean;
   uncommittedFileCount: number;
   unpushedCommitCount: number;
+  /**
+   * The worktree's live HEAD branch, or null on a detached HEAD or probe
+   * failure. Agents rename branches inside the worktree, so this is preferred
+   * over the stored `task.branch_name` when naming the branch in the UI.
+   */
+  currentBranch: string | null;
 }
 
 export interface GitDiffFilesInput {

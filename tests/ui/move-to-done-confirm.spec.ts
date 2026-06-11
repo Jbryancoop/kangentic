@@ -36,9 +36,16 @@ async function launchWithState(preConfigScript: string): Promise<{ browser: Brow
 }
 
 function makePreConfig(options: {
-  pendingChanges?: { uncommittedFileCount: number; unpushedCommitCount: number };
+  pendingChanges?: { uncommittedFileCount: number; unpushedCommitCount: number; currentBranch?: string | null };
+  // Override the task's stored branch_name. Defaults to 'ready-to-ship-abcd1234'.
+  // Pass null to simulate a task that was created without a branch (edge case
+  // tested by the null-displayBranch + unpushed-commits scenario).
+  branchName?: string | null;
 } = {}): string {
   const pendingChanges = options.pendingChanges;
+  const currentBranchLiteral = pendingChanges && pendingChanges.currentBranch !== undefined
+    ? JSON.stringify(pendingChanges.currentBranch)
+    : 'null';
   const pendingChangesOverride = pendingChanges
     ? `
       window.electronAPI.git.checkPendingChanges = async function () {
@@ -46,10 +53,16 @@ function makePreConfig(options: {
           hasPendingChanges: ${pendingChanges.uncommittedFileCount > 0 || pendingChanges.unpushedCommitCount > 0},
           uncommittedFileCount: ${pendingChanges.uncommittedFileCount},
           unpushedCommitCount: ${pendingChanges.unpushedCommitCount},
+          currentBranch: ${currentBranchLiteral},
         };
       };
     `
     : '';
+  // branch_name is serialized as a JSON value so null renders as the literal
+  // JSON null token and strings include their quotes.
+  const branchNameLiteral = options.branchName !== undefined
+    ? JSON.stringify(options.branchName)
+    : JSON.stringify('ready-to-ship-abcd1234');
   return `
     window.__mockPreConfigure(function (state) {
       var ts = new Date().toISOString();
@@ -90,7 +103,7 @@ function makePreConfig(options: {
         agent: 'claude',
         session_id: null,
         worktree_path: '/mock/worktrees/ready-to-ship',
-        branch_name: 'ready-to-ship-abcd1234',
+        branch_name: ${branchNameLiteral},
         pr_number: null,
         pr_url: null,
         base_branch: 'main',
@@ -183,7 +196,7 @@ test.describe('Move to Done - Delete Worktree Confirmation', () => {
       await expect(page.locator('text=will be unaffected')).toBeVisible();
       await expect(page.locator('text=ready-to-ship-abcd1234')).toBeVisible();
       await expect(page.locator('text=Session history will be kept')).toBeVisible();
-      await expect(page.locator('text=session history and worktree will be restored')).toBeVisible();
+      await expect(page.locator("text=the worktree will be recreated from the branch's last commit")).toBeVisible();
 
       await expect(page.locator('button:has-text("Move")').first()).toBeVisible();
       await expect(page.locator('button:has-text("Cancel")')).toBeVisible();
@@ -311,8 +324,8 @@ test.describe('Move to Done - Delete Worktree Confirmation', () => {
       await dragTaskToColumn(page, 'Ready To Ship', 'Done');
 
       await expect(page.locator('text=Move to Done?')).toBeVisible({ timeout: 3000 });
-      // Updated copy: commits that exist only on the local branch.
-      await expect(page.locator('text=2 commits exist only on the local branch')).toBeVisible();
+      // Unpushed commits are kept (branch preserved), so the copy says "remain".
+      await expect(page.locator('text=2 commits remain only on the local branch')).toBeVisible();
     } finally {
       await browser.close();
     }
@@ -376,7 +389,7 @@ test.describe('Move to Done - Delete Worktree Confirmation', () => {
                 requestDoneConfirmDirect: (
                   task: { id: string; title: string; branch_name: string; worktree_path: string },
                   input: { taskId: string; targetSwimlaneId: string; targetPosition: number },
-                  pendingChanges: { hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number },
+                  pendingChanges: { hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number; currentBranch: string | null },
                 ) => void;
               };
             };
@@ -394,15 +407,15 @@ test.describe('Move to Done - Delete Worktree Confirmation', () => {
             targetSwimlaneId: 'lane-done',
             targetPosition: 0,
           },
-          { hasPendingChanges: true, uncommittedFileCount: 2, unpushedCommitCount: 1 },
+          { hasPendingChanges: true, uncommittedFileCount: 2, unpushedCommitCount: 1, currentBranch: null },
         );
       });
 
       // The dialog should appear with the correct content.
       await expect(page.locator('text=Move to Done?')).toBeVisible({ timeout: 3000 });
       await expect(page.locator('text=2 uncommitted files will be lost')).toBeVisible();
-      // Updated copy for unpushed commits.
-      await expect(page.locator('text=1 commit exists only on the local branch')).toBeVisible();
+      // Singular "remains" for a single unpushed commit (kept on the branch).
+      await expect(page.locator('text=1 commit remains only on the local branch')).toBeVisible();
     } finally {
       await browser.close();
     }
@@ -427,15 +440,15 @@ test.describe('Move to Done - Delete Worktree Confirmation', () => {
       await page.evaluate(() => {
         (window as unknown as {
           __checkPendingChangesCalled: boolean;
-          electronAPI: { git: { checkPendingChanges: () => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number }> } };
+          electronAPI: { git: { checkPendingChanges: () => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number; currentBranch: string | null }> } };
         }).__checkPendingChangesCalled = false;
 
         const originalFn = (window as unknown as {
-          electronAPI: { git: { checkPendingChanges: () => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number }> } };
+          electronAPI: { git: { checkPendingChanges: () => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number; currentBranch: string | null }> } };
         }).electronAPI.git.checkPendingChanges;
 
         (window as unknown as {
-          electronAPI: { git: { checkPendingChanges: () => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number }> } };
+          electronAPI: { git: { checkPendingChanges: () => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number; currentBranch: string | null }> } };
         }).electronAPI.git.checkPendingChanges = async function (...args) {
           (window as unknown as { __checkPendingChangesCalled: boolean }).__checkPendingChangesCalled = true;
           return originalFn.apply(this, args as []);
@@ -512,6 +525,101 @@ test.describe('Move to Done - Delete Worktree Confirmation', () => {
 
       // No dialog appeared
       await expect(page.locator('text=Move to Done?')).toBeHidden({ timeout: 2000 });
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('names the worktree live branch over the stored slug', async () => {
+    // The agent renamed the branch inside the worktree; the probe reports the
+    // real branch. The dialog must show it, not the stale stored slug.
+    const { browser, page } = await launchWithState(
+      makePreConfig({
+        pendingChanges: { uncommittedFileCount: 1, unpushedCommitCount: 0, currentBranch: 'agent-renamed-branch' },
+      }),
+    );
+
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 15000 });
+
+      await dragTaskToColumn(page, 'Ready To Ship', 'Done');
+
+      await expect(page.locator('text=Move to Done?')).toBeVisible({ timeout: 3000 });
+      // The live branch is shown; the stored slug is not.
+      await expect(page.locator('text=agent-renamed-branch')).toBeVisible();
+      await expect(page.locator('text=ready-to-ship-abcd1234')).toHaveCount(0);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  test('styles uncommitted files as danger and unpushed commits as a warning', async () => {
+    // Red is reserved for genuinely destroyed data (uncommitted files). Unpushed
+    // commits are kept on the preserved branch, so they render amber, not red.
+    const { browser, page } = await launchWithState(
+      makePreConfig({
+        pendingChanges: { uncommittedFileCount: 2, unpushedCommitCount: 3 },
+      }),
+    );
+
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 15000 });
+
+      await dragTaskToColumn(page, 'Ready To Ship', 'Done');
+
+      await expect(page.locator('text=Move to Done?')).toBeVisible({ timeout: 3000 });
+
+      const uncommitted = page.locator('[data-testid="done-confirm-uncommitted"]');
+      const unpushed = page.locator('[data-testid="done-confirm-unpushed"]');
+      await expect(uncommitted).toBeVisible();
+      await expect(unpushed).toBeVisible();
+      await expect(uncommitted).toHaveClass(/text-red-400/);
+      await expect(unpushed).toHaveClass(/text-yellow-400/);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Null displayBranch + unpushed commits: edge case in BoardDialogs.tsx
+  //
+  // When BOTH task.branch_name and currentBranch are null, displayBranch is null.
+  // The template branches on `branchCode && ...` (null -> falsy) so the unpushed
+  // bullet must omit the "(kept on branch X)" clause, and the "Branch ... will
+  // be unaffected" green bullet must be absent entirely. This guards the
+  // `{displayBranch && (...)}` conditional in BoardDialogs.tsx.
+  // ---------------------------------------------------------------------------
+  test('null displayBranch with unpushed commits omits branch clauses', async () => {
+    // Seed a task with no branch_name AND a probe that returns currentBranch: null
+    // but reports unpushed commits. Both branch references should be absent.
+    const { browser, page } = await launchWithState(
+      makePreConfig({
+        branchName: null,
+        pendingChanges: { uncommittedFileCount: 0, unpushedCommitCount: 4, currentBranch: null },
+      }),
+    );
+
+    try {
+      await page.locator('[data-swimlane-name="Done"]').waitFor({ state: 'visible', timeout: 15000 });
+
+      await dragTaskToColumn(page, 'Ready To Ship', 'Done');
+
+      await expect(page.locator('text=Move to Done?')).toBeVisible({ timeout: 3000 });
+
+      // The unpushed-commit bullet must be visible (this is a pending-changes dialog).
+      const unpushedBullet = page.locator('[data-testid="done-confirm-unpushed"]');
+      await expect(unpushedBullet).toBeVisible();
+
+      // The bullet text must say "remain only on the local branch" (the generic
+      // copy that does not mention a specific branch name).
+      await expect(unpushedBullet).toContainText('remain only on the local branch');
+
+      // The "(kept on branch X)" parenthetical must NOT appear anywhere.
+      await expect(page.locator('text=(kept on branch')).toHaveCount(0);
+
+      // The green "Branch ... will be unaffected" bullet must be absent because
+      // displayBranch is null (there is no branch name to surface).
+      await expect(page.locator('text=will be unaffected')).toHaveCount(0);
     } finally {
       await browser.close();
     }

@@ -115,6 +115,7 @@ function makePreConfig(options: {
           hasPendingChanges: ${options.hasPendingChanges},
           uncommittedFileCount: ${uncommittedFileCount},
           unpushedCommitCount: ${unpushedCommitCount},
+          currentBranch: null,
         };
       };
 

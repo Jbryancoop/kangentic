@@ -199,7 +199,7 @@ test.describe('Move to Done - continuous overlay/FlyingCard visibility', () => {
           __moveCalledBeforeProbe: boolean | null;
           electronAPI: {
             git: {
-              checkPendingChanges: (...args: unknown[]) => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number }>;
+              checkPendingChanges: (...args: unknown[]) => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number; currentBranch: string | null }>;
             };
             tasks: {
               move: (input: unknown) => Promise<unknown>;

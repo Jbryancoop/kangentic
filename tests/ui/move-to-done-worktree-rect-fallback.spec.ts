@@ -255,10 +255,10 @@ test.describe('Move to Done - worktree-path rect fallback', () => {
       await page.evaluate(() => {
         (window as unknown as { __checkPendingChangesCalledWt: boolean }).__checkPendingChangesCalledWt = false;
         const original = (window as unknown as {
-          electronAPI: { git: { checkPendingChanges: (...args: unknown[]) => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number }> } };
+          electronAPI: { git: { checkPendingChanges: (...args: unknown[]) => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number; currentBranch: string | null }> } };
         }).electronAPI.git.checkPendingChanges;
         (window as unknown as {
-          electronAPI: { git: { checkPendingChanges: (...args: unknown[]) => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number }> } };
+          electronAPI: { git: { checkPendingChanges: (...args: unknown[]) => Promise<{ hasPendingChanges: boolean; uncommittedFileCount: number; unpushedCommitCount: number; currentBranch: string | null }> } };
         }).electronAPI.git.checkPendingChanges = async function (...args) {
           (window as unknown as { __checkPendingChangesCalledWt: boolean }).__checkPendingChangesCalledWt = true;
           return original.apply(this, args as []);

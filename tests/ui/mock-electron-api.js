@@ -1640,7 +1640,7 @@
         if (typeof window !== 'undefined' && window.__mockPendingChangesResult) {
           return window.__mockPendingChangesResult;
         }
-        return { hasPendingChanges: false, uncommittedFileCount: 0, unpushedCommitCount: 0 };
+        return { hasPendingChanges: false, uncommittedFileCount: 0, unpushedCommitCount: 0, currentBranch: null };
       },
     },
 
