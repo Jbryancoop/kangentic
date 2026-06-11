@@ -1,0 +1,93 @@
+---
+description: Diagnose activity-engine issues - a task shows active or idle wrongly, the board indicator is stuck, false thinking or false idle, activity engine debugging playbook
+---
+
+# Debug Activity
+
+A playbook for diagnosing why a task's board indicator shows the wrong state (active/thinking when it should be idle, idle when work is still running, or stuck). Reference this skill when investigating activity-engine behavior so the diagnostic method and known failure signatures are already in context.
+
+`docs/activity-detection.md` is the authoritative architecture reference: read the relevant section instead of re-deriving behavior from the symptom. `src/main/pty/activity/README.md` is the code-reader quick ref.
+
+**Route the symptom first.** If the engine state is correct but a renderer surface *buckets* it wrong (sidebar active/idle counts, card-pill grouping), that is a classification bug, not an engine bug: route through `.claude/rules/activity-state-classification.md` and the `requiresUserInteraction` / `isActive` helpers in `src/shared/activity-state.ts`, not this playbook. This skill is for the engine's own state being wrong.
+
+## Working rules
+
+The activity engine is core/critical. These constraints are not optional:
+
+- **Empirical evidence before any fix.** Reproduce the symptom against a real captured `events.jsonl` (via `kangentic_get_session_events` or a session dir). Never reason from the board symptom alone.
+- **Decide "bug vs designed behavior" explicitly before proposing a change.** Some surprising states are correct by design: in task #216 Incident A the board stayed active while Claude was parked at its prompt, because a backgrounded test shell was genuinely alive. That is the intended behavior, not the defect.
+- **Minimal fixes only.** Do not refactor the engine to fix one signature.
+- **Every confirmed bug gets a pinned replay fixture** in `tests/fixtures/replay/`, run by the harness below.
+- **Red-green.** Prove the new fixture fails with the fix disabled before claiming the fix works.
+
+## The predicate in one line
+
+```
+thinking IFF (turnActive OR subagentDepth > 0 OR bgShells > 0) AND NOT permissionPending
+```
+
+`src/main/pty/activity/engine/predicate.ts` (`derivePredicate`); `bgShells` = named (`activeBackgroundShellIds`) + anonymous (`anonymousBackgroundShellCount`). `permissionPending` forces `permission`. Every wrong indicator is one of two things: a predicate input is wrong (a counter stuck high or cleared early), or a watchdog / forced transition overrode the predicate. Triage is identifying which.
+
+## Evidence-gathering ladder
+
+Work this order. Each step narrows to a single session, then to a single transition.
+
+1. **Resolve task to session.** `kangentic_find_task` (by `#N`, branch, or title) then `kangentic_list_sessions` for the task. A task can have several sessions; note the `sessionIndex` you want.
+2. **Read the event stream.** `kangentic_get_session_events` (params: `taskId` | `sessionId`, `sessionIndex`, `tail` 1-2000 default 200, `since` epoch ms, `eventTypes` filter). Filter to the relevant types, e.g. `background_shell_start` / `background_shell_end`, `subagent_start` / `subagent_stop`, `idle`, `prompt`.
+3. **Read live engine state.** `kangentic_devtools_engine_state` scoped to ONE `sessionId` (the unscoped dump is huge). The payload is `recentTransitions` (ring of 50) and `compensationCounters`; `recentPtyChunks` is noise for most investigations.
+4. **Supporting context.** `kangentic_get_session_files` for the on-disk paths, `kangentic_tail_logs` for main-process logs, `kangentic_get_transcript` for what the agent was actually doing.
+
+**Timeline trick:** clipboard screenshots paste with an epoch-ms filename (`pasted-image-<epochMs>.png`). Use that timestamp to place the user's "it was wrong at this moment" observation on the event stream, and feed it to `since`.
+
+**Incident dirs are ephemeral.** A live session's raw files live in the MAIN checkout at `.kangentic/sessions/<id>/` (gitignored). They are gone once the session is cleaned up. The durable record is the committed replay fixtures (see below).
+
+## Reading a transition trace
+
+The trigger-label and counter-delta reference is in `docs/activity-detection.md`, section "Reading a transition trace". Interpretation that is playbook, not reference:
+
+- **All six compensation counters read 0 in a clean session.** Any non-zero counter names the silent recovery path that fired (`bgShellHatch`, `staleThinking`, `stuckPendingTools`, `forceThinking`, `forceIdle`, `unmatchedBgShellEnd`) - start there.
+- **In a bg-shell incident, the first thing to check is the end-label variant:** `event:bg-shell-ended:<shellId>` is a Tier A PID-exit drain (the watcher saw the OS process leave), while `event:bg-shell-ended:watcher` is the anonymous count-heuristic drain. A named shell that vanished via the cap rather than a PID exit is the #216 signature.
+- The counter-delta string on each transition shows what shifted: `prompt` carries `turn yes`, `idle` carries `turn no`, tool/shell changes show signed deltas (`tools +1`, `bg -1`).
+
+## Watchdog timing math
+
+A watchdog fire time is `anchor + threshold + 400ms stability window`. The anchor differs per hold:
+
+- **Both bg-shell holds** anchor on `bgShellHoldSince` (set when bg shells become the sole holder; refreshed ONLY by `markBackgroundShellsAlive`, never by signal-only keep-alives).
+- **Stale-thinking** anchors on `lastSignalAt` (PTY output does NOT defer it).
+- **Stuck-pending-tools** anchors on `max(lastSignalAt, lastPtyOutputAt)` (streaming foreground output keeps it alive).
+
+Point at `src/main/pty/activity/engine/watchdog.ts` (the `buildWatchdogHolds` table) and `engine/shapes.ts` (the `DEFAULT_*` threshold constants) for live values. Do NOT copy the numbers into the diagnosis - they drift.
+
+## Known failure signatures
+
+**PID-capture starvation -> false idle on a live named shell** (task #216). A backgrounded E2E suite (named shell) never gets a Tier A OS PID, so the watcher cannot confirm it alive; the named sole-holder cap fires via `timer:stability` with `bgShellHatch: 1` while the suite is still running. Provenance: Incident A = task #213 session `f03f5e43-2411-42a0-b511-702453e4b27f`, shell `b9wh3dhov`, capped ~42s before the suite finished. Incident B = task #215 session `e3b001cc-1c49-4828-9b21-48e8578cc37a`, shell `bikrml4pf`. The contrast that proves capture is the variable: in the SAME #215 session, shells `bp7mkduzr` / `b0n5h2qf8` / `bcs8obf77` got Tier A PIDs and drained cleanly via `event:bg-shell-ended:<id>`. Capture fails under process churn (`PID_CAPTURE_RETRY_CYCLES = 3`; the unambiguous tree-diff needs exactly one pending id AND one candidate). No committed fixture yet (defect open under #216); fixing it must add one.
+
+**Inverse: false ACTIVE up to the cap.** A PID-less named shell that dies with a lost `background_shell_end` hook is never count-drained (the watcher's deficit branch deliberately refuses named drains), so the task holds active until the 5-min named cap. Any fix for the above must not regress this direction.
+
+**Double-start / promotion (misread as two shells).** `PreToolUse` emits `background_shell_start` with the command string as detail (anonymous); `PostToolUse` re-emits with the assigned shell id. The engine treats the second as a *promotion* (one anonymous slot becomes one named slot, count constant). Reading the trace as two separate shells is a misdiagnosis.
+
+**Zombie distortion of the Tier B count.** Leaked app-under-test processes (a crashed Playwright worker that never closed its Electron instance) keep `shellLikeCount` desynced from expected, starving the count heuristic. Cleanup is tracked under task #218; an engine fix must work in their presence.
+
+**Resume adoption.** After a Kangentic restart mid-session, `event:bg-shells-adopted` reflects descendants adopted as anonymous shells; they drain via the watcher as they exit. Expected, not a leak.
+
+Durable pins (committed fixtures, run by the harness): `session-009-phantom-bg-shell-no-end.jsonl` (#175), `session-012-auto-bg-named-shell-live.jsonl` (#212), `session-005-waiting-for-input-idle-hint.jsonl`, `session-006-ask-user-question-resume.jsonl`, `session-010-subagent-permission-resume.jsonl` (#194), and the directory fixture `session-013-stuck-foreground-e2e/` (separate `events.jsonl`, `pty-chunks.jsonl`, `status-deltas.jsonl`, `meta.json`).
+
+## Pinning and verifying a fix
+
+- Harness: `tests/unit/activity-engine-replay.test.ts`. It replays each fixture with timing windows zeroed (`idleStabilityWindowMs: 0`, long stale timeout) for deterministic assertions on final activity, transition count, and compensation-counter flips.
+- Sanitize any new fixture with `tests/fixtures/replay/_sanitize.mjs` before committing (the repo is public; strip personal paths). Use `tests/fixtures/replay/_inspect.mjs` to eyeball a fixture.
+- Capture a portable fixture from a live incident via the dev-only trace recorder (`src/main/pty/activity/trace-recorder.ts`) or `kangentic_devtools_capture_trace`.
+- Red-green: disable the fix, confirm the new fixture fails, re-enable, confirm green.
+
+## Key source files
+
+- `src/main/pty/activity/engine/predicate.ts` - the single predicate (`derivePredicate`, `deriveReasonForActivity`, `idleHintEndsTurn`).
+- `src/main/pty/activity/engine/activity-engine.ts` - orchestration, transition recording, force-thinking/idle, bg-shell-end labels.
+- `src/main/pty/activity/engine/event-handlers.ts` - per-event counter mutations and the permission flag.
+- `src/main/pty/activity/engine/watchdog.ts` - the four watchdog holds, predicates, thresholds, anchors.
+- `src/main/pty/activity/engine/shapes.ts` - core types, `TransitionTrigger`, `CompensationCounters`, `DEFAULT_*` constants.
+- `src/main/pty/activity/engine/counter-snapshot.ts` - `formatCounterDelta` (the trace delta strings).
+- `src/main/pty/activity/background-shell/watcher.ts` - Tier A PID capture / liveness, Tier B count heuristic, named-drain deficit branch.
+- `src/main/pty/activity/session-telemetry.ts` - feeds events into the engine, Ctrl+C interrupt synthesis.
+- `src/shared/activity-state.ts` - the idle-vs-active bucketing helpers (`requiresUserInteraction` / `isActive`) and the `ActivityDisposition` table; the `ActivityState` union itself lives in `src/shared/types.ts` (for classification questions; see `.claude/rules/activity-state-classification.md`).

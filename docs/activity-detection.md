@@ -360,6 +360,27 @@ A per-project setting under **Developer → Activity Engine Debug Overlay** enab
 
 Polls `getActivityStats(sessionId)` every 2 seconds. Hidden by default - power users discover via Developer settings; bug reporters can enable + screenshot.
 
+### Reading a transition trace
+
+Each entry in `recentTransitions` (the ring of 50 returned by `getStatsSnapshot` / the MCP `kangentic_devtools_engine_state` tool; the overlay renders the last 10) carries a `trigger` label naming what caused it. The label vocabulary (`TransitionTrigger` in `src/main/pty/activity/engine/shapes.ts`):
+
+| Trigger | Meaning |
+|---------|---------|
+| `event:<type>` | A hook event drove the transition, e.g. `event:tool_start`, `event:prompt`, `event:idle`. |
+| `event:<type>:<detail>` | A hook event with a detail qualifier, e.g. `event:idle:permission` (paused awaiting approval). |
+| `event:bg-shell-ended:<shellId>` | Tier A PID-exit drain - the watcher saw a named shell's OS process leave the tree. |
+| `event:bg-shell-ended:watcher` | Tier B count-heuristic drain - an anonymous shell reclaimed by the descendant-count drop. |
+| `event:bg-shells-adopted` | Resume reconciliation adopted living descendants as anonymous shells. |
+| `force-thinking` | PTY tracker / heartbeat recovery forced thinking (predicate saw no holder). |
+| `force-idle` | PTY silence timer, Esc, or shutdown forced idle. |
+| `timer:stability` | The 400ms idle stability window expired and committed a pending idle. |
+| `timer:bg-shell-hatch` | A bg-shell sole-holder hold fired (named 5-min cap or anonymous 30s grace; same label, different threshold). |
+| `timer:stale-thinking` | The 180s stale-thinking watchdog fired (`turnActive` held alone, matching Idle never arrived). |
+| `timer:stuck-pending-tools` | The 5-min stuck-pending-tools hatch fired (orphaned `tool_start`, lost `PostToolUse`). |
+| `interrupted` | An Interrupted event (Esc / Ctrl+C, real or synthesized) reset all counters. |
+
+Each transition also carries an optional counter-delta string (`formatCounterDelta` in `engine/counter-snapshot.ts`) summarizing what shifted across the mutation: `"tools +1"`, `"subagent +1"`, `"bg -1, turn no"`, `"perm yes"`. Numeric counters render as a signed delta; booleans (`turnActive`, `permissionPending`) render as the new value (`yes` / `no`); the string is `undefined` when nothing observable changed.
+
 ### Trace capture and replay (dev only)
 
 `src/main/pty/activity/trace-recorder.ts` is a dev-only passive recorder that writes two per-session JSONL files to the session directory:

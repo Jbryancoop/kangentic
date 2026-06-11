@@ -22,9 +22,9 @@ session. Choosing it (or its alternatives) wrong makes skills slow, lossy, or un
 - **Do NOT fork** when ANY hold: it is a gated, mutating workflow (commit, rebase, push, tag,
   admin-merge) that needs main-loop visibility and confirmations; it is a knowledge-injection
   skill whose whole purpose is to enrich the MAIN context (`session-lifecycle`, `cross-platform`,
-  `ipc-bridge`); it is active implementation tied to the current conversation; or it already
-  delegates heavy work to a subagent (forking the driver risks subagent nesting, which is
-  undocumented). `test` and `sync-docs` stay inline for this reason.
+  `ipc-bridge`, `debug-activity`); it is active implementation tied to the current conversation;
+  or it already delegates heavy work to a subagent (forking the driver risks subagent nesting,
+  which is undocumented). `test` and `sync-docs` stay inline for this reason.
 - **Active-implementation skills** verify by auto-spawning their auditor agent (delegation), not
   by forking: `add-ipc-endpoint` to `ipc-auditor`, `add-migration` to `migration-safety`, and
   `code-review` to its dimension auditors (`ipc-auditor`, `hmr-parity`, `platform-guard`,
