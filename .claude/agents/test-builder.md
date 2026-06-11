@@ -684,9 +684,18 @@ The `intervals` array tells Playwright how often to poll - start fast (200ms) fo
 Two distinct flake classes show up in full-suite runs:
 
 1. **Mock CLI variance** (handled by per-spec `retries: 2` with documented root cause). Affects: `browser-evidence-retry.spec.ts`.
-2. **Worker process crashes** (`STATUS_STACK_BUFFER_OVERRUN`, 0xC0000409, observed once on `gemini-activity-detection.spec.ts` after ~50min of suite execution). Mitigations: keep wall-clock low (every removed `waitForTimeout` helps), let CI's `retries: 1` catch the rest. Do NOT add spec-level retries to mask this class - it hides real regressions.
+2. **Worker process crashes** (`worker process exited unexpectedly (code=3221226505, signal=null)`, i.e. 0xC0000409, at `(0ms)` test start). This is NOT a one-off and NOT spec-specific: it recurred 9+ times over 5 days (2026-06-07..06-11), random across specs, hitting BOTH the `[ui]` project (headless Chromium, no Electron) and `[electron]`. The common factor is the Playwright worker host itself (`node.exe`), not any app-under-test teardown path.
 
-If a worker crash is reproducible (same spec, every run), bisect the spec to the smallest failing case. If random across specs, document the run and move on.
+**Root cause (verified from a real minidump, 2026-06-11):** 0xC0000409 here is `__fastfail(FAST_FAIL_FATAL_APP_EXIT)`, subcode 0x7, raised by `abort()` (`electron!abort+0x35` -> `int 29h`). It is a deliberate fatal-abort (a V8/Node/Chromium FATAL check or an uncaught C++ exception), NOT a literal stack-buffer overrun despite the NTSTATUS name, and NOT the Jan-2026 Node stack-exhaustion CVE (CVE-2025-59466): the faulting stack is shallow (no deep recursion) and the local Node 24.15.0 already carries that mitigation (shipped in 24.13.0+). Upgrading Node does not address it.
+
+**Mitigations.** Keep wall-clock low (every removed `waitForTimeout` helps; cumulative process churn raises the odds). Do NOT add spec-level retries to mask this class - it hides real regressions. Note the previously documented mitigation "let CI's `retries: 1` catch the rest" does NOT apply: CI (`.github/workflows/ci.yml`) only runs unit + `--project=ui` on Linux and never runs the `[electron]` E2E project, so this only ever bites local full runs. The accepted mitigation is the E2E janitor task: a crashed worker never closes its `_electron.launch()`ed app, so the orphaned Electron processes (main + GPU + network-utility) leak and pin the worktree's `node_modules`, stalling the git queue. The janitor reaps those zombies; this crash class is otherwise treated as rare environmental noise.
+
+If a worker crash is reproducible (same spec, every run), bisect the spec to the smallest failing case. If random across specs (the observed pattern), document the run and move on.
+
+**For the next investigator** (don't restart from the exit code alone):
+- Highest-yield repro seen: `npx playwright test tests/e2e/session-exit.spec.ts tests/e2e/session-rapid-moves.spec.ts tests/e2e/task-delete.spec.ts tests/e2e/terminal-rendering.spec.ts --repeat-each=3` (27 tests, workers=1) produced 2 worker crashes in one run on 2026-06-08. Still random, not deterministic.
+- Electron app aborts are captured as minidumps under `%LOCALAPPDATA%\CrashDumps\electron.exe.*.dmp` (40 events since 2026-05-28, all 0xc0000409, identical fault offset 0x55be785 in electron.exe 41.1.1). Analyze with `cdb` from the WinDbg Store package (`winget install Microsoft.WinDbg`, then `...\amd64\cdb.exe -z <dump> -c "!analyze -v; q"`). The Electron public symbol server has no PDBs for the npm dev build, so frames past `abort` will not symbolize.
+- The `node.exe` worker itself never writes a dump (no WER LocalDumps key is configured for it). To capture a worker-side abort, add a `node.exe` LocalDumps key or run the worker with `NODE_OPTIONS=--report-on-fatalerror` and reproduce.
 
 ## Validation Commands
 
