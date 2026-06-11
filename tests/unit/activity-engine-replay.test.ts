@@ -44,6 +44,9 @@ interface ReplayResult {
   /** Unattributable `background_shell_end` events made no-ops by the engine
    *  invariant (a spurious end that matched no tracked shell). */
   unmatchedBgShellEndCompensations: number;
+  /** Times the named/anonymous bg-shell escape hatch (5-min cap) fired. Zero
+   *  in replay (no timers advanced) UNLESS the stream itself forces it. */
+  bgShellHatchCompensations: number;
   /** Trigger of the last committed thinking->idle transition, or null. */
   lastThinkingToIdleTrigger: string | null;
 }
@@ -93,6 +96,7 @@ function replay(events: SessionEvent[]): ReplayResult {
     staleThinkingCompensations: snapshot.compensationCounters.staleThinking,
     forceThinkingCompensations: snapshot.compensationCounters.forceThinking,
     unmatchedBgShellEndCompensations: snapshot.compensationCounters.unmatchedBgShellEnd,
+    bgShellHatchCompensations: snapshot.compensationCounters.bgShellHatch,
     lastThinkingToIdleTrigger: lastThinkingToIdle?.trigger ?? null,
   };
   engine.dispose();
@@ -553,6 +557,87 @@ describe('ActivityEngine replay tests', () => {
     });
   });
 
+  // ───────────────────────────────────────────────────────────────────
+  // Incident A (session f03f5e43): a NAMED bg shell whose OS PID was never
+  // captured exits, but its end hook is lost. The watcher's named-shell
+  // no-drain branch correctly refuses a count-based drain, so the shell is
+  // held until the 5-min cap -> the task shows falsely ACTIVE. The fix emits
+  // a background_shell_end from the <task-notification> Claude injects on
+  // terminal status. Two fixtures: the raw capture (bug) and the corrected
+  // stream carrying the ends the fixed bridge emits.
+  // ───────────────────────────────────────────────────────────────────
+  describe('session-013-task-notification-missed-end (RAW, the bug)', () => {
+    let result: ReplayResult;
+    beforeEach(() => {
+      result = replay(loadFixture('session-013-task-notification-missed-end.jsonl'));
+    });
+
+    it('leaves both backgrounded shells orphaned (no end hook ever fired)', () => {
+      // npm-run-build promoted to `bfp9mv8jh`, the E2E run is named `b9wh3dhov`;
+      // neither fires a background_shell_end in the raw capture.
+      expect(result.finalState.activeBackgroundShellIds).toContain('b9wh3dhov');
+      expect(result.finalState.activeBackgroundShellIds).toContain('bfp9mv8jh');
+      expect(result.finalState.anonymousBackgroundShellCount).toBe(0);
+    });
+
+    it('ends thinking, held only by the orphans after the turn is over (false ACTIVE)', () => {
+      // This is exactly the precondition that the production engine reclaims
+      // only at the 5-min cap. Replay advances no timers, so the orphan is
+      // simply held here; the timing-driven cap is covered in
+      // activity-engine.test.ts.
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.turnActive).toBe(false);
+      expect(result.finalState.pendingToolCount).toBe(0);
+      expect(result.finalState.subagentDepth).toBe(0);
+    });
+  });
+
+  describe('session-013-task-notification-missed-end-corrected (the fix drains it)', () => {
+    let result: ReplayResult;
+    beforeEach(() => {
+      result = replay(loadFixture('session-013-task-notification-missed-end-corrected.jsonl'));
+    });
+
+    it('drains both shells and reaches clean idle (no orphans, no hatch)', () => {
+      // The corrected stream carries the two background_shell_end events the
+      // fixed bridge emits from each shell's <task-notification>. Both named
+      // shells drain; the session settles to idle with no holders.
+      expect(result.finalActivity).toBe('idle');
+      expect(result.finalState.activeBackgroundShellIds).toEqual([]);
+      expect(result.finalState.anonymousBackgroundShellCount).toBe(0);
+      expect(result.bgShellHatchCompensations).toBe(0);
+      expect(result.unmatchedBgShellEndCompensations).toBe(0);
+    });
+
+    it('settles via the background_shell_end, not a watchdog cap', () => {
+      expect(result.lastThinkingToIdleTrigger).toMatch(/^event:background_shell_end/);
+    });
+  });
+
+  describe('session-014-named-shell-output-liveness (Incident B, engine-level invariant)', () => {
+    // Session e3b001cc: four backgrounded test shells, the last being the
+    // electron E2E run `bikrml4pf`. The engine-replay tier cannot exercise the
+    // process-tree watcher (where the output-file liveness fix lives), so this
+    // fixture pins the session-012-style invariant: the named shell stays
+    // tracked through the end of capture and is never spuriously dropped, so
+    // the predicate keeps the task active while the shell lives.
+    let result: ReplayResult;
+    beforeEach(() => {
+      result = replay(loadFixture('session-014-named-shell-output-liveness.jsonl'));
+    });
+
+    it('keeps the electron E2E shell tracked through end of capture', () => {
+      expect(result.finalState.activeBackgroundShellIds).toContain('bikrml4pf');
+    });
+
+    it('ends thinking, held by the live named shells, never reclaimed by a hatch', () => {
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.turnActive).toBe(false);
+      expect(result.bgShellHatchCompensations).toBe(0);
+      expect(result.lastThinkingToIdleTrigger).not.toBe('timer:bg-shell-hatch');
+    });
+  });
+
   describe('cross-fixture invariants', () => {
     it('all fixtures produce a deterministic outcome (no flakiness)', () => {
       const fixtures = [
@@ -566,6 +651,9 @@ describe('ActivityEngine replay tests', () => {
         'session-008-coupled-bg-shell-corrected.jsonl',
         'session-008-coupled-bg-shell-red-fix1-only.jsonl',
         'session-008-coupled-bg-shell-red-fix2-only.jsonl',
+        'session-013-task-notification-missed-end.jsonl',
+        'session-013-task-notification-missed-end-corrected.jsonl',
+        'session-014-named-shell-output-liveness.jsonl',
       ];
       for (const name of fixtures) {
         const events = loadFixture(name);

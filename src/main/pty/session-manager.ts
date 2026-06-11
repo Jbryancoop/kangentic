@@ -178,6 +178,12 @@ export class SessionManager extends EventEmitter {
         const session = this.registry.get(sessionId);
         return session?.pty?.pid;
       },
+      resolveBackgroundShellOutputFile: (sessionId, shellId) => {
+        const session = this.registry.get(sessionId);
+        if (!session) return null;
+        return session.agentParser?.runtime?.backgroundShells
+          ?.resolveOutputFile({ cwd: session.cwd, shellId }) ?? null;
+      },
     }, {
       activityEngineOptions: this.activityEngineOptions,
       // Activity-engine debug snapshots land at `<projectRoot>/.kangentic/debug/<sessionId>.json`

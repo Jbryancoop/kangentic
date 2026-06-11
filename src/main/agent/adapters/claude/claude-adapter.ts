@@ -3,6 +3,7 @@ import { ClaudeDetector } from './detector';
 import { CommandBuilder } from './command-builder';
 import { ClaudeStatusParser } from './status-parser';
 import { locateClaudeTranscriptFile } from './transcript-parser';
+import { resolveBackgroundTaskOutputFile } from './background-task-output';
 import { ensureWorktreeTrust, ensureMcpServerTrust } from './trust-manager';
 import { migrateClaudeProjectData } from './project-relocation';
 import { removeHooks as removeClaudeHooks } from './hook-manager';
@@ -111,6 +112,12 @@ export class ClaudeAdapter implements AgentAdapter {
       parseStatus: ClaudeStatusParser.parseStatus,
       parseEvent: ClaudeStatusParser.parseEvent,
       isFullRewrite: true,
+    },
+    // The bg-shell watcher stats this file for liveness when a named shell
+    // has no captured OS PID (Incident B). Wrapped in an arrow so the optional
+    // baseTmpDir parameter stays internal to the resolver.
+    backgroundShells: {
+      resolveOutputFile: (options) => resolveBackgroundTaskOutputFile(options),
     },
   };
 

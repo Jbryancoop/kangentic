@@ -31,6 +31,14 @@
  *   setTypeWhenDetailMatches   { pattern, to }      -> if event.detail (already
  *                                 extracted) matches the regex `pattern`,
  *                                 event.type = to. Must be listed AFTER an extractDetail.
+ *   extractDetailPattern       { field, pattern }   -> event.detail = capture group 1
+ *                                 of `pattern` matched against String(ctx[field]).
+ *                                 First-extraction-wins (skips if detail is set).
+ *   emitOnlyWhenDetailMatches  { pattern }          -> suppress the whole event
+ *                                 (no append) UNLESS event.detail (already extracted)
+ *                                 matches the regex `pattern`. Fail-closed: a missing
+ *                                 detail or malformed pattern suppresses. Must be
+ *                                 listed AFTER an extract directive.
  *
  * Stdin: Agent CLIs pipe hook context as JSON. Directives control which
  * fields are extracted for each event type.
@@ -98,6 +106,11 @@ process.stdin.on('end', () => {
   if (input && input.length > 0) {
     try { ctx = JSON.parse(input); } catch { /* stdin not valid JSON */ }
   }
+
+  // When an emitOnlyWhenDetailMatches directive fails its match, the whole
+  // event is dropped (no append). Tracked here so the suppression survives the
+  // rest of the directive loop.
+  let suppressed = false;
 
   // Process directives in list order (setTypeWhenDetailContains relies on a
   // prior extractDetail directive having run).
@@ -168,10 +181,46 @@ process.stdin.on('end', () => {
         }
         break;
       }
+      case 'extractDetailPattern': {
+        // Regex sibling of extractDetail: pull capture group 1 out of one
+        // top-level string field. First-extraction-wins. A malformed pattern
+        // must not crash the bridge - treat it as a logged no-op.
+        if (event.detail !== undefined) break;
+        if (!ctx || typeof payload.field !== 'string' || typeof payload.pattern !== 'string') break;
+        const value = ctx[payload.field];
+        if (typeof value !== 'string') break;
+        let match = null;
+        try {
+          match = value.match(new RegExp(payload.pattern));
+        } catch {
+          logBridgeError(`invalid extractDetailPattern pattern: ${payload.pattern}`);
+        }
+        if (match && match[1] != null) event.detail = String(match[1]).slice(0, 200);
+        break;
+      }
+      case 'emitOnlyWhenDetailMatches': {
+        // Fail-closed gate: suppress the entire event unless the already-
+        // extracted detail matches. A missing detail or a malformed pattern
+        // suppresses, because the event's base type is only valid on a match.
+        let matched = false;
+        if (typeof payload.pattern === 'string' && typeof event.detail === 'string') {
+          try {
+            matched = new RegExp(payload.pattern).test(event.detail);
+          } catch {
+            logBridgeError(`invalid emitOnlyWhenDetailMatches pattern: ${payload.pattern}`);
+          }
+        }
+        if (!matched) suppressed = true;
+        break;
+      }
       default:
         logBridgeError(`unknown directive kind: ${kind}`);
     }
   }
+
+  // An emitOnlyWhenDetailMatches gate failed: drop the event entirely. The
+  // early return skips the append, so nothing lands in the JSONL.
+  if (suppressed) return;
 
   // Capture the full stdin payload as hookContext on session_start only (so
   // adapters can extract the agent-assigned session id). Skipped for other

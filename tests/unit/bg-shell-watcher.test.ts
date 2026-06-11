@@ -4,7 +4,7 @@
  * spawning real children.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { BgShellWatcher, type BgShellWatcherCallbacks } from '../../src/main/pty/activity/background-shell/watcher';
+import { BgShellWatcher, type BgShellWatcherCallbacks, type OutputFileSample } from '../../src/main/pty/activity/background-shell/watcher';
 import type { ProcessInfo, ProcessTreeProbe } from '../../src/main/pty/activity/background-shell/process-tree';
 
 class MockProcessTreeProbe implements ProcessTreeProbe {
@@ -76,6 +76,8 @@ function makeWatcher(opts?: {
   shellCountMap?: Map<string, number>;
   pendingToolMap?: Map<string, number>;
   namedShellMap?: Map<string, string[]>;
+  outputPathMap?: Map<string, string>;
+  mockFiles?: Map<string, OutputFileSample>;
 }) {
   const probe = new MockProcessTreeProbe();
   const log: CallbackLog = { naturalExits: [], shellPidExited: [], rootDied: [], observedAlive: [] };
@@ -86,6 +88,12 @@ function makeWatcher(opts?: {
   // entries are all treated as anonymous (matching the pre-Tier-A behavior
   // every existing test relies on).
   const namedShells = opts?.namedShellMap ?? new Map<string, string[]>();
+  // Output-file liveness (Incident B). `outputPaths` maps a shell id to its
+  // resolved output path; defaults to empty so `resolveShellOutputFile` returns
+  // null and the file-growth path stays inert for every existing test.
+  // `mockFiles` maps a resolved path to its current size/mtime sample.
+  const outputPaths = opts?.outputPathMap ?? new Map<string, string>();
+  const mockFiles = opts?.mockFiles ?? new Map<string, OutputFileSample>();
 
   const callbacks: BgShellWatcherCallbacks = {
     onNaturalExit(sessionId, exitedCount) {
@@ -99,6 +107,9 @@ function makeWatcher(opts?: {
     },
     onShellsObservedAlive(sessionId) {
       log.observedAlive.push(sessionId);
+    },
+    resolveShellOutputFile(_sessionId, shellId) {
+      return outputPaths.get(shellId) ?? null;
     },
     getRootPid(sessionId) {
       return rootPids.get(sessionId);
@@ -118,9 +129,10 @@ function makeWatcher(opts?: {
     callbacks,
     probe,
     pollIntervalMs: opts?.pollIntervalMs ?? 100,
+    statOutputFile: (filePath) => mockFiles.get(filePath) ?? null,
   });
 
-  return { watcher, probe, log, rootPids, shellCounts, pendingTools, namedShells };
+  return { watcher, probe, log, rootPids, shellCounts, pendingTools, namedShells, outputPaths, mockFiles };
 }
 
 describe('BgShellWatcher', () => {
@@ -1609,6 +1621,274 @@ describe('BgShellWatcher', () => {
         await watcher.pollNow();
       }
       expect(log.naturalExits).toHaveLength(0);
+      watcher.dispose();
+    });
+  });
+
+  describe('output-file liveness for a PID-less named shell (bug B)', () => {
+    /**
+     * Incident B: a backgrounded `npx playwright test --project=electron` is
+     * alive, but its app-under-test churn keeps the shell-like count desynced
+     * (here modeled as a permanent deficit) and its OS PID was never captured,
+     * so neither Tier A nor the count heuristic confirms liveness. Without the
+     * output-file signal the engine reclaims it at the 5-min cap (false idle).
+     * Growth of the shell's output file is ground-truth liveness.
+     */
+    function setupPidlessNamedShell() {
+      const outputPaths = new Map<string, string>([['bgB', '/mock/tmp/bgB.output']]);
+      const mockFiles = new Map<string, OutputFileSample>([
+        ['/mock/tmp/bgB.output', { sizeBytes: 100, mtimeMs: 1000 }],
+      ]);
+      const harness = makeWatcher({ outputPathMap: outputPaths, mockFiles });
+      harness.rootPids.set('s1', 1234);
+      harness.probe.alive.add(1234);
+      harness.probe.trees.set(1234, []); // no pre-existing helpers
+      return { ...harness, outputPaths, mockFiles };
+    }
+
+    it('confirms liveness when the named shell output file grows (Incident B)', async () => {
+      const { watcher, probe, shellCounts, namedShells, mockFiles, log } = setupPidlessNamedShell();
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor: preExisting=0
+
+      // Named shell tracked, no PID captured; its OS shell is gone from the
+      // top-level count (permanent churn desync) -> deficit, anonCount===0.
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgB']);
+      probe.trees.set(1234, []);
+      await watcher.pollNow(); // first file sample is a BASELINE, no growth
+      expect(log.observedAlive).not.toContain('s1');
+
+      // The suite writes more output: the file grows. Liveness confirmed.
+      mockFiles.set('/mock/tmp/bgB.output', { sizeBytes: 4096, mtimeMs: 2000 });
+      await watcher.pollNow();
+      expect(log.observedAlive).toContain('s1');
+      // And it never drains the named shell on the deficit.
+      expect(log.naturalExits).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('does not confirm liveness once the output file stops growing (falls back to caps)', async () => {
+      const { watcher, probe, shellCounts, namedShells, mockFiles, log } = setupPidlessNamedShell();
+      watcher.registerSession('s1');
+      await watcher.pollNow();
+
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgB']);
+      probe.trees.set(1234, []);
+      await watcher.pollNow(); // baseline
+      mockFiles.set('/mock/tmp/bgB.output', { sizeBytes: 4096, mtimeMs: 2000 });
+      await watcher.pollNow(); // grows -> alive
+      expect(log.observedAlive).toContain('s1');
+
+      log.observedAlive.length = 0;
+      // No further writes: size and mtime unchanged. No new confirmation.
+      await watcher.pollNow();
+      await watcher.pollNow();
+      expect(log.observedAlive).not.toContain('s1');
+      watcher.dispose();
+    });
+
+    it('treats an mtime-only advance (no size change) as growth', async () => {
+      const { watcher, probe, shellCounts, namedShells, mockFiles, log } = setupPidlessNamedShell();
+      watcher.registerSession('s1');
+      await watcher.pollNow();
+
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgB']);
+      probe.trees.set(1234, []);
+      await watcher.pollNow(); // baseline {100, 1000}
+
+      // A rewrite that keeps the byte count but bumps mtime still proves life.
+      mockFiles.set('/mock/tmp/bgB.output', { sizeBytes: 100, mtimeMs: 5000 });
+      await watcher.pollNow();
+      expect(log.observedAlive).toContain('s1');
+      watcher.dispose();
+    });
+
+    it('is inert when the resolver returns no path (behaves exactly as today)', async () => {
+      // No output path registered for the shell: resolveShellOutputFile returns
+      // null, so the file-growth path never fires and the named-shell deficit
+      // is governed solely by the existing heuristics + 5-min cap.
+      const { watcher, probe, rootPids, shellCounts, namedShells, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, []);
+      watcher.registerSession('s1');
+      await watcher.pollNow();
+
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgB']);
+      probe.trees.set(1234, []);
+      await watcher.pollNow();
+      await watcher.pollNow();
+      expect(log.observedAlive).not.toContain('s1');
+      expect(log.naturalExits).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('re-resolves the path after the output file vanishes', async () => {
+      const { watcher, probe, shellCounts, namedShells, mockFiles, log } = setupPidlessNamedShell();
+      watcher.registerSession('s1');
+      await watcher.pollNow();
+
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgB']);
+      probe.trees.set(1234, []);
+      await watcher.pollNow(); // baseline {100, 1000}
+
+      // File disappears (e.g. temp cleanup): the cached entry is dropped.
+      mockFiles.delete('/mock/tmp/bgB.output');
+      await watcher.pollNow();
+      expect(log.observedAlive).not.toContain('s1');
+
+      // File reappears and grows: re-resolved, baseline, then growth.
+      mockFiles.set('/mock/tmp/bgB.output', { sizeBytes: 50, mtimeMs: 3000 });
+      await watcher.pollNow(); // re-baseline
+      mockFiles.set('/mock/tmp/bgB.output', { sizeBytes: 80, mtimeMs: 4000 });
+      await watcher.pollNow(); // growth
+      expect(log.observedAlive).toContain('s1');
+      watcher.dispose();
+    });
+
+    it('re-added named shell tracks growth correctly after all named shells were absent', async () => {
+      // Exercises the `else if (namedIds.length === 0 && state.shellOutputFiles.size > 0)
+      // state.shellOutputFiles.clear()` branch in cycleSession (reached when the
+      // engine drops all named shell ids to zero).
+      //
+      // The clear branch and the prune loop inside sampleNamedShellOutputGrowth
+      // both clean up stale entries - the clear is the eager path (fires immediately
+      // when namedIds drops to zero), and the prune loop is the deferred path (fires
+      // on the next sampleNamedShellOutputGrowth call when namedIds is non-empty again).
+      // Both paths update the entry to current values on re-add, so both produce
+      // identical observable behavior through the observedAlive callback.
+      //
+      // This test covers the end-to-end behavior: a re-added named shell always starts
+      // from a fresh baseline after being absent, and subsequent growth correctly fires
+      // observedAlive. It exercises both the clear branch (step 2) and the re-registration
+      // path (step 3) without redundant gaps in coverage.
+      const outputPaths = new Map<string, string>([['bgA', '/mock/tmp/bgA.output']]);
+      const mockFiles = new Map<string, OutputFileSample>([
+        ['/mock/tmp/bgA.output', { sizeBytes: 1000, mtimeMs: 1000 }],
+      ]);
+      const harness = makeWatcher({ outputPathMap: outputPaths, mockFiles });
+      const { watcher, probe, shellCounts, namedShells, log } = harness;
+      harness.rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, []);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor
+
+      // Step 1: bgA tracked. First poll establishes the baseline.
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgA']);
+      probe.trees.set(1234, []);
+      await watcher.pollNow(); // cache bgA at {sizeBytes:1000, mtimeMs:1000} (baseline)
+
+      // Advance to a very high watermark so the stale cache entry holds max values.
+      mockFiles.set('/mock/tmp/bgA.output', { sizeBytes: 999999, mtimeMs: 999999 });
+      await watcher.pollNow(); // grows -> observedAlive fires; cache now at max watermark
+      expect(log.observedAlive).toContain('s1');
+      log.observedAlive.length = 0;
+
+      // Step 2: engine drops all named shells (end hook received + count cleared).
+      // The stale cache entry for bgA now has {sizeBytes:999999, mtimeMs:999999}.
+      shellCounts.set('s1', 0);
+      namedShells.set('s1', []);
+      await watcher.pollNow(); // namedIds.length === 0 -> cache cleared
+      expect(log.observedAlive).not.toContain('s1');
+
+      // Step 3: re-add bgA with a file value far below the stale watermark.
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgA']);
+      mockFiles.set('/mock/tmp/bgA.output', { sizeBytes: 100, mtimeMs: 1 });
+      await watcher.pollNow();
+      // With a cleared cache: fresh baseline at {sizeBytes:100, mtimeMs:1}.
+      // First observation is always a baseline: no observedAlive.
+      expect(log.observedAlive).not.toContain('s1');
+
+      // Step 4: modest increase. Fires observedAlive ONLY if the cache was
+      // cleared (fresh baseline 100 -> 200 is growth). If the stale {999999,999999}
+      // entry survived, 200 < 999999 and 2 < 999999 -> no growth -> no observedAlive.
+      mockFiles.set('/mock/tmp/bgA.output', { sizeBytes: 200, mtimeMs: 2 });
+      await watcher.pollNow();
+      expect(log.observedAlive).toContain('s1');
+      watcher.dispose();
+    });
+
+    it('surviving named shell keeps firing observedAlive when one named shell ends', async () => {
+      // Tests the partial-prune loop in sampleNamedShellOutputGrowth:
+      // `for (const shellId of [...state.shellOutputFiles.keys()])
+      //   if (!trackedNamedShellIdSet.has(shellId)) state.shellOutputFiles.delete(shellId)`.
+      //
+      // When bgA ends (removed from namedIds) while bgB survives, the prune loop
+      // deletes the bgA cache entry so stale data does not accumulate. bgB's entry
+      // is kept and its continued growth still fires observedAlive.
+      //
+      // The decisive assertion for bgB: observedAlive fires after bgA ends.
+      // For bgA re-add: both the prune-then-re-baseline path and a hypothetical
+      // stale-entry-updated path produce the same observable result (entry reset
+      // to current values on first access). The test documents the end-to-end
+      // behavior and exercises the prune loop path without claiming to distinguish
+      // the two paths through the public callback API.
+      const outputPaths = new Map<string, string>([
+        ['bgA', '/mock/tmp/bgA.output'],
+        ['bgB', '/mock/tmp/bgB.output'],
+      ]);
+      const mockFiles = new Map<string, OutputFileSample>([
+        ['/mock/tmp/bgA.output', { sizeBytes: 500, mtimeMs: 1000 }],
+        ['/mock/tmp/bgB.output', { sizeBytes: 500, mtimeMs: 1000 }],
+      ]);
+      const harness = makeWatcher({ outputPathMap: outputPaths, mockFiles });
+      const { watcher, probe, shellCounts, namedShells, log } = harness;
+      harness.rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, []);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor
+
+      // Step 1: both shells tracked; establish baselines.
+      shellCounts.set('s1', 2);
+      namedShells.set('s1', ['bgA', 'bgB']);
+      probe.trees.set(1234, []);
+      await watcher.pollNow(); // baselines for bgA {500,1000} and bgB {500,1000}
+
+      // Advance bgA to a very high watermark so the stale entry holds max values.
+      mockFiles.set('/mock/tmp/bgA.output', { sizeBytes: 999999, mtimeMs: 999999 });
+      mockFiles.set('/mock/tmp/bgB.output', { sizeBytes: 1000, mtimeMs: 2000 });
+      await watcher.pollNow(); // bgA: cache at {999999, 999999}; bgB grows -> observedAlive
+      expect(log.observedAlive).toContain('s1');
+      log.observedAlive.length = 0;
+
+      // Step 2: bgA ends. Engine drops bgA from the named list.
+      // Stale bgA entry: {sizeBytes:999999, mtimeMs:999999}.
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgB']);
+      // bgB keeps growing - confirms it survives the partial-prune.
+      mockFiles.set('/mock/tmp/bgB.output', { sizeBytes: 2000, mtimeMs: 3000 });
+      await watcher.pollNow();
+      // bgA pruned from cache (not in namedIds). bgB grows -> observedAlive.
+      expect(log.observedAlive).toContain('s1');
+      log.observedAlive.length = 0;
+
+      // Step 3: re-add bgA with a file value far below the stale watermark.
+      namedShells.set('s1', ['bgB', 'bgA']);
+      shellCounts.set('s1', 2);
+      mockFiles.set('/mock/tmp/bgA.output', { sizeBytes: 100, mtimeMs: 1 });
+      await watcher.pollNow();
+      // With a pruned cache: fresh baseline at {sizeBytes:100, mtimeMs:1}.
+      // First observation is always a baseline: no growth signal from bgA.
+      // bgB is still in sync here (no change in this poll) -> clear the log.
+      log.observedAlive.length = 0;
+
+      // Step 4: modest increase from the fresh baseline. Fires observedAlive ONLY
+      // if bgA's stale entry was pruned (fresh baseline 100 -> 200 is growth).
+      // If the stale {999999, 999999} entry survived: 200 < 999999 and 2 < 999999
+      // -> no growth on bgA -> observedAlive would NOT fire on this cycle (bgB is
+      // unchanged too). This is the decisive assertion.
+      mockFiles.set('/mock/tmp/bgA.output', { sizeBytes: 200, mtimeMs: 2 });
+      await watcher.pollNow();
+      expect(log.observedAlive).toContain('s1');
       watcher.dispose();
     });
   });

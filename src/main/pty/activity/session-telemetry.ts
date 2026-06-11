@@ -45,6 +45,14 @@ interface SessionTelemetryCallbacks {
    * undefined for unknown / not-yet-spawned sessions.
    */
   getSessionRootPid?(sessionId: string): number | undefined;
+  /**
+   * Resolve the on-disk output file for a NAMED background shell, or null
+   * when the agent has no such file or it cannot be located. The bg-shell
+   * watcher stats it each cycle for liveness (file growth keeps a PID-less
+   * named shell from being reclaimed at the 5-min cap). Agent-specific path
+   * knowledge stays behind this generic callback.
+   */
+  resolveBackgroundShellOutputFile?(sessionId: string, shellId: string): string | null;
 }
 
 export interface SessionTelemetryOptions {
@@ -224,6 +232,8 @@ export class SessionTelemetry {
             // change (mirrors markThinkingSignal).
             this.activityEngine.markBackgroundShellsAlive(sessionId);
           },
+          resolveShellOutputFile: (sessionId, shellId) =>
+            callbacks.resolveBackgroundShellOutputFile?.(sessionId, shellId) ?? null,
         },
       });
     }

@@ -35,6 +35,8 @@ const KNOWN_KINDS = new Set([
   'setTypeWhen',
   'setTypeWhenDetailContains',
   'setTypeWhenDetailMatches',
+  'extractDetailPattern',
+  'emitOnlyWhenDetailMatches',
 ]);
 
 // A directive token is `<kind>:<base64>`: letters, a colon, then standard

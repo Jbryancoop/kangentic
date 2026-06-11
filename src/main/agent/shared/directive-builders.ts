@@ -108,3 +108,33 @@ export function setTypeWhenDetailContains(contains: string, to: EventType): stri
 export function setTypeWhenDetailMatches(pattern: string, to: EventType): string {
   return encodeDirective('setTypeWhenDetailMatches', { pattern, to });
 }
+
+/**
+ * Extract `event.detail` from capture group 1 of `pattern` matched against the
+ * top-level stdin string field `field`. The regex sibling of `extractDetail`:
+ * where `extractDetail` copies a whole field value, this pulls a substring out
+ * of one. No-op when the field is absent, not a string, the pattern does not
+ * match, or group 1 is empty. First-extraction-wins like `extractDetail` (skips
+ * if detail is already set). `pattern` is compiled with `new RegExp(pattern)`
+ * in the bridge; a malformed pattern is a logged no-op.
+ *
+ * Used to pull a background shell's task id out of the `<task-notification>`
+ * block Claude Code injects as a UserPromptSubmit `prompt` when a bg shell
+ * reaches a terminal state.
+ */
+export function extractDetailPattern(field: string, pattern: string): string {
+  return encodeDirective('extractDetailPattern', { field, pattern });
+}
+
+/**
+ * Suppress the event ENTIRELY (nothing is appended to the JSONL) unless the
+ * ALREADY-EXTRACTED `event.detail` matches `pattern`. Must be listed AFTER an
+ * extract directive. Fail-closed: a missing detail or a malformed pattern
+ * suppresses, because an entry carrying this directive has a base event type
+ * (e.g. `background_shell_end`) that is only valid when the match succeeds and
+ * is unsafe to emit unconditionally. This is the inverse polarity of
+ * `setTypeWhenDetailMatches`, whose no-op keeps the safe base type.
+ */
+export function emitOnlyWhenDetailMatches(pattern: string): string {
+  return encodeDirective('emitOnlyWhenDetailMatches', { pattern });
+}

@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import {
   filterTopmostShellLikeDescendants,
   isShellLike,
@@ -61,6 +62,14 @@ export interface BgShellWatcherCallbacks {
    */
   onShellsObservedAlive(sessionId: string): void;
   /**
+   * Resolve the on-disk output file for a NAMED background shell, or null
+   * when the agent has no such file or it cannot be located. The watcher
+   * stats it each cycle; growth is ground-truth liveness for a named shell
+   * with no captured OS PID (Incident B). Agent-specific path knowledge
+   * stays behind this generic callback (agent-adapters-boundary).
+   */
+  resolveShellOutputFile(sessionId: string, shellId: string): string | null;
+  /**
    * Read accessors for the watcher to introspect engine state. The
    * watcher does not own counters - it observes them.
    */
@@ -86,6 +95,12 @@ export interface BgShellWatcherCallbacks {
   getPendingToolCount(sessionId: string): number;
 }
 
+/** A point-in-time sample of a background shell's output file. */
+export interface OutputFileSample {
+  sizeBytes: number;
+  mtimeMs: number;
+}
+
 export interface BgShellWatcherOptions {
   callbacks: BgShellWatcherCallbacks;
   probe: ProcessTreeProbe;
@@ -96,6 +111,22 @@ export interface BgShellWatcherOptions {
    * `SHELL_LIKE_COMM_PATTERNS` allowlist. Override for tests.
    */
   isShellLike?: (comm: string) => boolean;
+  /**
+   * Stat a background shell's output file. Default wraps `fs.statSync` and
+   * returns null on any error (missing file, permission, etc.). Override for
+   * tests so the file-growth liveness path is exercised without real I/O.
+   */
+  statOutputFile?: (filePath: string) => OutputFileSample | null;
+}
+
+/** Default output-file stat: size + mtime, or null on any filesystem error. */
+function defaultStatOutputFile(filePath: string): OutputFileSample | null {
+  try {
+    const stats = fs.statSync(filePath);
+    return { sizeBytes: stats.size, mtimeMs: stats.mtimeMs };
+  } catch {
+    return null;
+  }
 }
 
 interface SessionWatchState {
@@ -160,6 +191,15 @@ interface SessionWatchState {
    * see deficit and false-fire a natural exit.
    */
   consecutiveDeficitCycles: number;
+  /**
+   * Per-named-shell output-file samples. The resolved path is cached after the
+   * first hit (the session-id segment is globbed, which is the costly part);
+   * growth in size or mtime since the previous cycle is positive liveness for
+   * a named shell whose OS PID was never captured (Incident B). Entries are
+   * pruned when the engine stops tracking the shell, and dropped (to force a
+   * re-resolve) if the file vanishes.
+   */
+  shellOutputFiles: Map<string, { filePath: string; sizeBytes: number; mtimeMs: number }>;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -177,6 +217,7 @@ export class BgShellWatcher {
   private readonly probe: ProcessTreeProbe;
   private readonly pollIntervalMs: number;
   private readonly isShellLikeFn: (comm: string) => boolean;
+  private readonly statOutputFileFn: (filePath: string) => OutputFileSample | null;
   private readonly states = new Map<string, SessionWatchState>();
   private timer: NodeJS.Timeout | null = null;
   private polling = false;
@@ -187,6 +228,7 @@ export class BgShellWatcher {
     this.probe = options.probe;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.isShellLikeFn = options.isShellLike ?? isShellLike;
+    this.statOutputFileFn = options.statOutputFile ?? defaultStatOutputFile;
   }
 
   /**
@@ -210,6 +252,7 @@ export class BgShellWatcher {
       pendingCaptures: new Map(),
       candidateForegroundShellPid: null,
       consecutiveDeficitCycles: 0,
+      shellOutputFiles: new Map(),
     });
     this.maybeStartPolling();
   }
@@ -479,6 +522,29 @@ export class BgShellWatcher {
       }
     }
 
+    // Output-file liveness: ground truth for a NAMED shell with no captured OS
+    // PID (Incident B: a backgrounded `npx playwright test --project=electron`
+    // was alive but its app-under-test churn kept the count in permanent
+    // deficit, so it false-idled at the 5-min cap while its output file kept
+    // growing). Growth in size or mtime since the last cycle proves the shell
+    // (or its children) is alive. Runs BEFORE the surplus/deficit branches
+    // because that deficit is permanent and would otherwise conclude the cycle.
+    // ANY growing shell suffices: the hold anchor is session-level and one
+    // genuinely-running bg shell justifies ACTIVE; a phantom sibling is
+    // reclaimed once the live shell ends (task-notification end or Tier A exit)
+    // and stops refreshing. Growth-STOPPED is deliberately NOT an exit signal -
+    // a quiet live shell is indistinguishable from a dead one, so the absence
+    // of growth simply falls through to the existing heuristics and caps.
+    if (!livenessConfirmed && namedIds.length > 0) {
+      if (this.sampleNamedShellOutputGrowth(sessionId, state, namedIds)) {
+        this.callbacks.onShellsObservedAlive(sessionId);
+        livenessConfirmed = true;
+      }
+    } else if (namedIds.length === 0 && state.shellOutputFiles.size > 0) {
+      // No named shells tracked anymore: release any cached output-file samples.
+      state.shellOutputFiles.clear();
+    }
+
     if (shellLikeCount > expected) {
       // Symmetric counterpart to the deficit-side rebase below: a
       // helper process appeared after the first-cycle anchor (MCP
@@ -590,6 +656,53 @@ export class BgShellWatcher {
         this.callbacks.onShellsObservedAlive(sessionId);
       }
     }
+  }
+
+  /**
+   * Sample each named shell's output file and report whether any grew since the
+   * previous cycle. The first sample for a shell is a BASELINE (records the
+   * size/mtime, reports no growth) so a shell that is alive but quiet is not
+   * mistaken for growth on its first observation. Returns true when at least
+   * one tracked named shell's file advanced in size or mtime.
+   */
+  private sampleNamedShellOutputGrowth(
+    sessionId: string,
+    state: SessionWatchState,
+    namedIds: string[],
+  ): boolean {
+    // Prune samples for shells the engine no longer tracks.
+    if (state.shellOutputFiles.size > 0) {
+      const trackedNamedShellIdSet = new Set(namedIds);
+      for (const shellId of [...state.shellOutputFiles.keys()]) {
+        if (!trackedNamedShellIdSet.has(shellId)) state.shellOutputFiles.delete(shellId);
+      }
+    }
+
+    let grew = false;
+    for (const shellId of namedIds) {
+      const entry = state.shellOutputFiles.get(shellId);
+      if (!entry) {
+        const filePath = this.callbacks.resolveShellOutputFile(sessionId, shellId);
+        if (!filePath) continue;
+        const sample = this.statOutputFileFn(filePath);
+        if (!sample) continue;
+        // First observation is a baseline, not growth.
+        state.shellOutputFiles.set(shellId, { filePath, sizeBytes: sample.sizeBytes, mtimeMs: sample.mtimeMs });
+        continue;
+      }
+      const sample = this.statOutputFileFn(entry.filePath);
+      if (!sample) {
+        // File vanished: drop the entry so the next cycle re-resolves the path.
+        state.shellOutputFiles.delete(shellId);
+        continue;
+      }
+      if (sample.sizeBytes > entry.sizeBytes || sample.mtimeMs > entry.mtimeMs) {
+        grew = true;
+      }
+      entry.sizeBytes = sample.sizeBytes;
+      entry.mtimeMs = sample.mtimeMs;
+    }
+    return grew;
   }
 
 }

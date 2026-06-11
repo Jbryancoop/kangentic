@@ -17,6 +17,9 @@ import {
   setDetail,
   setTypeWhen,
   setTypeWhenDetailContains,
+  setTypeWhenDetailMatches,
+  extractDetailPattern,
+  emitOnlyWhenDetailMatches,
 } from '../../src/main/agent/shared/directive-builders';
 
 /** Split a `<kind>:<base64>` directive and decode the JSON payload. */
@@ -40,6 +43,9 @@ describe('directive builders - wire format contract', () => {
     ['setDetail', setDetail('permission'), 'setDetail', { value: 'permission' }],
     ['setTypeWhen', setTypeWhen({ whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: EventType.BackgroundShellStart }), 'setTypeWhen', { whenTool: 'Bash', nested: ['tool_input', 'run_in_background'], equals: 'true', to: 'background_shell_start' }],
     ['setTypeWhenDetailContains', setTypeWhenDetailContains('waiting for your input', EventType.IdleHint), 'setTypeWhenDetailContains', { contains: 'waiting for your input', to: 'idle_hint' }],
+    ['setTypeWhenDetailMatches', setTypeWhenDetailMatches('^[\\w-]{1,64}$', EventType.BackgroundShellStart), 'setTypeWhenDetailMatches', { pattern: '^[\\w-]{1,64}$', to: 'background_shell_start' }],
+    ['extractDetailPattern', extractDetailPattern('prompt', '<task-id>([\\w-]+)</task-id>'), 'extractDetailPattern', { field: 'prompt', pattern: '<task-id>([\\w-]+)</task-id>' }],
+    ['emitOnlyWhenDetailMatches', emitOnlyWhenDetailMatches('^[\\w-]{1,64}$'), 'emitOnlyWhenDetailMatches', { pattern: '^[\\w-]{1,64}$' }],
   ];
 
   it.each(cases)('%s encodes to <kind>:<base64> and round-trips', (_label, directive, expectedKind, expectedPayload) => {

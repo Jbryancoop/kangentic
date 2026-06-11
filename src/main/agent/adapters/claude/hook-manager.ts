@@ -1,7 +1,24 @@
 import path from 'node:path';
 import { EventType } from '../../../../shared/types';
 import { filterKangenticHooks, buildBridgeCommand, safelyUpdateSettingsFile } from '../../shared/hook-utils';
-import { extractTool, extractToolId, extractDetail, setDetail, setTypeWhen, setTypeWhenDetailContains, setTypeWhenDetailMatches } from '../../shared/directive-builders';
+import { extractTool, extractToolId, extractDetail, setDetail, setTypeWhen, setTypeWhenDetailContains, setTypeWhenDetailMatches, extractDetailPattern, emitOnlyWhenDetailMatches } from '../../shared/directive-builders';
+
+/**
+ * Matches the `<task-notification>` block Claude Code injects as a user prompt
+ * when a background shell reaches a TERMINAL state. Capture group 1 is the
+ * shell id. Anchored on the wrapper AND a terminal `<status>` so ordinary
+ * prompts, and any future non-terminal (progress) notification, never match.
+ * `[\s\S]` spans newlines without needing flags.
+ *
+ * Scoped to UserPromptSubmit's `prompt` field, which is user message text.
+ * Unlike `tool_response.status` (shared across Bash/BashOutput/Agent, the
+ * tool-blind remap that mis-mapped foreground Agent completions to
+ * `background_shell_end` - see the PostToolUse entry below), this structure
+ * cannot appear for a foreground tool completion, so the dangerous false drain
+ * is structurally avoided.
+ */
+export const TASK_NOTIFICATION_END_PATTERN =
+  '<task-notification>[\\s\\S]*?<task-id>([\\w-]{1,64})</task-id>[\\s\\S]*?<status>(?:completed|failed|killed|cancelled|aborted)</status>';
 
 /** All Claude Code hook event names (settings.json keys). */
 export const ClaudeHookEvent = {
@@ -172,6 +189,20 @@ export function buildHooks(
     [H.UserPromptSubmit]: [
       ...(existingHooks[H.UserPromptSubmit] || []),
       { matcher: '', hooks: [{ type: 'command', command: buildBridgeCommand(eventBridge, eventsPath, E.Prompt) }] },
+      // Background-shell exit via task-notification (Incident A, session
+      // f03f5e43 / shell b9wh3dhov): when a NAMED bg shell never gets a Tier A
+      // OS PID, its natural exit is invisible to the watcher and the task stays
+      // falsely ACTIVE until the 5-min bg-shell hatch. Claude injects a
+      // `<task-notification>` user message on terminal status, which fires
+      // UserPromptSubmit. This SECOND entry emits `background_shell_end` with
+      // the task id as detail; emitOnlyWhenDetailMatches suppresses it entirely
+      // for ordinary prompts, so the entry above keeps emitting the bare Prompt
+      // (turnActive marker) unchanged. The engine drains the named shell; an
+      // already-drained or unknown id is a safe no-op (unmatchedBgShellEnd /
+      // anonymous drain - see event-handlers.ts BackgroundShellEnd).
+      { matcher: '', hooks: [{ type: 'command', command: buildBridgeCommand(eventBridge, eventsPath, E.BackgroundShellEnd,
+        extractDetailPattern('prompt', TASK_NOTIFICATION_END_PATTERN),
+        emitOnlyWhenDetailMatches('^[\\w-]{1,64}$')) }] },
     ],
     [H.Stop]: [
       ...(existingHooks[H.Stop] || []),

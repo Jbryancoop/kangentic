@@ -96,8 +96,9 @@ One scannable block per adapter for activity-state derivation and session ID cap
 | `statusFile?.parseEvent(line)` | `(string) => SessionEvent \| null` | Decode one appended line from the per-session `events.jsonl` (written by the event-bridge hook) into a `SessionEvent`. |
 | `statusFile?.isFullRewrite` | `boolean` | `true` when `status.json` is fully rewritten on every update. The events file is always append-only regardless of this flag. |
 | `streamOutput?.createParser()` | `() => StreamOutputParser` | Build a per-session parser that consumes raw PTY stdout for telemetry. Used by agents that emit machine-readable NDJSON to the terminal (Cursor's `--output-format stream-json` init event carries `model` + `session_id`). The returned object exposes `parseTelemetry(data)` returning `{ usage?, events? } \| null`; `SessionManager` invokes it on every PTY chunk. Each spawn gets a fresh parser so per-session rolling buffers can survive across chunk boundaries. |
+| `backgroundShells?.resolveOutputFile({cwd, shellId})` | `(options) => string \| null` | Locate the agent's on-disk output file for a NAMED background shell, or `null` when it has none. The bg-shell process-tree watcher stats this file each poll cycle; file growth is ground-truth liveness that keeps a genuinely-running shell from being reclaimed at the 5-min named cap when no OS PID could be captured (see [Activity Detection](activity-detection.md), Output-file liveness). Today only Claude implements this (its temp `tasks/<shellId>.output` files). |
 
-Omit `sessionId` entirely for agents that use caller-owned IDs (Claude via `--session-id`) or that have no resume mechanism (Aider). Omit `sessionHistory` for agents without a native session log file. Omit `statusFile` for agents that don't emit hook-driven `status.json` / `events.jsonl` (only Claude and Copilot use this pipeline today). Omit `streamOutput` for agents that don't emit machine-readable NDJSON to PTY stdout (everyone except Cursor today).
+Omit `sessionId` entirely for agents that use caller-owned IDs (Claude via `--session-id`) or that have no resume mechanism (Aider). Omit `sessionHistory` for agents without a native session log file. Omit `statusFile` for agents that don't emit hook-driven `status.json` / `events.jsonl` (only Claude and Copilot use this pipeline today). Omit `streamOutput` for agents that don't emit machine-readable NDJSON to PTY stdout (everyone except Cursor today). Omit `backgroundShells` for agents that don't write a per-shell output file (everyone except Claude today).
 
 ### `SpawnSessionInput` extras
 
@@ -310,7 +311,7 @@ All Kangentic artifacts stay in `.kangentic/` - nothing is written to `.claude/s
 
 ### Hook Injection
 
-Kangentic subscribes to 17 Claude Code hook points via the event bridge:
+Kangentic subscribes to 17 Claude Code hook points via the event bridge (18 entries: `UserPromptSubmit` registers two, for two distinct event types):
 
 | Hook Event | Event Type | Purpose |
 |------------|-----------|---------|
@@ -318,6 +319,7 @@ Kangentic subscribes to 17 Claude Code hook points via the event bridge:
 | `PostToolUse` (blank) | `tool_end` | Tool execution completed |
 | `PostToolUseFailure` (blank) | `tool_end` | Tool execution failed (remaps to `interrupted` when `is_interrupt` is true) |
 | `UserPromptSubmit` | `prompt` | User submitted a prompt |
+| `UserPromptSubmit` | `background_shell_end` | A `<task-notification>` terminal status (`completed`/`failed`/`killed`/`cancelled`/`aborted`) drains the named bg shell; suppressed for all other prompts via `emitOnlyWhenDetailMatches` (fail-closed) |
 | `Stop` | `idle` | Agent stopped naturally |
 | `PermissionRequest` | `idle` | Agent hit a permission wall |
 | `SessionStart` | `session_start` | Session began |

@@ -1882,6 +1882,29 @@ export interface AdapterRuntimeStrategy {
     /** Build a fresh parser bound to a single session. */
     createParser(): StreamOutputParser;
   };
+
+  /**
+   * How the agent exposes a NAMED background shell's on-disk output for
+   * liveness detection. The bg-shell process-tree watcher stats this file
+   * each poll cycle: growth (size or mtime advancing) is positive evidence
+   * that the shell is still alive, which keeps a genuinely-running shell
+   * from being reclaimed at the 5-min named-shell cap when no OS PID could
+   * be captured (the false-idle path in Incident B, where a backgrounded
+   * E2E run is alive but the count heuristic is permanently desynced by
+   * app-under-test churn).
+   *
+   * Claude Code writes each backgrounded Bash's stdout/stderr to a temp
+   * file; other agents may have no such file. Omit entirely for those.
+   */
+  readonly backgroundShells?: {
+    /**
+     * Locate the on-disk output file for a named background shell, or
+     * null when it cannot be found (no such file, agent uses a different
+     * layout, or the path could not be resolved). The watcher treats null
+     * as "unsupported" and falls back to the count heuristic and caps.
+     */
+    resolveOutputFile(options: { cwd: string; shellId: string }): string | null;
+  };
 }
 
 /**
