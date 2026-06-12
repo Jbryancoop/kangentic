@@ -2,7 +2,6 @@ import { ipcMain } from 'electron';
 import simpleGit from 'simple-git';
 import { IPC } from '../../../shared/ipc-channels';
 import { DiffService } from '../../git/diff-service';
-import { DiffWatcher } from '../../git/diff-watcher';
 import { readWorktreeHead } from '../../git/worktree-head';
 import { fetchAllRemotesIfStale } from '../../git/fetch-throttle';
 import type { GitDiffFilesInput, GitFileContentInput, GitPendingChangesInput, GitPendingChangesResult } from '../../../shared/types';
@@ -59,11 +58,15 @@ export async function probePendingChanges(checkPath: string): Promise<GitPending
 }
 
 export function registerGitDiffHandlers(context: IpcContext): void {
-  const watcher = new DiffWatcher();
+  // DiffWatcher lives on the context (not module-local) so project relocation
+  // can release the worktree fs.watch handles inside a folder before moving it.
+  const watcher = context.diffWatcher;
 
   // Cache DiffService instances per directory so the merge-base cache persists
   // across getDiffFiles and getFileContent calls, avoiding redundant git
-  // merge-base subprocess spawns on every file click.
+  // merge-base subprocess spawns on every file click. These hold no file
+  // handles (git is spawned per call), so stale post-relocation entries keyed
+  // by the old path are harmless and left in place.
   const serviceCache = new Map<string, DiffService>();
 
   function getOrCreateService(gitDirectory: string): DiffService {

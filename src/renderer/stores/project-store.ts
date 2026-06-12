@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Project, ProjectCreateInput, ProjectGroup, ProjectGroupCreateInput } from '../../shared/types';
+import type { Project, ProjectCreateInput, ProjectGroup, ProjectGroupCreateInput, ProjectRelocateOptions, ProjectRelocateResult } from '../../shared/types';
 import { PROJECT_PATH_MISSING_PREFIX } from '../../shared/ipc-channels';
 import { useSessionStore } from './session-store';
 import { useConfigStore } from './config-store';
@@ -28,7 +28,7 @@ interface ProjectStore {
   openProjectByPath: (folderPath: string) => Promise<Project>;
   reorderProjects: (ids: string[]) => Promise<void>;
   renameProject: (id: string, name: string) => Promise<void>;
-  relocateProject: (id: string, newPath: string) => Promise<Project>;
+  relocateProject: (id: string, newPath: string, options?: ProjectRelocateOptions) => Promise<ProjectRelocateResult>;
   setMissingPathProject: (project: Project | null) => void;
   setProjectGroup: (projectId: string, groupId: string | null) => Promise<void>;
   loadCurrent: () => Promise<void>;
@@ -164,11 +164,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     }
   },
 
-  relocateProject: async (id, newPath) => {
+  relocateProject: async (id, newPath, options) => {
     // No optimistic update: validation failures (path missing, already
     // registered to another project) are expected user-facing errors.
     useSessionStore.getState().killTransientSessionForProject(id).catch(() => {});
-    const updated = await window.electronAPI.projects.relocate(id, newPath);
+    const result = await window.electronAPI.projects.relocate(id, newPath, options);
+    const updated = result.project;
     set((state) => ({
       projects: state.projects.map((project) => (project.id === id ? updated : project)),
       currentProject: state.currentProject?.id === id ? updated : state.currentProject,
@@ -179,7 +180,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     if (get().currentProject?.id === id) {
       await get().openProject(id);
     }
-    return updated;
+    return result;
   },
 
   setMissingPathProject: (project) => {

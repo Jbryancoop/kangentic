@@ -24,7 +24,9 @@ export function ProjectPathMissingDialog() {
     const selectedPath = await window.electronAPI.dialog.selectFolder();
     if (!selectedPath) return; // picker cancelled: keep the dialog open
     try {
-      const updated = await relocateProject(project.id, selectedPath);
+      // Repoint mode (the default): the folder was moved outside Kangentic and
+      // the user is pointing us at where it now lives.
+      const { project: updated } = await relocateProject(project.id, selectedPath);
       // relocateProject only re-opens the current project; at startup (or
       // when the failed open never completed) nothing is current yet.
       if (useProjectStore.getState().currentProject?.id !== updated.id) {

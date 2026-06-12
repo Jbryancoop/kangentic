@@ -28,7 +28,7 @@ User drags task between columns
 
 All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src/preload/preload.ts` mirrors them as `window.electronAPI.*`.
 
-### Projects (14 channels)
+### Projects (15 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `project:list` | invoke | Fetch all projects (ordered by position) |
@@ -42,7 +42,8 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `project:setGroup` | invoke | Assign a project to a group (or clear group assignment) |
 | `project:rename` | invoke | Rename a project |
 | `project:setDefaultAgent` | invoke | Set the default agent CLI for a project |
-| `project:relocate` | invoke | Re-point a project at a new folder on disk (preserves tasks and history; migrates agent per-project data via the `onProjectRelocated` adapter hook) |
+| `project:relocate` | invoke | Relocate a project: `repoint` mode re-points at a folder already moved outside Kangentic (Locate Folder / Change); `move` mode has Kangentic move the folder itself (one-step Move). Both preserve tasks and history, rewrite stored paths, and call the `onProjectRelocated` adapter hook. Returns `ProjectRelocateResult` (`{ project, warnings }`) |
+| `project:moveProgress` | on | Event: progress during a one-step project move (`phase`: `moving`/`copying`, `copiedEntries`, `totalEntries`) |
 | `project:autoOpened` | on | Event: project auto-opened on launch |
 | `project:pathMissing` | on | Event: a registered project path no longer exists on disk |
 

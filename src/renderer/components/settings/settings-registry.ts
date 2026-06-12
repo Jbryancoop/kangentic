@@ -20,7 +20,7 @@ export interface SettingDefinition {
 /** Flat registry array. All settings in display order. */
 export const SETTINGS_REGISTRY: SettingDefinition[] = [
   // ── General ──
-  { id: 'project.location', tabId: 'general', label: 'Project Location', description: 'Folder on disk this project points at. Change it when the folder was moved or renamed; all tasks and history are preserved.', scope: 'project', keywords: ['path', 'folder', 'directory', 'move', 'relocate', 'change directory', 'locate'] },
+  { id: 'project.location', tabId: 'general', label: 'Project Location', description: 'Folder on disk this project points at. Move it to a new location; all tasks, history, and worktrees move with it.', scope: 'project', keywords: ['path', 'folder', 'directory', 'move', 'relocate', 'change directory', 'locate'] },
 
   // ── Theme ──
   { id: 'theme', tabId: 'theme', label: 'Theme', description: 'Color scheme for the interface', scope: 'project', keywords: ['color', 'dark', 'light', 'appearance'] },

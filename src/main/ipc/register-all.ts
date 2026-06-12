@@ -6,6 +6,7 @@ import { ProjectGroupRepository } from '../db/repositories/project-group-reposit
 import { SessionManager } from '../pty/session-manager';
 import { ConfigManager } from '../config/config-manager';
 import { BoardConfigManager } from '../config/board-config-manager';
+import { DiffWatcher } from '../git/diff-watcher';
 import { GitDetector } from '../git/git-detector';
 import { ShellResolver } from '../pty/spawn/shell-resolver';
 import { TerminalSubmitScheduler } from '../engine/terminal-submit-scheduler';
@@ -75,6 +76,7 @@ export function registerAllIpc(mainWindow: BrowserWindow, mcpServerHandle: McpHt
   const boardConfigManager = new BoardConfigManager({
     ephemeral: process.argv.includes('--ephemeral'),
   });
+  const diffWatcher = new DiffWatcher();
 
   // Lazy-initialize heavy objects on first access
   let projectRepo: ProjectRepository | null = null;
@@ -95,6 +97,7 @@ export function registerAllIpc(mainWindow: BrowserWindow, mcpServerHandle: McpHt
     },
     sessionManager,
     boardConfigManager,
+    diffWatcher,
     get configManager() {
       if (!configManager) configManager = new ConfigManager();
       return configManager;

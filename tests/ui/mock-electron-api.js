@@ -436,7 +436,7 @@
         var idx = projects.findIndex(function (p) { return p.id === projectId; });
         if (idx >= 0) projects[idx].group_id = groupId;
       },
-      relocate: async function (id, newPath) {
+      relocate: async function (id, newPath, _options) {
         var duplicate = projects.find(function (p) { return p.id !== id && p.path === newPath; });
         if (duplicate) {
           throw new Error('Another project ("' + duplicate.name + '") already points at ' + newPath);
@@ -444,9 +444,28 @@
         var idx = projects.findIndex(function (p) { return p.id === id; });
         if (idx >= 0) {
           projects[idx].path = newPath;
-          return Object.assign({}, projects[idx]);
+          return { project: Object.assign({}, projects[idx]), warnings: [] };
         }
         throw new Error('Project not found: ' + id);
+      },
+      onMoveProgress: function (callback) {
+        // Tests drive determinate copy progress via
+        // `window.__mockFireProjectMoveProgress(progress)`.
+        if (!window.__mockProjectMoveProgressListeners) {
+          window.__mockProjectMoveProgressListeners = [];
+        }
+        window.__mockProjectMoveProgressListeners.push(callback);
+        if (!window.__mockFireProjectMoveProgress) {
+          window.__mockFireProjectMoveProgress = function (progress) {
+            var listeners = (window.__mockProjectMoveProgressListeners || []).slice();
+            listeners.forEach(function (fn) { fn(progress); });
+          };
+        }
+        return function () {
+          var listeners = window.__mockProjectMoveProgressListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
       onPathMissing: function (callback) {
         // Tests can fire the startup missing-path push via

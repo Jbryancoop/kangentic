@@ -51,6 +51,8 @@ const applySuspendDbWritesMock = vi.hoisted(() => vi.fn());
 const abortInFlightResumeMock = vi.hoisted(() => vi.fn());
 const clearQueueMock = vi.hoisted(() => vi.fn());
 const onProjectRelocatedMock = vi.hoisted(() => vi.fn(async () => {}));
+const moveDirectoryMock = vi.hoisted(() => vi.fn(async () => ({ strategy: 'rename' as const })));
+const removeDirectoryTreeMock = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock('../../src/main/git/original-fs', () => ({
   default: {
@@ -93,6 +95,10 @@ vi.mock('../../src/main/ipc/handlers/session-reconcile', () => ({
 }));
 vi.mock('../../src/main/ipc/handlers/session-resume-controllers', () => ({
   abortInFlightResume: abortInFlightResumeMock,
+}));
+vi.mock('../../src/main/fs/directory-move', () => ({
+  moveDirectory: moveDirectoryMock,
+  removeDirectoryTree: removeDirectoryTreeMock,
 }));
 // The handler statically imports agentRegistry; mock it so vitest does not load
 // every real adapter (better-sqlite3 / node-pty transitive deps cannot load
@@ -146,11 +152,16 @@ interface ContextOptions {
 
 function makeContext(options: ContextOptions = {}) {
   const projects = options.projects ?? [makeProject()];
+  // Records the order of the key relocation steps so move-mode ordering can be
+  // asserted (suspend -> detach -> releaseUnder -> move -> updatePath -> ...).
+  const callOrder: string[] = [];
+  const sendMock = vi.fn();
   const context = {
     projectRepo: {
       getById: vi.fn((id: string) => projects.find((project) => project.id === id)),
       list: vi.fn(() => projects),
       updatePath: vi.fn((id: string, newPath: string) => {
+        callOrder.push('updatePath');
         const project = projects.find((candidate) => candidate.id === id);
         if (!project) throw new Error('not found');
         project.path = newPath;
@@ -159,14 +170,20 @@ function makeContext(options: ContextOptions = {}) {
     },
     sessionManager: {
       listSessions: vi.fn(() => options.sessions ?? []),
-      suspend: vi.fn(async () => {}),
-      kill: vi.fn(async () => {}),
+      suspend: vi.fn(async () => { callOrder.push('suspend'); }),
+      kill: vi.fn(async () => { callOrder.push('kill'); }),
     },
     recoveredProjects: new Set<string>(['project-1']),
     currentProjectId: options.currentProjectId ?? null,
     currentProjectPath: options.currentProjectId ? OLD_PATH : null,
-    boardConfigManager: { detach: vi.fn() },
+    boardConfigManager: { detach: vi.fn(() => { callOrder.push('detach'); }) },
+    diffWatcher: { releaseUnder: vi.fn(() => { callOrder.push('releaseUnder'); }) },
+    mainWindow: { isDestroyed: vi.fn(() => false), webContents: { send: sendMock } },
+    callOrder,
+    sendMock,
   };
+  moveDirectoryMock.mockImplementation(async () => { callOrder.push('move'); return { strategy: 'rename' as const }; });
+  removeDirectoryTreeMock.mockImplementation(async () => { callOrder.push('removeDirectoryTree'); });
   return context;
 }
 
@@ -184,7 +201,9 @@ beforeEach(() => {
   dbState.taskUpdates = [];
   dbState.cwdUpdates = [];
   isGitRepoMock.mockReturnValue(false);
-  // New location exists as a directory in the common case.
+  moveDirectoryMock.mockReset();
+  removeDirectoryTreeMock.mockReset();
+  // New location exists as a directory in the common case (repoint mode).
   mockFs.existing.add(NEW_PATH);
   mockFs.directories.add(NEW_PATH);
 });
@@ -247,7 +266,7 @@ describe('relocateProject', () => {
     mockFs.existing.add(OLD_PATH);
     mockFs.directories.add(OLD_PATH);
     const result = await relocateProject(asIpcContext(context), 'project-1', OLD_PATH);
-    expect(result.path).toBe(OLD_PATH);
+    expect(result.project.path).toBe(OLD_PATH);
     expect(context.projectRepo.updatePath).not.toHaveBeenCalled();
   });
 
@@ -271,7 +290,7 @@ describe('relocateProject', () => {
 
     const result = await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
 
-    expect(result.path).toBe(NEW_PATH);
+    expect(result.project.path).toBe(NEW_PATH);
     expect(context.projectRepo.updatePath).toHaveBeenCalledWith('project-1', NEW_PATH);
     expect(dbState.taskUpdates).toEqual([
       { id: 'task-1', worktree_path: path.join(NEW_PATH, '.kangentic', 'worktrees', 'feat-x') },
@@ -321,6 +340,26 @@ describe('relocateProject', () => {
     expect(context.boardConfigManager.detach).toHaveBeenCalled();
   });
 
+  it('does not detach the board watcher when the project is not current', async () => {
+    const context = makeContext({ currentProjectId: null });
+    await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
+    expect(context.boardConfigManager.detach).not.toHaveBeenCalled();
+  });
+
+  it('releases the diff watchers under the old path before any rewrite', async () => {
+    const context = makeContext();
+    await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
+    expect(context.diffWatcher.releaseUnder).toHaveBeenCalledWith(OLD_PATH);
+    expect(context.callOrder.indexOf('releaseUnder')).toBeLessThan(context.callOrder.indexOf('updatePath'));
+  });
+
+  it('returns an empty warnings array in repoint mode', async () => {
+    const context = makeContext();
+    const result = await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
+    expect(result.warnings).toEqual([]);
+    expect(moveDirectoryMock).not.toHaveBeenCalled();
+  });
+
   it('runs git worktree repair with rewritten worktree paths that exist', async () => {
     isGitRepoMock.mockReturnValue(true);
     const context = makeContext();
@@ -347,7 +386,7 @@ describe('relocateProject', () => {
     runGitWithTimeoutMock.mockRejectedValueOnce(new Error('repair exploded'));
     const context = makeContext();
     const result = await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
-    expect(result.path).toBe(NEW_PATH);
+    expect(result.project.path).toBe(NEW_PATH);
   });
 
   it('skips git worktree repair for non-git folders', async () => {
@@ -368,6 +407,168 @@ describe('relocateProject', () => {
     onProjectRelocatedMock.mockRejectedValueOnce(new Error('migration exploded'));
     const context = makeContext();
     const result = await relocateProject(asIpcContext(context), 'project-1', NEW_PATH);
-    expect(result.path).toBe(NEW_PATH);
+    expect(result.project.path).toBe(NEW_PATH);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// relocateProject - move mode (one-step move)
+// ---------------------------------------------------------------------------
+
+describe('relocateProject (move mode)', () => {
+  // A destination that does NOT yet exist, whose parent (OLD_PATH's parent)
+  // does exist as a directory.
+  const PARENT = path.dirname(OLD_PATH);
+  const MOVE_DEST = path.resolve(path.join(PARENT, 'moved-app'));
+
+  beforeEach(() => {
+    // Move mode requires the source to exist and the destination NOT to exist;
+    // override the repoint-friendly defaults from the outer beforeEach.
+    mockFs.existing.clear();
+    mockFs.directories.clear();
+    mockFs.existing.add(OLD_PATH);
+    mockFs.directories.add(OLD_PATH);
+    mockFs.existing.add(PARENT);
+    mockFs.directories.add(PARENT);
+  });
+
+  it('rejects when the destination already exists', async () => {
+    const context = makeContext();
+    mockFs.existing.add(MOVE_DEST);
+    mockFs.directories.add(MOVE_DEST);
+    await expect(relocateProject(asIpcContext(context), 'project-1', MOVE_DEST, { mode: 'move' }))
+      .rejects.toThrow('Destination already exists');
+    expect(moveDirectoryMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the destination parent does not exist', async () => {
+    const context = makeContext();
+    const orphanDest = path.resolve(path.join('/', 'no-such-parent', 'moved-app'));
+    await expect(relocateProject(asIpcContext(context), 'project-1', orphanDest, { mode: 'move' }))
+      .rejects.toThrow('Destination folder does not exist');
+    expect(moveDirectoryMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the destination is inside the project folder', async () => {
+    const context = makeContext();
+    const insideDest = path.join(OLD_PATH, 'sub', 'nested');
+    await expect(relocateProject(asIpcContext(context), 'project-1', insideDest, { mode: 'move' }))
+      .rejects.toThrow('inside the project folder');
+    expect(moveDirectoryMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the source folder no longer exists', async () => {
+    const context = makeContext();
+    mockFs.existing.delete(OLD_PATH);
+    mockFs.directories.delete(OLD_PATH);
+    await expect(relocateProject(asIpcContext(context), 'project-1', MOVE_DEST, { mode: 'move' }))
+      .rejects.toThrow('no longer exists');
+    expect(moveDirectoryMock).not.toHaveBeenCalled();
+  });
+
+  it('moves the folder and relocates in the correct order', async () => {
+    const context = makeContext({ currentProjectId: 'project-1' });
+    context.currentProjectPath = OLD_PATH;
+    const taskSession = {
+      id: 'pty-1', taskId: 'task-1', projectId: 'project-1', status: 'running',
+    } as unknown as Session;
+    (context.sessionManager.listSessions as ReturnType<typeof vi.fn>).mockReturnValue([taskSession]);
+
+    const result = await relocateProject(asIpcContext(context), 'project-1', MOVE_DEST, { mode: 'move' });
+
+    expect(result.project.path).toBe(MOVE_DEST);
+    expect(moveDirectoryMock).toHaveBeenCalledWith(OLD_PATH, MOVE_DEST, expect.anything());
+    // suspend -> detach -> releaseUnder -> move -> updatePath
+    const order = context.callOrder;
+    expect(order.indexOf('suspend')).toBeLessThan(order.indexOf('detach'));
+    expect(order.indexOf('detach')).toBeLessThan(order.indexOf('releaseUnder'));
+    expect(order.indexOf('releaseUnder')).toBeLessThan(order.indexOf('move'));
+    expect(order.indexOf('move')).toBeLessThan(order.indexOf('updatePath'));
+  });
+
+  it('does not delete the source for a same-volume rename', async () => {
+    const context = makeContext();
+    moveDirectoryMock.mockImplementation(async () => {
+      context.callOrder.push('move');
+      return { strategy: 'rename' as const };
+    });
+    await relocateProject(asIpcContext(context), 'project-1', MOVE_DEST, { mode: 'move' });
+    expect(removeDirectoryTreeMock).not.toHaveBeenCalled();
+  });
+
+  it('deletes the source after a cross-volume copy succeeds', async () => {
+    const context = makeContext();
+    moveDirectoryMock.mockImplementation(async () => {
+      context.callOrder.push('move');
+      return { strategy: 'copy' as const, totalEntries: 42 };
+    });
+    await relocateProject(asIpcContext(context), 'project-1', MOVE_DEST, { mode: 'move' });
+    expect(removeDirectoryTreeMock).toHaveBeenCalledWith(OLD_PATH);
+    // Source delete happens AFTER the relocation work (updatePath).
+    expect(context.callOrder.indexOf('updatePath'))
+      .toBeLessThan(context.callOrder.indexOf('removeDirectoryTree'));
+  });
+
+  it('reports a source-delete-failed warning when the cross-volume cleanup fails', async () => {
+    const context = makeContext();
+    moveDirectoryMock.mockImplementation(async () => {
+      context.callOrder.push('move');
+      return { strategy: 'copy' as const, totalEntries: 1 };
+    });
+    removeDirectoryTreeMock.mockRejectedValueOnce(new Error('still locked'));
+    const result = await relocateProject(asIpcContext(context), 'project-1', MOVE_DEST, { mode: 'move' });
+    expect(result.warnings).toEqual(['source-delete-failed']);
+  });
+
+  it('propagates a move failure without changing the project', async () => {
+    const context = makeContext();
+    moveDirectoryMock.mockRejectedValueOnce(new Error('rename exploded'));
+    await expect(relocateProject(asIpcContext(context), 'project-1', MOVE_DEST, { mode: 'move' }))
+      .rejects.toThrow('rename exploded');
+    expect(context.projectRepo.updatePath).not.toHaveBeenCalled();
+    expect(removeDirectoryTreeMock).not.toHaveBeenCalled();
+  });
+
+  it('pushes move progress events carrying the projectId', async () => {
+    const context = makeContext();
+    await relocateProject(asIpcContext(context), 'project-1', MOVE_DEST, { mode: 'move' });
+    expect(context.sendMock).toHaveBeenCalledWith(
+      'project:moveProgress',
+      expect.objectContaining({ projectId: 'project-1', phase: 'moving' }),
+    );
+  });
+
+  it('skips progress send when mainWindow is destroyed, but the move still completes', async () => {
+    // The sendProgress guard `if (context.mainWindow.isDestroyed()) return` must
+    // not skip the move itself - only the IPC push to the renderer.
+    const context = makeContext();
+    context.mainWindow.isDestroyed.mockReturnValue(true);
+
+    const result = await relocateProject(asIpcContext(context), 'project-1', MOVE_DEST, { mode: 'move' });
+
+    expect(result.project.path).toBe(MOVE_DEST);
+    // The progress send must NOT have been called (window is destroyed).
+    expect(context.sendMock).not.toHaveBeenCalledWith(
+      'project:moveProgress',
+      expect.anything(),
+    );
+  });
+
+  it('relocation still completes when a transient session kill throws', async () => {
+    // A transient session kill failure is caught and logged, and must not
+    // propagate to the caller.
+    const transientSession = {
+      id: 'pty-transient-throw', taskId: '', projectId: 'project-1',
+      status: 'running', transient: true,
+    } as unknown as Session;
+    const context = makeContext({ sessions: [transientSession] });
+    context.sessionManager.kill.mockRejectedValueOnce(new Error('PTY already gone'));
+
+    const result = await relocateProject(asIpcContext(context), 'project-1', MOVE_DEST, { mode: 'move' });
+
+    // The kill was attempted.
+    expect(context.sessionManager.kill).toHaveBeenCalledWith('pty-transient-throw');
+    // Relocation completed despite the kill failure.
+    expect(result.project.path).toBe(MOVE_DEST);
   });
 });

@@ -114,6 +114,44 @@ export interface ProjectSearchEntriesResult {
   truncated: boolean;
 }
 
+/**
+ * How `relocate` treats the project folder.
+ * - `repoint` (default): the folder was already moved/renamed outside
+ *   Kangentic; just re-point the project at it (validates it exists).
+ * - `move`: Kangentic moves the folder to `newPath` itself (one-step move),
+ *   then relocates. The destination must NOT already exist.
+ */
+export type ProjectRelocateMode = 'repoint' | 'move';
+
+export interface ProjectRelocateOptions {
+  mode?: ProjectRelocateMode;
+}
+
+/**
+ * Non-fatal conditions a relocation can finish with. `source-delete-failed`
+ * means a cross-volume move copied to the new location and relocated cleanly,
+ * but the original folder could not be fully removed afterward (it remains on
+ * disk).
+ */
+export type ProjectRelocateWarning = 'source-delete-failed';
+
+export interface ProjectRelocateResult {
+  project: Project;
+  warnings: ProjectRelocateWarning[];
+}
+
+/**
+ * Progress pushed to the renderer while a one-step move is in flight.
+ * `moving` = an atomic rename is in flight (indeterminate). `copying` = a
+ * cross-volume copy is running (determinate via copiedEntries/totalEntries).
+ */
+export interface ProjectMoveProgress {
+  projectId: string;
+  phase: 'moving' | 'copying';
+  copiedEntries: number;
+  totalEntries: number;
+}
+
 /** Normalized, platform-agnostic pull-request state. */
 export type PRState = 'open' | 'draft' | 'merged' | 'closed';
 
@@ -2134,7 +2172,8 @@ export interface ElectronAPI {
     setDefaultAgent: (id: string, agentName: string) => Promise<Project>;
     reorder: (ids: string[]) => Promise<void>;
     setGroup: (projectId: string, groupId: string | null) => Promise<void>;
-    relocate: (id: string, newPath: string) => Promise<Project>;
+    relocate: (id: string, newPath: string, options?: ProjectRelocateOptions) => Promise<ProjectRelocateResult>;
+    onMoveProgress: (callback: (progress: ProjectMoveProgress) => void) => () => void;
     onAutoOpened: (callback: (project: Project) => void) => () => void;
     onPathMissing: (callback: (project: Project) => void) => () => void;
   };

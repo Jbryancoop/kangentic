@@ -22,7 +22,7 @@ export function GeneralTab() {
   const project = projects.find((candidate) => candidate.path === activePath)
     ?? currentProject;
 
-  const { requestRelocate, relocationDialog } = useProjectRelocation((updated) => {
+  const { requestMove, relocationDialog } = useProjectRelocation((updated) => {
     // The settings panel and its project switcher are keyed by path; re-key
     // them so the panel keeps pointing at the relocated project.
     openProjectSettings(updated.path, updated.name, 'general');
@@ -43,12 +43,12 @@ export function GeneralTab() {
           </div>
           <button
             type="button"
-            onClick={() => requestRelocate(project)}
-            data-testid="project-location-change"
+            onClick={() => requestMove(project)}
+            data-testid="project-location-move"
             className="flex-shrink-0 inline-flex items-center gap-2 px-3 py-1.5 text-xs rounded border border-edge-input text-fg-muted hover:text-fg hover:border-edge-hover transition-colors"
           >
             <FolderInput size={14} />
-            <span>Change...</span>
+            <span>Move...</span>
           </button>
         </div>
       </SettingRow>

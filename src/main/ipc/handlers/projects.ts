@@ -21,7 +21,7 @@ import { trackEvent } from '../../analytics/analytics';
 import { isShuttingDown } from '../../shutdown-state';
 import { runWithProjectLogContext } from '../../diagnostics/project-log-context';
 import { DEFAULT_AGENT } from '../../../shared/types';
-import type { Project, Task, AppConfig, ProjectSearchEntriesInput } from '../../../shared/types';
+import type { Project, Task, AppConfig, ProjectSearchEntriesInput, ProjectRelocateOptions } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 import type { ProjectRepository } from '../../db/repositories/project-repository';
 import type { ConfigManager } from '../../config/config-manager';
@@ -597,8 +597,8 @@ export function registerProjectHandlers(context: IpcContext): void {
     return context.projectRepo.rename(id, name);
   });
 
-  ipcMain.handle(IPC.PROJECT_RELOCATE, async (_, id: string, newPath: string) => {
-    return relocateProject(context, id, newPath);
+  ipcMain.handle(IPC.PROJECT_RELOCATE, async (_, id: string, newPath: string, options?: ProjectRelocateOptions) => {
+    return relocateProject(context, id, newPath, options);
   });
 
   ipcMain.handle(IPC.PROJECT_SET_DEFAULT_AGENT, async (_, id: string, agentName: string) => {

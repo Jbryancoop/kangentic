@@ -140,10 +140,11 @@ test.describe('Project Sidebar Actions', () => {
 });
 
 test.describe('Project Relocation', () => {
-  test('settings General tab Change confirms and updates the project path', async () => {
-    // The folder picker returns the new location (consume-once override).
+  test('settings General tab Move confirms and updates the project path', async () => {
+    // The folder picker returns the destination PARENT (consume-once
+    // override); the project folder keeps its name and moves into it.
     await page.evaluate(() => {
-      (window as Record<string, unknown>).__mockFolderPath = '/mock/new-location/TestProject';
+      (window as Record<string, unknown>).__mockFolderPath = '/mock/new-location';
     });
 
     // Relocation lives in Project Settings > General (the context-menu entry
@@ -152,17 +153,17 @@ test.describe('Project Relocation', () => {
     await page.locator('.fixed.bg-surface-raised').locator('text=Project Settings').click();
     await page.locator('h2:has-text("Settings")').waitFor({ state: 'visible', timeout: 3000 });
     await page.getByRole('button', { name: 'General', exact: true }).click();
-    await page.getByTestId('project-location-change').click();
+    await page.getByTestId('project-location-move').click();
 
-    // Confirm dialog shows both the old and the new path. Scope to the
+    // Confirm dialog shows both the old and the computed new path. Scope to the
     // dialog's From/To lines: the General tab behind it also renders the old
     // path, so a bare getByText would match two elements.
-    await expect(page.getByRole('heading', { name: 'Change Project Directory' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Move Project Folder' })).toBeVisible();
     await expect(page.locator('p', { hasText: 'From:' })).toContainText('/mock/projects/TestProject');
     await expect(page.locator('p', { hasText: 'To:' })).toContainText('/mock/new-location/TestProject');
 
-    await page.getByRole('button', { name: 'Change Directory', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Change Project Directory' })).toBeHidden();
+    await page.getByRole('button', { name: 'Move Folder', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Move Project Folder' })).toBeHidden();
 
     // Sidebar search matches project.path: the project must now be found by
     // the new location and no longer by the old one.
@@ -173,7 +174,7 @@ test.describe('Project Relocation', () => {
     await expect(page.locator('.truncate.font-medium:text("TestProject")')).toHaveCount(0);
   });
 
-  test('settings General tab shows the location and a Change button', async () => {
+  test('settings General tab shows the location and a Move button', async () => {
     await page.locator('.truncate.font-medium:text("TestProject")').first().click({ button: 'right' });
     await page.locator('.fixed.bg-surface-raised').locator('text=Project Settings').click();
     await page.locator('h2:has-text("Settings")').waitFor({ state: 'visible', timeout: 3000 });
@@ -181,7 +182,7 @@ test.describe('Project Relocation', () => {
     await page.getByRole('button', { name: 'General', exact: true }).click();
 
     await expect(page.getByTestId('project-location-path')).toHaveText('/mock/projects/TestProject');
-    await expect(page.getByTestId('project-location-change')).toBeVisible();
+    await expect(page.getByTestId('project-location-move')).toBeVisible();
   });
 
   test('missing-path push shows the Project Folder Not Found dialog', async () => {

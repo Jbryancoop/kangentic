@@ -5,25 +5,34 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
-const mockWatcherClose = vi.fn();
+/** Per-path close spies so tests can assert exactly which watchers were closed. */
+const mockCloseFns = new Map<string, ReturnType<typeof vi.fn>>();
 let watchCallback: ((eventType: string, filename: string | null) => void) | null = null;
 
 vi.mock('node:fs', () => ({
   default: {
-    watch: vi.fn((_path: string, _options: unknown, callback: (eventType: string, filename: string | null) => void) => {
+    watch: vi.fn((watchPath: string, _options: unknown, callback: (eventType: string, filename: string | null) => void) => {
       watchCallback = callback;
-      return { close: mockWatcherClose };
+      const closeFn = vi.fn();
+      mockCloseFns.set(watchPath, closeFn);
+      return { close: closeFn };
     }),
   },
 }));
 
-// Use forward-slash separator for cross-platform tests.
-// DiffWatcher uses path.sep to split filenames; on Linux path.sep is '/'.
-vi.mock('node:path', () => ({
-  default: {
-    sep: '/',
-  },
-}));
+// Extend the real path module: pin sep to '/' for cross-platform consistency
+// (DiffWatcher splits filenames by path.sep; on CI Linux sep is already '/'),
+// but keep the real `relative`, `isAbsolute`, and `join` so that
+// `replacePathPrefix` (imported by releaseUnder) works correctly.
+vi.mock('node:path', async () => {
+  const actual = await vi.importActual<typeof import('node:path')>('node:path');
+  return {
+    default: {
+      ...actual,
+      sep: '/',
+    },
+  };
+});
 
 import { DiffWatcher } from '../../src/main/git/diff-watcher';
 
@@ -35,6 +44,7 @@ describe('DiffWatcher', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    mockCloseFns.clear();
     watchCallback = null;
     watcher = new DiffWatcher();
   });
@@ -56,8 +66,6 @@ describe('DiffWatcher', () => {
 
     watcher.subscribe('/project', callback);
 
-    // Reset the mock call count, then subscribe again
-    mockWatcherClose.mockClear();
     const secondCallback = vi.fn();
     watcher.subscribe('/project', secondCallback);
 
@@ -151,7 +159,7 @@ describe('DiffWatcher', () => {
 
     watcher.unsubscribe('/project');
 
-    expect(mockWatcherClose).toHaveBeenCalledTimes(1);
+    expect(mockCloseFns.get('/project')).toHaveBeenCalledTimes(1);
   });
 
   it('clears pending debounce timer on unsubscribe', () => {
@@ -185,6 +193,75 @@ describe('DiffWatcher', () => {
 
     watcher.closeAll();
 
-    expect(mockWatcherClose).toHaveBeenCalledTimes(2);
+    expect(mockCloseFns.get('/project-a')).toHaveBeenCalledTimes(1);
+    expect(mockCloseFns.get('/project-b')).toHaveBeenCalledTimes(1);
+  });
+
+  // ── releaseUnder ──────────────────────────────────────────────────────────
+  //
+  // releaseUnder uses replacePathPrefix (path.relative-based) to match the
+  // prefix exactly, so tests use platform-resolved paths to ensure correct
+  // path.relative behaviour on both Windows and Linux CI.
+
+  describe('releaseUnder', () => {
+    it('closes a watcher whose path IS exactly the prefix', () => {
+      // Use an absolute path so path.relative gives '' (exact match).
+      const prefix = '/projects/app';
+      watcher.subscribe(prefix, vi.fn());
+
+      watcher.releaseUnder(prefix);
+
+      expect(mockCloseFns.get(prefix)).toHaveBeenCalledTimes(1);
+    });
+
+    it('closes a watcher nested under the prefix', () => {
+      const prefix = '/projects/app';
+      const nestedPath = '/projects/app/.kangentic/worktrees/feat-x';
+      watcher.subscribe(nestedPath, vi.fn());
+
+      watcher.releaseUnder(prefix);
+
+      expect(mockCloseFns.get(nestedPath)).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT close a sibling that shares a string prefix but is a different directory', () => {
+      // '/projects/app2' starts with the string '/projects/app' but is a sibling,
+      // not a child. replacePathPrefix uses path.relative which returns '..'
+      // for siblings, so the match must be null.
+      const prefix = '/projects/app';
+      const siblingPath = '/projects/app2';
+      watcher.subscribe(siblingPath, vi.fn());
+
+      watcher.releaseUnder(prefix);
+
+      expect(mockCloseFns.get(siblingPath)).not.toHaveBeenCalled();
+    });
+
+    it('does NOT close an unrelated path', () => {
+      const prefix = '/projects/app';
+      const unrelatedPath = '/somewhere/else';
+      watcher.subscribe(unrelatedPath, vi.fn());
+
+      watcher.releaseUnder(prefix);
+
+      expect(mockCloseFns.get(unrelatedPath)).not.toHaveBeenCalled();
+    });
+
+    it('closes inside-prefix watchers and leaves outside-prefix ones alive', () => {
+      const prefix = '/projects/app';
+      const insidePath = '/projects/app/.kangentic/worktrees/feat-a';
+      const outsidePath = '/other/project';
+      const siblingPath = '/projects/app-fork';
+
+      watcher.subscribe(insidePath, vi.fn());
+      watcher.subscribe(outsidePath, vi.fn());
+      watcher.subscribe(siblingPath, vi.fn());
+
+      watcher.releaseUnder(prefix);
+
+      expect(mockCloseFns.get(insidePath)).toHaveBeenCalledTimes(1);
+      expect(mockCloseFns.get(outsidePath)).not.toHaveBeenCalled();
+      expect(mockCloseFns.get(siblingPath)).not.toHaveBeenCalled();
+    });
   });
 });

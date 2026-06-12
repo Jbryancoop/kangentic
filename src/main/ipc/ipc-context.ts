@@ -4,6 +4,7 @@ import type { ProjectGroupRepository } from '../db/repositories/project-group-re
 import type { SessionManager } from '../pty/session-manager';
 import type { ConfigManager } from '../config/config-manager';
 import type { BoardConfigManager } from '../config/board-config-manager';
+import type { DiffWatcher } from '../git/diff-watcher';
 import type { GitDetector } from '../git/git-detector';
 import type { ShellResolver } from '../pty/spawn/shell-resolver';
 import type { TerminalSubmitScheduler } from '../engine/terminal-submit-scheduler';
@@ -17,6 +18,13 @@ export interface IpcContext {
   sessionManager: SessionManager;
   configManager: ConfigManager;
   boardConfigManager: BoardConfigManager;
+  /**
+   * Watches worktree directories for file changes to drive the live git-diff
+   * view. Promoted onto the context (from a module-local in the git-diff
+   * handler) so project relocation can release the recursive `fs.watch`
+   * handles inside a project folder before moving the folder on disk.
+   */
+  diffWatcher: DiffWatcher;
   gitDetector: GitDetector;
   shellResolver: ShellResolver;
   /**

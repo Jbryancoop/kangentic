@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { replacePathPrefix } from '../../shared/paths';
 
 const DEBOUNCE_MS = 500;
 const IGNORED_SEGMENTS = new Set(['.git', 'node_modules', '.kangentic']);
@@ -56,6 +57,22 @@ export class DiffWatcher {
     }
     entry.watcher.close();
     this.watchers.delete(worktreePath);
+  }
+
+  /**
+   * Close every watcher whose path is `pathPrefix` itself or nested under it.
+   * Used by project relocation to release the recursive `fs.watch` handles
+   * inside a project folder before the folder is moved on disk (Windows cannot
+   * rename a directory while any process holds a handle inside it). Uses
+   * `replacePathPrefix` so the match is `path.relative`-based and therefore
+   * correct across Windows drive-letter case and separator differences.
+   */
+  releaseUnder(pathPrefix: string): void {
+    for (const worktreePath of [...this.watchers.keys()]) {
+      if (replacePathPrefix(worktreePath, pathPrefix, pathPrefix) !== null) {
+        this.unsubscribe(worktreePath);
+      }
+    }
   }
 
   /** Clean up all watchers (e.g., on app shutdown). */

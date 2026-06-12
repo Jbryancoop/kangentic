@@ -315,7 +315,17 @@ Settings are accessed from two entry points:
 - **App Settings** - click the gear icon in the title bar. This is the main settings panel with all app-wide and project-default settings.
 - **Project Settings** - click the gear icon on a project row in the sidebar. This shows only the per-project overridable subset.
 
-Both panels use a VS Code-style layout: a sidebar with tab navigation on the left, and the active settings pane on the right. In App Settings, tabs above the separator (General, Theme, Terminal, Agent, Git, Browser, Shortcuts) are per-project settings; tabs below the separator (Layout, Behavior, Hotkeys, MCP Server, Notifications, Privacy, Developer) are shared across all projects. The General tab shows the project's location on disk with a "Change..." button to re-point the project at a moved or renamed folder (tasks and history are preserved). When no project is open, only the shared tabs appear. Project Settings shows inherited defaults as hints, with reset buttons on any overridden value and a "Reset All" footer when overrides exist.
+Both panels use a VS Code-style layout: a sidebar with tab navigation on the left, and the active settings pane on the right. In App Settings, tabs above the separator (General, Theme, Terminal, Agent, Git, Browser, Shortcuts) are per-project settings; tabs below the separator (Layout, Behavior, Hotkeys, MCP Server, Notifications, Privacy, Developer) are shared across all projects. The General tab shows the project's location on disk with a "Move..." button (see [Moving a project](#moving-a-project)). When no project is open, only the shared tabs appear. Project Settings shows inherited defaults as hints, with reset buttons on any overridden value and a "Reset All" footer when overrides exist.
+
+### Moving a project
+
+To relocate a project to a new folder, open Project Settings > General and click **Move...**. Pick the destination's parent folder; Kangentic moves the project folder (keeping its name) into it and re-points the project at the new path in one step. All tasks, board history, and worktrees move with it, and each agent's resumable session data is migrated so sessions resume at the new location.
+
+Before the move, a confirmation dialog lists the project's active agent sessions. Confirming stops them (they resume automatically at the new path) and performs the move; cancelling changes nothing. Only this project's own sessions are touched - agents running in other projects or external terminals are left alone.
+
+A same-drive move is instant. Moving to a different drive copies the folder (a progress indicator shows the copy), then removes the original once the relocation has succeeded; if the original cannot be fully removed, the move still completes and a warning notes that the old copy remains.
+
+If a project's folder was moved or renamed outside Kangentic while the app was closed, you are instead prompted with **Project Folder Not Found** the next time you open it; click **Locate Folder...** to point Kangentic at the new location.
 
 ### Search
 

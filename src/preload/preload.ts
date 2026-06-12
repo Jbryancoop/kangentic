@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/ipc-channels';
-import type { ElectronAPI, NotificationInput, Project, Session, SessionUsage, ActivityState, ActivityReason, SessionEvent, UpdateDownloadedInfo, UsageTimePeriod, TaskBulkDeleteProgress } from '../shared/types';
+import type { ElectronAPI, NotificationInput, Project, Session, SessionUsage, ActivityState, ActivityReason, SessionEvent, UpdateDownloadedInfo, UsageTimePeriod, TaskBulkDeleteProgress, ProjectMoveProgress } from '../shared/types';
 import { installConsoleCapture } from './diagnostics/console-capture';
 import { installDevtoolsPreloadHooks } from '../devtools/preload/install-globals';
 
@@ -31,7 +31,12 @@ const api: ElectronAPI = {
     setDefaultAgent: (id: string, agentName: string) => ipcRenderer.invoke(IPC.PROJECT_SET_DEFAULT_AGENT, id, agentName),
     reorder: (ids: string[]) => ipcRenderer.invoke(IPC.PROJECT_REORDER, ids),
     setGroup: (projectId: string, groupId: string | null) => ipcRenderer.invoke(IPC.PROJECT_SET_GROUP, projectId, groupId),
-    relocate: (id: string, newPath: string) => ipcRenderer.invoke(IPC.PROJECT_RELOCATE, id, newPath),
+    relocate: (id: string, newPath: string, options) => ipcRenderer.invoke(IPC.PROJECT_RELOCATE, id, newPath, options),
+    onMoveProgress: (callback) => {
+      const handler = (_event: Electron.IpcRendererEvent, progress: ProjectMoveProgress) => callback(progress);
+      ipcRenderer.on(IPC.PROJECT_MOVE_PROGRESS, handler);
+      return () => ipcRenderer.removeListener(IPC.PROJECT_MOVE_PROGRESS, handler);
+    },
     onAutoOpened: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, project: Project) => callback(project);
       ipcRenderer.on(IPC.PROJECT_AUTO_OPENED, handler);

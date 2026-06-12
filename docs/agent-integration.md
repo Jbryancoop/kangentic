@@ -45,7 +45,7 @@ Every agent implements the `AgentAdapter` interface. Each adapter lives in `src/
 | `getExitSequence?()` | `() => string[]` | Sequence of strings to write to the PTY for a graceful exit. Default is `['\x03']` (Ctrl+C only). Claude overrides with `['\x03', '/exit\r']` to flush conversation state. |
 | `attachSession?(context)` | `(SessionContext) => SessionAttachment \| void` | Per-session lifecycle hook for adapters that need work outside the declarative `runtime` strategy (out-of-band CLI queries, file watchers, etc.). The returned `dispose` is called on session end. |
 | `summarize?(prompt, cliPath, cwd)` | `(string, string, string) => Promise<string>` | One-shot summarization for the auto-name-tasks-from-prompt feature. Spawns the CLI in non-interactive `--print` mode. Adapters without a clean headless mode (Aider, Warp) omit this. |
-| `onProjectRelocated?(oldPath, newPath)` | `(string, string) => Promise<void>` | Migrate per-project data the agent keeps OUTSIDE the project folder, keyed by the absolute path, when a Kangentic project is relocated. Called best-effort by `relocateProject` (the `project:relocate` IPC handler) after the stored DB paths are rewritten, while the project's own sessions are suspended. Implemented by Claude, Codex, Gemini, Qwen, Copilot, OpenCode, Kimi, and Droid (per-agent details in [Project relocation](#project-relocation) below); the shared mechanics (path-pair collection, directory rename/merge, backup + atomic write, serial lock) live in `src/main/agent/shared/relocation-utils.ts`. Implementations must be non-destructive and never block relocation. Aider, Cursor, and Warp omit this (their resumable state is in-project or absent). |
+| `onProjectRelocated?(oldPath, newPath)` | `(string, string) => Promise<void>` | Migrate per-project data the agent keeps OUTSIDE the project folder, keyed by the absolute path, when a Kangentic project is relocated. Relocation is reached two ways, both of which call this hook the same way: the user moves the folder outside Kangentic and points us at it (Locate Folder / Change), or Kangentic performs the move itself (the one-step "Move..." flow). Called best-effort by `relocateProject` (the `project:relocate` IPC handler) after the stored DB paths are rewritten and the folder is at `newPath`, while the project's own sessions are suspended. Implemented by Claude, Codex, Gemini, Qwen, Copilot, OpenCode, Kimi, and Droid (per-agent details in [Project relocation](#project-relocation) below); the shared mechanics (path-pair collection, directory rename/merge, backup + atomic write, serial lock) live in `src/main/agent/shared/relocation-utils.ts`. Implementations must be non-destructive and never block relocation. Aider, Cursor, and Warp omit this (their resumable state is in-project or absent). |
 | `probeAuth?()` | `() => Promise<boolean \| null>` | See the methods table above. |
 | `discoverCapabilities?(cliPath)` | `(string) => Promise<AgentCapabilities>` | Probe the live CLI for adapter-specific knobs (e.g. parsing `--help` for valid effort levels and the presence of a `--model` flag). Result is attached to `AgentDetectionInfo.capabilities` and read by the renderer to gate optional UI controls (Model and Effort dropdowns on `EditColumnDialog`). Implementations must never throw - return an empty object on parse failure so the rest of detection still succeeds. |
 | `getInjectionSequence?(spec)` | `(SettingsChangeSpec) => string[]` | Translate a column-level settings change (model / effort) into the writes the `TerminalSubmitScheduler` should push onto the live PTY. Sibling of `getExitSequence` - both return `string[]` of writes. Claude returns `['/model X', '/effort Y']` for changed fields. Adapters with no live-swap slash return `[]` and the caller falls back to suspend+respawn. |
@@ -904,15 +904,27 @@ Reading `<uuid>.settings.json` after session exit was considered as a "good enou
 
 ## Project relocation
 
-When a Kangentic project folder is moved or renamed, the `project:relocate` IPC handler
-(`src/main/ipc/handlers/project-relocate.ts`) rewrites the stored DB paths and then calls the
-optional `onProjectRelocated(oldPath, newPath)` hook on every registered adapter (best-effort,
-per-adapter try/catch, while the project's sessions are suspended). Each adapter migrates the
-per-project data its CLI keys to the absolute path OUTSIDE the project folder, so sessions stay
-resumable. The shared mechanics (path-pair collection across the project root plus on-disk
+A Kangentic project relocates in one of two ways, both handled by the `project:relocate` IPC
+handler (`src/main/ipc/handlers/project-relocate.ts`): the user moves the folder outside
+Kangentic and points us at the new location (`repoint` mode, reached from Project Settings or the
+Locate Folder dialog), or Kangentic moves the folder itself in one step (`move` mode, reached
+from the Project Settings "Move..." button). In both modes the handler suspends the project's own
+live sessions, then rewrites the stored DB paths, then calls the optional
+`onProjectRelocated(oldPath, newPath)` hook on every registered adapter (best-effort, per-adapter
+try/catch). By the time the hook fires the folder is already at `newPath`. Each adapter migrates
+the per-project data its CLI keys to the absolute path OUTSIDE the project folder, so sessions
+stay resumable. The shared mechanics (path-pair collection across the project root plus on-disk
 worktrees, directory rename/merge, backup + atomic write, serial lock) live in
 `src/main/agent/shared/relocation-utils.ts`; per-adapter logic lives in each adapter's
 `project-relocation.ts`.
+
+Suspending the project's own sessions fully terminates their PTYs before the folder moves (the
+quiesce that lets the move succeed on Windows, where a directory cannot be renamed while a
+process holds a handle inside it). It does NOT cover an unrelated agent session running in a
+DIFFERENT project or an external terminal: such a session can still hold a shared global config
+(e.g. `~/.claude.json`) in memory and overwrite the migrated keys on its next save. Kangentic
+only manages its own sessions and does not detect or kill those, so that residue is accepted (the
+same caveat the Claude adapter documents).
 
 | Agent | What migrates | Documented residue / notes |
 |-------|---------------|----------------------------|

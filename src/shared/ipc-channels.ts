@@ -13,6 +13,7 @@ export const IPC = {
   PROJECT_SET_DEFAULT_AGENT: 'project:setDefaultAgent',
   PROJECT_AUTO_OPENED: 'project:autoOpened',
   PROJECT_RELOCATE: 'project:relocate',
+  PROJECT_MOVE_PROGRESS: 'project:moveProgress',
   PROJECT_PATH_MISSING: 'project:pathMissing',
 
   // Project Groups
