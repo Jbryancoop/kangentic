@@ -65,21 +65,65 @@ describe('spawn-progress queryable map', () => {
     const { window, send } = makeWindow();
     emitSpawnWaiting(window, 'task-1', 2);
 
-    expect(getInFlightSpawnProgress()).toEqual({ 'task-1': 'Waiting for git queue... (2 ahead)' });
-    expect(send).toHaveBeenCalledWith('task:spawnProgress', 'task-1', 'Waiting for git queue... (2 ahead)');
+    expect(getInFlightSpawnProgress()).toEqual({ 'task-1': 'Waiting (2 ahead)' });
+    expect(send).toHaveBeenCalledWith('task:spawnProgress', 'task-1', 'Waiting (2 ahead)');
   });
 
   it('emitSpawnWaiting omits the count when no jobs are ahead', () => {
     const { window } = makeWindow();
     emitSpawnWaiting(window, 'task-1', 0);
 
-    expect(getInFlightSpawnProgress()['task-1']).toBe('Waiting for git queue...');
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Waiting...');
+  });
+
+  it('emitSpawnWaiting leads with the running worktree-removal and its elapsed time', () => {
+    const { window } = makeWindow();
+    emitSpawnWaiting(window, 'task-1', 1, { label: 'remove-worktree:1a2b3c4d', elapsedMs: 45_000 });
+
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Removing worktree (waiting 45s)');
+  });
+
+  it('emitSpawnWaiting names a running worktree creation', () => {
+    const { window } = makeWindow();
+    emitSpawnWaiting(window, 'task-1', 1, { label: 'create-worktree:1a2b3c4d', elapsedMs: 12_000 });
+
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Creating worktree (waiting 12s)');
+  });
+
+  it('emitSpawnWaiting names a running branch rename', () => {
+    const { window } = makeWindow();
+    emitSpawnWaiting(window, 'task-1', 1, { label: 'rename-branch:1a2b3c4d', elapsedMs: 8_000 });
+
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Renaming branch (waiting 8s)');
+  });
+
+  it('emitSpawnWaiting falls back to a generic phrase for an unknown running label', () => {
+    const { window } = makeWindow();
+    emitSpawnWaiting(window, 'task-1', 1, { label: 'mystery-op:1a2b3c4d', elapsedMs: 8_000 });
+
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Git operation (waiting 8s)');
+  });
+
+  it('emitSpawnWaiting re-emit refreshes the TTL (a long wait never strands)', () => {
+    const nowSpy = vi.spyOn(Date, 'now');
+    const { window } = makeWindow();
+
+    nowSpy.mockReturnValue(0);
+    emitSpawnWaiting(window, 'task-1', 1, { label: 'remove-worktree:1a2b3c4d', elapsedMs: 0 });
+
+    // Re-emit just before the first push's TTL would expire.
+    nowSpy.mockReturnValue(119_000);
+    emitSpawnWaiting(window, 'task-1', 1, { label: 'remove-worktree:1a2b3c4d', elapsedMs: 119_000 });
+
+    // Past the FIRST push's TTL but within the re-emit's: still alive.
+    nowSpy.mockReturnValue(119_000 + 119_000);
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Removing worktree (waiting 119s)');
   });
 
   it('a later phase push overwrites the waiting label (waiting -> fetching transition)', () => {
     const { window } = makeWindow();
     emitSpawnWaiting(window, 'task-1', 1);
-    expect(getInFlightSpawnProgress()['task-1']).toBe('Waiting for git queue... (1 ahead)');
+    expect(getInFlightSpawnProgress()['task-1']).toBe('Waiting (1 ahead)');
 
     // When the parked job dequeues and starts, the git layer emits 'fetching'.
     emitSpawnProgress(window, 'task-1', 'fetching');

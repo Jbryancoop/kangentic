@@ -1,26 +1,49 @@
 /**
- * Dev-only boot-time zombie reaper.
+ * Orphaned-process reaper. Two entry points share one scan/skip/kill core
+ * (the E2E leak janitor in tests/e2e/electron-janitor.ts is a third consumer
+ * of the core primitives - scanProcesses, buildSelfSkipSet, killProcess,
+ * normalizePath - with its own leak predicate):
  *
- * Scans the OS process list for orphaned Electron processes whose
- * CommandLine references this checkout's worktree node_modules or main
- * checkout node_modules. Triggered before pruneStaleWorktreeProjects so
- * any zombie holding a worktree directory's file handles (or a stale
- * OpenSSH ControlMaster socket that blocks `git fetch`) gets cleared
- * before the next instance tries to reuse those resources.
+ *   1. `reapWorktreeElectronZombies` - DEV-ONLY boot-time sweep. Scans for
+ *      orphaned Electron processes whose CommandLine references this checkout's
+ *      worktree node_modules or main checkout node_modules. Triggered before
+ *      pruneStaleWorktreeProjects so any zombie holding a worktree directory's
+ *      file handles (or a stale OpenSSH ControlMaster socket that blocks `git
+ *      fetch`) gets cleared before the next instance reuses those resources.
+ *      Wired only inside `if (__KANGENTIC_DEV__)` blocks and dropped from
+ *      production builds via esbuild dead-code elimination. Production NSIS
+ *      installs run from %LOCALAPPDATA%\Kangentic and never match the
+ *      worktree/checkout path patterns it looks for, so it would be a no-op.
  *
- * The whole module is loaded only inside `if (__KANGENTIC_DEV__)` blocks
- * and is dropped from production builds via esbuild dead-code
- * elimination. Production NSIS installs run from %LOCALAPPDATA%\Kangentic
- * and never match the worktree/checkout path patterns this reaper looks
- * for, so even a hypothetical production wire-up would be a no-op.
+ *   2. `reapProcessesForWorktree` - PRODUCTION per-worktree reap, called LAZILY
+ *      on the failure path of a worktree removal (`WorktreeManager.removeWorktree`):
+ *      only a delete that a held handle actually blocked runs this scan, so a
+ *      clean Done-move never pays for it. Scans for orphaned processes pinning the
+ *      SPECIFIC worktree path being deleted, kills them, and lets the caller retry
+ *      the removal. Unlike the boot sweep this ships in all builds: a user's agent
+ *      can leave a zombie Electron/node behind (E2E `_electron.launch()`,
+ *      `/preview`) just as a developer's can, and the worktree-path needle is
+ *      precise enough that production processes (which never run from a
+ *      `.kangentic/worktrees/` path) can never match.
  *
- * Safety contract:
+ * Safety contract for the TWO ENTRY POINTS IN THIS MODULE (the E2E leak janitor
+ * in tests/e2e/electron-janitor.ts defines its OWN contract: same self-skip and
+ * a pass-1 orphan gate, but its closure pass deliberately kills LIVE children of
+ * already-condemned parents to match Windows `taskkill /T` on POSIX - see that
+ * file's header):
  *   - Self-skip: own PID and walked parent PIDs are never killed.
- *   - Defensive: any scan/walk failure aborts the reaper with an empty
- *     return, so a broken `Get-CimInstance` can never escalate into a
- *     wrong-process kill.
- *   - Time-capped: `scanTimeoutMs` (default 1500ms) bounds the OS-level
- *     enumeration. Caller wraps with an outer 2s race.
+ *   - Orphan gate: a process whose parent is still alive is never killed (it is
+ *     actively supervised - a live Playwright worker, the dogfooding `npm start`
+ *     window, a `/preview` window). See `hasLiveParent`.
+ *   - Path needle: only processes whose CommandLine references the matched path
+ *     are candidates. The per-worktree needle carries a trailing separator so
+ *     `worktrees/foo` never matches `worktrees/foo-bar`.
+ *   - Defensive: any scan/walk failure aborts the reaper with an empty return,
+ *     so a broken `Get-CimInstance` can never escalate into a wrong-process kill.
+ *   - Time-capped: `scanTimeoutMs` bounds the OS-level enumeration (boot sweep
+ *     1500ms; per-worktree 5000ms, since a cold PowerShell `Get-CimInstance`
+ *     start often exceeds 1500ms - the too-tight cap is why a prior incident's
+ *     app restart failed to clear the zombies).
  */
 
 import { spawn, type SpawnOptions } from 'node:child_process';
@@ -35,7 +58,7 @@ export interface ZombieScanOptions {
 export interface ReapedProcess {
   pid: number;
   commandLine: string;
-  reason: 'worktree-orphan' | 'main-checkout-orphan';
+  reason: 'worktree-orphan' | 'main-checkout-orphan' | 'worktree-path-orphan';
 }
 
 export interface ProcessRow {
@@ -44,16 +67,50 @@ export interface ProcessRow {
   commandLine: string;
 }
 
+/** Options for the per-worktree production reap. */
+export interface WorktreeReapOptions {
+  /** Absolute path of the worktree being removed. */
+  worktreePath: string;
+  /**
+   * Time cap on the OS-level enumeration. Default 5000ms - higher than the boot
+   * sweep's 1500ms because a cold PowerShell `Get-CimInstance` start can exceed
+   * that and silently return no rows.
+   */
+  scanTimeoutMs?: number;
+}
+
 const DEFAULT_SCAN_TIMEOUT_MS = 1500;
+const DEFAULT_WORKTREE_SCAN_TIMEOUT_MS = 5000;
+
+/**
+ * Short-lived cache of the last successful process scan. The startup retry pass
+ * reaps once per Done-task in a loop (each a separate `removeWorktree` ->
+ * `reapProcessesForWorktree` scan), so a 5s TTL collapses that burst to a single
+ * PowerShell invocation. Empty/failed scans are never cached: a cold-start
+ * timeout must not poison the next 5s.
+ */
+let cachedScan: { rows: ProcessRow[]; capturedAt: number } | null = null;
+const SCAN_CACHE_TTL_MS = 5_000;
 
 /**
  * Normalize a path for case-insensitive substring comparison on Windows
  * and forward-slash matching on every platform. Returns lowercase on
  * Windows, original case elsewhere.
  */
-function normalizePath(value: string): string {
+export function normalizePath(value: string): string {
   const slashed = value.replace(/\\/g, '/');
   return process.platform === 'win32' ? slashed.toLowerCase() : slashed;
+}
+
+/**
+ * True when `row`'s parent is still alive in this scan. The orphan gate of every
+ * pass-1 matcher (here and in the E2E janitor): a live parent means the process
+ * is actively supervised and must not be killed. `ppid <= 4` covers init/system
+ * on every platform (1 on Unix, 0/4 on Windows for System/csrss), so such a
+ * parent is treated as "not a real supervisor" rather than alive.
+ */
+export function hasLiveParent(row: ProcessRow, livePids: Set<number>): boolean {
+  return row.ppid > 4 && livePids.has(row.ppid);
 }
 
 /**
@@ -68,6 +125,28 @@ export async function scanProcesses(scanTimeoutMs: number): Promise<ProcessRow[]
     return scanProcessesWindows(scanTimeoutMs);
   }
   return scanProcessesUnix(scanTimeoutMs);
+}
+
+/**
+ * `scanProcesses` with a 5s TTL cache. Returns the cached rows when fresh,
+ * otherwise scans and stores the result. A scan that returns no rows (failure
+ * or genuinely empty) is not cached, so a transient failure does not suppress
+ * the next 5s of reaps.
+ */
+export async function scanProcessesCached(scanTimeoutMs: number): Promise<ProcessRow[]> {
+  if (cachedScan && Date.now() - cachedScan.capturedAt < SCAN_CACHE_TTL_MS) {
+    return cachedScan.rows;
+  }
+  const rows = await _internals.scanProcesses(scanTimeoutMs);
+  if (rows.length > 0) {
+    cachedScan = { rows, capturedAt: Date.now() };
+  }
+  return rows;
+}
+
+/** Test-only: clear the scan cache between cases. */
+export function __resetScanCacheForTest(): void {
+  cachedScan = null;
 }
 
 async function scanProcessesWindows(scanTimeoutMs: number): Promise<ProcessRow[]> {
@@ -94,21 +173,24 @@ async function scanProcessesWindows(scanTimeoutMs: number): Promise<ProcessRow[]
   const result: ProcessRow[] = [];
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue;
-    const r = row as { ProcessId?: number; ParentProcessId?: number; CommandLine?: string | null };
-    if (typeof r.ProcessId !== 'number') continue;
+    const typedRow = row as {
+      ProcessId?: number;
+      ParentProcessId?: number;
+      CommandLine?: string | null;
+    };
+    if (typeof typedRow.ProcessId !== 'number') continue;
     result.push({
-      pid: r.ProcessId,
-      ppid: typeof r.ParentProcessId === 'number' ? r.ParentProcessId : 0,
-      commandLine: typeof r.CommandLine === 'string' ? r.CommandLine : '',
+      pid: typedRow.ProcessId,
+      ppid: typeof typedRow.ParentProcessId === 'number' ? typedRow.ParentProcessId : 0,
+      commandLine: typeof typedRow.CommandLine === 'string' ? typedRow.CommandLine : '',
     });
   }
   return result;
 }
 
 async function scanProcessesUnix(scanTimeoutMs: number): Promise<ProcessRow[]> {
-  // `ps -ax` lists every process; `-o pid=,ppid=,command=` strips headers
-  // and separates fields with whitespace. command= is last so it can
-  // contain spaces.
+  // `ps -ax` lists every process; `-o pid=,ppid=,command=` strips headers and
+  // separates fields with whitespace. command= is last so it can contain spaces.
   const stdout = await runCommandWithTimeout(
     'ps',
     ['-ax', '-o', 'pid=,ppid=,command='],
@@ -182,20 +264,77 @@ export function findZombies(
     const haystack = normalizePath(row.commandLine);
     if (!haystack) continue;
 
-    // Orphan gate: skip processes whose parent is still alive. A live
-    // parent means the process is actively supervised (Playwright worker,
-    // dogfooding npm start, /preview window) and must not be touched.
-    // ppid <= 4 covers init/system on every platform (1 on Unix, 0/4 on
-    // Windows for System/csrss).
-    const parentAlive = row.ppid > 4 && livePids.has(row.ppid);
-    if (parentAlive) continue;
+    // Orphan gate: skip processes whose parent is still alive. A live parent
+    // means the process is actively supervised (Playwright worker, dogfooding
+    // npm start, /preview window) and must not be touched.
+    if (hasLiveParent(row, livePids)) continue;
 
     if (haystack.includes(worktreeNeedle) && haystack.includes('/node_modules/electron/')) {
-      reaped.push({ pid: row.pid, commandLine: row.commandLine, reason: 'worktree-orphan' });
+      reaped.push({
+        pid: row.pid,
+        commandLine: row.commandLine,
+        reason: 'worktree-orphan',
+      });
       continue;
     }
     if (haystack.includes(mainCheckoutNeedle)) {
-      reaped.push({ pid: row.pid, commandLine: row.commandLine, reason: 'main-checkout-orphan' });
+      reaped.push({
+        pid: row.pid,
+        commandLine: row.commandLine,
+        reason: 'main-checkout-orphan',
+      });
+    }
+  }
+  return reaped;
+}
+
+/**
+ * Filter the process list to orphans pinning a SPECIFIC worktree directory.
+ * A process matches when its CommandLine contains the normalized worktree path
+ * (with a trailing separator so a prefix-sibling like `worktrees/foo-bar` never
+ * matches `worktrees/foo`) AND it is genuinely orphaned (parent dead or init).
+ *
+ * Unlike `findZombies` this does not require `/node_modules/electron/` in the
+ * command line: an orphaned `node.exe` test runner pins the directory just as
+ * hard, and on Windows the scan is already filtered to electron.exe/node.exe.
+ *
+ * The orphan gate is the same cross-process-safety guarantee as `findZombies`:
+ * a live parent means the process is actively supervised. Killing the orphaned
+ * root with `taskkill /T` (Windows) or relying on Chromium parent-death exit
+ * (POSIX) clears its gpu/utility children too.
+ *
+ * Note the gate's reach is bounded by what the scan enumerates. On Windows the
+ * scan lists only electron.exe/node.exe, so a LIVE but shell-parented pinner
+ * (e.g. a `playwright`/`vitest` runner launched directly from pwsh, whose parent
+ * pwsh.exe is not in the table) reads as an orphan and IS killed here. That is
+ * intended at this call site: this runs only when a task is moved to Done, and a
+ * Done move is meant to end every process the task left pinning its worktree.
+ * It is NOT a general "kill anything supervised" path - it fires once, scoped to
+ * one worktree path, behind the per-task lock.
+ */
+export function findWorktreePathProcesses(
+  rows: ProcessRow[],
+  worktreePath: string,
+  skipPids: Set<number>,
+): ReapedProcess[] {
+  let needle = normalizePath(worktreePath);
+  if (!needle.endsWith('/')) needle = `${needle}/`;
+  const livePids = new Set(rows.map((row) => row.pid));
+
+  const reaped: ReapedProcess[] = [];
+  for (const row of rows) {
+    if (skipPids.has(row.pid)) continue;
+    const haystack = normalizePath(row.commandLine);
+    if (!haystack) continue;
+
+    if (hasLiveParent(row, livePids)) continue;
+
+    if (haystack.includes(needle)) {
+      reaped.push({
+        pid: row.pid,
+        commandLine: row.commandLine,
+        reason: 'worktree-path-orphan',
+      });
     }
   }
   return reaped;
@@ -285,14 +424,62 @@ export async function reapWorktreeElectronZombies(
   return killed;
 }
 
+/**
+ * Per-worktree production reap: kill orphaned processes pinning `worktreePath`
+ * before it is removed. Always returns the (possibly empty) list of reaped
+ * processes; never throws (matching `reapWorktreeElectronZombies`), so a caller
+ * on the removal path can `await` it without a guard and removal proceeds even
+ * if the scan fails.
+ */
+export async function reapProcessesForWorktree(
+  options: WorktreeReapOptions,
+): Promise<ReapedProcess[]> {
+  const scanTimeoutMs = options.scanTimeoutMs ?? DEFAULT_WORKTREE_SCAN_TIMEOUT_MS;
+  let rows: ProcessRow[];
+  try {
+    rows = await _internals.scanProcessesCached(scanTimeoutMs);
+  } catch (error) {
+    console.warn('[REAPER] worktree scan failed:', error);
+    return [];
+  }
+  if (rows.length === 0) return [];
+
+  let skipPids: Set<number>;
+  try {
+    skipPids = _internals.buildSelfSkipSet(rows, process.pid);
+  } catch (error) {
+    console.warn('[REAPER] self-walk failed, aborting:', error);
+    return [];
+  }
+
+  const candidates = _internals.findWorktreePathProcesses(rows, options.worktreePath, skipPids);
+  if (candidates.length === 0) return [];
+
+  const killed: ReapedProcess[] = [];
+  for (const candidate of candidates) {
+    try {
+      await _internals.killProcess(candidate.pid);
+      console.log(
+        `[REAPER] killed pid=${candidate.pid} reason=${candidate.reason} cmd=${candidate.commandLine.slice(0, 200)}`,
+      );
+      killed.push(candidate);
+    } catch (error) {
+      console.warn(`[REAPER] kill failed for pid=${candidate.pid}:`, error);
+    }
+  }
+  return killed;
+}
+
 // ---------------------------------------------------------------------------
 // Internals (exposed for unit-test replacement via vi.spyOn / vi.mock)
 // ---------------------------------------------------------------------------
 
 export const _internals = {
   scanProcesses,
+  scanProcessesCached,
   buildSelfSkipSet,
   findZombies,
+  findWorktreePathProcesses,
   killProcess,
 };
 

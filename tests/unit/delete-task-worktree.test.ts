@@ -3,15 +3,24 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock WorktreeManager: the helper constructs `new WorktreeManager(projectPath)`
 // and calls `withLock(fn)` + `removeWorktree(path)`. We capture the last-created
 // instance so each test can configure its behavior and assert against it.
-const { worktreeManagerInstances, mockRemoveWorktree } = vi.hoisted(() => ({
+const { worktreeManagerInstances, mockRemoveWorktree, mockPrepareWorktreeForRemoval, callOrder } = vi.hoisted(() => ({
   worktreeManagerInstances: [] as Array<{ removeWorktree: ReturnType<typeof vi.fn>; withLock: ReturnType<typeof vi.fn> }>,
-  mockRemoveWorktree: vi.fn<(path: string) => Promise<boolean>>(),
+  mockRemoveWorktree: vi.fn<(path: string, options?: unknown) => Promise<boolean>>(),
+  mockPrepareWorktreeForRemoval: vi.fn<(path: string, profile: string) => Promise<void>>(),
+  callOrder: [] as string[],
 }));
 
 vi.mock('../../src/main/git/worktree-manager', () => ({
+  prepareWorktreeForRemoval: (...args: [string, string]) => {
+    callOrder.push('prepare');
+    return mockPrepareWorktreeForRemoval(...args);
+  },
   WorktreeManager: class {
     removeWorktree = mockRemoveWorktree;
-    withLock = vi.fn(async (operation: () => Promise<unknown>) => operation());
+    withLock = vi.fn(async (operation: () => Promise<unknown>) => {
+      callOrder.push('withLock');
+      return operation();
+    });
     constructor() {
       worktreeManagerInstances.push({ removeWorktree: this.removeWorktree, withLock: this.withLock });
     }
@@ -68,7 +77,10 @@ describe('deleteTaskWorktree', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     worktreeManagerInstances.length = 0;
+    callOrder.length = 0;
     mockRemoveWorktree.mockReset();
+    mockPrepareWorktreeForRemoval.mockReset();
+    mockPrepareWorktreeForRemoval.mockResolvedValue(undefined);
     // Default: detached / unreadable HEAD (matches a worktree git can't probe).
     mockReadWorktreeHead.mockReset();
     mockReadWorktreeHead.mockResolvedValue({ branch: null, sha: null });
@@ -88,7 +100,11 @@ describe('deleteTaskWorktree', () => {
     const result = await deleteTaskWorktree(context as never, task, tasks as never, context.currentProjectPath);
 
     expect(result).toBe(true);
-    expect(mockRemoveWorktree).toHaveBeenCalledWith(task.worktree_path);
+    expect(mockRemoveWorktree).toHaveBeenCalledWith(task.worktree_path, { removalProfile: 'moderate' });
+    // The orphan reap + node_modules clear runs BEFORE the git lock is taken,
+    // so the slow fs work does not hold the per-project queue.
+    expect(mockPrepareWorktreeForRemoval).toHaveBeenCalledWith(task.worktree_path, 'moderate');
+    expect(callOrder).toEqual(['prepare', 'withLock']);
     expect(tasks.update).toHaveBeenCalledTimes(1);
     expect(tasks.update).toHaveBeenCalledWith({ id: 'task-1', worktree_path: null });
     // Critical: branch_name is NOT cleared. Moving out of Done re-creates the

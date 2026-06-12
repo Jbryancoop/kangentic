@@ -89,7 +89,7 @@ export function buildCommandContextForProject(
               await worktreeManager.removeBranch(task.branch_name);
             }
           }
-        }).catch((error) => {
+        }, { label: `mcp-worktree:${task.id.slice(0, 8)}` }).catch((error) => {
           console.error(`[mcp-http delete] Worktree cleanup failed for task ${task.id.slice(0, 8)}:`, error);
         });
       }

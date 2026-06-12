@@ -215,4 +215,38 @@ describe('removeNodeModulesPath', () => {
     expect(mockRmdir).toHaveBeenCalledTimes(1);
     expect(mockRm).not.toHaveBeenCalled();
   });
+
+  it('Real directory: removeOptions are forwarded to the recursive rm budget', async () => {
+    // A user-facing (Done-move) caller passes a collapsed budget so a pinned
+    // node_modules fails in seconds. The budget reaches Node's fs.rm via
+    // removeWithRetry's maxRetries.
+    setPlatform('linux');
+    mockLstat.mockReturnValue(makeStat({ isDirectory: true }));
+
+    await removeNodeModulesPath('/home/dev/project/.kangentic/worktrees/task-abc/node_modules', {
+      removeOptions: { delays: [0], innerMaxRetries: 2 },
+    });
+
+    expect(mockPromisesRm).toHaveBeenCalledWith(
+      '/home/dev/project/.kangentic/worktrees/task-abc/node_modules',
+      expect.objectContaining({ recursive: true, force: true, maxRetries: 2 }),
+    );
+  });
+
+  it('Junction-guard regression: options never divert a junction into recursive rm', () => {
+    // Even with removeOptions passed, the Windows junction branch must still use
+    // rmdirSync (reparse-point-only) and never removeWithRetry / fs.promises.rm,
+    // which would traverse into the main repo's node_modules.
+    setPlatform('win32');
+    mockLstat.mockReturnValue(makeStat({ isDirectory: true }));
+    mockReadlink.mockReturnValue('C:\\Users\\dev\\project\\node_modules');
+
+    removeNodeModulesPath('C:\\Users\\dev\\project\\.kangentic\\worktrees\\task-abc\\node_modules', {
+      removeOptions: { delays: [0, 500], innerMaxRetries: 2 },
+    });
+
+    expect(mockRmdir).toHaveBeenCalledTimes(1);
+    expect(mockPromisesRm).not.toHaveBeenCalled();
+    expect(mockRm).not.toHaveBeenCalled();
+  });
 });

@@ -76,7 +76,7 @@ vi.mock('../../src/main/ipc/task-lifecycle-lock', () => ({
 import { retryFailedDoneCleanups } from '../../src/main/engine/resource-cleanup';
 import { GitQueuePriority } from '../../src/main/git/worktree-manager';
 
-const FAST_OPTS = { timeoutMs: 3000, fast: true };
+const FAST_OPTS = { timeoutMs: 3000, removalProfile: 'fast' };
 
 interface MockTask {
   id: string;
@@ -179,7 +179,10 @@ describe('retryFailedDoneCleanups', () => {
     await retryFailedDoneCleanups(PROJECT_PATH, taskRepo as never, swimlaneRepo as never);
 
     // The git lock is acquired at BACKGROUND priority so a user spawn jumps ahead.
-    expect(mockWithLock).toHaveBeenCalledWith(expect.any(Function), { priority: GitQueuePriority.BACKGROUND });
+    expect(mockWithLock).toHaveBeenCalledWith(
+      expect.any(Function),
+      { priority: GitQueuePriority.BACKGROUND, label: 'retry-remove-worktree:ffff6666' },
+    );
     // The removal itself is fail-fast (short timeout + single attempt).
     expect(mockRemoveWorktree).toHaveBeenCalledWith(
       '/home/dev/my-project/.kangentic/worktrees/stuck-ffff6666',

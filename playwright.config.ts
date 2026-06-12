@@ -19,7 +19,7 @@ function findFreePort(start: number): number {
   for (let port = start; port < start + 100; port++) {
     if (isPortFree(port)) return port;
   }
-  throw new Error(`No free port found in range ${start}–${start + 99}`);
+  throw new Error(`No free port found in range ${start}-${start + 99}`);
 }
 
 const isWorktree = __dirname.replace(/\\/g, '/').includes('.kangentic/worktrees/');
@@ -34,6 +34,12 @@ export default defineConfig({
   timeout: 60000,
   retries: 0,
   workers: 4,
+  // Sweep leaked app-under-test Electron instances before and after every run.
+  // These hooks run once per invocation for every project filter, including
+  // CI's `--project=ui` run on Linux, where the sweep finds nothing and is a
+  // fast no-op that never throws. See tests/e2e/electron-janitor.ts.
+  globalSetup: './tests/e2e/global-setup.ts',
+  globalTeardown: './tests/e2e/global-teardown.ts',
   use: {
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',

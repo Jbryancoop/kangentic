@@ -272,8 +272,8 @@ export async function retryFailedDoneCleanups(
       // ahead, and fail-fast so one stuck removal can't hold the queue for 15s.
       // A false return is logged below and deferred to the next project open.
       const removed = await worktreeManager.withLock(
-        () => worktreeManager.removeWorktree(current.worktree_path!, { timeoutMs: 3000, fast: true }),
-        { priority: GitQueuePriority.BACKGROUND },
+        () => worktreeManager.removeWorktree(current.worktree_path!, { timeoutMs: 3000, removalProfile: 'fast' }),
+        { priority: GitQueuePriority.BACKGROUND, label: `retry-remove-worktree:${task.id.slice(0, 8)}` },
       );
       if (!removed) {
         console.warn(

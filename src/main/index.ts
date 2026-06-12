@@ -642,6 +642,11 @@ app.whenReady().then(async () => {
     // strictly parented by the Playwright worker, so there are no orphans
     // to find. The reaper's intended audience is interactive `npm start`
     // sessions and `/preview` windows, not headless test workers.
+    //
+    // This is the DEV-ONLY project-wide BOOT sweep. The per-worktree reap that
+    // runs in PRODUCTION lives in WorktreeManager.removeWorktree, which calls it
+    // lazily only when a delete is actually pinned (so a clean Done-move never
+    // scans), and shares the same scan/skip/kill core in zombie-reaper.ts.
     if (__KANGENTIC_DEV__ && !isE2ETest) {
       phase('reapZombieElectron');
       try {

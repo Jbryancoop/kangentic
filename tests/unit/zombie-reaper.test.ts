@@ -1,20 +1,27 @@
 /**
- * Unit tests for the dev-only zombie reaper.
+ * Unit tests for the zombie reaper (dev-only boot sweep + production
+ * per-worktree reap).
  *
  * Covers:
  *   - Self-skip: own PID never killed
  *   - Parent-skip: walked parent chain never killed
  *   - Path matching: worktree path + main checkout path patterns
+ *   - Per-worktree scoped match: specific worktree path, trailing-separator
+ *     boundary, orphan gate, node-and-electron processes
  *   - Negative match: unrelated electron processes left alone
  *   - Defensive aborts: scan failure / self-walk failure return [] cleanly
- *   - Scan timeout: caller-side cap returns empty array
+ *   - Scan cache: a burst of reaps shares one OS enumeration
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   buildSelfSkipSet,
   findZombies,
+  findWorktreePathProcesses,
   reapWorktreeElectronZombies,
+  reapProcessesForWorktree,
+  scanProcessesCached,
+  __resetScanCacheForTest,
   _internals,
   type ProcessRow,
 } from '../../src/main/git/zombie-reaper';
@@ -26,6 +33,16 @@ const PROJECT_PATH = process.platform === 'win32'
 function asWorktreeCmd(slug: string, extra = ''): string {
   const sep = process.platform === 'win32' ? '\\' : '/';
   return `${PROJECT_PATH}${sep}.kangentic${sep}worktrees${sep}${slug}${sep}node_modules${sep}electron${sep}dist${sep}electron.exe ${extra}`.trim();
+}
+
+function worktreePathFor(slug: string): string {
+  const sep = process.platform === 'win32' ? '\\' : '/';
+  return `${PROJECT_PATH}${sep}.kangentic${sep}worktrees${sep}${slug}`;
+}
+
+function asWorktreeNodeCmd(slug: string): string {
+  const sep = process.platform === 'win32' ? '\\' : '/';
+  return `node ${PROJECT_PATH}${sep}.kangentic${sep}worktrees${sep}${slug}${sep}scripts${sep}run-tests.js`;
 }
 
 function asMainCheckoutCmd(extra = ''): string {
@@ -226,5 +243,164 @@ describe('reapWorktreeElectronZombies', () => {
     expect(killSpy).toHaveBeenCalledTimes(2);
     expect(result).toHaveLength(1); // only the successful kill
     expect(result[0].pid).toBe(201);
+  });
+});
+
+describe('findWorktreePathProcesses', () => {
+  const worktreePath = worktreePathFor('feature-abc-1234');
+
+  it('matches an orphaned electron process under the specific worktree path', () => {
+    const rows: ProcessRow[] = [
+      { pid: 200, ppid: 1, commandLine: asWorktreeCmd('feature-abc-1234') },
+    ];
+    const result = findWorktreePathProcesses(rows, worktreePath, new Set());
+    expect(result).toHaveLength(1);
+    expect(result[0].pid).toBe(200);
+    expect(result[0].reason).toBe('worktree-path-orphan');
+  });
+
+  it('matches an orphaned node process under the worktree (not only electron)', () => {
+    const rows: ProcessRow[] = [
+      { pid: 210, ppid: 1, commandLine: asWorktreeNodeCmd('feature-abc-1234') },
+    ];
+    const result = findWorktreePathProcesses(rows, worktreePath, new Set());
+    expect(result).toHaveLength(1);
+    expect(result[0].pid).toBe(210);
+  });
+
+  it('does NOT match a prefix-sibling worktree (trailing-separator boundary)', () => {
+    // worktrees/feature-abc-1234 must never match worktrees/feature-abc-1234-x.
+    const rows: ProcessRow[] = [
+      { pid: 220, ppid: 1, commandLine: asWorktreeCmd('feature-abc-1234-extra') },
+    ];
+    const result = findWorktreePathProcesses(rows, worktreePath, new Set());
+    expect(result).toHaveLength(0);
+  });
+
+  it('skips a process whose parent is still alive (orphan gate)', () => {
+    const rows: ProcessRow[] = [
+      { pid: 999, ppid: 1, commandLine: 'playwright worker (live parent)' },
+      { pid: 200, ppid: 999, commandLine: asWorktreeCmd('feature-abc-1234') },
+    ];
+    const result = findWorktreePathProcesses(rows, worktreePath, new Set());
+    expect(result).toHaveLength(0);
+  });
+
+  it('skips PIDs in the self-skip set', () => {
+    const rows: ProcessRow[] = [
+      { pid: 200, ppid: 1, commandLine: asWorktreeCmd('feature-abc-1234') },
+    ];
+    const result = findWorktreePathProcesses(rows, worktreePath, new Set([200]));
+    expect(result).toHaveLength(0);
+  });
+
+  it('does not match an empty CommandLine', () => {
+    const rows: ProcessRow[] = [{ pid: 200, ppid: 1, commandLine: '' }];
+    const result = findWorktreePathProcesses(rows, worktreePath, new Set());
+    expect(result).toHaveLength(0);
+  });
+
+  it('case-insensitive match on Windows', () => {
+    if (process.platform !== 'win32') return;
+    const uppercased = asWorktreeCmd('feature-abc-1234').replace('c:\\users\\dev', 'C:\\Users\\Dev');
+    const rows: ProcessRow[] = [{ pid: 200, ppid: 1, commandLine: uppercased }];
+    const result = findWorktreePathProcesses(rows, worktreePath, new Set());
+    expect(result).toHaveLength(1);
+  });
+});
+
+describe('reapProcessesForWorktree', () => {
+  const worktreePath = worktreePathFor('feature-abc-1234');
+  let scanCachedSpy: ReturnType<typeof vi.spyOn>;
+  let killSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    __resetScanCacheForTest();
+    scanCachedSpy = vi.spyOn(_internals, 'scanProcessesCached');
+    killSpy = vi.spyOn(_internals, 'killProcess').mockResolvedValue(undefined);
+  });
+
+  it('kills an orphaned process pinning the worktree', async () => {
+    scanCachedSpy.mockResolvedValue([
+      { pid: 200, ppid: 1, commandLine: asWorktreeCmd('feature-abc-1234') },
+    ]);
+
+    const result = await reapProcessesForWorktree({ worktreePath });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].pid).toBe(200);
+    expect(killSpy).toHaveBeenCalledWith(200);
+  });
+
+  it('returns [] without killing when the scan throws', async () => {
+    scanCachedSpy.mockRejectedValue(new Error('powershell not found'));
+
+    const result = await reapProcessesForWorktree({ worktreePath });
+
+    expect(result).toEqual([]);
+    expect(killSpy).not.toHaveBeenCalled();
+  });
+
+  it('never kills own PID or the parent chain', async () => {
+    scanCachedSpy.mockResolvedValue([
+      { pid: process.pid, ppid: 9999, commandLine: asWorktreeCmd('feature-abc-1234') },
+      { pid: 9999, ppid: 1, commandLine: asWorktreeCmd('feature-abc-1234') },
+    ]);
+
+    const result = await reapProcessesForWorktree({ worktreePath });
+
+    expect(result).toEqual([]);
+    expect(killSpy).not.toHaveBeenCalled();
+  });
+
+  it('continues sweeping when one kill fails', async () => {
+    scanCachedSpy.mockResolvedValue([
+      { pid: 200, ppid: 1, commandLine: asWorktreeCmd('feature-abc-1234') },
+      { pid: 201, ppid: 1, commandLine: asWorktreeNodeCmd('feature-abc-1234') },
+    ]);
+    killSpy
+      .mockRejectedValueOnce(new Error('access denied'))
+      .mockResolvedValueOnce(undefined);
+
+    const result = await reapProcessesForWorktree({ worktreePath });
+
+    expect(killSpy).toHaveBeenCalledTimes(2);
+    expect(result).toHaveLength(1);
+    expect(result[0].pid).toBe(201);
+  });
+});
+
+describe('scanProcessesCached', () => {
+  let scanSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    __resetScanCacheForTest();
+    scanSpy = vi.spyOn(_internals, 'scanProcesses');
+  });
+
+  it('scans once for two calls within the TTL', async () => {
+    scanSpy.mockResolvedValue([{ pid: 1, ppid: 0, commandLine: 'init' }]);
+
+    const first = await scanProcessesCached(1500);
+    const second = await scanProcessesCached(1500);
+
+    expect(scanSpy).toHaveBeenCalledTimes(1);
+    expect(second).toBe(first);
+  });
+
+  it('does not cache an empty (failed) scan', async () => {
+    scanSpy.mockResolvedValueOnce([]);
+    scanSpy.mockResolvedValueOnce([{ pid: 1, ppid: 0, commandLine: 'init' }]);
+
+    const first = await scanProcessesCached(1500);
+    const second = await scanProcessesCached(1500);
+
+    expect(first).toEqual([]);
+    expect(second).toHaveLength(1);
+    expect(scanSpy).toHaveBeenCalledTimes(2);
   });
 });

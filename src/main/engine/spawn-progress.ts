@@ -119,21 +119,70 @@ export function emitSpawnProgress(
 }
 
 /**
+ * Translate an internal git-queue job label (e.g. `remove-worktree:1a2b3c4d`)
+ * into a short, sentence-case phrase for the waiting card. The phrase LEADS the
+ * label (e.g. "Removing worktree (waiting 45s)"), so it is capitalized to match
+ * the active phase labels in PHASE_LABELS ("Fetching latest...", "Creating
+ * worktree..."). Falls back to a generic phrase so a new label never leaks a raw
+ * `verb:id` token to the user.
+ */
+function describeGitJobLabel(runningLabel: string): string {
+  const kind = runningLabel.split(':')[0];
+  switch (kind) {
+    case 'remove-worktree':
+    case 'cleanup-worktree':
+    case 'retry-remove-worktree':
+    case 'transition-cleanup':
+    case 'stale-cleanup':
+    case 'project-delete-worktree':
+    case 'mcp-worktree':
+      return 'Removing worktree';
+    case 'create-worktree':
+    case 'transition-ensure':
+      return 'Creating worktree';
+    case 'checkout-branch':
+      return 'Switching branch';
+    case 'rename-branch':
+      return 'Renaming branch';
+    case 'background-prune':
+      return 'Pruning worktrees';
+    default:
+      return 'Git operation';
+  }
+}
+
+/**
  * Emit a "waiting in the per-project git queue" label. Not a PHASE_LABELS
  * entry because it carries a runtime count - but it rides the same
  * pushSpawnProgress path, so it lands in the queryable map and is reconciled
  * by syncSessions / swept by the TTL exactly like a phase label. Used while a
  * spawn is parked behind another git op so the card shows a distinct waiting
  * state instead of a static "Fetching latest...".
+ *
+ * When `running` is provided, the label leads with what the queue is blocked
+ * behind and tucks the wait state next to the elapsed (e.g. "Removing worktree
+ * (waiting 45s)"). Leading with the action keeps the most informative token
+ * first on a compact card; the lowercase "(waiting Ns)" qualifier sits next to
+ * the timer so a parked task is never mistaken for one actively doing the work
+ * (the active phase label would be "Creating worktree..."). Without a running op
+ * to name, it degrades to the bare wait state. Re-emitting on a timer refreshes
+ * the elapsed and the queryable map's TTL.
  */
 export function emitSpawnWaiting(
   mainWindow: BrowserWindow,
   taskId: string,
   jobsAhead: number,
+  running?: { label: string; elapsedMs: number },
 ): void {
-  const label = jobsAhead > 0
-    ? `Waiting for git queue... (${jobsAhead} ahead)`
-    : 'Waiting for git queue...';
+  let label: string;
+  if (running) {
+    const seconds = Math.round(running.elapsedMs / 1000);
+    label = `${describeGitJobLabel(running.label)} (waiting ${seconds}s)`;
+  } else if (jobsAhead > 0) {
+    label = `Waiting (${jobsAhead} ahead)`;
+  } else {
+    label = 'Waiting...';
+  }
   pushSpawnProgress(mainWindow, taskId, label);
 }
 

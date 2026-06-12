@@ -11,7 +11,7 @@
  * operation (prevents accidental deletion of main repo node_modules on Windows).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -22,6 +22,7 @@ const {
   mockFsRm,
   mockRemoveNodeModulesPath,
   mockRemoveWithRetry,
+  mockReapProcessesForWorktree,
   mockSpawn,
   recordedSpawnCalls,
   spawnOverrides,
@@ -47,6 +48,7 @@ const {
     mockFsRm: vi.fn(async () => {}),
     mockRemoveNodeModulesPath: vi.fn(),
     mockRemoveWithRetry: vi.fn(async (_target: string, _opts?: unknown): Promise<void> => {}),
+    mockReapProcessesForWorktree: vi.fn(async (): Promise<Array<{ pid: number }>> => []),
     mockSpawn: vi.fn((command: string, args: readonly string[], options: { cwd: string }) => {
       recordedSpawnCalls.push({ command, args, cwd: options.cwd });
       const override = spawnOverrides.find((entry) => entry.match(args));
@@ -118,6 +120,10 @@ vi.mock('../../src/main/git/rm-with-retry', () => ({
   removeWithRetry: (target: string, opts?: unknown) => mockRemoveWithRetry(target, opts),
 }));
 
+vi.mock('../../src/main/git/zombie-reaper', () => ({
+  reapProcessesForWorktree: (...args: unknown[]) => mockReapProcessesForWorktree(...args),
+}));
+
 vi.mock('../../src/main/git/fetch-throttle', () => ({
   fetchIfStale: vi.fn(async () => 'main'),
 }));
@@ -178,6 +184,7 @@ describe('WorktreeManager.removeWorktree', () => {
     mockGitInstances.length = 0;
     recordedSpawnCalls.length = 0;
     spawnOverrides.length = 0;
+    mockReapProcessesForWorktree.mockResolvedValue([]);
     manager = new WorktreeManager(PROJECT_PATH);
   });
 
@@ -202,8 +209,12 @@ describe('WorktreeManager.removeWorktree', () => {
     const result = await manager.removeWorktree(WORKTREE_PATH);
 
     expect(result).toBe(true);
-    // node_modules junction must be removed BEFORE any recursive operation
-    expect(mockRemoveNodeModulesPath).toHaveBeenCalledWith(`${WORKTREE_PATH}/node_modules`);
+    // node_modules junction must be removed BEFORE any recursive operation.
+    // Default profile is 'thorough', whose removeOptions are undefined.
+    expect(mockRemoveNodeModulesPath).toHaveBeenCalledWith(
+      `${WORKTREE_PATH}/node_modules`,
+      { removeOptions: undefined },
+    );
     const worktreeRemoveCall = recordedSpawnCalls.find(
       (call) => call.args[0] === 'worktree' && call.args[1] === 'remove',
     );
@@ -265,10 +276,10 @@ describe('WorktreeManager.removeWorktree', () => {
     expect(result).toBe(false);
   });
 
-  // Fast mode (background retry cleanup): collapse the manual-removal backoff
+  // Fast profile (background retry cleanup): collapse the manual-removal backoff
   // to a single attempt so a stuck removal can't hold the git queue for ~15s
   // while a user spawn waits behind it.
-  it('fast mode forwards single-attempt opts to removeWithRetry', async () => {
+  it('fast profile forwards single-attempt opts to removeWithRetry', async () => {
     mockExistsSync.mockReturnValue(true);
     spawnOverrides.push({
       match: (args) => args[0] === 'worktree' && args[1] === 'remove',
@@ -276,10 +287,32 @@ describe('WorktreeManager.removeWorktree', () => {
     });
     mockRemoveWithRetry.mockResolvedValue(undefined);
 
-    const result = await manager.removeWorktree(WORKTREE_PATH, { timeoutMs: 3000, fast: true });
+    const result = await manager.removeWorktree(WORKTREE_PATH, { timeoutMs: 3000, removalProfile: 'fast' });
 
     expect(result).toBe(true);
     expect(mockRemoveWithRetry).toHaveBeenCalledWith(WORKTREE_PATH, { delays: [0], innerMaxRetries: 0 });
+  });
+
+  // Moderate profile (user-facing Done-move / cleanup): a bounded budget that
+  // makes a still-pinned path fail in seconds. Forwarded to BOTH the
+  // node_modules step and the manual-removal fallback.
+  it('moderate profile forwards a bounded budget to both removal steps', async () => {
+    mockExistsSync.mockReturnValue(true);
+    spawnOverrides.push({
+      match: (args) => args[0] === 'worktree' && args[1] === 'remove',
+      behavior: { exitCode: 1, stderr: 'fatal: git worktree remove failed' },
+    });
+    mockRemoveWithRetry.mockResolvedValue(undefined);
+
+    const result = await manager.removeWorktree(WORKTREE_PATH, { removalProfile: 'moderate' });
+
+    expect(result).toBe(true);
+    const moderateBudget = { delays: [0, 500], innerMaxRetries: 2 };
+    expect(mockRemoveNodeModulesPath).toHaveBeenCalledWith(
+      `${WORKTREE_PATH}/node_modules`,
+      { removeOptions: moderateBudget },
+    );
+    expect(mockRemoveWithRetry).toHaveBeenCalledWith(WORKTREE_PATH, moderateBudget);
   });
 
   // Guard: node_modules junction cleaned up BEFORE git/fs recursive operations
@@ -303,5 +336,87 @@ describe('WorktreeManager.removeWorktree', () => {
 
     expect(callOrder[0]).toBe('removeNodeModulesPath');
     expect(callOrder[1]).toBe('gitWorktreeRemove');
+  });
+
+  // The reap MUST NOT run on a clean removal - a Done-move that leaves no orphan
+  // pays zero process-scan cost. (Holds even outside test env, asserted below.)
+  it('does not scan for orphans when the removal succeeds (zero happy-path cost)', async () => {
+    mockExistsSync.mockReturnValue(true);
+
+    const result = await manager.removeWorktree(WORKTREE_PATH);
+
+    expect(result).toBe(true);
+    expect(mockReapProcessesForWorktree).not.toHaveBeenCalled();
+  });
+});
+
+// The reap is gated on NODE_ENV !== 'test' (E2E owns its own janitor sweep), so
+// these cases force a non-test env to exercise the lazy failure-path reap.
+describe('WorktreeManager.removeWorktree - lazy orphan reap on pinned delete', () => {
+  let manager: WorktreeManager;
+  let originalNodeEnv: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGitInstances.length = 0;
+    recordedSpawnCalls.length = 0;
+    spawnOverrides.length = 0;
+    mockReapProcessesForWorktree.mockResolvedValue([]);
+    originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    manager = new WorktreeManager(PROJECT_PATH);
+  });
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  it('a clean removal still never scans, even outside test env', async () => {
+    mockExistsSync.mockReturnValue(true);
+
+    const result = await manager.removeWorktree(WORKTREE_PATH);
+
+    expect(result).toBe(true);
+    expect(mockReapProcessesForWorktree).not.toHaveBeenCalled();
+  });
+
+  it('reaps orphans and retries once when the first removal is pinned, then succeeds', async () => {
+    mockExistsSync.mockReturnValue(true);
+    // git worktree remove always fails, so each attempt falls to the manual rm.
+    spawnOverrides.push({
+      match: (args) => args[0] === 'worktree' && args[1] === 'remove',
+      behavior: { exitCode: 1, stderr: 'fatal: unable to remove worktree' },
+    });
+    // Attempt 1's manual rm fails (pinned); after the reap, attempt 2 succeeds.
+    mockRemoveWithRetry
+      .mockRejectedValueOnce(new Error('EBUSY: resource busy or locked'))
+      .mockResolvedValueOnce(undefined);
+    mockReapProcessesForWorktree.mockResolvedValue([{ pid: 4242 }]);
+
+    const result = await manager.removeWorktree(WORKTREE_PATH, { removalProfile: 'moderate' });
+
+    expect(result).toBe(true);
+    expect(mockReapProcessesForWorktree).toHaveBeenCalledTimes(1);
+    expect(mockReapProcessesForWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({ worktreePath: WORKTREE_PATH }),
+    );
+    expect(mockRemoveWithRetry).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns false without retrying when there is no reapable orphan (husk left for retry pass)', async () => {
+    mockExistsSync.mockReturnValue(true);
+    spawnOverrides.push({
+      match: (args) => args[0] === 'worktree' && args[1] === 'remove',
+      behavior: { exitCode: 1, stderr: 'fatal: unable to remove worktree' },
+    });
+    mockRemoveWithRetry.mockRejectedValue(new Error('EPERM: operation not permitted'));
+    mockReapProcessesForWorktree.mockResolvedValue([]); // nothing to kill
+
+    const result = await manager.removeWorktree(WORKTREE_PATH, { removalProfile: 'moderate' });
+
+    expect(result).toBe(false);
+    expect(mockReapProcessesForWorktree).toHaveBeenCalledTimes(1);
+    // Only the first attempt's manual rm ran; no retry after an empty reap.
+    expect(mockRemoveWithRetry).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from './original-fs';
-import { removeWithRetry } from './rm-with-retry';
+import { removeWithRetry, type RemoveWithRetryOptions } from './rm-with-retry';
 
 /**
  * node_modules junction (Windows) / symlink (POSIX) management for
@@ -54,8 +54,18 @@ function isJunction(targetPath: string): boolean {
  *
  * Exported so resource-cleanup and worktree-manager can use it before
  * recursive worktree removal.
+ *
+ * `options.removeOptions` only bounds case 3 (the real-directory recursive
+ * removal). A caller on a user-facing path (Done move) passes a collapsed
+ * budget so a pinned node_modules fails in seconds instead of grinding for
+ * minutes while it holds the git queue. Cases 1, 2, and 4 are already bounded
+ * (a reparse point or file-like removal completes in microseconds), so the
+ * option does not apply to them.
  */
-export async function removeNodeModulesPath(targetPath: string): Promise<void> {
+export async function removeNodeModulesPath(
+  targetPath: string,
+  options?: { removeOptions?: RemoveWithRetryOptions },
+): Promise<void> {
   try {
     const stat = fs.lstatSync(targetPath);
     // Windows junction check MUST come first - lstatSync().isSymbolicLink()
@@ -76,7 +86,7 @@ export async function removeNodeModulesPath(targetPath: string): Promise<void> {
       // exponential backoff window for Windows file-lock transients
       // instead of Node's opaque maxRetries budget. Reparse points were
       // already handled above.
-      await removeWithRetry(targetPath);
+      await removeWithRetry(targetPath, options?.removeOptions);
     } else {
       // Regular file / fifo / socket. Should be unreachable for a path
       // named node_modules, but handle it defensively.

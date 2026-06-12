@@ -30,15 +30,21 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * `opts` lets a best-effort/background caller collapse the retry budget. Pass
- * `{ delays: [0], innerMaxRetries: 0 }` to attempt removal exactly once with no
- * backoff (outer) and no per-file retry (inner) - the only way to actually
- * bound the call to a few seconds, since `delays: [0]` alone still incurs
- * Node's ~2s inner `maxRetries` budget per locked path.
+ * Tunes the two-layer retry budget. A best-effort/background caller can collapse
+ * it by passing `{ delays: [0], innerMaxRetries: 0 }` to attempt removal exactly
+ * once with no backoff (outer) and no per-file retry (inner) - the only way to
+ * actually bound the call to a few seconds, since `delays: [0]` alone still
+ * incurs Node's ~2s inner `maxRetries` budget per locked path.
  */
+export interface RemoveWithRetryOptions {
+  delays?: readonly number[];
+  innerMaxRetries?: number;
+  innerRetryDelayMs?: number;
+}
+
 export async function removeWithRetry(
   targetPath: string,
-  options?: { delays?: readonly number[]; innerMaxRetries?: number; innerRetryDelayMs?: number },
+  options?: RemoveWithRetryOptions,
 ): Promise<void> {
   const delays = options?.delays ?? RETRY_DELAYS_MS;
   const maxRetries = options?.innerMaxRetries ?? INNER_MAX_RETRIES;

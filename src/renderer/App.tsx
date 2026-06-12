@@ -189,8 +189,11 @@ export function App() {
       const projectId = useProjectStore.getState().currentProject?.id ?? '';
       const notifyConfig = useConfigStore.getState().config.notifications;
       // The 8s timer arms for any preparing label, so describe the actual cause
-      // rather than always claiming a git-queue wait.
-      const detail = label.startsWith('Waiting for git queue')
+      // rather than always claiming a git-queue wait. A git-queue wait is either
+      // the bare fallback ("Waiting...", "Waiting (2 ahead)") or the running form
+      // that ends in a "(waiting 45s)" qualifier; both collapse to one phrase.
+      const isGitQueueWait = label.startsWith('Waiting') || /\(waiting \d+s\)$/.test(label);
+      const detail = isGitQueueWait
         ? 'waiting on the git queue'
         : label.replace(/\.\.\.$/, '').toLowerCase();
 

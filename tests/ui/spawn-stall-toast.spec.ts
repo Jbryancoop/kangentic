@@ -1,8 +1,9 @@
 /**
  * UI tests for the "spawn is parked / stalling" surfaces:
  *
- *  1. A task whose spawn-progress label is "Waiting for git queue..." renders
- *     that distinct label on the card (not a static "Fetching latest..."). The
+ *  1. A task whose spawn-progress label is a git-queue wait (e.g. "Removing
+ *     worktree (waiting 45s)") renders that distinct label on the card (not a
+ *     static "Fetching latest..."). The
  *     label flows through getTaskProgress -> { kind: 'preparing', label } and
  *     the existing TaskCard 'preparing' case, so no card change is needed.
  *
@@ -140,17 +141,17 @@ async function clearSpawnProgressEntry(page: Page, taskId: string): Promise<void
 }
 
 test.describe('spawn stall: waiting label + notification', () => {
-  test('renders the distinct "Waiting for git queue..." label on the card', async () => {
+  test('renders the distinct git-queue waiting label on the card', async () => {
     const { browser, page } = await launchWithState(false);
     try {
       await page.locator('[data-swimlane-name="Planning"]').waitFor({ state: 'visible', timeout: 15000 });
       await expect(page.locator('text=Stalling Task')).toBeVisible({ timeout: 5000 });
 
-      await seedSpawnProgress(page, TASK_ID, 'Waiting for git queue... (2 ahead)');
+      await seedSpawnProgress(page, TASK_ID, 'Removing worktree (waiting 45s)');
 
-      const statusBar = page.locator('[data-testid="status-bar"]', { hasText: 'Waiting for git queue' });
+      const statusBar = page.locator('[data-testid="status-bar"]', { hasText: 'Removing worktree' });
       await expect(statusBar).toBeVisible({ timeout: 5000 });
-      await expect(statusBar).toContainText('(2 ahead)');
+      await expect(statusBar).toContainText('(waiting 45s)');
     } finally {
       await browser.close();
     }
@@ -162,7 +163,7 @@ test.describe('spawn stall: waiting label + notification', () => {
       await page.locator('[data-swimlane-name="Planning"]').waitFor({ state: 'visible', timeout: 15000 });
 
       // Enter the preparing state -> arms the 8s stall timer.
-      await seedSpawnProgress(page, TASK_ID, 'Waiting for git queue...');
+      await seedSpawnProgress(page, TASK_ID, 'Waiting...');
 
       // No toast before the threshold.
       await page.clock.fastForward(STALL_THRESHOLD_MS - 1000);
@@ -192,7 +193,7 @@ test.describe('spawn stall: waiting label + notification', () => {
       await page.locator('[data-swimlane-name="Planning"]').waitFor({ state: 'visible', timeout: 15000 });
 
       await setStallToastEnabled(page, false);
-      await seedSpawnProgress(page, TASK_ID, 'Waiting for git queue...');
+      await seedSpawnProgress(page, TASK_ID, 'Waiting...');
 
       // Past the threshold: the gate is off, so no toast appears.
       await page.clock.fastForward(STALL_THRESHOLD_MS + 1000);
@@ -217,7 +218,7 @@ test.describe('spawn stall: waiting label + notification', () => {
       // The board only contains TASK_ID ('task-spawn-stall'); this unknown id
       // simulates a task from a different project that happened to emit progress.
       const backgroundTaskId = 'task-from-background-project-xyz';
-      await seedSpawnProgress(page, backgroundTaskId, 'Waiting for git queue...');
+      await seedSpawnProgress(page, backgroundTaskId, 'Waiting...');
 
       // Fast-forward well past the stall threshold.
       await page.clock.fastForward(STALL_THRESHOLD_MS + 2000);
@@ -241,7 +242,7 @@ test.describe('spawn stall: waiting label + notification', () => {
       await page.locator('[data-swimlane-name="Planning"]').waitFor({ state: 'visible', timeout: 15000 });
 
       // Arm the stall timer.
-      await seedSpawnProgress(page, TASK_ID, 'Waiting for git queue...');
+      await seedSpawnProgress(page, TASK_ID, 'Waiting...');
 
       // Cross the threshold to raise the toast.
       await page.clock.fastForward(STALL_THRESHOLD_MS + 500);

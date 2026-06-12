@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { TaskRepository } from '../../db/repositories/task-repository';
 import { SessionRepository } from '../../db/repositories/session-repository';
-import { WorktreeManager } from '../../git/worktree-manager';
+import { WorktreeManager, prepareWorktreeForRemoval } from '../../git/worktree-manager';
 import { readWorktreeHead } from '../../git/worktree-head';
 import { getProjectDb } from '../../db/database';
 import type { IpcContext } from '../ipc-context';
@@ -121,8 +121,12 @@ export async function cleanupTaskResources(
     let removed = false;
     try {
       const worktreeManager = new WorktreeManager(resolvedProjectPath);
+      // Reap orphans + clear node_modules BEFORE taking the git lock so the slow
+      // fs work does not hold the per-project queue. Safe outside the lock: the
+      // caller holds withTaskLock(taskId), which serializes same-path work.
+      await prepareWorktreeForRemoval(task.worktree_path, 'moderate');
       await worktreeManager.withLock(async () => {
-        removed = await worktreeManager.removeWorktree(task.worktree_path!);
+        removed = await worktreeManager.removeWorktree(task.worktree_path!, { removalProfile: 'moderate' });
         if (removed && task.branch_name) {
           const config = context.configManager.getEffectiveConfig(resolvedProjectPath);
           if (config.git.autoCleanup) {
@@ -132,7 +136,7 @@ export async function cleanupTaskResources(
             await worktreeManager.removeBranch(task.branch_name);
           }
         }
-      });
+      }, { label: `cleanup-worktree:${task.id.slice(0, 8)}` });
     } catch (err) {
       console.error(`[WORKTREE] Failed to clean up worktree for task ${task.id.slice(0, 8)}:`, err);
     }
@@ -197,9 +201,15 @@ export async function deleteTaskWorktree(
   let removed = false;
   try {
     const worktreeManager = new WorktreeManager(resolvedProjectPath);
+    // Reap orphans + clear node_modules BEFORE taking the git lock so the slow
+    // fs work (and a pinned-handle stall) does not head-of-line-block every
+    // other spawn on this project. Safe outside the lock per the LOCK CONTRACT
+    // above: the caller holds withTaskLock(taskId), which serializes same-path
+    // work; no other task ever shares this worktree path.
+    await prepareWorktreeForRemoval(task.worktree_path, 'moderate');
     await worktreeManager.withLock(async () => {
-      removed = await worktreeManager.removeWorktree(task.worktree_path!);
-    });
+      removed = await worktreeManager.removeWorktree(task.worktree_path!, { removalProfile: 'moderate' });
+    }, { label: `remove-worktree:${task.id.slice(0, 8)}` });
   } catch (err) {
     console.error(`[WORKTREE] Failed to delete worktree for task ${task.id.slice(0, 8)}:`, err);
   }

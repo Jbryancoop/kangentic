@@ -229,6 +229,16 @@ npx playwright test --project=electron
   Electron can import `{ test, expect }` from `./shared-app` instead of `@playwright/test` to
   share one worker-scoped Electron boot. See the header of `tests/e2e/shared-app.ts` for the
   eligibility and never-migrate lists.
+- **Leak janitor:** a worker crash bypasses per-fixture teardown and leaves the launched Electron
+  app (main plus its GPU and network-utility children) running with a dead parent, pinning the
+  worktree's `node_modules`. `tests/e2e/electron-janitor.ts` is wired into Playwright `globalSetup`
+  and `globalTeardown` (`playwright.config.ts`) to sweep these. It is conservative: a process is
+  killed only when its command line points at the repo's `.kangentic/worktrees/` or the main
+  checkout's `.vite/build/index.js` AND its parent is dead, so the dogfooding `npm start` app, any
+  `/preview` window, and concurrent runs in other worktrees are never touched. Every kill is logged
+  under the `[E2E-JANITOR]` prefix with PID, reason, and a command-line excerpt. The pure
+  matching predicate is unit-tested in `tests/unit/e2e-janitor.test.ts`; the janitor reuses the
+  scan and kill primitives from `src/main/git/zombie-reaper.ts`.
 
 ### Decision Guide
 

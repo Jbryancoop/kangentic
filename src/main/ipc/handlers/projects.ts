@@ -135,7 +135,10 @@ export async function cleanupProject(context: IpcContext, projectId: string, pro
     for (const task of allTasks) {
       if (task.worktree_path && fs.existsSync(task.worktree_path)) {
         try {
-          await worktreeManager.withLock(() => worktreeManager.removeWorktree(task.worktree_path!));
+          await worktreeManager.withLock(
+            () => worktreeManager.removeWorktree(task.worktree_path!),
+            { label: 'project-delete-worktree' },
+          );
         } catch (err) {
           console.error(`[PROJECT_DELETE] Failed to detach worktree for task ${task.id.slice(0, 8)}:`, err);
         }

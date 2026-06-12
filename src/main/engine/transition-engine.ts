@@ -441,7 +441,10 @@ export class TransitionEngine {
       copyFiles: config.copyFiles || appConfig.gitConfig.copyFiles,
     };
 
-    const result = await wm.withLock(() => wm.ensureWorktree(task, gitConfig));
+    const result = await wm.withLock(
+      () => wm.ensureWorktree(task, gitConfig),
+      { label: `transition-ensure:${task.id.slice(0, 8)}` },
+    );
     if (!result) return;
 
     this.taskRepo.update({
@@ -468,11 +471,11 @@ export class TransitionEngine {
     const wm = new WorktreeManager(appConfig.projectPath);
     let removed = false;
     await wm.withLock(async () => {
-      removed = await wm.removeWorktree(task.worktree_path!);
+      removed = await wm.removeWorktree(task.worktree_path!, { removalProfile: 'moderate' });
       if (removed && appConfig.gitConfig.autoCleanup) {
         await wm.removeBranch(task.branch_name!);
       }
-    });
+    }, { label: `transition-cleanup:${task.id.slice(0, 8)}` });
 
     // Only clear DB fields if the directory was actually removed.
     // Keeping them set allows resource-cleanup to retry on next startup.

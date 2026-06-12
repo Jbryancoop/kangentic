@@ -188,11 +188,12 @@ export function registerTaskCrudHandlers(context: IpcContext): void {
         const effectiveConfig = context.configManager.getEffectiveConfig(resolvedProjectPath);
         const boardDefaultBranch = context.boardConfigManager.getDefaultBaseBranch();
         const defaultBaseBranch = boardDefaultBranch || effectiveConfig.git.defaultBaseBranch || 'main';
-        const newBranchName = await worktreeManager.withLock(() =>
-          worktreeManager.renameBranch(input.id, existing.branch_name!, input.title, {
+        const newBranchName = await worktreeManager.withLock(
+          () => worktreeManager.renameBranch(input.id, existing.branch_name!, input.title, {
             baseBranch: existing.base_branch,
             defaultBaseBranch,
           }),
+          { label: `rename-branch:${input.id.slice(0, 8)}` },
         );
         if (newBranchName) {
           console.log(`[TASK_UPDATE] Branch renamed: ${existing.branch_name} -> ${newBranchName}`);

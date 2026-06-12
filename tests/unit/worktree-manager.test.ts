@@ -1149,18 +1149,18 @@ describe('WorktreeManager - priority queue', () => {
     expect(next).toBe('ok');
   });
 
-  it('onWait fires only when parked, with the count of jobs ahead', async () => {
+  it('onWaitProgress fires only when parked, with the count of jobs ahead', async () => {
     const waits: number[] = [];
-    const onWait = (jobsAhead: number) => waits.push(jobsAhead);
+    const onWaitProgress = (info: { jobsAhead: number }) => waits.push(info.jobsAhead);
     let release: () => void;
     const blocked = new Promise<void>(resolve => { release = resolve; });
 
-    // First op starts immediately -> onWait NOT called.
-    const first = WorktreeManager.withGitLock('/project', async () => { await blocked; }, { onWait });
-    // Second op parks behind the running first -> onWait(1).
-    const second = WorktreeManager.withGitLock('/project', async () => {}, { onWait });
-    // Third op parks behind running + one waiter -> onWait(2).
-    const third = WorktreeManager.withGitLock('/project', async () => {}, { onWait });
+    // First op starts immediately -> onWaitProgress NOT called.
+    const first = WorktreeManager.withGitLock('/project', async () => { await blocked; }, { onWaitProgress });
+    // Second op parks behind the running first -> jobsAhead 1.
+    const second = WorktreeManager.withGitLock('/project', async () => {}, { onWaitProgress });
+    // Third op parks behind running + one waiter -> jobsAhead 2.
+    const third = WorktreeManager.withGitLock('/project', async () => {}, { onWaitProgress });
 
     expect(waits).toEqual([1, 2]); // first op did not report a wait
 
@@ -1179,13 +1179,33 @@ describe('WorktreeManager - priority queue', () => {
     // USER job: only the running op is ahead of it.
     const user = WorktreeManager.withGitLock('/project', async () => {}, {
       priority: GitQueuePriority.USER,
-      onWait: (n) => waits.push(n),
+      onWaitProgress: (info) => waits.push(info.jobsAhead),
     });
 
     expect(waits).toEqual([1]);
 
     release!();
     await Promise.all([running, background, user]);
+  });
+
+  it('onWaitProgress reports the running job label and its elapsed time', async () => {
+    let release: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const seen: Array<{ runningLabel: string | null; runningElapsedMs: number }> = [];
+
+    const running = WorktreeManager.withGitLock('/project', async () => { await blocked; }, { label: 'remove-worktree:abcd1234' });
+    const parked = WorktreeManager.withGitLock('/project', async () => {}, {
+      label: 'create-worktree:ef567890',
+      onWaitProgress: (info) => seen.push({ runningLabel: info.runningLabel, runningElapsedMs: info.runningElapsedMs }),
+    });
+
+    // Enqueue-time emit names the in-flight removal.
+    expect(seen).toHaveLength(1);
+    expect(seen[0].runningLabel).toBe('remove-worktree:abcd1234');
+    expect(seen[0].runningElapsedMs).toBeGreaterThanOrEqual(0);
+
+    release!();
+    await Promise.all([running, parked]);
   });
 
   it('clearQueue rejects still-waiting jobs and lets new ops run afterward', async () => {
@@ -1362,5 +1382,114 @@ describe('WorktreeManager.scheduleBackgroundPrune', () => {
       (call: string[][]) => call[0]?.includes('worktree') && call[0]?.includes('prune'),
     );
     expect(simpleGitPruneCalls.length).toBe(0);
+  });
+});
+
+// ── Queue observability (logging + heartbeat + wait re-emit) ───────────────
+
+describe('WorktreeManager - queue observability', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('logs queue start/done and heartbeats a long-running holder, then stops', async () => {
+    vi.useFakeTimers();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    WorktreeManager.clearQueue('/obs-1');
+    let release: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+
+    const job = WorktreeManager.withGitLock('/obs-1', async () => { await blocked; }, { label: 'remove-worktree:abcd1234' });
+
+    const startLogged = logSpy.mock.calls.some(
+      (call) => String(call[0]).includes('[GIT_QUEUE] start remove-worktree:abcd1234'),
+    );
+    expect(startLogged).toBe(true);
+
+    // 15s -> exactly one heartbeat.
+    await vi.advanceTimersByTimeAsync(15_000);
+    const heartbeatCount = logSpy.mock.calls.filter(
+      (call) => String(call[0]).includes('remove-worktree:abcd1234 still running'),
+    ).length;
+    expect(heartbeatCount).toBe(1);
+
+    release!();
+    await job;
+
+    const doneLogged = logSpy.mock.calls.some(
+      (call) => String(call[0]).includes('[GIT_QUEUE] done remove-worktree:abcd1234'),
+    );
+    expect(doneLogged).toBe(true);
+
+    // Interval cleared on settle: advancing further logs no more heartbeats.
+    const before = logSpy.mock.calls.filter(
+      (call) => String(call[0]).includes('still running'),
+    ).length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    const after = logSpy.mock.calls.filter(
+      (call) => String(call[0]).includes('still running'),
+    ).length;
+    expect(after).toBe(before);
+  });
+
+  it('re-emits onWaitProgress every 5s while parked and stops once the job runs', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    WorktreeManager.clearQueue('/obs-2');
+    let release: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const elapsedSeen: number[] = [];
+
+    const running = WorktreeManager.withGitLock('/obs-2', async () => { await blocked; }, { label: 'remove-worktree:abcd1234' });
+    const parked = WorktreeManager.withGitLock('/obs-2', async () => {}, {
+      label: 'create-worktree:ef567890',
+      onWaitProgress: (info) => elapsedSeen.push(info.runningElapsedMs),
+    });
+
+    // Enqueue-time emit.
+    expect(elapsedSeen).toHaveLength(1);
+
+    // Two 5s ticks -> two more emits with growing elapsed.
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(elapsedSeen).toHaveLength(3);
+    expect(elapsedSeen[2]).toBeGreaterThan(elapsedSeen[0]);
+
+    release!();
+    await Promise.all([running, parked]);
+
+    // Wait timer cleared when the parked job dequeued: no further emits.
+    const countAfterRun = elapsedSeen.length;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(elapsedSeen).toHaveLength(countAfterRun);
+  });
+
+  it('clears the wait timer when a parked job is rejected by clearQueue', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    WorktreeManager.clearQueue('/obs-3');
+    let release: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const emits: number[] = [];
+
+    const running = WorktreeManager.withGitLock('/obs-3', async () => { await blocked; }, { label: 'remove-worktree:abcd1234' });
+    const waiter = WorktreeManager.withGitLock('/obs-3', async () => 'never', {
+      label: 'create-worktree:ef567890',
+      onWaitProgress: (info) => emits.push(info.jobsAhead),
+    });
+    waiter.catch(() => {});
+
+    expect(emits).toHaveLength(1);
+
+    WorktreeManager.clearQueue('/obs-3');
+    await expect(waiter).rejects.toThrow(/Git queue cleared/);
+
+    // No further wait emits after the queue was cleared.
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(emits).toHaveLength(1);
+
+    release!();
+    await running;
   });
 });

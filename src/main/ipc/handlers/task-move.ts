@@ -5,7 +5,7 @@ import { IPC } from '../../../shared/ipc-channels';
 import { SessionRepository } from '../../db/repositories/session-repository';
 import { UsageHistoryRepository } from '../../db/repositories/usage-history-repository';
 import { captureGitStats } from './git-stats-capture';
-import { WorktreeManager } from '../../git/worktree-manager';
+import { WorktreeManager, type GitWaitProgress } from '../../git/worktree-manager';
 import { slugify } from '../../../shared/slugify';
 import { getProjectDb } from '../../db/database';
 import {
@@ -743,14 +743,19 @@ export async function handleTaskMove(
     // another op. The 'fetching' label is emitted by the git layer itself once
     // the op actually starts, so we no longer eagerly show "Fetching latest..."
     // here (which made a queue wait masquerade as an active fetch).
-    const onWait = (jobsAhead: number) => emitSpawnWaiting(context.mainWindow, task.id, jobsAhead);
+    const onWaitProgress = (info: GitWaitProgress) => emitSpawnWaiting(
+      context.mainWindow,
+      task.id,
+      info.jobsAhead,
+      info.runningLabel ? { label: info.runningLabel, elapsedMs: info.runningElapsedMs } : undefined,
+    );
     try {
       // Create worktree if worktrees are enabled and task doesn't have one yet.
       // If worktree creation fails (e.g. duplicate branch), revert the task
       // back to its original column so it doesn't get stuck without a session.
       try {
         const { tasks: tasksPhase2 } = getProjectRepos(context, resolvedProjectId);
-        await ensureTaskWorktree(context, task, tasksPhase2, resolvedProjectPath, { signal, onProgress, onWait });
+        await ensureTaskWorktree(context, task, tasksPhase2, resolvedProjectPath, { signal, onProgress, onWaitProgress });
       } catch (error) {
         // Let AbortError propagate to the outer catch for centralized handling
         if (isAbortError(error)) throw error;
@@ -778,7 +783,7 @@ export async function handleTaskMove(
               }
               await worktreeManager.pruneWorktrees();
               await worktreeManager.removeBranch(expectedBranch);
-            });
+            }, { label: `stale-cleanup:${task.id.slice(0, 8)}` });
           } catch (cleanupError) {
             console.warn('[TASK_MOVE] Stale resource cleanup failed (will retry on next attempt):', cleanupError);
           }
@@ -798,7 +803,7 @@ export async function handleTaskMove(
       // the outer catch which also handles AbortError cleanup.
       const { tasks: tasksCheckout } = getProjectRepos(context, resolvedProjectId);
       guardActiveNonWorktreeSessions(context, task, tasksCheckout);
-      await ensureTaskBranchCheckout(task, resolvedProjectPath, { signal, onProgress, onWait });
+      await ensureTaskBranchCheckout(task, resolvedProjectPath, { signal, onProgress, onWaitProgress });
 
       // === Phase 3 (locked, short) ===
       // CAS-check invariants before spawning. If a newer move ran during our

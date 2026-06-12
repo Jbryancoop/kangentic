@@ -34,7 +34,9 @@ The chosen base branch is stored in the worktree's git config as `kangentic.base
 
 ### Concurrency
 
-All git-mutating operations (create, remove, branch delete, prune, checkout, rename) are serialized per project via a priority-aware queue (`WorktreeManager.withGitLock` / instance `withLock`). Exactly one operation runs at a time per project (preserving the `.git` lock-contention guarantee), but waiting operations are ordered by `GitQueuePriority` - `USER` (0, the default) runs ahead of `BACKGROUND` (10, e.g. retry cleanups and background prune), with FIFO order within a priority band. This keeps a user-initiated spawn from head-of-line-blocking behind a slow or failing background cleanup. Different projects run independently. Background worktree removal also runs fail-fast (`removeWorktree`'s `{ timeoutMs, fast }` options) so one stuck removal cannot hold the queue for the full timeout. `clearQueue` (on project close) rejects any still-waiting jobs so their callers do not hang.
+All git-mutating operations (create, remove, branch delete, prune, checkout, rename) are serialized per project via a priority-aware queue (`WorktreeManager.withGitLock` / instance `withLock`). Exactly one operation runs at a time per project (preserving the `.git` lock-contention guarantee), but waiting operations are ordered by `GitQueuePriority` - `USER` (0, the default) runs ahead of `BACKGROUND` (10, e.g. retry cleanups and background prune), with FIFO order within a priority band. This keeps a user-initiated spawn from head-of-line-blocking behind a slow or failing background cleanup. Different projects run independently. `removeWorktree`'s `{ timeoutMs, removalProfile }` options bound how hard a removal retries so one stuck delete cannot hold the queue: `removalProfile` is one of `thorough` (full backoff; the default, used where a failure surfaces an error to the user such as worktree create or project delete), `moderate` (a pinned path fails in a few seconds; used on the user-facing Done-move and cleanup paths so a held handle never holds the queue for minutes), or `fast` (a single attempt; used by the background startup retry pass). `clearQueue` (on project close) rejects any still-waiting jobs so their callers do not hang.
+
+When a removal fails because a process still pins the worktree, `removeWorktree` reaps orphaned processes whose command line points inside that worktree path (a zombie Electron/node left by an agent's E2E run or `/preview`) and retries once. This reap is lazy by design: a clean Done-move never runs the OS process scan, so dragging a task to Done pays no added cost; the scan fires only on the rare delete a held handle actually blocks. It is skipped under `NODE_ENV=test`, where the E2E leak janitor owns process sweeps instead.
 
 ### Creation Flow
 
@@ -266,8 +268,8 @@ Uses real temp files with mocked `os.homedir()`.
 - `withLock` instance method uses the project path
 
 **Fail-fast removal:**
-- `removeWorktree({ fast: true })` forwards single-attempt opts to `removeWithRetry`; no-opts keeps the full backoff
-- Background retry cleanup runs at `BACKGROUND` priority with `{ timeoutMs: 3000, fast: true }`
+- `removeWorktree({ removalProfile: 'fast' })` forwards single-attempt opts to `removeWithRetry`; the default `'thorough'` profile keeps the full backoff
+- Background retry cleanup runs at `BACKGROUND` priority with `{ timeoutMs: 3000, removalProfile: 'fast' }`
 
 **listWorktrees:**
 - Parses `git worktree list --porcelain` output correctly

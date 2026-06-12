@@ -378,9 +378,9 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
             case 'initializing':
               return (
                 <div className="mt-2 pt-2 border-t border-edge" data-testid="status-bar">
-                  <span className="text-xs text-fg-faint flex items-center gap-1">
-                    <Loader2 size={12} className="animate-spin" />
-                    {displayState.label}
+                  <span className="text-xs text-fg-faint flex items-center gap-1 min-w-0" title={displayState.label}>
+                    <Loader2 size={12} className="animate-spin shrink-0" />
+                    <span className="truncate">{displayState.label}</span>
                   </span>
                 </div>
               );
