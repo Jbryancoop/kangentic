@@ -4,6 +4,7 @@ import { IPC } from '../../../shared/ipc-channels';
 import { DiffService } from '../../git/diff-service';
 import { DiffWatcher } from '../../git/diff-watcher';
 import { readWorktreeHead } from '../../git/worktree-head';
+import { fetchAllRemotesIfStale } from '../../git/fetch-throttle';
 import type { GitDiffFilesInput, GitFileContentInput, GitPendingChangesInput, GitPendingChangesResult } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 
@@ -16,6 +17,10 @@ import type { IpcContext } from '../ipc-context';
  * The unpushed count is gated on the repo having at least one remote: with no
  * remotes, `rev-list --not --remotes` matches nothing and would count the
  * entire history, scaring the user with a number that is not unpushed work.
+ * When a remote exists we first refresh remote-tracking refs
+ * (fetchAllRemotesIfStale) so the count reflects current remote state rather
+ * than stale local refs, which previously made already-pushed commits look
+ * local-only.
  *
  * On any git failure it returns a safe default (`hasPendingChanges: true`) so
  * a corrupted or missing worktree still routes through the confirm dialog.
@@ -31,6 +36,12 @@ export async function probePendingChanges(checkPath: string): Promise<GitPending
     let unpushedCommitCount = 0;
     const remotes = await git.getRemotes();
     if (remotes.length > 0) {
+      // Refresh remote-tracking refs first: stale local refs make rev-list
+      // report already-pushed commits as local-only. Never rejects; on failure
+      // the count falls back to existing (possibly stale) refs, the pre-fix
+      // behavior. Kept outside the inner try so a hypothetical throw lands in
+      // the outer catch (safe default) rather than yielding a false 0 count.
+      await fetchAllRemotesIfStale(checkPath);
       try {
         const countOutput = (await git.raw(['rev-list', 'HEAD', '--not', '--remotes', '--count'])).trim();
         unpushedCommitCount = parseInt(countOutput, 10) || 0;

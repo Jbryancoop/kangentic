@@ -27,7 +27,7 @@ vi.mock('../../src/main/git/git-spawn', () => ({
   isGitTimeoutError: mockIsGitTimeoutError,
 }));
 
-import { fetchIfStale, clearFetchCache } from '../../src/main/git/fetch-throttle';
+import { fetchIfStale, fetchAllRemotesIfStale, clearFetchCache } from '../../src/main/git/fetch-throttle';
 import type { SimpleGit } from 'simple-git';
 
 const PROJECT_PATH = '/mock/project';
@@ -128,5 +128,124 @@ describe('fetchIfStale', () => {
       ['fetch', 'origin', BRANCH],
       expect.objectContaining({ signal: controller.signal }),
     );
+  });
+});
+
+describe('fetchAllRemotesIfStale', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  const WORKTREE_PATH = '/mock/repo/.kangentic/worktrees/a';
+  const SIBLING_WORKTREE_PATH = '/mock/repo/.kangentic/worktrees/b';
+  const COMMON_DIR_OUTPUT = '/mock/repo/.git\n';
+
+  // The helper makes two spawn calls per invocation: `rev-parse
+  // --git-common-dir` (repo identity for the throttle key), then the actual
+  // `fetch --all`. Route the mock by the leading git subcommand so order and
+  // count are explicit.
+  function routeByGitSubcommand(
+    fetchBehavior: () => Promise<{ stdout: string; stderr: string }>,
+    commonDirOutput: string = COMMON_DIR_OUTPUT,
+  ): void {
+    mockRunGitWithTimeout.mockImplementation((_checkPath: string, args: readonly string[]) => {
+      if (args[0] === 'rev-parse') {
+        return Promise.resolve({ stdout: commonDirOutput, stderr: '' });
+      }
+      return fetchBehavior();
+    });
+  }
+
+  function fetchCallCount(): number {
+    return mockRunGitWithTimeout.mock.calls.filter((call) => call[1][0] === 'fetch').length;
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    clearFetchCache();
+    mockRunGitWithTimeout.mockReset();
+    mockIsGitTimeoutError.mockClear();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('fetches all remotes with prune and quiet using the probe timeout', async () => {
+    routeByGitSubcommand(() => Promise.resolve({ stdout: '', stderr: '' }));
+
+    await fetchAllRemotesIfStale(WORKTREE_PATH);
+
+    expect(mockRunGitWithTimeout).toHaveBeenCalledWith(
+      WORKTREE_PATH,
+      ['fetch', '--all', '--prune', '--quiet'],
+      expect.objectContaining({ timeoutMs: 5_000 }),
+    );
+  });
+
+  it('throttles by common dir: two worktrees of the same repo share one fetch', async () => {
+    routeByGitSubcommand(() => Promise.resolve({ stdout: '', stderr: '' }));
+
+    await fetchAllRemotesIfStale(WORKTREE_PATH);
+    await fetchAllRemotesIfStale(SIBLING_WORKTREE_PATH);
+
+    // Both worktrees resolve to /mock/repo/.git, so the second call is throttled.
+    expect(fetchCallCount()).toBe(1);
+  });
+
+  it('never rejects and does not cache on fetch failure (next call retries)', async () => {
+    routeByGitSubcommand(() => Promise.reject(new Error('fatal: unable to access remote')));
+
+    await expect(fetchAllRemotesIfStale(WORKTREE_PATH)).resolves.toBeUndefined();
+    expect(fetchCallCount()).toBe(1);
+
+    // Failure left the cache empty, so a second call attempts the fetch again.
+    await fetchAllRemotesIfStale(WORKTREE_PATH);
+    expect(fetchCallCount()).toBe(2);
+  });
+
+  it('logs a warning on timeout only', async () => {
+    const timeoutError = new Error('git fetch --all --prune --quiet aborted (timeout after 5000ms) (child process killed)');
+    routeByGitSubcommand(() => Promise.reject(timeoutError));
+
+    await fetchAllRemotesIfStale(WORKTREE_PATH);
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[FETCH] all-remotes refresh timed out'));
+  });
+
+  it('does not log a warning on a generic (non-timeout) fetch error', async () => {
+    routeByGitSubcommand(() => Promise.reject(new Error('fatal: no remote named origin')));
+
+    await fetchAllRemotesIfStale(WORKTREE_PATH);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to checkPath as the cache key when rev-parse fails', async () => {
+    // rev-parse rejects, so the identity falls back to checkPath. A successful
+    // fetch from the SAME path then populates the cache and throttles the next call.
+    mockRunGitWithTimeout.mockImplementation((_checkPath: string, args: readonly string[]) => {
+      if (args[0] === 'rev-parse') {
+        return Promise.reject(new Error('fatal: not a git repository'));
+      }
+      return Promise.resolve({ stdout: '', stderr: '' });
+    });
+
+    await fetchAllRemotesIfStale(WORKTREE_PATH);
+    expect(fetchCallCount()).toBe(1);
+
+    await fetchAllRemotesIfStale(WORKTREE_PATH);
+    expect(fetchCallCount()).toBe(1);
+  });
+
+  it('dedupes concurrent calls into a single in-flight fetch', async () => {
+    let resolveFetch: (value: { stdout: string; stderr: string }) => void = () => {};
+    const pendingFetch = new Promise<{ stdout: string; stderr: string }>((resolve) => {
+      resolveFetch = resolve;
+    });
+    routeByGitSubcommand(() => pendingFetch);
+
+    const first = fetchAllRemotesIfStale(WORKTREE_PATH);
+    const second = fetchAllRemotesIfStale(WORKTREE_PATH);
+
+    resolveFetch({ stdout: '', stderr: '' });
+    await Promise.all([first, second]);
+
+    expect(fetchCallCount()).toBe(1);
   });
 });

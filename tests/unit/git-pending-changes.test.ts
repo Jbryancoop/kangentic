@@ -24,6 +24,14 @@ vi.mock('../../src/main/git/worktree-head', () => ({
   readWorktreeHead: (path: string) => mockReadWorktreeHead(path),
 }));
 
+// The probe refreshes remote-tracking refs before counting unpushed commits.
+// Mock it so the unit tests don't spawn a real fetch; behavior of the helper
+// itself is covered in fetch-throttle.test.ts.
+const mockFetchAllRemotesIfStale = vi.fn<(checkPath: string) => Promise<void>>();
+vi.mock('../../src/main/git/fetch-throttle', () => ({
+  fetchAllRemotesIfStale: (checkPath: string) => mockFetchAllRemotesIfStale(checkPath),
+}));
+
 // git-diff.ts imports these at module scope; stub them so the import resolves
 // without Electron or real git wiring (the handler registration is unused here).
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn(), on: vi.fn() } }));
@@ -39,6 +47,7 @@ describe('probePendingChanges', () => {
     mockGit.getRemotes.mockResolvedValue([]);
     mockGit.raw.mockResolvedValue('0');
     mockReadWorktreeHead.mockResolvedValue({ branch: 'feat/work', sha: 'abc123' });
+    mockFetchAllRemotesIfStale.mockResolvedValue(undefined);
   });
 
   it('counts uncommitted files from git status', async () => {
@@ -73,6 +82,8 @@ describe('probePendingChanges', () => {
 
     // rev-list must never run with no remotes (it would count all of history).
     expect(mockGit.raw).not.toHaveBeenCalled();
+    // With no remote there is nothing to refresh, so no fetch is attempted.
+    expect(mockFetchAllRemotesIfStale).not.toHaveBeenCalled();
     expect(result.unpushedCommitCount).toBe(0);
   });
 
@@ -85,6 +96,20 @@ describe('probePendingChanges', () => {
     expect(mockGit.raw).toHaveBeenCalledWith(['rev-list', 'HEAD', '--not', '--remotes', '--count']);
     expect(result.unpushedCommitCount).toBe(4);
     expect(result.hasPendingChanges).toBe(true);
+  });
+
+  it('refreshes remote-tracking refs before counting unpushed commits', async () => {
+    mockGit.getRemotes.mockResolvedValue([{ name: 'origin' }]);
+    mockGit.raw.mockResolvedValue('0\n');
+
+    await probePendingChanges('/mock/worktree');
+
+    expect(mockFetchAllRemotesIfStale).toHaveBeenCalledWith('/mock/worktree');
+    // The fetch must complete before rev-list, otherwise the count still reads
+    // stale refs. invocationCallOrder is monotonic across all mocks.
+    const fetchOrder = mockFetchAllRemotesIfStale.mock.invocationCallOrder[0];
+    const revListOrder = mockGit.raw.mock.invocationCallOrder[0];
+    expect(fetchOrder).toBeLessThan(revListOrder);
   });
 
   it('treats a rev-list failure (unborn / detached) as zero unpushed', async () => {
@@ -135,6 +160,24 @@ describe('probePendingChanges', () => {
     // The outer catch must return the all-null safe default.
     mockGit.status.mockResolvedValue({ files: [{}] });
     mockGit.getRemotes.mockRejectedValue(new Error('could not read git config'));
+
+    const result = await probePendingChanges('/mock/worktree');
+
+    expect(result).toEqual({
+      hasPendingChanges: true,
+      uncommittedFileCount: 0,
+      unpushedCommitCount: 0,
+      currentBranch: null,
+    });
+  });
+
+  it('returns the safe default if the freshness fetch rejects unexpectedly', async () => {
+    // fetchAllRemotesIfStale is contracted to never reject, but the call site
+    // sits outside the inner rev-list try so that if it ever did, the outer
+    // catch (safe default) fires rather than a false 0 unpushed count. This
+    // locks that placement against future refactors.
+    mockGit.getRemotes.mockResolvedValue([{ name: 'origin' }]);
+    mockFetchAllRemotesIfStale.mockRejectedValue(new Error('unexpected fetch failure'));
 
     const result = await probePendingChanges('/mock/worktree');
 
