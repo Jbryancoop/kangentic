@@ -16,6 +16,7 @@ import {
   cleanupTaskResources,
   resolveSpawnOverrides,
 } from '../helpers';
+import { resolveProjectContext } from '../helpers/project-repos';
 import { guardActiveNonWorktreeSessions } from './task-move';
 import { interpolateTemplate } from '../../agent/shared';
 import { withTaskLock } from '../task-lifecycle-lock';
@@ -87,23 +88,24 @@ export function registerTaskCrudHandlers(context: IpcContext): void {
     return tasks.list(swimlaneId);
   });
 
-  ipcMain.handle(IPC.TASK_CREATE, async (_, input) => {
-    const { tasks, swimlanes, actions, attachments } = getProjectRepos(context);
+  ipcMain.handle(IPC.TASK_CREATE, async (_, input, projectId?: string | null) => {
+    const { projectId: resolvedProjectId, projectPath: resolvedProjectPath } = resolveProjectContext(context, projectId);
+    const { tasks, swimlanes, actions, attachments } = getProjectRepos(context, resolvedProjectId);
     const { pendingAttachments, ...taskInput } = input;
     const task = tasks.create(taskInput);
 
     // Save any pending attachments from the dialog
-    if (pendingAttachments?.length && context.currentProjectPath) {
+    if (pendingAttachments?.length && resolvedProjectPath) {
       for (const att of pendingAttachments) {
-        attachments.add(context.currentProjectPath, task.id, att.filename, att.data, att.media_type);
+        attachments.add(resolvedProjectPath, task.id, att.filename, att.data, att.media_type);
       }
     }
 
     // Auto-spawn: if target column has auto_spawn, start the agent
     const toLane = swimlanes.getById(task.swimlane_id);
-    if (toLane?.auto_spawn && context.currentProjectPath && context.currentProjectId) {
-      const projectPath = context.currentProjectPath;
-      const projectId = context.currentProjectId;
+    if (toLane?.auto_spawn && resolvedProjectPath && resolvedProjectId) {
+      const projectPath = resolvedProjectPath;
+      const projectId = resolvedProjectId;
       // Serialize the spawn flow against any other in-flight lifecycle op
       // (move, suspend, kill, delete) for this freshly created task. Without
       // the lock, a concurrent TASK_DELETE could clean up resources mid-spawn
@@ -162,9 +164,8 @@ export function registerTaskCrudHandlers(context: IpcContext): void {
     return tasks.getById(task.id) ?? task;
   });
 
-  ipcMain.handle(IPC.TASK_UPDATE, async (_, input) => {
-    const resolvedProjectId = context.currentProjectId;
-    const resolvedProjectPath = context.currentProjectPath;
+  ipcMain.handle(IPC.TASK_UPDATE, async (_, input, projectId?: string | null) => {
+    const { projectId: resolvedProjectId, projectPath: resolvedProjectPath } = resolveProjectContext(context, projectId);
     const { tasks } = getProjectRepos(context, resolvedProjectId);
     const existing = tasks.getById(input.id);
 
@@ -207,9 +208,8 @@ export function registerTaskCrudHandlers(context: IpcContext): void {
     return tasks.update(input);
   });
 
-  ipcMain.handle(IPC.TASK_DELETE, async (_, id) => {
-    const resolvedProjectId = context.currentProjectId;
-    const resolvedProjectPath = context.currentProjectPath;
+  ipcMain.handle(IPC.TASK_DELETE, async (_, id, projectId?: string | null) => {
+    const { projectId: resolvedProjectId, projectPath: resolvedProjectPath } = resolveProjectContext(context, projectId);
     const { tasks, attachments } = getProjectRepos(context, resolvedProjectId);
     // Serialize against any in-flight session lifecycle op for this task so
     // the long awaits inside cleanup don't race with spawn/resume/etc.
@@ -224,9 +224,8 @@ export function registerTaskCrudHandlers(context: IpcContext): void {
     drainAutoNameAskedIds(context, [id]);
   });
 
-  ipcMain.handle(IPC.TASK_BULK_DELETE, async (_, ids: string[]): Promise<TaskBulkDeleteResult> => {
-    const resolvedProjectId = context.currentProjectId;
-    const resolvedProjectPath = context.currentProjectPath;
+  ipcMain.handle(IPC.TASK_BULK_DELETE, async (_, ids: string[], projectId?: string | null): Promise<TaskBulkDeleteResult> => {
+    const { projectId: resolvedProjectId, projectPath: resolvedProjectPath } = resolveProjectContext(context, projectId);
     const { tasks, attachments } = getProjectRepos(context, resolvedProjectId);
     const failures: TaskBulkDeleteFailure[] = [];
     const total = ids.length;

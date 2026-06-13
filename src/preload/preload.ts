@@ -60,18 +60,18 @@ const api: ElectronAPI = {
 
   tasks: {
     list: (swimlaneId?) => ipcRenderer.invoke(IPC.TASK_LIST, swimlaneId),
-    create: (input) => ipcRenderer.invoke(IPC.TASK_CREATE, input),
-    update: (input) => ipcRenderer.invoke(IPC.TASK_UPDATE, input),
-    delete: (id) => ipcRenderer.invoke(IPC.TASK_DELETE, id),
-    move: (input) => ipcRenderer.invoke(IPC.TASK_MOVE, input),
+    create: (input, projectId) => ipcRenderer.invoke(IPC.TASK_CREATE, input, projectId),
+    update: (input, projectId) => ipcRenderer.invoke(IPC.TASK_UPDATE, input, projectId),
+    delete: (id, projectId) => ipcRenderer.invoke(IPC.TASK_DELETE, id, projectId),
+    move: (input, projectId) => ipcRenderer.invoke(IPC.TASK_MOVE, input, projectId),
     cancelSpawn: (taskId) => ipcRenderer.invoke(IPC.TASK_CANCEL_SPAWN, taskId),
     listArchived: () => ipcRenderer.invoke(IPC.TASK_LIST_ARCHIVED),
-    unarchive: (input) => ipcRenderer.invoke(IPC.TASK_UNARCHIVE, input),
-    bulkDelete: (ids) => ipcRenderer.invoke(IPC.TASK_BULK_DELETE, ids),
-    bulkUnarchive: (ids, targetSwimlaneId) => ipcRenderer.invoke(IPC.TASK_BULK_UNARCHIVE, ids, targetSwimlaneId),
-    switchBranch: (input) => ipcRenderer.invoke(IPC.TASK_SWITCH_BRANCH, input),
-    setRuntimeOverride: (input) => ipcRenderer.invoke(IPC.TASK_SET_RUNTIME_OVERRIDE, input),
-    resolvePr: (taskId) => ipcRenderer.invoke(IPC.TASK_RESOLVE_PR, taskId),
+    unarchive: (input, projectId) => ipcRenderer.invoke(IPC.TASK_UNARCHIVE, input, projectId),
+    bulkDelete: (ids, projectId) => ipcRenderer.invoke(IPC.TASK_BULK_DELETE, ids, projectId),
+    bulkUnarchive: (ids, targetSwimlaneId, projectId) => ipcRenderer.invoke(IPC.TASK_BULK_UNARCHIVE, ids, targetSwimlaneId, projectId),
+    switchBranch: (input, projectId) => ipcRenderer.invoke(IPC.TASK_SWITCH_BRANCH, input, projectId),
+    setRuntimeOverride: (input, projectId) => ipcRenderer.invoke(IPC.TASK_SET_RUNTIME_OVERRIDE, input, projectId),
+    resolvePr: (taskId, projectId) => ipcRenderer.invoke(IPC.TASK_RESOLVE_PR, taskId, projectId),
     onAutoMoved: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, taskId: string, targetSwimlaneId: string, taskTitle: string, projectId?: string) =>
         callback(taskId, targetSwimlaneId, taskTitle, projectId);
@@ -147,12 +147,12 @@ const api: ElectronAPI = {
   },
 
   sessions: {
-    spawn: (input) => ipcRenderer.invoke(IPC.SESSION_SPAWN, input),
+    spawn: (input, projectId) => ipcRenderer.invoke(IPC.SESSION_SPAWN, input, projectId),
     kill: (id) => ipcRenderer.invoke(IPC.SESSION_KILL, id),
-    suspend: (taskId) => ipcRenderer.invoke(IPC.SESSION_SUSPEND, taskId),
-    resume: (taskId, resumePrompt?) => ipcRenderer.invoke(IPC.SESSION_RESUME, taskId, resumePrompt),
-    reconcile: (taskId) => ipcRenderer.invoke(IPC.SESSION_RECONCILE, taskId),
-    reset: (taskId) => ipcRenderer.invoke(IPC.SESSION_RESET, taskId),
+    suspend: (taskId, projectId) => ipcRenderer.invoke(IPC.SESSION_SUSPEND, taskId, projectId),
+    resume: (taskId, resumePrompt?, projectId?) => ipcRenderer.invoke(IPC.SESSION_RESUME, taskId, resumePrompt, projectId),
+    reconcile: (taskId, projectId) => ipcRenderer.invoke(IPC.SESSION_RECONCILE, taskId, projectId),
+    reset: (taskId, projectId) => ipcRenderer.invoke(IPC.SESSION_RESET, taskId, projectId),
     write: (id, data) => ipcRenderer.invoke(IPC.SESSION_WRITE, id, data),
     resize: (id, cols, rows) => ipcRenderer.invoke(IPC.SESSION_RESIZE, id, cols, rows),
     list: () => ipcRenderer.invoke(IPC.SESSION_LIST),

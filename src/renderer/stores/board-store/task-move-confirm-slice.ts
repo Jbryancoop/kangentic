@@ -1,5 +1,6 @@
 import { type StateCreator } from 'zustand';
 import type { TaskMoveInput } from '../../../shared/types';
+import { useProjectStore } from '../project-store';
 import type { BoardStore } from './types';
 
 export interface TaskMoveConfirmSlice {
@@ -29,7 +30,8 @@ export const createTaskMoveConfirmSlice: StateCreator<BoardStore, [], [], TaskMo
       return;
     }
     set({ pendingMoveConfirm: null });
-    await get().moveTask(pending.input, true);
+    // Modal dialog against the current project; live capture is interaction-time-correct.
+    await get().moveTask(pending.input, true, useProjectStore.getState().currentProject?.id ?? null);
   },
   cancelPendingMove: () => {
     set({ pendingMoveConfirm: null });

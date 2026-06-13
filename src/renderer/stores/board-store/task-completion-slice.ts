@@ -1,5 +1,6 @@
 import { type StateCreator } from 'zustand';
 import { useToastStore } from '../toast-store';
+import { useProjectStore } from '../project-store';
 import type { BoardStore, CompletingTask } from './types';
 import { type CompletionGate, createGate, canPersist } from './completion-gate';
 
@@ -63,7 +64,7 @@ export const createTaskCompletionSlice: StateCreator<BoardStore, [], [], TaskCom
       return { completionGates: nextGates };
     });
 
-    const { targetSwimlaneId, targetPosition, task } = gate.completing;
+    const { targetSwimlaneId, targetPosition, task, projectId } = gate.completing;
     const taskTitle = task.title;
 
     // Clear the singular completingTask only if it still points at THIS drop;
@@ -71,14 +72,28 @@ export const createTaskCompletionSlice: StateCreator<BoardStore, [], [], TaskCom
     set((s) => (s.completingTask?.taskId === taskId ? { completingTask: null } : {}));
 
     try {
-      await get().moveTask({ taskId, targetSwimlaneId, targetPosition });
-      set({ recentlyArchivedId: taskId });
-      useToastStore.getState().addToast({
-        message: `"${taskTitle}" completed and archived`,
-        variant: 'success',
-      });
+      // Pass the projectId captured at drop time so the move (and its archive)
+      // target the project the card was dropped in, even if the user switched
+      // projects during the FlyingCard flight.
+      const result = await get().moveTask({ taskId, targetSwimlaneId, targetPosition }, false, projectId);
+      if (result.ok) {
+        // recentlyArchivedId is board-store-global. Only flag it when still
+        // viewing the source project, so a cross-project completion doesn't
+        // mis-highlight a foreign board.
+        if (useProjectStore.getState().currentProject?.id === projectId) {
+          set({ recentlyArchivedId: taskId });
+        }
+        useToastStore.getState().addToast({
+          message: `"${taskTitle}" completed and archived`,
+          variant: 'success',
+        });
+      }
+      // result.ok === false: moveTask already surfaced the error toast and did a
+      // cross-project-safe rollback (reload or warm-cache invalidation). Firing a
+      // success toast here was the original false-success bug; we no longer do.
     } catch (err) {
-      await get().loadBoard();
+      // Safety net: moveTask returns { ok: false } rather than throwing for IPC
+      // failures, but guard an unexpected throw so the gate still cleans up below.
       useToastStore.getState().addToast({
         message: `Failed to complete task: ${err instanceof Error ? err.message : 'Unknown error'}`,
         variant: 'error',

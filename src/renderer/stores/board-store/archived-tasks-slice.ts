@@ -2,6 +2,7 @@ import { type StateCreator } from 'zustand';
 import type { Task, TaskUnarchiveInput, TaskBulkDeleteProgress } from '../../../shared/types';
 import { useSessionStore } from '../session-store';
 import { useToastStore } from '../toast-store';
+import { useProjectStore } from '../project-store';
 import { applyStructuralSharing } from './structural-sharing';
 import type { BoardStore } from './types';
 
@@ -71,7 +72,7 @@ export const createArchivedTasksSlice: StateCreator<BoardStore, [], [], Archived
     }
 
     try {
-      await window.electronAPI.tasks.unarchive(input);
+      await window.electronAPI.tasks.unarchive(input, useProjectStore.getState().currentProject?.id ?? null);
 
       const [nextTasks, nextArchivedTasks] = await Promise.all([
         window.electronAPI.tasks.list(),
@@ -124,7 +125,7 @@ export const createArchivedTasksSlice: StateCreator<BoardStore, [], [], Archived
       archivedTasks: s.archivedTasks.filter((t) => t.id !== id),
     }));
     try {
-      await window.electronAPI.tasks.delete(id);
+      await window.electronAPI.tasks.delete(id, useProjectStore.getState().currentProject?.id ?? null);
       // Also clean up sessions in session store
       useSessionStore.setState((s) => ({
         sessions: s.sessions.filter((session) => session.taskId !== id),
@@ -155,7 +156,7 @@ export const createArchivedTasksSlice: StateCreator<BoardStore, [], [], Archived
     });
 
     try {
-      const result = await window.electronAPI.tasks.bulkDelete(ids);
+      const result = await window.electronAPI.tasks.bulkDelete(ids, useProjectStore.getState().currentProject?.id ?? null);
 
       // Always clear sessions for fully-deleted tasks. Partial-failure tasks
       // still had their DB row deleted (cleanup just left worktree files
@@ -195,7 +196,7 @@ export const createArchivedTasksSlice: StateCreator<BoardStore, [], [], Archived
       archivedTasks: state.archivedTasks.filter((task) => !idSet.has(task.id)),
     }));
     try {
-      await window.electronAPI.tasks.bulkUnarchive(ids, targetSwimlaneId);
+      await window.electronAPI.tasks.bulkUnarchive(ids, targetSwimlaneId, useProjectStore.getState().currentProject?.id ?? null);
       // Reload tasks (sessions arrive via push-based session-changed events)
       const tasks = await window.electronAPI.tasks.list();
       set({ tasks });

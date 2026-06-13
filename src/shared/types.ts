@@ -2195,10 +2195,15 @@ export interface ElectronAPI {
   // Tasks
   tasks: {
     list: (swimlaneId?: string) => Promise<Task[]>;
-    create: (input: TaskCreateInput) => Promise<Task>;
-    update: (input: TaskUpdateInput) => Promise<Task>;
-    delete: (id: string) => Promise<void>;
-    move: (input: TaskMoveInput) => Promise<void>;
+    // Mutation methods take an optional trailing `projectId` the renderer
+    // stamps at interaction time so the mutation always targets the project it
+    // was issued for, even if the user switches projects before the handler
+    // runs. The handler prefers it over the ambient current project. See
+    // .claude/rules/project-scoped-ipc.md.
+    create: (input: TaskCreateInput, projectId?: string | null) => Promise<Task>;
+    update: (input: TaskUpdateInput, projectId?: string | null) => Promise<Task>;
+    delete: (id: string, projectId?: string | null) => Promise<void>;
+    move: (input: TaskMoveInput, projectId?: string | null) => Promise<void>;
     /**
      * Cancel an in-flight spawn for a task (e.g. while it is parked in the
      * git queue or fetching). Aborts the move's AbortController; the existing
@@ -2206,13 +2211,13 @@ export interface ElectronAPI {
      */
     cancelSpawn: (taskId: string) => Promise<void>;
     listArchived: () => Promise<Task[]>;
-    unarchive: (input: TaskUnarchiveInput) => Promise<Task>;
-    bulkDelete: (ids: string[]) => Promise<TaskBulkDeleteResult>;
-    bulkUnarchive: (ids: string[], targetSwimlaneId: string) => Promise<void>;
-    switchBranch: (input: TaskSwitchBranchInput) => Promise<Task>;
-    setRuntimeOverride: (input: TaskSetRuntimeOverrideInput) => Promise<TaskSetRuntimeOverrideResult>;
+    unarchive: (input: TaskUnarchiveInput, projectId?: string | null) => Promise<Task>;
+    bulkDelete: (ids: string[], projectId?: string | null) => Promise<TaskBulkDeleteResult>;
+    bulkUnarchive: (ids: string[], targetSwimlaneId: string, projectId?: string | null) => Promise<void>;
+    switchBranch: (input: TaskSwitchBranchInput, projectId?: string | null) => Promise<Task>;
+    setRuntimeOverride: (input: TaskSetRuntimeOverrideInput, projectId?: string | null) => Promise<TaskSetRuntimeOverrideResult>;
     /** On-demand authoritative branch->PR resolve + link for a task (works without a live session). */
-    resolvePr: (taskId: string) => Promise<TaskResolvePrResult>;
+    resolvePr: (taskId: string, projectId?: string | null) => Promise<TaskResolvePrResult>;
     onAutoMoved: (callback: (taskId: string, targetSwimlaneId: string, taskTitle: string, projectId?: string) => void) => () => void;
     onCreatedByAgent: (callback: (taskId: string, taskTitle: string, columnName: string, projectId?: string) => void) => () => void;
     onUpdatedByAgent: (callback: (taskId: string, taskTitle: string, projectId?: string) => void) => () => void;
@@ -2263,10 +2268,14 @@ export interface ElectronAPI {
 
   // Sessions (PTY)
   sessions: {
-    spawn: (input: SpawnSessionInput) => Promise<Session>;
+    // spawn/suspend/resume/reset/reconcile take an optional trailing
+    // `projectId` the renderer stamps at interaction time (same rationale as
+    // the task mutations above). kill/write/resize/list operate by session id
+    // and stay project-agnostic. See .claude/rules/project-scoped-ipc.md.
+    spawn: (input: SpawnSessionInput, projectId?: string | null) => Promise<Session>;
     kill: (sessionId: string) => Promise<void>;
-    suspend: (taskId: string) => Promise<void>;
-    resume: (taskId: string, resumePrompt?: string) => Promise<Session>;
+    suspend: (taskId: string, projectId?: string | null) => Promise<void>;
+    resume: (taskId: string, resumePrompt?: string, projectId?: string | null) => Promise<Session>;
     /**
      * Targeted "is this task's session alive right now?" probe. Returns
      * the live registry Session if main has one for this task, or null
@@ -2276,8 +2285,8 @@ export interface ElectronAPI {
      * renderer cache that has drifted to `suspended` while the PTY is
      * actually running (HMR listener gap, optimistic suspend, etc.).
      */
-    reconcile: (taskId: string) => Promise<Session | null>;
-    reset: (taskId: string) => Promise<void>;
+    reconcile: (taskId: string, projectId?: string | null) => Promise<Session | null>;
+    reset: (taskId: string, projectId?: string | null) => Promise<void>;
     write: (sessionId: string, data: string) => Promise<void>;
     resize: (sessionId: string, cols: number, rows: number) => Promise<{ colsChanged: boolean }>;
     list: () => Promise<Session[]>;

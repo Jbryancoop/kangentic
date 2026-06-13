@@ -11,6 +11,7 @@ import { ConfirmDialog } from '../dialogs/ConfirmDialog';
 import { stripMarkdown } from '../../utils/strip-markdown';
 import { useBoardStore } from '../../stores/board-store';
 import { useSessionStore } from '../../stores/session-store';
+import { useProjectStore } from '../../stores/project-store';
 import { useBacklogStore } from '../../stores/backlog-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useToastStore } from '../../stores/toast-store';
@@ -115,7 +116,7 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
     const laneTasks = currentTasks.filter(
       (boardTask) => boardTask.swimlane_id === targetSwimlaneId,
     );
-    await moveTask({ taskId: task.id, targetSwimlaneId, targetPosition: laneTasks.length });
+    await moveTask({ taskId: task.id, targetSwimlaneId, targetPosition: laneTasks.length }, false, useProjectStore.getState().currentProject?.id ?? null);
     // If a confirmation dialog was triggered, moveTask returns early without
     // moving. Don't show a success toast in that case.
     if (useBoardStore.getState().pendingMoveConfirm) return;
@@ -135,7 +136,7 @@ const TaskCardInner = function TaskCard({ task, isDragOverlay, compact, onDelete
     const laneTasks = currentTasks.filter(
       (boardTask) => boardTask.swimlane_id === doneLane.id,
     );
-    await window.electronAPI.tasks.move({ taskId, targetSwimlaneId: doneLane.id, targetPosition: laneTasks.length });
+    await window.electronAPI.tasks.move({ taskId, targetSwimlaneId: doneLane.id, targetPosition: laneTasks.length }, useProjectStore.getState().currentProject?.id ?? null);
     useToastStore.getState().addToast({
       message: `Archived "${taskTitle}"`,
       variant: 'info',

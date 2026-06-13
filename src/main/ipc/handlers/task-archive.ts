@@ -9,6 +9,7 @@ import {
   createTransitionEngine,
   resolveSpawnOverrides,
 } from '../helpers';
+import { resolveProjectContext } from '../helpers/project-repos';
 import { guardActiveNonWorktreeSessions } from './task-move';
 import { withTaskLock } from '../task-lifecycle-lock';
 import type { IpcContext } from '../ipc-context';
@@ -19,9 +20,8 @@ export function registerTaskArchiveHandlers(context: IpcContext): void {
     return tasks.listArchived();
   });
 
-  ipcMain.handle(IPC.TASK_UNARCHIVE, async (_, input: { id: string; targetSwimlaneId: string }) => {
-    const resolvedProjectId = context.currentProjectId;
-    const resolvedProjectPath = context.currentProjectPath;
+  ipcMain.handle(IPC.TASK_UNARCHIVE, async (_, input: { id: string; targetSwimlaneId: string }, projectId?: string | null) => {
+    const { projectId: resolvedProjectId, projectPath: resolvedProjectPath } = resolveProjectContext(context, projectId);
     if (!resolvedProjectId) throw new Error('No project is currently open');
 
     const { tasks, swimlanes, actions, attachments: attachmentRepo } = getProjectRepos(context, resolvedProjectId);
@@ -103,9 +103,8 @@ export function registerTaskArchiveHandlers(context: IpcContext): void {
     });
   });
 
-  ipcMain.handle(IPC.TASK_BULK_UNARCHIVE, async (_, ids: string[], targetSwimlaneId: string) => {
-    const resolvedProjectId = context.currentProjectId;
-    const resolvedProjectPath = context.currentProjectPath;
+  ipcMain.handle(IPC.TASK_BULK_UNARCHIVE, async (_, ids: string[], targetSwimlaneId: string, projectId?: string | null) => {
+    const { projectId: resolvedProjectId, projectPath: resolvedProjectPath } = resolveProjectContext(context, projectId);
     if (!resolvedProjectId) throw new Error('No project is currently open');
 
     const { tasks, swimlanes, actions, attachments: attachmentRepo } = getProjectRepos(context, resolvedProjectId);

@@ -19,6 +19,7 @@ import {
   buildAutoCommandVars,
   maybeResolvePRAfterMove,
 } from '../helpers';
+import { resolveProjectContext } from '../helpers/project-repos';
 import { interpolateTemplate } from '../../agent/shared';
 import { trackEvent } from '../../analytics/analytics';
 import { captureSessionMetrics } from './session-metrics';
@@ -906,13 +907,20 @@ export async function handleTaskMove(
 }
 
 export function registerTaskMoveHandlers(context: IpcContext): void {
-  ipcMain.handle(IPC.TASK_MOVE, async (_, input) => {
+  ipcMain.handle(IPC.TASK_MOVE, async (_, input, projectId?: string | null) => {
     try {
-      const result = await handleTaskMove(context, input);
+      // Prefer the renderer-stamped projectId (captured at drop time) over the
+      // ambient current project, which can change if the user switches projects
+      // during the FlyingCard flight. Resolve the matching projectPath too so
+      // Phase 2/3 worktree + spawn work also targets the right project, not the
+      // ambient one. handleTaskMove keeps the ambient fallback for main-process
+      // internal callers that pass undefined.
+      const { projectId: resolvedProjectId, projectPath: resolvedProjectPath } = resolveProjectContext(context, projectId);
+      const result = await handleTaskMove(context, input, resolvedProjectId, resolvedProjectPath);
       // After the move's task lock has released, resolve the PR for the new lane
       // (gated on a branch + non-To Do lane inside the helper). Fire-and-forget so
       // a slow gh query never blocks the move response.
-      maybeResolvePRAfterMove(context, input.taskId, context.currentProjectId);
+      maybeResolvePRAfterMove(context, input.taskId, resolvedProjectId ?? context.currentProjectId);
       return result;
     } catch (error) {
       // Shutdown closes the DB synchronously; any handler that crossed an

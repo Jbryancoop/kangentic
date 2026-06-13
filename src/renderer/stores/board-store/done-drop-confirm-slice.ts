@@ -1,5 +1,6 @@
 import { type StateCreator } from 'zustand';
 import type { GitPendingChangesResult, Task, TaskMoveInput } from '../../../shared/types';
+import { useProjectStore } from '../project-store';
 import type { BoardStore, CompletingTask, PendingDoneConfirm } from './types';
 
 export type PendingChangesInfo = Pick<GitPendingChangesResult, 'hasPendingChanges' | 'uncommittedFileCount' | 'unpushedCommitCount' | 'currentBranch'>;
@@ -78,8 +79,10 @@ export const createDoneDropConfirmSlice: StateCreator<BoardStore, [], [], DoneDr
           get().setCompletingTask(pending.completing);
         }
       } else {
-        // Drop-fallback path: no animation, move directly.
-        await get().moveTask(pending.input);
+        // Drop-fallback path: no animation, move directly. The confirm dialog is
+        // modal against the current project, so capturing the live current
+        // project here is interaction-time-correct.
+        await get().moveTask(pending.input, false, useProjectStore.getState().currentProject?.id ?? null);
       }
     },
 

@@ -1,4 +1,10 @@
 export { getProjectRepos } from './project-repos';
+// resolveProjectContext is intentionally NOT re-exported through this barrel:
+// handlers import it directly from './project-repos'. It is a pure context
+// reader, and many handler unit tests vi.mock this barrel to stub the
+// side-effectful helpers (getProjectRepos, ensureTaskWorktree, ...). Importing
+// the pure resolver from the submodule keeps those tests exercising the real
+// implementation instead of forcing every mock to re-declare it.
 export { ensureGitignore } from './project-setup';
 export { ensureTaskWorktree, ensureTaskBranchCheckout } from './task-git';
 export { buildAutoCommandVars, createTransitionEngine, spawnAgent, autoSpawnForTask, resolveSpawnOverrides } from './agent-spawn';

@@ -13,6 +13,7 @@ import { MaximizeToggleButton } from '../dialog-maximize';
 import { PriorityBadge } from '../../backlog/PriorityBadge';
 import { useConfigStore } from '../../../stores/config-store';
 import { useToastStore } from '../../../stores/toast-store';
+import { useProjectStore } from '../../../stores/project-store';
 import { prStatePresentation } from '../../../lib/pr-state';
 import type { Task, AgentCommand, ShortcutConfig, Swimlane } from '../../../../shared/types';
 
@@ -391,7 +392,7 @@ function TaskDetailKebabItems({
     if (linkingPr) return;
     setLinkingPr(true);
     try {
-      const result = await window.electronAPI.tasks.resolvePr(task.id);
+      const result = await window.electronAPI.tasks.resolvePr(task.id, useProjectStore.getState().currentProject?.id ?? null);
       if (result.reason === 'resolver-unavailable') {
         useToastStore.getState().addToast({
           message: 'GitHub CLI not found - install gh and run gh auth login to link PRs',

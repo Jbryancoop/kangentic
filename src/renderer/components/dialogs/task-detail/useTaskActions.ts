@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom';
 import { useBoardStore } from '../../../stores/board-store';
 import { useBacklogStore } from '../../../stores/backlog-store';
 import { useSessionStore } from '../../../stores/session-store';
+import { useProjectStore } from '../../../stores/project-store';
 import { useToastStore } from '../../../stores/toast-store';
 import type { Task, Session, AgentCommand, Swimlane } from '../../../../shared/types';
 import type { useBranchConfig } from './useBranchConfig';
@@ -197,7 +198,7 @@ export function useTaskActions(input: {
       const laneTasks = useBoardStore.getState().tasks.filter(
         (candidate) => candidate.swimlane_id === targetSwimlaneId,
       );
-      await input.moveTask({ taskId: input.task.id, targetSwimlaneId, targetPosition: laneTasks.length });
+      await input.moveTask({ taskId: input.task.id, targetSwimlaneId, targetPosition: laneTasks.length }, false, useProjectStore.getState().currentProject?.id ?? null);
       // If a confirmation dialog was triggered, moveTask returns early without
       // moving. Don't close the detail dialog or show a toast in that case.
       if (useBoardStore.getState().pendingMoveConfirm) return;
@@ -265,7 +266,7 @@ export function useTaskActions(input: {
           taskId: input.task.id,
           newBaseBranch: trimmedBranch,
           enableWorktree: enablingWorktree || undefined,
-        });
+        }, useProjectStore.getState().currentProject?.id ?? null);
         if (input.title !== input.task.title
           || input.description !== input.task.description
           || prUrlFields.pr_url !== undefined
@@ -381,7 +382,7 @@ export function useTaskActions(input: {
     const laneTasks = useBoardStore.getState().tasks.filter(
       (candidate) => candidate.swimlane_id === doneLane.id,
     );
-    await window.electronAPI.tasks.move({ taskId, targetSwimlaneId: doneLane.id, targetPosition: laneTasks.length });
+    await window.electronAPI.tasks.move({ taskId, targetSwimlaneId: doneLane.id, targetPosition: laneTasks.length }, useProjectStore.getState().currentProject?.id ?? null);
     useToastStore.getState().addToast({
       message: `Archived "${taskTitle}"`,
       variant: 'info',

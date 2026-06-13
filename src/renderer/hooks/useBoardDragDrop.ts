@@ -22,6 +22,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { useBoardStore } from '../stores/board-store';
 import { useToastStore } from '../stores/toast-store';
+import { useProjectStore } from '../stores/project-store';
 import { beginBoardDrag, endBoardDrag } from '../lib/session-update-coalescer';
 import type { Task, Swimlane as SwimlaneType } from '../../shared/types';
 
@@ -456,6 +457,13 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
       .sort((a, b) => a.position - b.position);
     const targetPosition = getInsertionIndex(event, laneTasks, swimlaneIds);
 
+    // Project this drop targets, captured synchronously before any await. A Done
+    // drop defers its persist ~700ms (the FlyingCard flight) and is threaded
+    // through the completion gate; direct moves below pass it straight through.
+    // Either way the move routes to the right project even if the user switches
+    // projects mid-flight. See task-slice.ts moveTask.
+    const dropProjectId = useProjectStore.getState().currentProject?.id ?? null;
+
     // Done target: fly the card into the drop zone immediately, then persist.
     // Moving to Done deletes the local worktree directory, but the branch and
     // session records are preserved and restored on resume, so a clean move is
@@ -497,9 +505,10 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
             originSwimlaneId: originalSwimlane,
             task,
             startRect: rectFromInitial(initialRect, event.delta),
+            projectId: dropProjectId,
           });
         } else {
-          await moveTask(directInput);
+          await moveTask(directInput, false, dropProjectId);
         }
         return;
       }
@@ -525,7 +534,7 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
         if (pendingChanges.hasPendingChanges) {
           requestDoneConfirmDirect(task, directInput, pendingChanges);
         } else {
-          await moveTask(directInput);
+          await moveTask(directInput, false, dropProjectId);
         }
         return;
       }
@@ -537,6 +546,7 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
         originSwimlaneId: originalSwimlane,
         task,
         startRect: rectFromInitial(initialRect, event.delta),
+        projectId: dropProjectId,
       };
       setCompletingTask(completing, { gated: true });
 
@@ -551,7 +561,7 @@ export function useBoardDragDrop({ swimlanes, tasks, archivedTasks }: UseBoardDr
     }
 
     // Persist the move (moveTask handles optimistic update, IPC, and reload)
-    await moveTask({ taskId, targetSwimlaneId, targetPosition });
+    await moveTask({ taskId, targetSwimlaneId, targetPosition }, false, dropProjectId);
 
     } catch (err) {
       console.error('handleDragEnd error:', err);

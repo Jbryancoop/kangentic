@@ -671,7 +671,17 @@
           return a.task_id !== id;
         });
       },
-      move: async function (input) {
+      move: async function (input, projectId) {
+        // Record the projectId the renderer stamped (captured at interaction
+        // time) so cross-project tests can assert the move routed to the right
+        // project even after a mid-flight switch. `undefined` is normalized to
+        // null so an unstamped legacy call is distinguishable.
+        if (typeof window !== 'undefined') {
+          window.__mockLastMoveProjectId = projectId === undefined ? null : projectId;
+          if (!window.__mockMoveProjectIds) window.__mockMoveProjectIds = [];
+          window.__mockMoveProjectIds.push(projectId === undefined ? null : projectId);
+        }
+
         // Test hook: simulate a main-process failure (e.g. dirty branch, spawn
         // error). Real main process reverts the DB move before throwing, so
         // the mock leaves the tasks array unchanged and throws.
@@ -680,6 +690,18 @@
           var throwMsg = window.__mockTaskMoveThrow;
           window.__mockTaskMoveThrow = null;
           throw new Error(throwMsg);
+        }
+
+        // Test hook: make tasks.move() return a controlled promise so the test
+        // can observe behavior while the IPC is in flight (e.g. switch projects
+        // before it resolves). Set window.__mockTaskMoveDeferred = true before
+        // calling; the promise hangs until window.__mockTaskMoveResolve() runs.
+        if (typeof window !== 'undefined' && window.__mockTaskMoveDeferred) {
+          window.__mockTaskMoveDeferred = false;
+          var resolveMoveRef;
+          var pendingMove = new Promise(function (resolve) { resolveMoveRef = resolve; });
+          window.__mockTaskMoveResolve = resolveMoveRef;
+          await pendingMove;
         }
 
         var idx = tasks.findIndex(function (t) {

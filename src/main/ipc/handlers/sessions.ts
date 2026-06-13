@@ -6,6 +6,7 @@ import { UsageHistoryRepository } from '../../db/repositories/usage-history-repo
 import { TaskRepository } from '../../db/repositories/task-repository';
 import { getProjectDb } from '../../db/database';
 import { getProjectRepos, ensureTaskWorktree, createTransitionEngine, resolveSpawnOverrides, resolveAndLinkPR, maybeResolvePRAfterMove } from '../helpers';
+import { resolveProjectContext } from '../helpers/project-repos';
 import { handleTaskMove } from './task-move';
 import { trackEvent } from '../../analytics/analytics';
 import { captureSessionMetrics } from './session-metrics';
@@ -28,9 +29,10 @@ const sessionSpawnAnalyticsFired = new Set<string>();
 
 export function registerSessionHandlers(context: IpcContext): void {
   // === Sessions ===
-  ipcMain.handle(IPC.SESSION_SPAWN, (_, input) => {
-    if (!context.currentProjectId) throw new Error('Cannot spawn session: no project is currently open');
-    return context.sessionManager.spawn({ ...input, projectId: context.currentProjectId });
+  ipcMain.handle(IPC.SESSION_SPAWN, (_, input, projectId?: string | null) => {
+    const resolvedProjectId = projectId ?? context.currentProjectId;
+    if (!resolvedProjectId) throw new Error('Cannot spawn session: no project is currently open');
+    return context.sessionManager.spawn({ ...input, projectId: resolvedProjectId });
   });
   ipcMain.handle(IPC.SESSION_KILL, (_, id) => {
     // Serialize against suspend/resume/reset for the same task so KILL can't
@@ -51,10 +53,10 @@ export function registerSessionHandlers(context: IpcContext): void {
   // does not spawn anything (unlike SESSION_RESUME's self-heal). No
   // withTaskLock: this is a read-mostly probe and contention with concurrent
   // suspend/resume is acceptable.
-  ipcMain.handle(IPC.SESSION_RECONCILE, (_, taskId: string): Session | null => {
-    const projectId = context.currentProjectId;
-    if (!projectId) return null;
-    const { liveSession } = reconcileTaskSessionRef(context, projectId, taskId);
+  ipcMain.handle(IPC.SESSION_RECONCILE, (_, taskId: string, projectId?: string | null): Session | null => {
+    const resolvedProjectId = projectId ?? context.currentProjectId;
+    if (!resolvedProjectId) return null;
+    const { liveSession } = reconcileTaskSessionRef(context, resolvedProjectId, taskId);
     return liveSession;
   });
   ipcMain.handle(IPC.SESSION_GET_SCROLLBACK, (_, id) => context.sessionManager.getScrollback(id));
@@ -78,13 +80,13 @@ export function registerSessionHandlers(context: IpcContext): void {
     projectId ? context.sessionManager.getEventsCacheForProject(projectId) : context.sessionManager.getEventsCache());
 
   // === Session Suspend / Resume ===
-  ipcMain.handle(IPC.SESSION_SUSPEND, (_, taskId: string) => {
+  ipcMain.handle(IPC.SESSION_SUSPEND, (_, taskId: string, projectId?: string | null) => {
     // Cancel any in-flight resume BEFORE queueing on the lock - otherwise
     // we would deadlock waiting for a resume that is stuck in worktree I/O.
     abortInFlightResume(taskId);
 
     return withTaskLock(taskId, async () => {
-      const resolvedProjectId = context.currentProjectId;
+      const resolvedProjectId = projectId ?? context.currentProjectId;
       if (!resolvedProjectId) throw new Error('No project is currently open');
 
       const { tasks } = getProjectRepos(context, resolvedProjectId);
@@ -102,7 +104,7 @@ export function registerSessionHandlers(context: IpcContext): void {
     });
   });
 
-  ipcMain.handle(IPC.SESSION_RESUME, (_, taskId: string, resumePrompt?: string) => {
+  ipcMain.handle(IPC.SESSION_RESUME, (_, taskId: string, resumePrompt?: string, projectId?: string | null) => {
     // Cancel any in-flight resume BEFORE queueing on the lock. Moving this
     // outside the lock is required because Phase 2 (worktree git I/O) runs
     // unlocked - a second resume must be able to cancel the first's in-flight
@@ -114,8 +116,7 @@ export function registerSessionHandlers(context: IpcContext): void {
     const { signal } = resumeController;
 
     return (async (): Promise<Session | null> => {
-      const resolvedProjectId = context.currentProjectId;
-      const resolvedProjectPath = context.currentProjectPath;
+      const { projectId: resolvedProjectId, projectPath: resolvedProjectPath } = resolveProjectContext(context, projectId);
       if (!resolvedProjectId) throw new Error('No project is currently open');
 
       const { tasks, actions, swimlanes, attachments: attachmentRepo } = getProjectRepos(context, resolvedProjectId);
@@ -214,13 +215,13 @@ export function registerSessionHandlers(context: IpcContext): void {
   });
 
   // === Session Reset (safety-net recovery for unrecoverable sessions) ===
-  ipcMain.handle(IPC.SESSION_RESET, (_, taskId: string) => {
+  ipcMain.handle(IPC.SESSION_RESET, (_, taskId: string, projectId?: string | null) => {
     // Cancel any in-flight resume BEFORE queueing on the lock - otherwise
     // we would deadlock waiting for a resume that is stuck in worktree I/O.
     abortInFlightResume(taskId);
 
     return withTaskLock(taskId, async () => {
-      const resolvedProjectId = context.currentProjectId;
+      const resolvedProjectId = projectId ?? context.currentProjectId;
       if (!resolvedProjectId) throw new Error('No project is currently open');
 
       const { tasks } = getProjectRepos(context, resolvedProjectId);
@@ -588,10 +589,10 @@ export function registerSessionHandlers(context: IpcContext): void {
 
   // Manual "Link / refresh PR" - on-demand authoritative resolve for a task.
   // Works with no live session (maps by task id, resolves via the confidence ladder).
-  ipcMain.handle(IPC.TASK_RESOLVE_PR, async (_, taskId: string): Promise<TaskResolvePrResult> => {
-    const projectId = context.currentProjectId;
-    if (!projectId) return { task: null, linked: false, reason: 'no-anchor' };
-    const result = await resolveAndLinkPR(context, { projectId, taskId, force: true });
+  ipcMain.handle(IPC.TASK_RESOLVE_PR, async (_, taskId: string, projectId?: string | null): Promise<TaskResolvePrResult> => {
+    const resolvedProjectId = projectId ?? context.currentProjectId;
+    if (!resolvedProjectId) return { task: null, linked: false, reason: 'no-anchor' };
+    const result = await resolveAndLinkPR(context, { projectId: resolvedProjectId, taskId, force: true });
     return {
       task: result.task,
       linked: result.status === 'linked' || result.status === 'unchanged',

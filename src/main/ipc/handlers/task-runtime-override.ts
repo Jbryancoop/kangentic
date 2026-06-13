@@ -5,6 +5,7 @@ import { agentRegistry } from '../../agent/agent-registry';
 import { SessionRepository } from '../../db/repositories/session-repository';
 import { getProjectDb } from '../../db/database';
 import { getProjectRepos, createTransitionEngine, resolveSpawnOverrides } from '../helpers';
+import { resolveProjectContext } from '../helpers/project-repos';
 import { applySuspendDbWrites } from './session-reconcile';
 import { isAbortError } from '../../../shared/abort-utils';
 import { buildCommandInjectionVerifier } from '../../engine/injection-plan';
@@ -42,9 +43,8 @@ import type { IpcContext } from '../ipc-context';
 export function registerTaskRuntimeOverrideHandlers(context: IpcContext): void {
   ipcMain.handle(
     IPC.TASK_SET_RUNTIME_OVERRIDE,
-    async (_, input: TaskSetRuntimeOverrideInput): Promise<TaskSetRuntimeOverrideResult> => {
-      const projectId = context.currentProjectId;
-      const projectPath = context.currentProjectPath;
+    async (_, input: TaskSetRuntimeOverrideInput, projectIdArg?: string | null): Promise<TaskSetRuntimeOverrideResult> => {
+      const { projectId, projectPath } = resolveProjectContext(context, projectIdArg);
       if (!projectId || !projectPath) {
         return { ok: false, reason: 'no project is currently open' };
       }

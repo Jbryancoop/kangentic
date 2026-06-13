@@ -10,6 +10,7 @@ import {
   getProjectRepos,
   ensureTaskWorktree,
 } from '../helpers';
+import { resolveProjectContext } from '../helpers/project-repos';
 import type { IpcContext } from '../ipc-context';
 import type { TaskSwitchBranchInput } from '../../../shared/types';
 
@@ -87,9 +88,8 @@ export async function carryUncommittedChanges(
 }
 
 export function registerTaskBranchHandlers(context: IpcContext): void {
-  ipcMain.handle(IPC.TASK_SWITCH_BRANCH, async (_, input: TaskSwitchBranchInput) => {
-    const resolvedProjectId = context.currentProjectId;
-    const resolvedProjectPath = context.currentProjectPath;
+  ipcMain.handle(IPC.TASK_SWITCH_BRANCH, async (_, input: TaskSwitchBranchInput, projectId?: string | null) => {
+    const { projectId: resolvedProjectId, projectPath: resolvedProjectPath } = resolveProjectContext(context, projectId);
     if (!resolvedProjectId) throw new Error('No project is currently open');
 
     const { tasks } = getProjectRepos(context, resolvedProjectId);

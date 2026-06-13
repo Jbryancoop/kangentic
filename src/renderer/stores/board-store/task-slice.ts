@@ -5,15 +5,23 @@ import { useConfigStore } from '../config-store';
 import { useSessionStore } from '../session-store';
 import { useToastStore } from '../toast-store';
 import { useProjectStore } from '../project-store';
+import { invalidateProject } from '../project-cache';
 import { applyStructuralSharing } from './structural-sharing';
 import type { BoardStore } from './types';
+
+/** Outcome of a moveTask call. `ok: false` means the IPC genuinely failed
+ *  (moveTask already toasted + rolled back); the completion gate uses this to
+ *  suppress its success toast. A superseded/deferred move resolves `ok: true`. */
+export interface MoveTaskResult {
+  ok: boolean;
+}
 
 export interface TaskSlice {
   tasks: Task[];
   createTask: (input: TaskCreateInput) => Promise<Task>;
   updateTask: (input: TaskUpdateInput) => Promise<Task>;
   deleteTask: (id: string) => Promise<void>;
-  moveTask: (input: TaskMoveInput, skipConfirmation?: boolean) => Promise<void>;
+  moveTask: (input: TaskMoveInput, skipConfirmation?: boolean, projectId?: string | null) => Promise<MoveTaskResult>;
   getTasksBySwimlane: (swimlaneId: string) => Task[];
   reorderTaskInColumn: (taskId: string, swimlaneId: string, activeId: string, overId: string) => Promise<void>;
   updateAttachmentCount: (taskId: string, delta: number) => void;
@@ -49,7 +57,7 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
   tasks: [],
 
   createTask: async (input) => {
-    const task = await window.electronAPI.tasks.create(input);
+    const task = await window.electronAPI.tasks.create(input, useProjectStore.getState().currentProject?.id ?? null);
     set((s) => ({ tasks: [...s.tasks, task] }));
 
     // Mark first-run onboarding complete after the user's first task creation
@@ -62,7 +70,7 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
   },
 
   updateTask: async (input) => {
-    const task = await window.electronAPI.tasks.update(input);
+    const task = await window.electronAPI.tasks.update(input, useProjectStore.getState().currentProject?.id ?? null);
     set((s) => ({
       tasks: s.tasks.map((t) => (t.id === task.id ? task : t)),
       archivedTasks: s.archivedTasks.map((t) => (t.id === task.id ? task : t)),
@@ -96,7 +104,7 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
 
     let result: TaskSetRuntimeOverrideResult;
     try {
-      result = await window.electronAPI.tasks.setRuntimeOverride({ taskId, ...patch });
+      result = await window.electronAPI.tasks.setRuntimeOverride({ taskId, ...patch }, useProjectStore.getState().currentProject?.id ?? null);
     } catch (err) {
       // IPC bridge itself threw - the handler never ran, no DB write
       // happened, rollback is correct.
@@ -163,7 +171,7 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
     }));
 
     try {
-      await window.electronAPI.tasks.delete(id);
+      await window.electronAPI.tasks.delete(id, useProjectStore.getState().currentProject?.id ?? null);
     } catch (err) {
       // Restore both arrays so the card reappears in its original slot.
       // No loadBoard() reconcile (unlike unarchiveTask): backend withTaskLock
@@ -179,7 +187,23 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
     }
   },
 
-  moveTask: async (input, skipConfirmation?: boolean) => {
+  moveTask: async (input, skipConfirmation?: boolean, projectId?: string | null) => {
+    // Capture the project this move targets at interaction time. The gated Done
+    // path passes the projectId stamped on the FlyingCard at drop (the move runs
+    // ~700ms later, possibly after a project switch); direct synchronous callers
+    // omit it and we read the live current project. `!== undefined` lets a caller
+    // pass an explicit null (no project) without falling back to live.
+    const sourceProjectId = projectId !== undefined
+      ? projectId
+      : (useProjectStore.getState().currentProject?.id ?? null);
+    // True when the user has switched away from the project this move targets.
+    // Used so a reload/rollback never runs against the wrong project's board;
+    // instead we invalidate the source project's warm-cache snapshot so the next
+    // switch back to it does a fresh cold load.
+    const switchedAway = () =>
+      sourceProjectId !== null
+      && sourceProjectId !== (useProjectStore.getState().currentProject?.id ?? null);
+
     // Capture the task's current session before the move
     const prevTask = get().tasks.find((t) => t.id === input.taskId);
     const prevSessionId = prevTask?.session_id ?? null;
@@ -237,7 +261,9 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
                   hasWorktree: !!prevTask.worktree_path,
                 },
               });
-              return;
+              // Deferred to the confirm dialog; not a failure. confirmPendingMove
+              // re-invokes moveTask with the captured projectId.
+              return { ok: true };
             }
           } catch {
             // Git check failed - show confirmation as safe default
@@ -250,7 +276,8 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
                 hasWorktree: !!prevTask.worktree_path,
               },
             });
-            return;
+            // Deferred to the confirm dialog; not a failure.
+            return { ok: true };
           }
         }
       }
@@ -292,15 +319,30 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
     }
 
     try {
-      await window.electronAPI.tasks.move(input);
-      if (moveGeneration !== thisGen) return; // Skip stale reload
+      await window.electronAPI.tasks.move(input, sourceProjectId);
+      if (moveGeneration !== thisGen) return { ok: true }; // Superseded; the newer move owns the reload
+
+      // The user switched to another project while this move was in flight. The
+      // move itself succeeded (it ran against sourceProjectId), but a reload here
+      // would read the now-current (wrong) project. Skip it and invalidate the
+      // source project's warm-cache snapshot so the next switch back to it does a
+      // fresh cold load instead of restoring a stale (optimistically-removed) one.
+      if (switchedAway()) {
+        invalidateProject(sourceProjectId!);
+        return { ok: true };
+      }
 
       // Reload tasks and archived tasks (sessions arrive via push-based session-changed events)
       const [nextTasks, nextArchivedTasks] = await Promise.all([
         window.electronAPI.tasks.list(),
         window.electronAPI.tasks.listArchived(),
       ]);
-      if (moveGeneration !== thisGen) return; // Skip stale reload
+      if (moveGeneration !== thisGen) return { ok: true }; // Skip stale reload
+      // A switch can also land during the list round-trip above.
+      if (switchedAway()) {
+        invalidateProject(sourceProjectId!);
+        return { ok: true };
+      }
 
       // Preserve references for unchanged tasks so sibling TaskCards (the
       // majority, since only the moved task changed swimlane/position) skip
@@ -331,16 +373,25 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
         useSessionStore.getState().clearPendingCommandLabel(input.taskId);
         useSessionStore.getState().setSpawnProgress(input.taskId, null);
       }
+      return { ok: true };
     } catch (err) {
-      if (moveGeneration !== thisGen) return; // Don't clobber newer state on error
+      if (moveGeneration !== thisGen) return { ok: true }; // Superseded; not this move's failure
       // Clear any optimistic progress indicators set before the IPC call
       useSessionStore.getState().clearPendingCommandLabel(input.taskId);
       useSessionStore.getState().setSpawnProgress(input.taskId, null);
-      await get().loadBoard();
+      // Cross-project-safe rollback: reload only if still on the source project;
+      // otherwise loadBoard would reload the wrong (now-current) project. Mark the
+      // source project stale instead so re-entry reloads it fresh.
+      if (switchedAway()) {
+        invalidateProject(sourceProjectId!);
+      } else {
+        await get().loadBoard();
+      }
       useToastStore.getState().addToast({
         message: `Failed to move task: ${err instanceof Error ? err.message : 'Unknown error'}`,
         variant: 'error',
       });
+      return { ok: false };
     } finally {
       // Release the completingTaskIds guard regardless of success/failure so
       // tasksPerLane lets future reloads re-render the task if anything above
@@ -359,6 +410,9 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
 
   reorderTaskInColumn: async (taskId, swimlaneId, activeId, overId) => {
     if (activeId === overId) return;
+    // Same-tick synchronous reorder; capture the current project so the move
+    // routes correctly even though the race window is tiny.
+    const reorderProjectId = useProjectStore.getState().currentProject?.id ?? null;
     const thisGen = ++moveGeneration;
 
     // Compute indices from IDs
@@ -392,7 +446,7 @@ export const createTaskSlice: StateCreator<BoardStore, [], [], TaskSlice> = (set
         taskId,
         targetSwimlaneId: swimlaneId,
         targetPosition: newIndex,
-      });
+      }, reorderProjectId);
       if (moveGeneration !== thisGen) return; // Skip stale reload
 
       // Lightweight reload -- only tasks (no session changes for same-column reorder)

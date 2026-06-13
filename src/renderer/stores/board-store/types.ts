@@ -22,6 +22,13 @@ export interface CompletingTask {
   originSwimlaneId: string;
   task: Task;
   startRect: { left: number; top: number; width: number; height: number };
+  /**
+   * Project that owned this task at drop time. The FlyingCard defers the move
+   * ~700ms, so this is captured synchronously on drop and threaded to moveTask
+   * so the persist targets the right project even if the user switches projects
+   * mid-flight. Null when no project is open. See task-slice.ts moveTask.
+   */
+  projectId: string | null;
 }
 
 export type { CompletionGate } from './completion-gate';

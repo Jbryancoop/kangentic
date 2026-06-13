@@ -415,7 +415,7 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
   },
 
   spawnSession: async (input) => {
-    const session = await window.electronAPI.sessions.spawn(input);
+    const session = await window.electronAPI.sessions.spawn(input, useProjectStore.getState().currentProject?.id ?? null);
     set((s) => {
       const sessions = [...s.sessions.filter((sess) => sess.id !== session.id && sess.taskId !== session.taskId), session];
       return {
@@ -438,7 +438,7 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
   },
 
   resetSession: async (taskId) => {
-    await window.electronAPI.sessions.reset(taskId);
+    await window.electronAPI.sessions.reset(taskId, useProjectStore.getState().currentProject?.id ?? null);
     set((s) => {
       const sessions = s.sessions.filter((session) => session.taskId !== taskId);
       return { sessions, _sessionByTaskId: buildSessionByTaskId(sessions) };
@@ -453,11 +453,11 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
       );
       return { sessions, _sessionByTaskId: buildSessionByTaskId(sessions) };
     });
-    await window.electronAPI.sessions.suspend(taskId);
+    await window.electronAPI.sessions.suspend(taskId, useProjectStore.getState().currentProject?.id ?? null);
   },
 
   resumeSession: async (taskId, resumePrompt?) => {
-    const newSession = await window.electronAPI.sessions.resume(taskId, resumePrompt);
+    const newSession = await window.electronAPI.sessions.resume(taskId, resumePrompt, useProjectStore.getState().currentProject?.id ?? null);
     set((s) => {
       const sessions = [
         ...s.sessions.filter((sess) => sess.taskId !== taskId),
@@ -473,7 +473,7 @@ export const useSessionStore = create<SessionStore>((set, get, api) => ({
   },
 
   reconcileSession: async (taskId) => {
-    const liveSession = await window.electronAPI.sessions.reconcile(taskId);
+    const liveSession = await window.electronAPI.sessions.reconcile(taskId, useProjectStore.getState().currentProject?.id ?? null);
     if (!liveSession) {
       // Main has no LIVE session for this task. That includes the legitimate
       // "session is suspended" case (reconcileTaskSessionRef only returns

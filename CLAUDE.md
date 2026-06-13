@@ -170,6 +170,7 @@ session; rules with one load when you touch matching files. Each rule names its 
 - `synchronous-shutdown.md` - the `before-quit` path must be synchronous (`src/main/` shutdown).
 - `utc-timestamps.md` - DB writes use `new Date().toISOString()` (`src/main/db/`).
 - `ipc-7-layer-parity.md` - wire an IPC endpoint through all 7 layers.
+- `project-scoped-ipc.md` - renderer-driven task/session mutations forward an explicit interaction-time `projectId` (`src/preload/`, `src/main/ipc/`, `src/renderer/stores/`).
 - `esbuild-cjs-imports.md` - ES `import`, not bare `require()`, in bundled main/preload code.
 - `agent-adapters-boundary.md` - no agent-name branching outside `src/main/agent/adapters/`.
 - `cli-features-over-custom-layers.md` - do not shadow an agent CLI's native controls (`src/main/agent/`).
