@@ -62,6 +62,7 @@ function makeSessionRepo() {
     getLatestForTaskByTypeAndIsolation: vi.fn(() => null),
     insert: vi.fn((record: unknown) => { insertedRecords.push(record); }),
     update: vi.fn(),
+    updateAppliedSettings: vi.fn(),
     insertedRecords,
   };
 }
@@ -340,5 +341,29 @@ describe('TransitionEngine - raw/sanitized description split', () => {
     expect(inserted.prompt).toBeDefined();
     // The prompt stored in the DB should contain the XML with raw newlines
     expect(inserted.prompt).toContain(rawDescription);
+  });
+
+  it('executeTransition (spawn_agent) calls updateAppliedSettings with the resolved spawn overrides', async () => {
+    // Gap 4: after every spawn, the session record must have applied_model /
+    // applied_effort written so prepareInjectionPlan can diff against the true
+    // running value on a subsequent column move. When no spawnOverrides are
+    // provided, the call uses null (agent default / no --model / --effort flag).
+    const task = makeTask();
+    const sessionRepo = makeSessionRepo();
+
+    const { engine } = makeEngine({ sessionRepo });
+    await engine.executeTransition(task as Parameters<typeof engine.executeTransition>[0], 'todo', 'doing');
+
+    // The session must have been inserted first, then the applied settings written.
+    expect(sessionRepo.insert).toHaveBeenCalledTimes(1);
+    expect(sessionRepo.updateAppliedSettings).toHaveBeenCalledTimes(1);
+    expect(sessionRepo.updateAppliedSettings).toHaveBeenCalledWith(
+      expect.any(String), // ptySessionId (a UUID generated inside executeSpawnAgent)
+      { model: null, effort: null },
+    );
+    // The session ID written to updateAppliedSettings must match the inserted record.
+    const insertedId = (sessionRepo.insert.mock.calls[0][0] as { id: string }).id;
+    const [appliedSessionId] = sessionRepo.updateAppliedSettings.mock.calls[0] as [string, unknown];
+    expect(appliedSessionId).toBe(insertedId);
   });
 });

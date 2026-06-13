@@ -6,6 +6,10 @@
  *
  * The whole point of this helper is to keep IPC handlers agent-agnostic.
  * These tests verify that:
+ * - The delta SOURCE is the session's recorded applied_model / applied_effort
+ *   (what it is actually running at), NOT the leaving column's config. A move
+ *   into a column whose value the session already has injects nothing - this is
+ *   the redundant-`/effort` bug the helper now avoids.
  * - Adapters without getInjectionSequence contribute no settings writes
  * - Adapters that DO implement it own the slash syntax (Claude returns
  *   `/model X` and `/effort Y`; a hypothetical Codex could return
@@ -13,11 +17,13 @@
  * - The verifier is wired up only when the adapter declares one AND a
  *   captured agent_session_id is available
  * - auto_command is appended after settings writes and trimmed
+ * - appliedSettings reports the new running value for fields that emitted a slash
  */
 import { describe, it, expect } from 'vitest';
 import { prepareInjectionPlan } from '../../src/main/engine/injection-plan';
 import type { AgentAdapter, SettingsChangeSpec } from '../../src/main/agent/agent-adapter';
-import type { Swimlane } from '../../src/shared/types';
+import type { SessionRepository } from '../../src/main/db/repositories/session-repository';
+import type { SessionRecord, Swimlane } from '../../src/shared/types';
 
 function lane(overrides: Partial<Swimlane> = {}): Swimlane {
   return {
@@ -54,28 +60,81 @@ function fakeAdapter(overrides: Partial<AgentAdapter>): AgentAdapter {
   } as unknown as AgentAdapter;
 }
 
+/**
+ * A SessionRepository stub whose `getLatestForTask` returns the given record
+ * (or null for "no session record"). Only the fields prepareInjectionPlan reads
+ * (`applied_model`, `applied_effort`, and `agent_session_id` / `cwd` for the
+ * verifier) need to be present.
+ */
+function sessionRepoWith(record: Partial<SessionRecord> | null): SessionRepository {
+  return {
+    getLatestForTask: () => record ?? undefined,
+  } as unknown as SessionRepository;
+}
+
 describe('prepareInjectionPlan', () => {
-  it('returns null when there are no deltas and no auto_command', () => {
+  it('returns null when the session already runs at the target (no delta, no auto_command)', () => {
     const adapter = fakeAdapter({
       getInjectionSequence: () => [],
     });
     const plan = prepareInjectionPlan({
       adapter,
-      sessionRepo: null,
+      sessionRepo: sessionRepoWith({ applied_model: 'opus', applied_effort: 'high' }),
       task: { id: 't1', agent: 'fake' },
-      fromLane: lane({ model_override: 'opus', effort_override: 'high' }),
       toLane: lane({ model_override: 'opus', effort_override: 'high' }),
     });
     expect(plan).toBeNull();
+  });
+
+  it('does not re-inject when the session already has the target value and there is no leaving-column reference', () => {
+    // The reported bug: every column is xhigh, the session was spawned at xhigh
+    // (applied_effort), and the move had a null leaving-column. The old code
+    // diffed null vs xhigh and injected `/effort xhigh` redundantly. Diffing
+    // against the recorded applied value yields no change.
+    let capturedSpec: SettingsChangeSpec | null = null;
+    const adapter = fakeAdapter({
+      getInjectionSequence: (spec) => {
+        capturedSpec = spec;
+        const out: string[] = [];
+        if (spec.modelChanged && spec.model) out.push(`/model ${spec.model}`);
+        if (spec.effortChanged && spec.effort) out.push(`/effort ${spec.effort}`);
+        return out;
+      },
+    });
+    const plan = prepareInjectionPlan({
+      adapter,
+      sessionRepo: sessionRepoWith({ applied_model: 'opus', applied_effort: 'xhigh' }),
+      task: { id: 't1', agent: 'fake', model_override: null, effort_override: null },
+      toLane: lane({ model_override: 'opus', effort_override: 'xhigh' }),
+    });
+    expect(capturedSpec).toMatchObject({ modelChanged: false, effortChanged: false });
+    expect(plan).toBeNull();
+  });
+
+  it('injects once when the session runs at the agent default and the column pins a concrete value', () => {
+    // applied_* null = the session was spawned with no --model/--effort flag
+    // (agent default). Entering a configured column must live-switch it. This is
+    // the legitimate case a naive "null source = no-op" guard would have wrongly
+    // dropped.
+    const adapter = fakeAdapter({
+      getInjectionSequence: (spec) => (spec.effortChanged && spec.effort ? [`/effort ${spec.effort}`] : []),
+    });
+    const plan = prepareInjectionPlan({
+      adapter,
+      sessionRepo: sessionRepoWith({ applied_model: null, applied_effort: null }),
+      task: { id: 't1', agent: 'fake', model_override: null, effort_override: null },
+      toLane: lane({ model_override: null, effort_override: 'xhigh' }),
+    });
+    expect(plan?.sequence).toEqual(['/effort xhigh']);
+    expect(plan?.appliedSettings).toEqual({ effort: 'xhigh' });
   });
 
   it('asks the adapter for settings commands - adapters without the hook contribute none', () => {
     const adapter = fakeAdapter({}); // no getInjectionSequence
     const plan = prepareInjectionPlan({
       adapter,
-      sessionRepo: null,
+      sessionRepo: sessionRepoWith({ applied_model: null }),
       task: { id: 't1', agent: 'fake' },
-      fromLane: lane({ model_override: null }),
       toLane: lane({ model_override: 'opus' }),
     });
     expect(plan).toBeNull(); // no auto_command + no settings commands -> null
@@ -89,11 +148,11 @@ describe('prepareInjectionPlan', () => {
         return ['/x'];
       },
     });
+    // Session running at haiku/low; destination column is opus/low.
     prepareInjectionPlan({
       adapter,
-      sessionRepo: null,
+      sessionRepo: sessionRepoWith({ applied_model: 'haiku', applied_effort: 'low' }),
       task: { id: 't1', agent: 'fake' },
-      fromLane: lane({ model_override: 'haiku', effort_override: 'low' }),
       toLane: lane({ model_override: 'opus', effort_override: 'low' }),
     });
     expect(capturedSpec).toEqual({
@@ -104,15 +163,69 @@ describe('prepareInjectionPlan', () => {
     });
   });
 
+  it('returns appliedSettings only for fields that emitted a concrete slash', () => {
+    const adapter = fakeAdapter({
+      getInjectionSequence: (spec) => {
+        const out: string[] = [];
+        if (spec.modelChanged && spec.model) out.push(`/model ${spec.model}`);
+        if (spec.effortChanged && spec.effort) out.push(`/effort ${spec.effort}`);
+        return out;
+      },
+    });
+    // model changes haiku -> opus (emitted); effort stays high (no change).
+    const plan = prepareInjectionPlan({
+      adapter,
+      sessionRepo: sessionRepoWith({ applied_model: 'haiku', applied_effort: 'high' }),
+      task: { id: 't1', agent: 'fake' },
+      toLane: lane({ model_override: 'opus', effort_override: 'high' }),
+    });
+    expect(plan?.sequence).toEqual(['/model opus']);
+    expect(plan?.appliedSettings).toEqual({ model: 'opus' });
+  });
+
+  it('concrete->null target: model field is NOT recorded in appliedSettings when the destination is null (Default)', () => {
+    // Gap 5: when the session is running at 'opus' but the destination column has no
+    // model_override (null = "Default"), the adapter emits no `/model` slash (there is
+    // no `/model <agent-default>` slash command). Because no slash was emitted, the
+    // applied_model should NOT be overwritten with null in the DB - the session keeps
+    // running at opus until the user explicitly picks something. Concretely,
+    // plan.appliedSettings must not include a `model` key.
+    //
+    // The plan is still non-null because the effort field changes (low -> xhigh).
+    const adapter = fakeAdapter({
+      getInjectionSequence: (spec) => {
+        const out: string[] = [];
+        // model: no slash when target is null (no concrete value to set)
+        if (spec.modelChanged && spec.model) out.push(`/model ${spec.model}`);
+        if (spec.effortChanged && spec.effort) out.push(`/effort ${spec.effort}`);
+        return out;
+      },
+    });
+    const plan = prepareInjectionPlan({
+      adapter,
+      sessionRepo: sessionRepoWith({ applied_model: 'opus', applied_effort: 'low' }),
+      task: { id: 't1', agent: 'fake', model_override: null, effort_override: null },
+      // model_override: null = "Default" column (no concrete model)
+      // effort_override: 'xhigh' = a real change that produces a slash
+      toLane: lane({ model_override: null, effort_override: 'xhigh' }),
+    });
+    // The plan is non-null because effort changed.
+    expect(plan).not.toBeNull();
+    expect(plan?.sequence).toEqual(['/effort xhigh']);
+    // model changed (opus -> null) but null emits no slash, so model is ABSENT
+    // from appliedSettings. Only the concrete effort change is recorded.
+    expect(plan?.appliedSettings).toEqual({ effort: 'xhigh' });
+    expect(plan?.appliedSettings).not.toHaveProperty('model');
+  });
+
   it('appends a trimmed auto_command after the adapter-supplied settings commands', () => {
     const adapter = fakeAdapter({
       getInjectionSequence: () => ['/model opus'],
     });
     const plan = prepareInjectionPlan({
       adapter,
-      sessionRepo: null,
+      sessionRepo: sessionRepoWith({ applied_model: 'haiku' }),
       task: { id: 't1', agent: 'fake' },
-      fromLane: lane({ model_override: 'haiku' }),
       toLane: lane({ model_override: 'opus' }),
       autoCommand: '   review the diff   ',
     });
@@ -127,12 +240,12 @@ describe('prepareInjectionPlan', () => {
       adapter,
       sessionRepo: null,
       task: { id: 't1', agent: 'fake' },
-      fromLane: lane(),
       toLane: lane(),
       autoCommand: 'do thing',
     });
     // verifiedPrefixLength = 0 because settings sequence is empty.
     // The auto_command sits at index 0 and is fire-and-forget.
+    // appliedSettings is absent: no settings field changed to a concrete value.
     expect(plan).toEqual({ sequence: ['do thing'], verifier: null, verifiedPrefixLength: 0 });
   });
 
@@ -145,9 +258,8 @@ describe('prepareInjectionPlan', () => {
     });
     const plan = prepareInjectionPlan({
       adapter,
-      sessionRepo: null,
+      sessionRepo: sessionRepoWith({ applied_model: null, applied_effort: null }),
       task: { id: 't1', agent: 'fake' },
-      fromLane: lane({ model_override: null, effort_override: null }),
       toLane: lane({ model_override: 'opus', effort_override: 'high' }),
       autoCommand: '/review --strict',
     });
@@ -162,12 +274,8 @@ describe('prepareInjectionPlan', () => {
     });
     const plan = prepareInjectionPlan({
       adapter,
-      sessionRepo: {
-        // @ts-expect-error stub
-        getLatestForTask: () => ({ agent_session_id: 'abc', cwd: '/cwd' }),
-      },
+      sessionRepo: sessionRepoWith({ applied_model: null, agent_session_id: 'abc', cwd: '/cwd' }),
       task: { id: 't1', agent: 'fake' },
-      fromLane: lane({ model_override: null }),
       toLane: lane({ model_override: 'opus' }),
     });
     expect(plan?.verifier).toBeNull();
@@ -181,12 +289,8 @@ describe('prepareInjectionPlan', () => {
     });
     const plan = prepareInjectionPlan({
       adapter,
-      sessionRepo: {
-        // @ts-expect-error stub
-        getLatestForTask: () => ({ agent_session_id: null, cwd: '/cwd' }),
-      },
+      sessionRepo: sessionRepoWith({ applied_model: null, agent_session_id: null, cwd: '/cwd' }),
       task: { id: 't1', agent: 'fake' },
-      fromLane: lane({ model_override: null }),
       toLane: lane({ model_override: 'opus' }),
     });
     expect(plan?.verifier).toBeNull();
@@ -204,12 +308,8 @@ describe('prepareInjectionPlan', () => {
     });
     const plan = prepareInjectionPlan({
       adapter,
-      sessionRepo: {
-        // @ts-expect-error stub
-        getLatestForTask: () => ({ agent_session_id: 'sess-uuid', cwd: '/repo' }),
-      },
+      sessionRepo: sessionRepoWith({ applied_model: null, agent_session_id: 'sess-uuid', cwd: '/repo' }),
       task: { id: 't1', agent: 'fake' },
-      fromLane: lane({ model_override: null }),
       toLane: lane({ model_override: 'opus' }),
     });
     expect(plan?.verifier).not.toBeNull();
@@ -221,7 +321,6 @@ describe('prepareInjectionPlan', () => {
       adapter: undefined,
       sessionRepo: null,
       task: { id: 't1', agent: null },
-      fromLane: lane(),
       toLane: lane(),
       autoCommand: 'fallback',
     });
@@ -245,7 +344,6 @@ describe('prepareInjectionPlan', () => {
       adapter,
       sessionRepo: null,
       task: { id: 't1', agent: 'fake' },
-      fromLane: lane({ model_override: null }),
       toLane: lane({ model_override: 'opus' }),
     });
     expect(plan?.verifier).toBeNull();
@@ -268,12 +366,8 @@ describe('prepareInjectionPlan', () => {
     });
     const plan = prepareInjectionPlan({
       adapter,
-      sessionRepo: {
-        // @ts-expect-error stub
-        getLatestForTask: () => ({ agent_session_id: 'sess-abc', cwd: '/project' }),
-      },
+      sessionRepo: sessionRepoWith({ applied_model: null, agent_session_id: 'sess-abc', cwd: '/project' }),
       task: { id: 't1', agent: 'fake' },
-      fromLane: lane({ model_override: null }),
       toLane: lane({ model_override: 'opus' }),
     });
 
@@ -298,7 +392,7 @@ describe('prepareInjectionPlan -- per-task override wins over column override', 
   // Without this rule, every column transition would re-inject /model X /effort Y
   // and undo the user's pinned choice.
 
-  it('does not emit /model when the task pins a model override (even if columns differ)', () => {
+  it('does not emit /model when the task pins a model override (even if the column differs)', () => {
     let capturedSpec: SettingsChangeSpec | null = null;
     const adapter = fakeAdapter({
       getInjectionSequence: (spec) => {
@@ -308,9 +402,10 @@ describe('prepareInjectionPlan -- per-task override wins over column override', 
     });
     const plan = prepareInjectionPlan({
       adapter,
-      sessionRepo: null,
+      // The session was spawned at the pin (haiku applied is irrelevant: the pin
+      // wins for both source and target).
+      sessionRepo: sessionRepoWith({ applied_model: 'opus' }),
       task: { id: 't1', agent: 'fake', model_override: 'opus', effort_override: null },
-      fromLane: lane({ model_override: 'haiku' }),
       toLane: lane({ model_override: 'sonnet' }),
     });
     // Task pinned 'opus', so source=target='opus' -> modelChanged is false.
@@ -318,7 +413,7 @@ describe('prepareInjectionPlan -- per-task override wins over column override', 
     expect(plan).toBeNull();
   });
 
-  it('does not emit /effort when the task pins an effort override (even if columns differ)', () => {
+  it('does not emit /effort when the task pins an effort override (even if the column differs)', () => {
     let capturedSpec: SettingsChangeSpec | null = null;
     const adapter = fakeAdapter({
       getInjectionSequence: (spec) => {
@@ -328,9 +423,8 @@ describe('prepareInjectionPlan -- per-task override wins over column override', 
     });
     const plan = prepareInjectionPlan({
       adapter,
-      sessionRepo: null,
+      sessionRepo: sessionRepoWith({ applied_effort: 'xhigh' }),
       task: { id: 't1', agent: 'fake', model_override: null, effort_override: 'xhigh' },
-      fromLane: lane({ effort_override: 'low' }),
       toLane: lane({ effort_override: 'high' }),
     });
     expect(capturedSpec).toMatchObject({ effort: 'xhigh', effortChanged: false });
@@ -348,14 +442,14 @@ describe('prepareInjectionPlan -- per-task override wins over column override', 
         return out;
       },
     });
+    // Session running at haiku/xhigh; effort pinned xhigh; column moves model to opus.
     const plan = prepareInjectionPlan({
       adapter,
-      sessionRepo: null,
+      sessionRepo: sessionRepoWith({ applied_model: 'haiku', applied_effort: 'xhigh' }),
       task: { id: 't1', agent: 'fake', model_override: null, effort_override: 'xhigh' },
-      fromLane: lane({ model_override: 'haiku', effort_override: 'low' }),
       toLane: lane({ model_override: 'opus', effort_override: 'high' }),
     });
-    // model: column delta haiku -> opus is honored (no task pin)
+    // model: applied haiku -> column opus is honored (no task pin)
     // effort: task-pinned xhigh wins, no slash fires
     expect(capturedSpec).toMatchObject({
       model: 'opus',
@@ -366,7 +460,7 @@ describe('prepareInjectionPlan -- per-task override wins over column override', 
     expect(plan?.sequence).toEqual(['/model opus']);
   });
 
-  it('falls back to column override when the task has no per-task override (existing behavior)', () => {
+  it('diffs against the session applied value when the task has no per-task override', () => {
     let capturedSpec: SettingsChangeSpec | null = null;
     const adapter = fakeAdapter({
       getInjectionSequence: (spec) => {
@@ -376,9 +470,8 @@ describe('prepareInjectionPlan -- per-task override wins over column override', 
     });
     prepareInjectionPlan({
       adapter,
-      sessionRepo: null,
+      sessionRepo: sessionRepoWith({ applied_model: 'haiku' }),
       task: { id: 't1', agent: 'fake', model_override: null, effort_override: null },
-      fromLane: lane({ model_override: 'haiku' }),
       toLane: lane({ model_override: 'opus' }),
     });
     expect(capturedSpec).toMatchObject({ model: 'opus', modelChanged: true });

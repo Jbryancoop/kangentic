@@ -31,6 +31,7 @@ import type { Task, Swimlane } from '../../src/shared/types';
 
 const hoisted = vi.hoisted(() => ({
   activeRecord: null as Record<string, unknown> | null,
+  updateAppliedSettings: vi.fn(),
 }));
 
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn() } }));
@@ -49,6 +50,7 @@ vi.mock('../../src/main/db/repositories/session-repository', () => ({
     getLatestForTask = vi.fn(() => hoisted.activeRecord);
     getLatestForTaskByTypeAndIsolation = vi.fn(() => hoisted.activeRecord);
     updateGitStats = vi.fn();
+    updateAppliedSettings = hoisted.updateAppliedSettings;
   },
 }));
 vi.mock('../../src/main/db/repositories/swimlane-repository', () => ({ SwimlaneRepository: class {} }));
@@ -218,12 +220,18 @@ function makeLanes(executingOverrides: Partial<Swimlane> = {}) {
 }
 
 /** Live main session record. Phase 1 reads it via getLatestForTask. */
-function setActiveRecord(permissionMode: string | null) {
+function setActiveRecord(
+  permissionMode: string | null,
+  appliedModel: string | null = null,
+  appliedEffort: string | null = null,
+) {
   hoisted.activeRecord = {
     id: 'rec-main', task_id: 'task-aaa00001', isolated_swimlane_id: null,
     agent_session_id: 'agent-A', status: 'running',
     started_at: '2026-01-01T00:00:00Z', session_type: 'claude_agent',
     permission_mode: permissionMode,
+    applied_model: appliedModel,
+    applied_effort: appliedEffort,
   };
 }
 
@@ -270,6 +278,7 @@ describe('handleTaskMove permission-mode delta respawn', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     hoisted.activeRecord = null;
+    hoisted.updateAppliedSettings.mockReset();
     mockEnsureTaskWorktree.mockResolvedValue(null);
     mockEnsureTaskBranchCheckout.mockResolvedValue(undefined);
     mockSpawnAgent.mockResolvedValue(undefined);
@@ -445,5 +454,108 @@ describe('handleTaskMove permission-mode delta respawn', () => {
     expect(markRecordSuspended).not.toHaveBeenCalled();
     expect(context.sessionManager.suspend).not.toHaveBeenCalled();
     expect(mockSpawnAgent).not.toHaveBeenCalled();
+  });
+
+  // =========================================================================
+  // Gap 1: Priority 3c persistence - updateAppliedSettings called after live injection
+  // =========================================================================
+
+  it('live injection (plan with appliedSettings) calls updateAppliedSettings on the session repo', async () => {
+    // The plan mock returns appliedSettings so the handler must persist the new
+    // running value via sessionRepo.updateAppliedSettings. Without this, the NEXT
+    // move would still diff against the old applied value and inject again.
+    const { swimlaneRepo } = makeLanes({ permission_mode: null, effort_override: 'xhigh' });
+    setActiveRecord('acceptEdits');
+    const taskRepo = makeTaskRepo();
+    const context = makeContext(taskRepo, swimlaneRepo);
+    vi.mocked(prepareInjectionPlan).mockReturnValue({
+      sequence: ['/effort xhigh'],
+      verifier: null,
+      verifiedPrefixLength: 1,
+      appliedSettings: { effort: 'xhigh' },
+    });
+
+    await handleTaskMove(context as never, {
+      taskId: 'task-aaa00001', targetSwimlaneId: EXECUTING_LANE_ID, targetPosition: 0,
+    });
+
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledTimes(1);
+
+    // The persistence call is load-bearing: the next column move diffs against
+    // the RECORDED applied value. If it is not called, that move would still
+    // see applied_effort=null and re-inject /effort xhigh redundantly.
+    expect(hoisted.updateAppliedSettings).toHaveBeenCalledWith(
+      'active-session-1',
+      { effort: 'xhigh' },
+    );
+  });
+
+  it('live injection with no appliedSettings (auto_command only) does NOT call updateAppliedSettings', async () => {
+    // A plan that only carries an auto_command has no appliedSettings (no model/effort
+    // field was emitted). The handler must NOT call updateAppliedSettings with undefined/empty.
+    const { swimlaneRepo } = makeLanes({ permission_mode: null });
+    setActiveRecord('acceptEdits');
+    const taskRepo = makeTaskRepo();
+    const context = makeContext(taskRepo, swimlaneRepo);
+    vi.mocked(prepareInjectionPlan).mockReturnValue({
+      sequence: ['implement the task'],
+      verifier: null,
+      verifiedPrefixLength: 0,
+      // appliedSettings absent - auto_command only
+    });
+
+    await handleTaskMove(context as never, {
+      taskId: 'task-aaa00001', targetSwimlaneId: EXECUTING_LANE_ID, targetPosition: 0,
+    });
+
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledTimes(1);
+    expect(hoisted.updateAppliedSettings).not.toHaveBeenCalled();
+  });
+
+  // =========================================================================
+  // Gap 2: Respawn-fallback source uses activeRecord.applied_* (regression guard)
+  // =========================================================================
+
+  it('no-live-swap: does NOT respawn when the session already runs at the destination effort (regression guard)', async () => {
+    // THE KEY REGRESSION: old code diffed fromLane vs toLane. When both columns
+    // had effort_override='xhigh' but the leaving column was null (e.g. a To Do
+    // lane with no override), the diff was null vs xhigh and a spurious respawn
+    // fired. New code diffs activeRecord.applied_effort vs toLane, so a session
+    // already at xhigh (recorded in applied_effort) entering another xhigh column
+    // produces no delta and no respawn.
+    const { swimlaneRepo } = makeLanes({ permission_mode: null, effort_override: 'xhigh' });
+    // Session is already running at xhigh - the fix reads this from the record.
+    setActiveRecord('acceptEdits', null, 'xhigh');
+    const taskRepo = makeTaskRepo();
+    const context = makeContext(taskRepo, swimlaneRepo);
+    // prepareInjectionPlan returns null (adapter has no live slash - codex-style).
+    vi.mocked(prepareInjectionPlan).mockReturnValue(null);
+
+    await handleTaskMove(context as never, {
+      taskId: 'task-aaa00001', targetSwimlaneId: EXECUTING_LANE_ID, targetPosition: 0,
+    });
+
+    // With the fix: applied_effort='xhigh' == destination effort_override='xhigh' -> no delta -> no respawn.
+    expect(context.sessionManager.suspend).not.toHaveBeenCalled();
+    expect(markRecordSuspended).not.toHaveBeenCalled();
+    expect(mockSpawnAgent).not.toHaveBeenCalled();
+  });
+
+  it('no-live-swap: DOES respawn when the session runs at a different effort than the destination', async () => {
+    // Complementary case: session applied_effort='low', destination effort='xhigh'.
+    // The delta is real, so a no-live-swap respawn must fire.
+    const { swimlaneRepo } = makeLanes({ permission_mode: null, effort_override: 'xhigh' });
+    setActiveRecord('acceptEdits', null, 'low');
+    const taskRepo = makeTaskRepo();
+    const context = makeContext(taskRepo, swimlaneRepo);
+    vi.mocked(prepareInjectionPlan).mockReturnValue(null);
+
+    await handleTaskMove(context as never, {
+      taskId: 'task-aaa00001', targetSwimlaneId: EXECUTING_LANE_ID, targetPosition: 0,
+    });
+
+    // Delta exists: applied='low', target='xhigh' -> respawn.
+    expect(context.sessionManager.suspend).toHaveBeenCalledWith('active-session-1');
+    expect(mockSpawnAgent).toHaveBeenCalledTimes(1);
   });
 });

@@ -2,6 +2,27 @@
 
 Kangentic injects per-column "auto-commands" and per-column model/effort settings into a live agent session when a task moves between columns. `TerminalSubmitScheduler` (`src/main/engine/terminal-submit-scheduler.ts`) schedules each task's burst and decides whether the burst is prefixed with a `Ctrl+C` (live-injection) or not (fresh-spawn). `TerminalSubmit.submitKeystrokes` (`src/main/pty/terminal-submit.ts`) executes the byte-level keystroke sequence (`Ctrl+C? → text → Esc → Enter` per command). This document covers how the **command-injection** verification context confirms each chained command lands cleanly on the agent's TUI.
 
+## What gets injected (the settings delta)
+
+`prepareInjectionPlan` (`src/main/engine/injection-plan.ts`) decides which `/model` / `/effort`
+slashes a column transition emits by diffing a **source** against a **target**:
+
+- **Target** is the destination column's effective value: `task.<override> ?? toLane.<override> ?? null`.
+- **Source** is the value the live session is *actually running at*, read from the session
+  record's `applied_model` / `applied_effort` columns: `task.<override> ?? record.applied_<field> ?? null`.
+  It is NOT the leaving column's config. The leaving column disagrees with reality after an
+  in-flight ContextBar switch or a `kangentic.json` column-config edit, and is null on a move
+  with no resolvable leaving-column - either case used to manufacture a redundant `/effort`
+  injection even though the spawn/resume `--model` / `--effort` flags had already applied the value.
+  A per-task override still wins for that field (source = target = pin, so no slash fires).
+
+When a field changes to a concrete target, the returned `InjectionPlan` carries an
+`appliedSettings: { model?, effort? }` for the emitted fields. Each caller (the `task-move`
+Priority 3c path, the `SWIMLANE_UPDATE` propagation, and the `task:setRuntimeOverride` live path)
+persists it via `SessionRepository.updateAppliedSettings` after scheduling the burst, so the
+session's recorded running value stays current and the *next* transition diffs against the truth.
+The same `updateAppliedSettings` is written at spawn/resume with the resolved spawn overrides.
+
 ## Why verification exists
 
 Column transitions can chain several commands in sequence: `/model X`, `/effort Y`, then a user-supplied `auto_command`. Without verification, an Enter key can be silently dropped by the TUI (autocomplete still showing, model picker overlay open, render frame skipped), causing the next command's text to concatenate into the previous prompt buffer. The result is a single combined entry like `<command-args>claude-opus-4-7\n/effort xhigh</command-args>` -- a "model not found" failure that quietly leaves the column's intended settings unapplied.
@@ -92,7 +113,7 @@ A non-Claude adapter could implement `'command-injection'` verification once its
 
 ## Files
 
-- `src/main/engine/injection-plan.ts` -- builds the chained sequence + verifier from a column transition spec.
+- `src/main/engine/injection-plan.ts` -- builds the chained sequence + verifier from a column transition spec; sources the delta from the session record's `applied_model` / `applied_effort` and returns `appliedSettings` for the caller to persist.
 - `src/main/engine/terminal-submit-scheduler.ts` -- task-keyed lifecycle wrapper: cancel-on-rerun, freshlySpawned wait, drag-burst coalesce, and `sendCtrlC` routing (suppressed for fresh-spawn, enabled for live-injection).
 - `src/main/pty/terminal-submit.ts` -- byte-level engine: `submitContent` (bracketed paste) + `submitKeystrokes` (manual keypress sequence with retry-on-unconfirmed).
 - `src/main/agent/adapters/claude/slash-command-verifier.ts` -- Claude-specific JSONL-polling implementation.

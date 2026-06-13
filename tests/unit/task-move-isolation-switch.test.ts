@@ -46,6 +46,7 @@ vi.mock('../../src/main/db/repositories/session-repository', () => ({
     getLatestForTask = vi.fn(() => hoisted.activeRecord);
     getLatestForTaskByTypeAndIsolation = vi.fn(() => hoisted.activeRecord);
     updateGitStats = vi.fn();
+    updateAppliedSettings = vi.fn();
   },
 }));
 vi.mock('../../src/main/db/repositories/swimlane-repository', () => ({ SwimlaneRepository: class {} }));

@@ -24,6 +24,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const capturedHandlers = new Map<string, (...args: unknown[]) => unknown>();
 
+const hoisted = vi.hoisted(() => ({
+  updateAppliedSettings: vi.fn(),
+}));
+
 vi.mock('electron', () => ({
   ipcMain: {
     handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
@@ -34,7 +38,9 @@ vi.mock('electron', () => ({
 
 vi.mock('../../src/main/db/database', () => ({ getProjectDb: vi.fn(() => ({})) }));
 vi.mock('../../src/main/db/repositories/session-repository', () => ({
-  SessionRepository: class {},
+  SessionRepository: class {
+    updateAppliedSettings = hoisted.updateAppliedSettings;
+  },
 }));
 
 const mockGetProjectRepos = vi.fn();
@@ -136,6 +142,7 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    hoisted.updateAppliedSettings.mockReset();
     capturedHandlers.clear();
 
     task = createMockTask();
@@ -280,6 +287,9 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
       expect.objectContaining({ verifiedPrefixLength: 1 }),
     );
     expect(context.sessionManager.suspend).not.toHaveBeenCalled();
+    // Gap 3: persistence wiring. The recorded applied_model must be updated so a
+    // subsequent column move diffs against 'sonnet' and does not re-inject /model.
+    expect(hoisted.updateAppliedSettings).toHaveBeenCalledWith('session-1', { model: 'sonnet' });
   });
 
   it('"Use column default" resolves through to the swimlane override and stays a live-switch', async () => {

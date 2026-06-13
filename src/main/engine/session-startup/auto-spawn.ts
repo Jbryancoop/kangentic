@@ -202,6 +202,12 @@ export async function autoSpawnTasks(
         exited_at: null,
         suspended_by: null,
       });
+      // Record what this fresh spawn applied so a later column move diffs
+      // against the session's true value, not the leaving column's config.
+      sessionRepo.updateAppliedSettings(newSession.id, {
+        model: input.appliedModel,
+        effort: input.appliedEffort,
+      });
 
       spawned++;
     } else {

@@ -391,6 +391,21 @@ export interface SessionRecord {
   total_output_tokens: number | null;
   model_id: string | null;
   model_display_name: string | null;
+  /**
+   * Model the session was actually spawned, resumed, or live-switched with (the
+   * `--model` flag value; null = agent default / no flag). Ground truth for the
+   * column-transition injection delta in `prepareInjectionPlan`: a move only
+   * injects `/model` when this differs from the destination's effective model,
+   * so a drifted column config never ghost-injects. Distinct from `model_id`,
+   * which is the agent-reported model captured at exit via metrics.
+   */
+  applied_model: string | null;
+  /**
+   * Effort/reasoning level the session was actually spawned, resumed, or
+   * live-switched with (the `--effort` flag value; null = agent default).
+   * Sibling of `applied_model` for the effort field of the injection delta.
+   */
+  applied_effort: string | null;
   total_duration_ms: number | null;
   tool_call_count: number | null;
   lines_added: number | null;

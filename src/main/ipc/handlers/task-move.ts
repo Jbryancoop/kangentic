@@ -587,7 +587,6 @@ export async function handleTaskMove(
             adapter,
             sessionRepo,
             task,
-            fromLane: fromLane ?? null,
             toLane: toLane ?? null,
             autoCommand: interpolatedAuto,
           });
@@ -596,6 +595,11 @@ export async function handleTaskMove(
               verifier: plan.verifier,
               verifiedPrefixLength: plan.verifiedPrefixLength,
             });
+            // Record what the burst applied so the NEXT move diffs against the
+            // session's new running value instead of re-injecting it.
+            if (plan.appliedSettings) {
+              sessionRepo.updateAppliedSettings(task.session_id, plan.appliedSettings);
+            }
             console.log(
               `[TASK_MOVE] Injecting ${plan.sequence.length} command(s) for task ${task.id.slice(0, 8)}`
               + ` into running session${plan.verifier ? ' (with command verification)' : ''}: ${plan.sequence.join(' | ')}`,
@@ -606,11 +610,14 @@ export async function handleTaskMove(
           // If plan is null, check if adapter doesn't support live swap but
           // settings changed. For adapters with no live swap, trigger respawn
           // instead of keeping the session alive (respawn applies new flags).
-          // Mirror the per-task-override-wins rule from prepareInjectionPlan
-          // so we don't trigger a respawn when the task pinned the field.
-          const sourceModel = task.model_override ?? fromLane?.model_override ?? null;
+          // Source is the session's ACTUAL applied value (same ground truth
+          // prepareInjectionPlan uses), NOT the leaving column's config - else a
+          // null/drifted `fromLane` would churn the PTY with a needless respawn.
+          // Per-task overrides still win (no respawn when the task pinned the
+          // field, since source = target = pin).
+          const sourceModel = task.model_override ?? activeRecord?.applied_model ?? null;
           const targetModel = task.model_override ?? toLane?.model_override ?? null;
-          const sourceEffort = task.effort_override ?? fromLane?.effort_override ?? null;
+          const sourceEffort = task.effort_override ?? activeRecord?.applied_effort ?? null;
           const targetEffort = task.effort_override ?? toLane?.effort_override ?? null;
 
           const hasModelDelta = targetModel !== sourceModel;

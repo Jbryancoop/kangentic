@@ -144,6 +144,12 @@ export function registerTaskRuntimeOverrideHandlers(context: IpcContext): void {
             sequence,
             { verifier, verifiedPrefixLength: sequence.length },
           );
+          // Record the session's new running value (changed concrete fields only)
+          // so a later column move diffs against it instead of re-injecting.
+          sessionRepo.updateAppliedSettings(task.session_id, {
+            ...(spec.modelChanged && spec.model !== null ? { model: spec.model } : {}),
+            ...(spec.effortChanged && spec.effort !== null ? { effort: spec.effort } : {}),
+          });
           return { ok: true, mode: 'live' };
         }
 

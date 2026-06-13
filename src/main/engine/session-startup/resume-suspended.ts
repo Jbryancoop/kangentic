@@ -366,6 +366,12 @@ export async function resumeSuspendedSessions(
         exited_at: null,
         suspended_by: null,
       });
+      // Record what this resume applied (the `--model` / `--effort` flags land
+      // on every resume) so a later column move diffs against the true value.
+      sessionRepo.updateAppliedSettings(newSession.id, {
+        model: input.appliedModel,
+        effort: input.appliedEffort,
+      });
 
       taskRepo.update({ id: input.task.id, session_id: newSession.id });
       recovered++;

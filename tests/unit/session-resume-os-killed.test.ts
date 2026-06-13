@@ -103,6 +103,7 @@ vi.mock('../../src/main/db/repositories/session-repository', () => {
     ) => latestForTaskByTypeAndIsolation(taskId, sessionType, isolatedSwimlaneId);
     getUserPausedTaskIds = () => new Set<string>();
     insert = (...args: unknown[]) => sessionRepoInsert(...args);
+    updateAppliedSettings = vi.fn();
   }
   return { SessionRepository: FakeSessionRepository };
 });

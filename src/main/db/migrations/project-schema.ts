@@ -352,6 +352,24 @@ export function runProjectMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE sessions ADD COLUMN isolated_swimlane_id TEXT DEFAULT NULL');
   }
 
+  // Migration: record the model/effort a session was actually spawned, resumed,
+  // or live-switched with (the `--model` / `--effort` flag value; NULL = agent
+  // default, no flag). This is the ground truth the column-transition injection
+  // delta compares against, so a move only injects `/model` / `/effort` when the
+  // session's real running value differs from the destination - never because
+  // the leaving column or a drifted kangentic.json column config disagrees.
+  // Distinct from `model_id` (agent-reported, captured at exit via metrics).
+  const hasAppliedModel = (db.pragma('table_info(sessions)') as Array<{ name: string }>)
+    .some((col) => col.name === 'applied_model');
+  if (!hasAppliedModel) {
+    db.exec('ALTER TABLE sessions ADD COLUMN applied_model TEXT DEFAULT NULL');
+  }
+  const hasAppliedEffort = (db.pragma('table_info(sessions)') as Array<{ name: string }>)
+    .some((col) => col.name === 'applied_effort');
+  if (!hasAppliedEffort) {
+    db.exec('ALTER TABLE sessions ADD COLUMN applied_effort TEXT DEFAULT NULL');
+  }
+
   // Migration: rename permission_strategy column -> permission_mode
   const currentSwimlaneCols = new Set(
     (db.pragma('table_info(swimlanes)') as Array<{ name: string }>).map((col) => col.name),

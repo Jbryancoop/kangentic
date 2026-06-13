@@ -1,4 +1,4 @@
-import type { Swimlane, Task } from '../../shared/types';
+import type { SessionRecord, Swimlane, Task } from '../../shared/types';
 import type { AgentAdapter } from '../agent/agent-adapter';
 import type { SessionRepository } from '../db/repositories/session-repository';
 import type { CommandVerifier } from './terminal-submit-scheduler';
@@ -42,7 +42,6 @@ export interface InjectionPlanInput {
    * over the column's setting.
    */
   task: Pick<Task, 'id' | 'agent' | 'model_override' | 'effort_override'>;
-  fromLane: Swimlane | null;
   toLane: Swimlane | null;
   /** Already-interpolated auto_command from the destination column, or empty. */
   autoCommand?: string;
@@ -60,27 +59,45 @@ export interface InjectionPlan {
    * dropping the user's intended action after retry exhaustion.
    */
   verifiedPrefixLength: number;
+  /**
+   * The model/effort the live session will be at once this burst applies -
+   * present only for fields whose value actually changed to a concrete target
+   * (i.e. a `/model` / `/effort` slash was emitted). The caller persists these
+   * via `sessionRepo.updateAppliedSettings` after scheduling so the next column
+   * transition diffs against the session's true running value. Absent when the
+   * burst carries only an auto_command (no settings delta).
+   */
+  appliedSettings?: { model?: string; effort?: string };
 }
 
 export function prepareInjectionPlan(input: InjectionPlanInput): InjectionPlan | null {
-  const { adapter, sessionRepo, task, fromLane, toLane, autoCommand } = input;
+  const { adapter, sessionRepo, task, toLane, autoCommand } = input;
 
-  // If the task carries its own per-task override, both source and target
-  // collapse to that value so the delta is zero and no slash command fires
-  // for that field. The other field (without a task override) still follows
-  // standard column-delta rules.
-  const sourceModel = task.model_override ?? fromLane?.model_override ?? null;
+  // SOURCE is the model/effort the live session is ACTUALLY running at, read
+  // from the session record (`applied_model` / `applied_effort`), NOT the
+  // leaving column's config. The leaving column disagrees after an in-flight
+  // ContextBar switch or a kangentic.json column-config edit, which is what
+  // produced the spurious `/effort` injection. A per-task override still wins:
+  // the session was spawned/switched to the pin, so source = target = pin and no
+  // slash fires for that field (preserving the ContextBar contract). When no
+  // record exists (unit stubs, a session predating this column) the applied
+  // value is null, i.e. "agent default".
+  const record = sessionRepo?.getLatestForTask(task.id) ?? null;
+  const sourceModel = task.model_override ?? record?.applied_model ?? null;
   const targetModel = task.model_override ?? toLane?.model_override ?? null;
-  const sourceEffort = task.effort_override ?? fromLane?.effort_override ?? null;
+  const sourceEffort = task.effort_override ?? record?.applied_effort ?? null;
   const targetEffort = task.effort_override ?? toLane?.effort_override ?? null;
+
+  const modelChanged = targetModel !== sourceModel;
+  const effortChanged = targetEffort !== sourceEffort;
 
   // Settings writes come from the adapter so the IPC layer never names a
   // slash. An adapter without getInjectionSequence contributes none.
   const settingsSequence = adapter?.getInjectionSequence?.({
     model: targetModel,
-    modelChanged: targetModel !== sourceModel,
+    modelChanged,
     effort: targetEffort,
-    effortChanged: targetEffort !== sourceEffort,
+    effortChanged,
   }) ?? [];
 
   const trimmedAutoCommand = autoCommand?.trim() ?? '';
@@ -92,12 +109,27 @@ export function prepareInjectionPlan(input: InjectionPlanInput): InjectionPlan |
 
   // Verifier is best-effort: needs adapter support + a captured agent_session_id.
   // null is a documented fallback to time-based settle in
-  // TerminalSubmit.submitKeystrokes.
+  // TerminalSubmit.submitKeystrokes. Pass the record we already read so the
+  // verifier builder does not re-query.
   const verifier = adapter && sessionRepo
-    ? buildCommandInjectionVerifier(adapter, sessionRepo, task.id)
+    ? buildCommandInjectionVerifier(adapter, sessionRepo, task.id, record)
     : null;
 
-  return { sequence, verifier, verifiedPrefixLength: settingsSequence.length };
+  // What the session will be at after this burst: only fields that changed to a
+  // concrete value (i.e. a slash was actually emitted). A change to a null
+  // target ("Default" column) emits no slash and leaves the session as-is, so
+  // it is not recorded.
+  const appliedSettings: { model?: string; effort?: string } = {};
+  if (modelChanged && targetModel !== null) appliedSettings.model = targetModel;
+  if (effortChanged && targetEffort !== null) appliedSettings.effort = targetEffort;
+  const hasApplied = appliedSettings.model !== undefined || appliedSettings.effort !== undefined;
+
+  return {
+    sequence,
+    verifier,
+    verifiedPrefixLength: settingsSequence.length,
+    ...(hasApplied ? { appliedSettings } : {}),
+  };
 }
 
 /**
@@ -115,16 +147,21 @@ export function prepareInjectionPlan(input: InjectionPlanInput): InjectionPlan |
  * picks). Without a shared helper both call sites would re-implement the
  * same record lookup + closure capture, and a fix in one would silently
  * miss the other.
+ *
+ * `prefetchedRecord` lets a caller that already read the latest session record
+ * (e.g. `prepareInjectionPlan` reading it for the delta source) pass it through
+ * to avoid a second query. Omit it to read fresh.
  */
 export function buildCommandInjectionVerifier(
   adapter: AgentAdapter,
   sessionRepo: SessionRepository,
   taskId: string,
+  prefetchedRecord?: SessionRecord | null,
 ): CommandVerifier | null {
   if (!adapter.getSubmissionVerifier) return null;
   const submissionVerifier = adapter.getSubmissionVerifier('command-injection');
   if (!submissionVerifier) return null;
-  const record = sessionRepo.getLatestForTask(taskId);
+  const record = prefetchedRecord !== undefined ? prefetchedRecord : sessionRepo.getLatestForTask(taskId);
   if (!record?.agent_session_id || !record.cwd) return null;
   const agentSessionId = record.agent_session_id;
   const cwd = record.cwd;

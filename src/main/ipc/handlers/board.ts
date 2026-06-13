@@ -88,9 +88,12 @@ export function registerBoardHandlers(context: IpcContext): void {
     // keep the prior model/effort until the user moved them out and back.
     //
     // Per-task injection is delegated to prepareInjectionPlan so the
-    // slash syntax + verifier wiring lives on each adapter, not here.
-    // Pass the BEFORE swimlane as the source so deltas are computed
-    // identically to the task-move flow.
+    // slash syntax + verifier wiring lives on each adapter, not here. The
+    // delta source is each session's recorded `applied_model`/`applied_effort`
+    // (its true running value), so editing a column from e.g. Default to xhigh
+    // propagates to a session running at the default, but re-saving a column at
+    // a value the session already has injects nothing. `before` only gates that
+    // the swimlane existed pre-update.
     if (before) {
       const sessionRepo = context.currentProjectId
         ? new SessionRepository(getProjectDb(context.currentProjectId))
@@ -106,7 +109,6 @@ export function registerBoardHandlers(context: IpcContext): void {
           adapter,
           sessionRepo,
           task,
-          fromLane: before,
           toLane: result,
         });
         if (!plan) continue;
@@ -114,6 +116,10 @@ export function registerBoardHandlers(context: IpcContext): void {
           verifier: plan.verifier,
           verifiedPrefixLength: plan.verifiedPrefixLength,
         });
+        // Record the new running value so a later column move doesn't re-inject.
+        if (plan.appliedSettings && sessionRepo) {
+          sessionRepo.updateAppliedSettings(task.session_id, plan.appliedSettings);
+        }
         console.log(
           `[SWIMLANE_UPDATE] Propagating ${plan.sequence.length} setting(s) to active session for task ${task.id.slice(0, 8)}`
           + ` in column "${result.name}"${plan.verifier ? ' (with command verification)' : ''}: ${plan.sequence.join(' | ')}`,

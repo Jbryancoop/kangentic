@@ -4,10 +4,11 @@ import type { PerToolStat, SessionRecord, SessionRecordStatus, SessionSummary, S
 /**
  * Fields accepted by insert(). Caller must provide `id` (the PTY session ID)
  * to unify the DB record key with the SessionManager/TranscriptWriter key.
- * Excludes metric columns (set via updateMetrics).
+ * Excludes metric columns (set via updateMetrics) and the applied model/effort
+ * (set via updateAppliedSettings, mirroring how metrics are maintained).
  */
 type SessionInsertInput = Omit<SessionRecord,
-  'total_cost_usd' | 'total_input_tokens' | 'total_output_tokens' | 'model_id' | 'model_display_name' | 'total_duration_ms' | 'tool_call_count' | 'lines_added' | 'lines_removed' | 'files_changed' | 'tool_breakdown'
+  'total_cost_usd' | 'total_input_tokens' | 'total_output_tokens' | 'model_id' | 'model_display_name' | 'applied_model' | 'applied_effort' | 'total_duration_ms' | 'tool_call_count' | 'lines_added' | 'lines_removed' | 'files_changed' | 'tool_breakdown'
 >;
 
 export interface SessionMetricsInput {
@@ -90,6 +91,8 @@ export class SessionRepository {
       total_output_tokens: null,
       model_id: null,
       model_display_name: null,
+      applied_model: null,
+      applied_effort: null,
       total_duration_ms: null,
       tool_call_count: null,
       lines_added: null,
@@ -320,6 +323,30 @@ export class SessionRepository {
       metrics.toolBreakdown,
       id,
     );
+  }
+
+  /**
+   * Record the model/effort the session is now actually running at. Called at
+   * spawn/resume (with the resolved spawn overrides) and after every live
+   * settings switch (column-move injection, column-edit propagation, ContextBar
+   * pick). Only the provided field(s) are written, so a switch that changes just
+   * effort leaves the recorded model intact. `null` means agent default / no
+   * flag. This is the ground truth `prepareInjectionPlan` diffs against.
+   */
+  updateAppliedSettings(id: string, applied: { model?: string | null; effort?: string | null }): void {
+    const sets: string[] = [];
+    const params: Array<string | null> = [];
+    if (applied.model !== undefined) {
+      sets.push('applied_model = ?');
+      params.push(applied.model);
+    }
+    if (applied.effort !== undefined) {
+      sets.push('applied_effort = ?');
+      params.push(applied.effort);
+    }
+    if (sets.length === 0) return;
+    params.push(id);
+    this.db.prepare(`UPDATE sessions SET ${sets.join(', ')} WHERE id = ?`).run(...params);
   }
 
   /** Update git diff stats for a session record. */

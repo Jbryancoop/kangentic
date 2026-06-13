@@ -84,6 +84,7 @@ vi.mock('../../src/main/db/repositories/session-repository', () => {
     getLatestForTaskByTypeAndIsolation = vi.fn(() => null);
     getUserPausedTaskIds = vi.fn(() => new Set<string>());
     insert = vi.fn();
+    updateAppliedSettings = vi.fn();
   }
   return { SessionRepository: FakeSessionRepository };
 });

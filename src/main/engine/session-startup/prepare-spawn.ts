@@ -33,6 +33,14 @@ export interface PreparedSpawn {
    * via CLI flag or settings file.
    */
   extraEnv: Record<string, string> | null;
+  /**
+   * The model/effort this command actually applies via `--model` / `--effort`
+   * (null = agent default, no flag). The caller persists these to the session
+   * record's `applied_model` / `applied_effort` so a later column transition
+   * diffs against the session's true running value. See `prepareInjectionPlan`.
+   */
+  appliedModel: string | null;
+  appliedEffort: string | null;
 }
 
 export type PrepareResult =
@@ -144,6 +152,8 @@ export async function prepareAgentSpawn(input: {
       statusOutputPath,
       eventsOutputPath,
       extraEnv,
+      appliedModel: commandOptions.model ?? null,
+      appliedEffort: commandOptions.effort ?? null,
     },
   };
 }
