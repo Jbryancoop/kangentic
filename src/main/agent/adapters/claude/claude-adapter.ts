@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { ClaudeDetector } from './detector';
 import { CommandBuilder } from './command-builder';
 import { ClaudeStatusParser } from './status-parser';
-import { locateClaudeTranscriptFile } from './transcript-parser';
+import { locateClaudeTranscriptFile, parseClaudeTranscript } from './transcript-parser';
 import { resolveBackgroundTaskOutputFile } from './background-task-output';
 import { ensureWorktreeTrust, ensureMcpServerTrust } from './trust-manager';
 import { migrateClaudeProjectData } from './project-relocation';
@@ -15,6 +15,7 @@ import type {
   AgentInfo,
   SpawnCommandOptions,
   SettingsChangeSpec,
+  ParsedTranscript,
 } from '../../agent-adapter';
 import type {
   AgentPermissionEntry,
@@ -151,6 +152,12 @@ export class ClaudeAdapter implements AgentAdapter {
     } catch {
       return null;
     }
+  }
+
+  async parseTranscript(agentSessionId: string, cwd: string): Promise<ParsedTranscript> {
+    const filePath = locateClaudeTranscriptFile(agentSessionId, cwd);
+    const entries = await parseClaudeTranscript(filePath);
+    return { entries, sourcePath: filePath };
   }
 
   async summarize(prompt: string, cliPath: string, cwd: string): Promise<string> {

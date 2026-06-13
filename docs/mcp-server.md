@@ -321,12 +321,24 @@ Get the most recent handoff record for a task. Returns metadata about the cross-
 
 ### kangentic_get_transcript
 
-Get a session transcript for a task or session. At least one of `taskId` or `sessionId` must be provided. Returns the structured agent conversation parsed from the agent's native session history (for Claude, `~/.claude/projects/<slug>/<sessionId>.jsonl`) rendered as markdown - ideal for cross-agent context handoff. The underlying handler can also emit the ANSI-stripped PTY scrollback, but the MCP tool does not currently expose a `format` parameter for it.
+Get a session transcript for a task or session. At least one of `taskId` or `sessionId` must be provided. Two formats, selected with `format`:
+
+- `format="structured"` (default): the parsed agent conversation - user prompts, assistant text, tool calls and results - rendered as clean markdown, read from the agent's native session history via the adapter's `parseTranscript` capability. The Claude parser also drops noise (slash-command XML, `<system-reminder>` spans, `isMeta` injections) and surfaces compaction boundaries/summaries explicitly. There is no cleaned-scrollback substitute: structured either comes from real session history or reports that it is unavailable and points at `format="raw"`.
+- `format="raw"`: the verbatim ANSI-stripped PTY scrollback (the full terminal output, including TUI redraws), available for every agent. Useful for debugging the terminal layer or for agents without a structured parser.
+
+Structured-format support by agent:
+
+| Agent | Structured | Raw |
+|-------|------------|-----|
+| Claude, Droid, Codex, Gemini, Qwen, Kimi, OpenCode | native parser | yes |
+| Aider | no (no per-session native history) | yes |
+| Warp, Cursor, Copilot | no (history location unknown) | yes |
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `taskId` | string | No | Task ID (returns transcript for the task's latest session) |
 | `sessionId` | string | No | Session ID (returns transcript for a specific session) |
+| `format` | string | No | `"structured"` (default) or `"raw"`. |
 | `project` | string | No | Project selector (name or UUID). Defaults to the URL-path project. |
 
 ### kangentic_get_session_files

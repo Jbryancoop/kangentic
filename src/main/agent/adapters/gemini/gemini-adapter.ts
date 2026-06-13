@@ -2,11 +2,12 @@ import { GeminiDetector } from './detector';
 import { GeminiCommandBuilder } from './command-builder';
 import { removeHooks as removeGeminiHooks } from './hook-manager';
 import { GeminiSessionHistoryParser } from './session-history-parser';
+import { parseGeminiTranscript, locateGeminiTranscriptFile } from './transcript-parser';
 import { migrateGeminiProjectData } from './project-relocation';
 import { GeminiStatusParser } from './status-parser';
 import { discoverGeminiCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec, ParsedTranscript } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
@@ -192,6 +193,13 @@ export class GeminiAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return GeminiSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async parseTranscript(agentSessionId: string, cwd: string): Promise<ParsedTranscript> {
+    const filePath = locateGeminiTranscriptFile(agentSessionId, cwd);
+    if (!filePath) return { entries: [], sourcePath: null };
+    const entries = await parseGeminiTranscript(filePath);
+    return { entries, sourcePath: filePath };
   }
 
   async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {

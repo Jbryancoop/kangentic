@@ -2,11 +2,10 @@ import { TranscriptRepository } from '../../db/repositories/transcript-repositor
 import { SessionRepository } from '../../db/repositories/session-repository';
 import { TaskRepository } from '../../db/repositories/task-repository';
 import { resolveTask } from './task-resolver';
-import { parseClaudeTranscript, locateClaudeTranscriptFile } from '../adapters/claude/transcript-parser';
-import { parseDroidTranscript, droidTranscriptFilePath } from '../adapters/droid/transcript-parser';
+import { agentRegistry } from '../agent-registry';
 import { transcriptToMarkdown } from '../../../shared/transcript-format';
 import type { CommandContext, CommandResponse } from './types';
-import type { SessionRecord, TranscriptEntry } from '../../../shared/types';
+import type { SessionRecord } from '../../../shared/types';
 
 type TranscriptFormat = 'structured' | 'raw';
 
@@ -17,16 +16,17 @@ type TranscriptFormat = 'structured' | 'raw';
  * session. Two formats:
  *
  * - `structured` (default): the parsed conversation - user prompts,
- *   assistant text, tool calls and results - rendered as markdown.
- *   Sourced from each agent's native session JSONL. Best for
- *   cross-agent context handoff and human review. Currently supported
- *   for Claude (`claude_agent`) and Droid (`droid_agent`); other agent
- *   types fall back to a polite "not yet supported" message.
+ *   assistant text, tool calls and results - rendered as clean markdown.
+ *   Sourced from each agent's native session history via the adapter's
+ *   optional `parseTranscript` capability (no agent-name branching here).
+ *   Adapters without that capability (Aider, and agents whose history
+ *   location is unknown) report that the structured format is unsupported
+ *   and point at `format: "raw"`. There is deliberately no cleaned-scrollback
+ *   substitute: structured either comes from real session history or says so.
  *
- * - `raw`: the ANSI-stripped PTY scrollback - exactly what hit the
+ * - `raw`: the verbatim ANSI-stripped PTY scrollback - exactly what hit the
  *   terminal, including TUI redraws. Useful for debugging the terminal
- *   layer or for inspecting agents where the structured parser isn't
- *   yet supported.
+ *   layer or for inspecting agents without a structured parser.
  */
 export async function handleGetTranscript(
   params: Record<string, unknown>,
@@ -36,12 +36,18 @@ export async function handleGetTranscript(
   const sessionId = typeof params.sessionId === 'string' ? params.sessionId : undefined;
 
   // Validate format BEFORE narrowing - never cast user-supplied input
-  // before checking it's in the allowed set.
+  // before checking it's in the allowed set. null/undefined both mean
+  // "use the default" (the MCP layer forwards an absent format as null).
   const formatParam = params.format;
-  if (formatParam !== undefined && formatParam !== 'structured' && formatParam !== 'raw') {
+  if (
+    formatParam !== undefined &&
+    formatParam !== null &&
+    formatParam !== 'structured' &&
+    formatParam !== 'raw'
+  ) {
     return { success: false, error: `Invalid format "${String(formatParam)}". Use "structured" or "raw".` };
   }
-  const format: TranscriptFormat = formatParam ?? 'structured';
+  const format: TranscriptFormat = formatParam === 'raw' ? 'raw' : 'structured';
 
   if (!rawTaskId && !sessionId) {
     return { success: false, error: 'Provide either taskId or sessionId.' };
@@ -71,29 +77,35 @@ export async function handleGetTranscript(
     }
 
     const targetSessionId = record.id;
+    const adapter = agentRegistry.getBySessionType(record.session_type);
 
     if (format === 'structured') {
-      if (!record.agent_session_id) {
-        return { success: true, message: `Session ${targetSessionId.slice(0, 8)} has no agent_session_id - JSONL not yet written.` };
-      }
-
-      let filePath: string;
-      let entries: TranscriptEntry[];
-      if (record.session_type === 'claude_agent') {
-        filePath = locateClaudeTranscriptFile(record.agent_session_id, record.cwd);
-        entries = await parseClaudeTranscript(filePath);
-      } else if (record.session_type === 'droid_agent') {
-        filePath = droidTranscriptFilePath(record.agent_session_id, record.cwd);
-        entries = await parseDroidTranscript(filePath);
-      } else {
+      // No structured parser for this agent: report it and point at raw.
+      // Self-maintaining - new adapters that implement parseTranscript are
+      // picked up here without touching this handler (agent-adapters-boundary).
+      if (!adapter?.parseTranscript) {
+        const label = adapter?.displayName ?? record.session_type;
         return {
           success: true,
-          message: `Structured transcripts are not yet supported for ${record.session_type}. Re-run with format="raw" to get the terminal scrollback instead.`,
+          message: `Structured transcripts are not supported for ${label}. Re-run with format="raw" to get the terminal scrollback instead.`,
         };
       }
 
+      if (!record.agent_session_id) {
+        return {
+          success: true,
+          message: `Session ${targetSessionId.slice(0, 8)} has no agent_session_id - native history not yet written. Re-run with format="raw" for the terminal scrollback.`,
+        };
+      }
+
+      const { entries, sourcePath } = await adapter.parseTranscript(record.agent_session_id, record.cwd);
+
       if (entries.length === 0) {
-        return { success: true, message: `No transcript entries found at ${filePath}.` };
+        const where = sourcePath ? ` at ${sourcePath}` : '';
+        return {
+          success: true,
+          message: `No structured transcript found${where}. The native session history may not exist yet. Re-run with format="raw" for the terminal scrollback.`,
+        };
       }
 
       const markdown = transcriptToMarkdown(entries);
@@ -105,7 +117,7 @@ export async function handleGetTranscript(
           sessionId: targetSessionId,
           format,
           entryCount: entries.length,
-          filePath,
+          filePath: sourcePath,
         },
       };
     }

@@ -75,22 +75,36 @@ export async function parseClaudeTranscript(filePath: string): Promise<Transcrip
     const ts = parseTimestamp(raw.timestamp);
     const type = raw.type;
 
+    // Conversation-compaction boundary: a system entry Claude writes when it
+    // compacts the context. Surface it explicitly so the post-compaction
+    // summary that follows is not read as a fresh start.
+    if (type === 'system' && raw.subtype === 'compact_boundary') {
+      entries.push({
+        kind: 'system',
+        uuid,
+        ts,
+        subtype: 'compaction',
+        text: describeCompactBoundary(raw),
+      });
+      continue;
+    }
+
     if (type === 'user') {
+      // Skip Claude's own meta injections (skill preambles, queued-message
+      // bookkeeping). They are not real user turns and otherwise render as
+      // "## User" noise.
+      if (raw.isMeta === true) continue;
+
       const message = raw.message;
       if (!isRecord(message)) continue;
       const messageContent = message.content;
 
-      // String shorthand: pure user prompt.
+      // Collect the user-authored text (string shorthand or text blocks) and
+      // emit any tool_result blocks the SDK injected as synthetic user turns.
+      let userText = '';
       if (typeof messageContent === 'string') {
-        if (messageContent.length === 0) continue;
-        entries.push({ kind: 'user', uuid, ts, text: messageContent });
-        continue;
-      }
-
-      // Array form: may contain text blocks (user message) and/or
-      // tool_result blocks (synthetic user turns the SDK injects after
-      // a tool runs).
-      if (Array.isArray(messageContent)) {
+        userText = messageContent;
+      } else if (Array.isArray(messageContent)) {
         const textParts: string[] = [];
         for (const block of messageContent) {
           if (!isRecord(block)) continue;
@@ -107,10 +121,35 @@ export async function parseClaudeTranscript(filePath: string): Promise<Transcrip
             textParts.push(block.text);
           }
         }
-        if (textParts.length > 0) {
-          entries.push({ kind: 'user', uuid, ts, text: textParts.join('\n') });
-        }
+        userText = textParts.join('\n');
       }
+
+      // Compaction summary: Claude writes the post-compaction recap as a
+      // single user entry flagged isCompactSummary. Surface it as a
+      // compaction system entry, not a "## User" turn.
+      if (raw.isCompactSummary === true) {
+        if (userText.length > 0) {
+          entries.push({ kind: 'system', uuid, ts, subtype: 'compaction', text: userText });
+        }
+        continue;
+      }
+
+      if (userText.length === 0) continue;
+
+      // Slash-command invocations: when the ENTIRE message is command XML,
+      // collapse it to a compact marker (or drop empty local stdout) instead
+      // of rendering raw <command-name>/<local-command-stdout> tags.
+      const commandEntry = parseCommandEntry(userText, uuid, ts);
+      if (commandEntry !== null) {
+        if (commandEntry !== 'drop') entries.push(commandEntry);
+        continue;
+      }
+
+      // Strip <system-reminder> spans from real user text; drop the entry
+      // entirely if nothing meaningful remains (a reminder-only injection).
+      const stripped = stripSystemReminders(userText);
+      if (stripped.length === 0) continue;
+      entries.push({ kind: 'user', uuid, ts, text: stripped });
       continue;
     }
 
@@ -178,6 +217,76 @@ function parseTimestamp(value: unknown): number {
   if (typeof value !== 'string') return Date.now();
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+// Whole-message slash-command invocation, e.g.
+//   <command-name>/exit</command-name>
+//   <command-message>exit</command-message>
+//   <command-args></command-args>
+// The message/args blocks are optional and may carry leading indentation.
+const COMMAND_MESSAGE_RE =
+  /^<command-name>([\s\S]*?)<\/command-name>\s*(?:<command-message>[\s\S]*?<\/command-message>)?\s*(?:<command-args>([\s\S]*?)<\/command-args>)?\s*$/;
+
+// Whole-message local command stdout, e.g. <local-command-stdout>Goodbye!</local-command-stdout>
+const COMMAND_STDOUT_RE = /^<local-command-stdout>([\s\S]*?)<\/local-command-stdout>$/;
+
+/**
+ * Recognize a user entry whose ENTIRE text is slash-command XML and collapse
+ * it to a compact system entry. Returns the entry to push, the sentinel
+ * `'drop'` for an empty command stdout (no useful content), or `null` when the
+ * text is not a whole-message command (so normal user-text handling applies).
+ * Mixed command-plus-prose text is intentionally left to the caller.
+ */
+function parseCommandEntry(
+  text: string,
+  uuid: string,
+  ts: number,
+): TranscriptEntry | 'drop' | null {
+  const trimmed = text.trim();
+
+  const commandMatch = COMMAND_MESSAGE_RE.exec(trimmed);
+  if (commandMatch) {
+    const name = commandMatch[1].trim();
+    const args = (commandMatch[2] ?? '').trim();
+    const label = args ? `${name} ${args}` : name;
+    return { kind: 'system', uuid, ts, subtype: 'command', text: label };
+  }
+
+  const stdoutMatch = COMMAND_STDOUT_RE.exec(trimmed);
+  if (stdoutMatch) {
+    const output = stdoutMatch[1].trim();
+    if (output.length === 0) return 'drop';
+    return { kind: 'system', uuid, ts, subtype: 'command_output', text: output };
+  }
+
+  return null;
+}
+
+/** Remove `<system-reminder>...</system-reminder>` spans and trim. */
+function stripSystemReminders(text: string): string {
+  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
+}
+
+/**
+ * Build a one-line description of a `compact_boundary` system entry from its
+ * content and `compactMetadata` (trigger and pre-compaction token count).
+ */
+function describeCompactBoundary(raw: Record<string, unknown>): string {
+  const content =
+    typeof raw.content === 'string' && raw.content.length > 0
+      ? raw.content
+      : 'Conversation compacted';
+  const meta = raw.compactMetadata;
+  if (!isRecord(meta)) return content;
+
+  const annotations: string[] = [];
+  if (typeof meta.trigger === 'string' && meta.trigger.length > 0) {
+    annotations.push(meta.trigger);
+  }
+  if (typeof meta.preTokens === 'number') {
+    annotations.push(`${meta.preTokens} tokens before compaction`);
+  }
+  return annotations.length > 0 ? `${content} (${annotations.join(', ')})` : content;
 }
 
 /**

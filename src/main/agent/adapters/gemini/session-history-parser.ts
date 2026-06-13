@@ -271,7 +271,7 @@ function toNumber(value: unknown): number | undefined {
  * Gemini's design choice, not ours. Worktrees typically have unique
  * names so this is rarely an issue in practice.
  */
-function computeGeminiProjectDirName(cwd: string): string {
+export function computeGeminiProjectDirName(cwd: string): string {
   const basename = path.basename(path.normalize(cwd));
   return basename.toLowerCase();
 }

@@ -1,10 +1,11 @@
 import { DroidDetector } from './detector';
 import { DroidCommandBuilder } from './command-builder';
 import { captureSessionIdFromFilesystem, locateSessionFile } from './session-id-capture';
+import { droidTranscriptFilePath, parseDroidTranscript } from './transcript-parser';
 import { migrateDroidProjectData } from './project-relocation';
 import { discoverDroidCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec, ParsedTranscript } from '../../agent-adapter';
 import type {
   AgentPermissionEntry,
   PermissionMode,
@@ -154,6 +155,12 @@ export class DroidAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return locateSessionFile({ agentSessionId, cwd });
+  }
+
+  async parseTranscript(agentSessionId: string, cwd: string): Promise<ParsedTranscript> {
+    const filePath = droidTranscriptFilePath(agentSessionId, cwd);
+    const entries = await parseDroidTranscript(filePath);
+    return { entries, sourcePath: filePath };
   }
 
   async discoverCapabilities(_cliPath: string): Promise<AgentCapabilities> {

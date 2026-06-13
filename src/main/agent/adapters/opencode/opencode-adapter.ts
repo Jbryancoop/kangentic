@@ -4,11 +4,12 @@ import path from 'node:path';
 import { OpenCodeDetector } from './detector';
 import { OpenCodeCommandBuilder } from './command-builder';
 import { OpenCodeSessionHistoryParser } from './session-history-parser';
+import { parseOpenCodeTranscript, openCodeTranscriptSourcePath } from './transcript-parser';
 import { migrateOpenCodeProjectData } from './project-relocation';
 import { removeHooks as removeOpenCodeHooks } from './hook-manager';
 import { discoverOpenCodeCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec, ParsedTranscript } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SessionEvent, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
@@ -324,6 +325,14 @@ export class OpenCodeAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return OpenCodeSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async parseTranscript(agentSessionId: string, _cwd: string): Promise<ParsedTranscript> {
+    const entries = await parseOpenCodeTranscript(agentSessionId);
+    // The shared DB path is always known, so report it even when no entries
+    // were found (empty session vs missing DB) - consistent with the
+    // file-based adapters and gives the "not found" message a location to cite.
+    return { entries, sourcePath: openCodeTranscriptSourcePath() };
   }
 
   async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {

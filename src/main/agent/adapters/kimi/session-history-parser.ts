@@ -116,7 +116,7 @@ export class KimiSessionHistoryParser {
  * the number of work_dirs the user has opened with Kimi - small and
  * cheap on every plausible setup.
  */
-function findSessionWireFile(sessionsRoot: string, sessionUuid: string): string | null {
+export function findSessionWireFile(sessionsRoot: string, sessionUuid: string): string | null {
   let hashEntries: string[];
   try {
     hashEntries = fs.readdirSync(sessionsRoot);

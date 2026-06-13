@@ -5,10 +5,11 @@ import { AgentDetector } from '../../shared/agent-detector';
 import { standardUnixFallbackPaths } from '../../shared/fallback-paths';
 import { KimiCommandBuilder } from './command-builder';
 import { KimiSessionHistoryParser } from './session-history-parser';
+import { parseKimiTranscript, locateKimiTranscriptFile } from './transcript-parser';
 import { migrateKimiProjectData } from './project-relocation';
 import { discoverKimiCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec, ParsedTranscript } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
@@ -212,6 +213,13 @@ export class KimiAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return KimiSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async parseTranscript(agentSessionId: string, _cwd: string): Promise<ParsedTranscript> {
+    const filePath = locateKimiTranscriptFile(agentSessionId);
+    if (!filePath) return { entries: [], sourcePath: null };
+    const entries = await parseKimiTranscript(filePath);
+    return { entries, sourcePath: filePath };
   }
 
   async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {

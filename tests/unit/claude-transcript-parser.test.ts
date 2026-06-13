@@ -355,6 +355,106 @@ describe('parseClaudeTranscript', () => {
     expect(entries[0]).toMatchObject({ text: 'one' });
     expect(entries[1]).toMatchObject({ text: 'two' });
   });
+
+  // --- Fidelity fixes (each isolated so reverting its guard turns it red) ---
+
+  it('skips isMeta user entries (skill preambles, queued-message bookkeeping)', async () => {
+    tmpFile = writeFixture([
+      { type: 'user', uuid: 'm', isMeta: true, timestamp: '2026-06-12T00:00:00Z', message: { content: 'Base directory for this skill: C:\\Users\\dev\\skills\\demo' } },
+      { type: 'user', uuid: 'u', timestamp: '2026-06-12T00:00:01Z', message: { content: 'real prompt' } },
+    ]);
+    const entries = await parseClaudeTranscript(tmpFile);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'user', text: 'real prompt' });
+  });
+
+  it('collapses a whole-message slash-command into a system command entry', async () => {
+    tmpFile = writeFixture([
+      { type: 'user', uuid: 'c', timestamp: '2026-06-12T00:00:00Z', message: { content: '<command-name>/exit</command-name>\n            <command-message>exit</command-message>\n            <command-args></command-args>' } },
+    ]);
+    const entries = await parseClaudeTranscript(tmpFile);
+    expect(entries).toEqual([
+      { kind: 'system', uuid: 'c', ts: expect.any(Number), subtype: 'command', text: '/exit' },
+    ]);
+  });
+
+  it('includes command args in the system command label when present', async () => {
+    tmpFile = writeFixture([
+      { type: 'user', uuid: 'c', timestamp: '2026-06-12T00:00:00Z', message: { content: '<command-name>/model</command-name>\n<command-args>opus</command-args>' } },
+    ]);
+    const entries = await parseClaudeTranscript(tmpFile);
+    expect(entries[0]).toMatchObject({ kind: 'system', subtype: 'command', text: '/model opus' });
+  });
+
+  it('surfaces non-empty local-command-stdout and drops empty stdout', async () => {
+    tmpFile = writeFixture([
+      { type: 'user', uuid: 'o', timestamp: '2026-06-12T00:00:00Z', message: { content: '<local-command-stdout>Goodbye!</local-command-stdout>' } },
+      { type: 'user', uuid: 'e', timestamp: '2026-06-12T00:00:01Z', message: { content: '<local-command-stdout></local-command-stdout>' } },
+    ]);
+    const entries = await parseClaudeTranscript(tmpFile);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'system', subtype: 'command_output', text: 'Goodbye!' });
+  });
+
+  it('strips <system-reminder> spans from user text and drops reminder-only entries', async () => {
+    tmpFile = writeFixture([
+      { type: 'user', uuid: 'mix', timestamp: '2026-06-12T00:00:00Z', message: { content: 'Add a test.\n<system-reminder>follow the style guide</system-reminder>' } },
+      { type: 'user', uuid: 'only', timestamp: '2026-06-12T00:00:01Z', message: { content: '<system-reminder>background context</system-reminder>' } },
+    ]);
+    const entries = await parseClaudeTranscript(tmpFile);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'user', text: 'Add a test.' });
+    expect((entries[0] as { text: string }).text).not.toContain('system-reminder');
+  });
+
+  it('surfaces an isCompactSummary entry as a compaction system entry', async () => {
+    tmpFile = writeFixture([
+      { type: 'user', uuid: 'sum', isCompactSummary: true, timestamp: '2026-06-12T00:00:00Z', message: { content: 'Summary: prior work recap.' } },
+    ]);
+    const entries = await parseClaudeTranscript(tmpFile);
+    expect(entries).toEqual([
+      { kind: 'system', uuid: 'sum', ts: expect.any(Number), subtype: 'compaction', text: 'Summary: prior work recap.' },
+    ]);
+  });
+
+  it('surfaces a compact_boundary system entry with trigger and pre-compaction tokens', async () => {
+    tmpFile = writeFixture([
+      { type: 'system', subtype: 'compact_boundary', uuid: 'b', timestamp: '2026-06-12T00:00:00Z', content: 'Conversation compacted', compactMetadata: { trigger: 'auto', preTokens: 165432 } },
+    ]);
+    const entries = await parseClaudeTranscript(tmpFile);
+    expect(entries[0]).toMatchObject({
+      kind: 'system',
+      subtype: 'compaction',
+      text: 'Conversation compacted (auto, 165432 tokens before compaction)',
+    });
+  });
+
+  it('parses the pinned real-capture fixture into a clean entry sequence', async () => {
+    const fixturePath = path.join(__dirname, '..', 'fixtures', 'claude-real-session.jsonl');
+    const entries = await parseClaudeTranscript(fixturePath);
+
+    expect(entries.map((entry) => entry.kind)).toEqual([
+      'user',       // real prompt
+      'user',       // mixed system-reminder, stripped
+      'assistant',  // text
+      'assistant',  // tool_use
+      'tool_result',
+      'system',     // /exit command
+      'system',     // local-command-stdout
+      'system',     // compact_boundary
+      'system',     // isCompactSummary
+      'assistant',  // final text
+    ]);
+
+    const markdown = transcriptToMarkdown(entries);
+    expect(markdown).not.toContain('<command-name>');
+    expect(markdown).not.toContain('<system-reminder>');
+    expect(markdown).not.toContain('Base directory for this skill'); // isMeta dropped
+    expect(markdown.match(/## Conversation compacted/g) ?? []).toHaveLength(2);
+    expect(markdown).toContain('`[command: /exit]`');
+    expect(markdown).toContain('**Command output:**');
+    expect(markdown).toContain('Goodbye!');
+  });
 });
 
 describe('transcriptToMarkdown', () => {

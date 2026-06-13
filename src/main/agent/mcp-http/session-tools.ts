@@ -145,16 +145,18 @@ export function registerSessionTools(server: McpServer, resolver: RequestResolve
   server.registerTool(
     'kangentic_get_transcript',
     {
-      description: 'Get the full ANSI-stripped session transcript for a task. Returns the complete terminal output from the agent session, useful for reviewing what an agent did, debugging issues, or auditing work. Find the task ID first with kangentic_find_task or kangentic_search_tasks. Pass `project` to read a transcript from a different project.',
+      description: 'Get a session transcript for a task, for reviewing what an agent did, debugging, or auditing. Two formats. format="structured" (default): the parsed conversation - user prompts, assistant text, tool calls and results - as clean markdown, read from the agent\'s native session history. Supported for Claude, Droid, Codex, Gemini, Qwen, Kimi, and OpenCode; agents without a parser (e.g. Aider) report that structured is unsupported. format="raw": the verbatim ANSI-stripped PTY scrollback (the full terminal output, including TUI redraws), available for every agent. Find the task ID first with kangentic_find_task or kangentic_search_tasks. Pass `project` to read a transcript from a different project.',
       inputSchema: z.object({
         taskId: z.string().optional().describe('Task ID (numeric display ID like "42" or full UUID). Returns transcript from the most recent session for this task.'),
         sessionId: z.string().optional().describe('Session UUID for a specific session. Use kangentic_list_sessions to find session IDs.'),
+        format: z.enum(['structured', 'raw']).optional().describe('"structured" (default) = parsed conversation as markdown from native session history; "raw" = verbatim ANSI-stripped terminal scrollback.'),
         project: z.string().optional().describe(PROJECT_SELECTOR_DESCRIPTION),
       }),
     },
-    async ({ taskId, sessionId, project }) => withProject(resolver, project, (ctx) => callHandler('get_transcript', {
+    async ({ taskId, sessionId, format, project }) => withProject(resolver, project, (ctx) => callHandler('get_transcript', {
       taskId: taskId ?? null,
       sessionId: sessionId ?? null,
+      format: format ?? null,
     }, ctx, 'Failed to get transcript')),
   );
 

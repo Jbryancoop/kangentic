@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-06-12T10:00:00.000Z","message":{"role":"user","parts":[{"text":"List the files in this directory."}]}}
+{"type":"system","subtype":"ui_telemetry","timestamp":"2026-06-12T10:00:00.100Z"}
+{"type":"assistant","model":"qwen3-coder-plus","timestamp":"2026-06-12T10:00:00.200Z","message":{"role":"model","parts":[{"text":"Let me list the directory.","thought":true,"thoughtSignature":"Es8CCmUIDhgC"},{"text":"Here are the files."},{"functionCall":{"id":"fc-1","name":"list_directory","args":{"path":"."}}}]}}
+{"type":"user","timestamp":"2026-06-12T10:00:00.300Z","message":{"role":"user","parts":[{"functionResponse":{"id":"fc-1","name":"list_directory","response":{"output":"file1.txt\nfile2.txt"}}}]}}

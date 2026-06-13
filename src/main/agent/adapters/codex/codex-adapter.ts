@@ -2,11 +2,12 @@ import { CodexDetector } from './detector';
 import { CodexCommandBuilder } from './command-builder';
 import { removeHooks as removeCodexHooks } from './hook-manager';
 import { CodexSessionHistoryParser } from './session-history-parser';
+import { parseCodexTranscript, locateCodexTranscriptFile } from './transcript-parser';
 import { migrateCodexProjectData } from './project-relocation';
 import { CodexStatusParser } from './status-parser';
 import { discoverCodexCapabilities } from './capability-discovery';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec, ParsedTranscript } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
@@ -208,6 +209,13 @@ export class CodexAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return CodexSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async parseTranscript(agentSessionId: string, _cwd: string): Promise<ParsedTranscript> {
+    const filePath = locateCodexTranscriptFile(agentSessionId);
+    if (!filePath) return { entries: [], sourcePath: null };
+    const entries = await parseCodexTranscript(filePath);
+    return { entries, sourcePath: filePath };
   }
 
   async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {

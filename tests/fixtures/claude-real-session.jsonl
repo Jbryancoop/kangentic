@@ -1,0 +1,16 @@
+{"type":"permission-mode","permissionMode":"default","sessionId":"s1"}
+{"type":"file-history-snapshot","messageId":"m1","snapshot":{}}
+{"type":"user","uuid":"u-prompt","timestamp":"2026-06-12T10:00:00Z","message":{"role":"user","content":"Add a hello function to greet.ts"}}
+{"type":"user","uuid":"u-meta","isMeta":true,"timestamp":"2026-06-12T10:00:01Z","message":{"role":"user","content":"Base directory for this skill: C:\\Users\\dev\\skills\\demo"}}
+{"type":"user","uuid":"u-mixed","timestamp":"2026-06-12T10:00:02Z","message":{"role":"user","content":"Please also add a test.\n<system-reminder>Remember to follow the project style guide.</system-reminder>"}}
+{"type":"user","uuid":"u-reminder-only","timestamp":"2026-06-12T10:00:03Z","message":{"role":"user","content":"<system-reminder>This is background context, not a user instruction.</system-reminder>"}}
+{"type":"assistant","uuid":"a-text","timestamp":"2026-06-12T10:00:04Z","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"I'll add the function now."}]}}
+{"type":"assistant","uuid":"a-tool","timestamp":"2026-06-12T10:00:05Z","message":{"model":"claude-opus-4-8","content":[{"type":"tool_use","id":"toolu_01","name":"Write","input":{"file_path":"greet.ts","content":"export const hello = () => 'hi';"}}]}}
+{"type":"user","uuid":"u-result","timestamp":"2026-06-12T10:00:06Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"File created successfully."}]}}
+{"type":"assistant","uuid":"a-think","timestamp":"2026-06-12T10:00:07Z","message":{"model":"claude-opus-4-8","content":[{"type":"thinking","thinking":"","signature":"ErcCCmIIDB..."}]}}
+{"type":"user","uuid":"u-exit","timestamp":"2026-06-12T10:00:08Z","message":{"role":"user","content":"<command-name>/exit</command-name>\n            <command-message>exit</command-message>\n            <command-args></command-args>"}}
+{"type":"user","uuid":"u-stdout","timestamp":"2026-06-12T10:00:09Z","message":{"role":"user","content":"<local-command-stdout>Goodbye!</local-command-stdout>"}}
+{"type":"user","uuid":"u-stdout-empty","timestamp":"2026-06-12T10:00:10Z","message":{"role":"user","content":"<local-command-stdout></local-command-stdout>"}}
+{"type":"system","subtype":"compact_boundary","content":"Conversation compacted","isMeta":false,"timestamp":"2026-06-12T10:00:11Z","uuid":"sys-compact","compactMetadata":{"trigger":"auto","preTokens":165432}}
+{"type":"user","uuid":"u-summary","isCompactSummary":true,"timestamp":"2026-06-12T10:00:12Z","message":{"role":"user","content":"Summary: the user asked to add a hello function and a test."}}
+{"type":"assistant","uuid":"a-final","timestamp":"2026-06-12T10:00:13Z","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"Done. The function and test are in place."}]}}

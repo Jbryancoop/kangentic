@@ -1,0 +1,13 @@
+{"timestamp":"2026-06-12T10:00:00.000Z","type":"session_meta","payload":{"id":"019df02a-e744-7de2-8f30-63d9ae3ab36a","cwd":"C:/Users/dev/project","cli_version":"0.118.0"}}
+{"timestamp":"2026-06-12T10:00:00.100Z","type":"turn_context","payload":{"model":"gpt-5-codex"}}
+{"timestamp":"2026-06-12T10:00:00.200Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>\nFilesystem sandboxing is read-only.\n</permissions instructions>"}]}}
+{"timestamp":"2026-06-12T10:00:00.300Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>C:/Users/dev/project</cwd>\n  <shell>powershell</shell>\n</environment_context>"}]}}
+{"timestamp":"2026-06-12T10:00:00.400Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"List the files in this directory."}]}}
+{"timestamp":"2026-06-12T10:00:00.450Z","type":"event_msg","payload":{"type":"user_message","message":"List the files in this directory."}}
+{"timestamp":"2026-06-12T10:00:00.500Z","type":"response_item","payload":{"type":"reasoning","summary":[],"content":null,"encrypted_content":"gAAAAABp93oJlxwSTUfzYgMT"}}
+{"timestamp":"2026-06-12T10:00:00.600Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"I should run a directory listing."}]}}
+{"timestamp":"2026-06-12T10:00:00.700Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Listing the files now."}],"phase":"final_answer"}}
+{"timestamp":"2026-06-12T10:00:00.800Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"]}","call_id":"call_abc123"}}
+{"timestamp":"2026-06-12T10:00:00.900Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_abc123","output":"file1.txt\nfile2.txt"}}
+{"timestamp":"2026-06-12T10:00:01.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Found two files."}}
+{"timestamp":"2026-06-12T10:00:01.100Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Found two files."}],"phase":"final_answer"}}

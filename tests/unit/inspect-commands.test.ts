@@ -2,29 +2,40 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { handleGetTranscript, handleQueryDb } from '../../src/main/agent/commands/inspect-commands';
 import type { CommandContext } from '../../src/main/agent/commands/types';
 import type { TranscriptEntry } from '../../src/shared/types';
+import type { AgentAdapter, ParsedTranscript } from '../../src/main/agent/agent-adapter';
 
-// Vitest hoists vi.mock() calls automatically, so these mock factories run
-// before the inspect-commands module is evaluated and intercept the parsers
-// it would otherwise import directly.
+// Vitest hoists vi.mock() calls automatically, so these factories run before
+// the inspect-commands module is evaluated. We mock the agent registry (the
+// single dispatch point) rather than individual parser modules - the handler
+// routes structured transcripts through `agentRegistry.getBySessionType().
+// parseTranscript`, with no agent-name branching of its own.
 
-vi.mock('../../src/main/agent/adapters/claude/transcript-parser', () => ({
-  parseClaudeTranscript: vi.fn(),
-  locateClaudeTranscriptFile: vi.fn().mockReturnValue('/fake/.claude/sessions/claude-session.jsonl'),
-}));
-
-vi.mock('../../src/main/agent/adapters/droid/transcript-parser', () => ({
-  parseDroidTranscript: vi.fn(),
-  droidTranscriptFilePath: vi.fn().mockReturnValue('/fake/.factory/sessions/cwd-slug/droid-session.jsonl'),
+vi.mock('../../src/main/agent/agent-registry', () => ({
+  agentRegistry: { getBySessionType: vi.fn() },
 }));
 
 vi.mock('../../src/shared/transcript-format', () => ({
   transcriptToMarkdown: vi.fn().mockReturnValue('## User\n\nhello\n\n## Assistant\n\nworld'),
 }));
 
-// Import the mocked functions so tests can configure return values.
-import { parseClaudeTranscript, locateClaudeTranscriptFile } from '../../src/main/agent/adapters/claude/transcript-parser';
-import { parseDroidTranscript, droidTranscriptFilePath } from '../../src/main/agent/adapters/droid/transcript-parser';
+import { agentRegistry } from '../../src/main/agent/agent-registry';
 import { transcriptToMarkdown } from '../../src/shared/transcript-format';
+
+/**
+ * Build a stub adapter for a session_type. Pass `parseTranscript` to simulate
+ * an agent with a structured parser; omit it to simulate an agent that only
+ * supports the raw format (Aider, Warp, ...).
+ */
+function stubAdapter(options: {
+  displayName: string;
+  parseTranscript?: (agentSessionId: string, cwd: string) => Promise<ParsedTranscript>;
+}): AgentAdapter {
+  const adapter: Partial<AgentAdapter> = { displayName: options.displayName };
+  if (options.parseTranscript) {
+    adapter.parseTranscript = vi.fn(options.parseTranscript);
+  }
+  return adapter as AgentAdapter;
+}
 
 // --- Helpers ---
 
@@ -146,10 +157,7 @@ function createMockContext(db: ReturnType<typeof createMockDb>): CommandContext 
 
 describe('handleGetTranscript', () => {
   beforeEach(() => {
-    vi.mocked(parseClaudeTranscript).mockReset();
-    vi.mocked(parseDroidTranscript).mockReset();
-    vi.mocked(locateClaudeTranscriptFile).mockReturnValue('/fake/.claude/sessions/claude-session.jsonl');
-    vi.mocked(droidTranscriptFilePath).mockReturnValue('/fake/.factory/sessions/cwd-slug/droid-session.jsonl');
+    vi.mocked(agentRegistry.getBySessionType).mockReset();
     vi.mocked(transcriptToMarkdown).mockReturnValue('## User\n\nhello\n\n## Assistant\n\nworld');
   });
 
@@ -164,6 +172,7 @@ describe('handleGetTranscript', () => {
   });
 
   it('returns raw transcript by sessionId when format="raw"', async () => {
+    vi.mocked(agentRegistry.getBySessionType).mockReturnValue(stubAdapter({ displayName: 'Claude Code' }));
     const db = createMockDb({
       sessions: [{ id: 'session-abc', task_id: 'task-1', session_type: 'claude_agent' }],
       transcripts: [{
@@ -185,6 +194,7 @@ describe('handleGetTranscript', () => {
   });
 
   it('returns message when no raw transcript exists', async () => {
+    vi.mocked(agentRegistry.getBySessionType).mockReturnValue(stubAdapter({ displayName: 'Claude Code' }));
     const db = createMockDb({
       tasks: [{ id: 'task-1', display_id: 1, session_id: 'session-1' }],
       sessions: [{ id: 'session-1', task_id: 'task-1', session_type: 'claude_agent' }],
@@ -220,7 +230,53 @@ describe('handleGetTranscript', () => {
 
   // --- format='structured' dispatch tests ---
 
-  it('early-exits with "no agent_session_id" message before parser dispatch when agent_session_id is null', async () => {
+  it('reports structured is unsupported when the adapter has no parseTranscript', async () => {
+    // Aider-style adapter: present in the registry but no structured parser.
+    vi.mocked(agentRegistry.getBySessionType).mockReturnValue(stubAdapter({ displayName: 'Aider' }));
+    const db = createMockDb({
+      sessions: [{
+        id: 'session-aider',
+        task_id: 'task-1',
+        session_type: 'aider_agent',
+        agent_session_id: 'aider-uuid',
+        cwd: 'C:/Users/dev/project',
+      }],
+    });
+    const context = createMockContext(db);
+
+    const result = await handleGetTranscript({ sessionId: 'session-aider', format: 'structured' }, context);
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('not supported');
+    expect(result.message).toContain('Aider');
+    expect(result.message).toContain('format="raw"');
+  });
+
+  it('reports structured is unsupported when no adapter is registered for the session_type', async () => {
+    vi.mocked(agentRegistry.getBySessionType).mockReturnValue(undefined);
+    const db = createMockDb({
+      sessions: [{
+        id: 'session-unknown',
+        task_id: 'task-1',
+        session_type: 'mystery_agent',
+        agent_session_id: 'x',
+        cwd: 'C:/Users/dev/project',
+      }],
+    });
+    const context = createMockContext(db);
+
+    const result = await handleGetTranscript({ sessionId: 'session-unknown', format: 'structured' }, context);
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('not supported');
+    expect(result.message).toContain('mystery_agent');
+  });
+
+  it('reports native history not yet written when the parser exists but agent_session_id is null', async () => {
+    const parseTranscript = vi.fn();
+    vi.mocked(agentRegistry.getBySessionType).mockReturnValue(
+      stubAdapter({ displayName: 'Droid', parseTranscript }),
+    );
     const db = createMockDb({
       sessions: [{ id: 'session-abc', task_id: 'task-1', session_type: 'droid_agent', agent_session_id: null }],
     });
@@ -231,31 +287,21 @@ describe('handleGetTranscript', () => {
     expect(result.success).toBe(true);
     expect(result.message).toContain('no agent_session_id');
     // Parser must NOT have been called - the guard fires before dispatch.
-    expect(parseDroidTranscript).not.toHaveBeenCalled();
-    expect(parseClaudeTranscript).not.toHaveBeenCalled();
+    expect(parseTranscript).not.toHaveBeenCalled();
   });
 
-  it('early-exits with "no agent_session_id" message when agent_session_id is absent from the record', async () => {
-    // A session row with no agent_session_id field at all (e.g. sessions
-    // spawned before the column was populated). Same guard, different shape.
-    const db = createMockDb({
-      sessions: [{ id: 'session-abc', task_id: 'task-1', session_type: 'claude_agent' }],
-    });
-    const context = createMockContext(db);
-
-    const result = await handleGetTranscript({ sessionId: 'session-abc', format: 'structured' }, context);
-
-    expect(result.success).toBe(true);
-    expect(result.message).toContain('no agent_session_id');
-    expect(parseClaudeTranscript).not.toHaveBeenCalled();
-  });
-
-  it('dispatches to droid_agent parser and returns structured markdown', async () => {
+  it('dispatches through the adapter capability and returns structured markdown', async () => {
     const fakeEntries: TranscriptEntry[] = [
       { kind: 'user', uuid: 'u1', ts: 0, text: 'hello' },
       { kind: 'assistant', uuid: 'a1', ts: 1, blocks: [{ type: 'text', text: 'world' }] },
     ];
-    vi.mocked(parseDroidTranscript).mockResolvedValue(fakeEntries);
+    const parseTranscript = vi.fn().mockResolvedValue({
+      entries: fakeEntries,
+      sourcePath: '/fake/.factory/sessions/cwd-slug/droid-session.jsonl',
+    });
+    vi.mocked(agentRegistry.getBySessionType).mockReturnValue(
+      stubAdapter({ displayName: 'Droid', parseTranscript }),
+    );
 
     const db = createMockDb({
       sessions: [{
@@ -271,74 +317,25 @@ describe('handleGetTranscript', () => {
     const result = await handleGetTranscript({ sessionId: 'session-droid', format: 'structured' }, context);
 
     expect(result.success).toBe(true);
-    // Header line must identify the session and format.
     expect(result.message).toContain('Format: structured');
     expect(result.message).toContain('Entries: 2');
-    // Markdown body from the mock transcriptToMarkdown.
     expect(result.message).toContain('## User');
-    // Droid parser was called; Claude parser was not.
-    expect(parseDroidTranscript).toHaveBeenCalledOnce();
-    expect(droidTranscriptFilePath).toHaveBeenCalledWith('droid-uuid-1234', 'C:/Users/dev/project');
-    expect(parseClaudeTranscript).not.toHaveBeenCalled();
-    // Data payload carries the expected metadata.
+    // The capability is invoked with the agent session id and cwd.
+    expect(parseTranscript).toHaveBeenCalledWith('droid-uuid-1234', 'C:/Users/dev/project');
+    // Data payload carries the located source path as filePath.
     expect(result.data).toMatchObject({
       sessionId: 'session-droid',
       format: 'structured',
       entryCount: 2,
+      filePath: '/fake/.factory/sessions/cwd-slug/droid-session.jsonl',
     });
   });
 
-  it('dispatches to claude_agent parser and returns structured markdown', async () => {
-    const fakeEntries: TranscriptEntry[] = [
-      { kind: 'user', uuid: 'u1', ts: 0, text: 'run ls' },
-    ];
-    vi.mocked(parseClaudeTranscript).mockResolvedValue(fakeEntries);
-
-    const db = createMockDb({
-      sessions: [{
-        id: 'session-claude',
-        task_id: 'task-2',
-        session_type: 'claude_agent',
-        agent_session_id: 'claude-uuid-abcd',
-        cwd: 'C:/Users/dev/project',
-      }],
-    });
-    const context = createMockContext(db);
-
-    const result = await handleGetTranscript({ sessionId: 'session-claude', format: 'structured' }, context);
-
-    expect(result.success).toBe(true);
-    expect(result.message).toContain('Format: structured');
-    expect(result.message).toContain('Entries: 1');
-    expect(parseClaudeTranscript).toHaveBeenCalledOnce();
-    expect(locateClaudeTranscriptFile).toHaveBeenCalledWith('claude-uuid-abcd', 'C:/Users/dev/project');
-    expect(parseDroidTranscript).not.toHaveBeenCalled();
-  });
-
-  it('returns "not yet supported" for an unsupported session_type with the type name in the message', async () => {
-    const db = createMockDb({
-      sessions: [{
-        id: 'session-codex',
-        task_id: 'task-3',
-        session_type: 'codex_agent',
-        agent_session_id: 'codex-uuid-9999',
-        cwd: 'C:/Users/dev/project',
-      }],
-    });
-    const context = createMockContext(db);
-
-    const result = await handleGetTranscript({ sessionId: 'session-codex', format: 'structured' }, context);
-
-    expect(result.success).toBe(true);
-    expect(result.message).toContain('codex_agent');
-    expect(result.message).toContain('not yet supported');
-    // Neither parser should have been called.
-    expect(parseDroidTranscript).not.toHaveBeenCalled();
-    expect(parseClaudeTranscript).not.toHaveBeenCalled();
-  });
-
-  it('returns "no transcript entries" when the parser returns an empty array', async () => {
-    vi.mocked(parseDroidTranscript).mockResolvedValue([]);
+  it('reports native history not found when the parser returns no entries', async () => {
+    const parseTranscript = vi.fn().mockResolvedValue({ entries: [], sourcePath: '/fake/path.jsonl' });
+    vi.mocked(agentRegistry.getBySessionType).mockReturnValue(
+      stubAdapter({ displayName: 'Droid', parseTranscript }),
+    );
 
     const db = createMockDb({
       sessions: [{
@@ -354,14 +351,18 @@ describe('handleGetTranscript', () => {
     const result = await handleGetTranscript({ sessionId: 'session-empty', format: 'structured' }, context);
 
     expect(result.success).toBe(true);
-    expect(result.message).toContain('No transcript entries found');
+    expect(result.message).toContain('No structured transcript found');
+    expect(result.message).toContain('/fake/path.jsonl');
   });
 
   it('defaults to format="structured" when format param is omitted', async () => {
-    const fakeEntries: TranscriptEntry[] = [
-      { kind: 'user', uuid: 'u1', ts: 0, text: 'hi' },
-    ];
-    vi.mocked(parseDroidTranscript).mockResolvedValue(fakeEntries);
+    const parseTranscript = vi.fn().mockResolvedValue({
+      entries: [{ kind: 'user', uuid: 'u1', ts: 0, text: 'hi' }] satisfies TranscriptEntry[],
+      sourcePath: '/fake/path.jsonl',
+    });
+    vi.mocked(agentRegistry.getBySessionType).mockReturnValue(
+      stubAdapter({ displayName: 'Droid', parseTranscript }),
+    );
 
     const db = createMockDb({
       sessions: [{
@@ -379,7 +380,7 @@ describe('handleGetTranscript', () => {
 
     expect(result.success).toBe(true);
     expect(result.message).toContain('Format: structured');
-    expect(parseDroidTranscript).toHaveBeenCalledOnce();
+    expect(parseTranscript).toHaveBeenCalledOnce();
   });
 });
 

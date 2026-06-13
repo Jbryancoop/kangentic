@@ -9,7 +9,19 @@ import type {
   SubmissionContextType,
   SubmissionVerifier,
   AgentCapabilities,
+  TranscriptEntry,
 } from '../../shared/types';
+
+/**
+ * Result of `AgentAdapter.parseTranscript`. `entries` is the parsed
+ * conversation (empty when no history was found or it could not be parsed);
+ * `sourcePath` is the located native file or database, or null, for the
+ * response header.
+ */
+export interface ParsedTranscript {
+  entries: TranscriptEntry[];
+  sourcePath: string | null;
+}
 
 /**
  * Description of a column-level settings change (model and/or effort)
@@ -174,6 +186,28 @@ export interface AgentAdapter {
    * cannot be found.
    */
   locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null>;
+
+  /**
+   * Optional: parse the agent's native session history into agent-agnostic
+   * `TranscriptEntry[]` for the MCP `get_transcript` structured format. The
+   * adapter owns ALL format and location knowledge (which JSONL/JSON/SQLite
+   * file or database, how its blocks map onto user/assistant/tool_result/
+   * system entries), so `handleGetTranscript` never branches on agent name.
+   *
+   * Must NOT throw on a missing, partial, or corrupt history: return
+   * `{ entries: [], sourcePath }` so the caller can report "no structured
+   * transcript yet" cleanly. `sourcePath` is informational (the located file
+   * or database, or null when nothing was found) and feeds the response
+   * header.
+   *
+   * A single parse method (rather than a locate+parse pair) is used because
+   * some agents (OpenCode) read from a shared SQLite database keyed by
+   * session id, not a per-session file. Adapters whose native history cannot
+   * be parsed into a conversation (Aider's cumulative markdown, agents whose
+   * history location is unknown) omit this; `get_transcript` then reports that
+   * the structured format is unsupported and points at `format: "raw"`.
+   */
+  parseTranscript?(agentSessionId: string, cwd: string): Promise<ParsedTranscript>;
 
   /**
    * Optional: return a callback that confirms a submission was processed.

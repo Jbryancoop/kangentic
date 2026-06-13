@@ -2,12 +2,13 @@ import { QwenDetector } from './detector';
 import { QwenCommandBuilder } from './command-builder';
 import { removeHooks as removeQwenHooks } from './hook-manager';
 import { QwenSessionHistoryParser } from './session-history-parser';
+import { parseQwenTranscript, locateQwenTranscriptFile } from './transcript-parser';
 import { QwenStatusParser } from './status-parser';
 import { discoverQwenCapabilities } from './capability-discovery';
 import { ensureWorktreeTrust } from './trust-manager';
 import { migrateQwenProjectData } from './project-relocation';
 import { runCliPrintSummarize, buildSummarizePrompt } from '../../shared/auto-name';
-import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec } from '../../agent-adapter';
+import type { AgentAdapter, AgentInfo, SpawnCommandOptions, SettingsChangeSpec, ParsedTranscript } from '../../agent-adapter';
 import type { AgentPermissionEntry, PermissionMode, AdapterRuntimeStrategy, SubmissionContextType, SubmissionVerifier, AgentCapabilities } from '../../../../shared/types';
 import { ActivityDetection } from '../../../../shared/types';
 
@@ -216,6 +217,12 @@ export class QwenAdapter implements AgentAdapter {
 
   async locateSessionHistoryFile(agentSessionId: string, cwd: string): Promise<string | null> {
     return QwenSessionHistoryParser.locate({ agentSessionId, cwd });
+  }
+
+  async parseTranscript(agentSessionId: string, cwd: string): Promise<ParsedTranscript> {
+    const filePath = locateQwenTranscriptFile(agentSessionId, cwd);
+    const entries = await parseQwenTranscript(filePath);
+    return { entries, sourcePath: filePath };
   }
 
   async discoverCapabilities(cliPath: string): Promise<AgentCapabilities> {

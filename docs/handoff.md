@@ -91,7 +91,7 @@ Handoff records are stored in the `handoffs` table for audit trail:
 
 ## MCP Access
 
-Claude Code sessions can access handoff metadata via the `kangentic_get_handoff_context` MCP tool, which returns the session history file path and handoff metadata. The `kangentic_get_transcript` tool provides structured access to Claude session transcripts. See [MCP Server](mcp-server.md) for details.
+Claude Code sessions can access handoff metadata via the `kangentic_get_handoff_context` MCP tool, which returns the session history file path and handoff metadata. The `kangentic_get_transcript` tool provides structured access to session transcripts for Claude, Droid, Codex, Gemini, Qwen, Kimi, and OpenCode sessions (other agents fall back to raw scrollback). See [MCP Server](mcp-server.md) for details.
 
 ## Disabling Session History Passthrough
 

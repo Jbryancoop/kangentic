@@ -2039,7 +2039,11 @@ export interface SessionHistoryParseResult {
 export type TranscriptEntry =
   | { kind: 'user'; uuid: string; ts: number; text: string }
   | { kind: 'assistant'; uuid: string; ts: number; model?: string; blocks: TranscriptBlock[] }
-  | { kind: 'tool_result'; uuid: string; ts: number; toolUseId: string; content: string; isError?: boolean };
+  | { kind: 'tool_result'; uuid: string; ts: number; toolUseId: string; content: string; isError?: boolean }
+  // Non-conversation events surfaced explicitly instead of being rendered as
+  // misleading "## User" turns: conversation-compaction boundaries/summaries,
+  // and slash-command invocations and their local stdout.
+  | { kind: 'system'; uuid: string; ts: number; subtype: 'compaction' | 'command' | 'command_output'; text: string };
 
 export type TranscriptBlock =
   | { type: 'text'; text: string }

@@ -1,0 +1,8 @@
+{"sessionId":"8336f267-33dc-4cd7-8212-b807cb166f76","projectHash":"69d89678a773f06a24c7a68033f3c103b6c5e8541f58451b8427c58199a8180d","startTime":"2026-06-10T18:32:07.204Z","lastUpdated":"2026-06-10T18:32:07.204Z","kind":"main"}
+{"$set":{"messages":[{"id":"seed-context","timestamp":"2026-06-10T18:32:07.206Z","type":"user","content":[{"text":"<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\n</session_context>"}]}]}}
+{"id":"u1","timestamp":"2026-06-10T18:32:12.486Z","type":"user","content":[{"text":"List the files in this directory."}]}
+{"$set":{"lastUpdated":"2026-06-10T18:32:12.488Z"}}
+{"id":"g1","timestamp":"2026-06-10T18:32:16.294Z","type":"gemini","content":"","thoughts":[{"subject":"Planning the listing","description":"I will enumerate the workspace files."}],"tokens":{"input":1200,"output":40,"cached":0,"total":1240},"model":"gemini-3-pro-preview"}
+{"$set":{"lastUpdated":"2026-06-10T18:32:16.295Z"}}
+{"id":"g1","timestamp":"2026-06-10T18:32:19.818Z","type":"gemini","content":"Here are the files.","thoughts":[{"subject":"Planning the listing","description":"I will enumerate the workspace files."}],"tokens":{"input":1240,"output":80,"cached":0,"total":1320},"model":"gemini-3-pro-preview","toolCalls":[{"id":"call_g1","name":"list_dir","args":{"path":"."},"result":[{"functionResponse":{"id":"call_g1","name":"list_dir","response":{"output":"file1.txt\nfile2.txt"}}}],"status":"success"}]}
+{"$set":{"lastUpdated":"2026-06-10T18:32:19.831Z"}}
