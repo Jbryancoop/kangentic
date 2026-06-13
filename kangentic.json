@@ -15,8 +15,8 @@
       "color": "#8b5cf6",
       "autoSpawn": true,
       "permissionMode": "plan",
-      "modelOverride": "claude-fable-5",
-      "effortOverride": "high",
+      "modelOverride": "claude-opus-4-8",
+      "effortOverride": "xhigh",
       "planExitTarget": "Executing"
     },
     {
@@ -26,7 +26,7 @@
       "autoSpawn": true,
       "permissionMode": "auto",
       "modelOverride": "claude-opus-4-8",
-      "effortOverride": "high"
+      "effortOverride": "xhigh"
     },
     {
       "id": "623a36ef-9045-4437-b9c8-f67312dc5437",
@@ -37,7 +37,7 @@
       "permissionMode": "auto",
       "autoCommand": "/code-review {{baseBranch}}",
       "modelOverride": "claude-opus-4-8",
-      "effortOverride": "high",
+      "effortOverride": "xhigh",
       "sessionTarget": "isolated",
       "sessionSpawnStrategy": "always_spawn_new"
     },
@@ -50,7 +50,7 @@
       "permissionMode": "auto",
       "autoCommand": "/test",
       "modelOverride": "claude-opus-4-8",
-      "effortOverride": "high"
+      "effortOverride": "xhigh"
     },
     {
       "id": "8adfe5cc-955c-4c4f-83a2-461e2a9d3c14",
@@ -61,7 +61,7 @@
       "permissionMode": "auto",
       "autoCommand": "/merge-back",
       "modelOverride": "claude-opus-4-8",
-      "effortOverride": "high"
+      "effortOverride": "xhigh"
     },
     {
       "id": "64f9ef9a-c05d-44f8-a846-329a8f15e69f",
@@ -103,15 +103,6 @@
       "actions": [
         "Kill Session"
       ]
-    }
-  ],
-  "shortcuts": [
-    {
-      "label": "TortoiseGit Commit",
-      "icon": "git-commit-horizontal",
-      "command": "TortoiseGitProc /command:commit /path:\"{{cwd}}\"",
-      "display": "both",
-      "id": "460b4921-4c86-45c3-be7a-b9397e98be02"
     }
   ],
   "_modifiedBy": "7ef4fd0cb484"
