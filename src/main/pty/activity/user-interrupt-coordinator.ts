@@ -79,9 +79,18 @@ export class UserInterruptCoordinator {
     const state = this.engine.getState(sessionId);
     if (!state) return;
     if (state.activity !== 'thinking') return;
-    // Hooks may have already recovered: pendingTools=0 and
-    // turnActive=false means the engine is settling on its own.
-    const stillHot = state.pendingToolCount > 0 || state.turnActive;
+    // Hooks may have already recovered: pendingTools=0 and a non-stuck
+    // turnActive means the engine is settling on its own.
+    //
+    // `turnActive` counts as "stuck" only when nothing self-recovering is
+    // holding the turn. A live subagent (subagentDepth > 0) now KEEPS the
+    // parent's turnActive set - its inner Stop no longer clears the parent turn
+    // (see ActivityEngine.processEvent's turn-ending gate) - but it WILL
+    // self-recover via its own SubagentStop, so synthesizing an Interrupted
+    // here would force the engine to idle while the subagent is still running:
+    // a false idle. Suppress that case and let the subagent's hooks settle it.
+    const stillHot =
+      state.pendingToolCount > 0 || (state.turnActive && state.subagentDepth === 0);
     if (!stillHot) return;
     // Synthesize an Interrupted event so the engine's normal
     // bypass path runs. This clears all counters and emits idle

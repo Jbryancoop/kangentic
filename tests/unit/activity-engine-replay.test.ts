@@ -682,6 +682,57 @@ describe('ActivityEngine replay tests', () => {
     });
   });
 
+  // ───────────────────────────────────────────────────────────────────
+  // A parent session shows IDLE while a subagent is still running. Real
+  // capture (session bab8e0a8, a doc-auditor sync-docs audit): one
+  // `subagent_start doc-auditor`, then the subagent's own inner Stop arrives
+  // as `idle` while it is still live, then a spurious empty-detail
+  // `subagent_stop` drops the counter to 0 ~50s before the real, named
+  // terminal `subagent_stop doc-auditor`. Pre-fix, the `idle` cleared the
+  // PARENT's turnActive AND the empty stop zeroed subagentDepth, so the board
+  // went idle for the whole tail of the subagent's run. The fix gates the
+  // Idle turn-end on subagentDepth === 0, so a subagent's inner Stop can no
+  // longer end the parent turn; even though the empty stop still drains the
+  // raw counter, turnActive (held by the gate) keeps the predicate thinking.
+  // No watchdog is involved - the engine inputs are simply held correct.
+  // ───────────────────────────────────────────────────────────────────
+  describe('session-017-false-idle-during-live-subagent', () => {
+    const FIXTURE = 'session-017-false-idle-during-live-subagent.jsonl';
+
+    it('stays thinking through the subagent run (no false idle from its inner Stop)', () => {
+      const result = replay(loadFixture(FIXTURE));
+      // The parent turn is still active (about to consume the subagent
+      // result), so the board must stay thinking. Pre-fix this was 'idle'.
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.turnActive).toBe(true);
+      // The empty/named stops drained the raw counter - harmless, because
+      // turnActive (held by the gate) keeps the predicate thinking.
+      expect(result.finalState.subagentDepth).toBe(0);
+      // No thinking->idle transition ever committed: the subagent's inner Stop
+      // did not end the parent turn (the leading 'idle' in `transitions` is the
+      // engine's initial state before the first prompt, not a false idle).
+      // Pre-fix this was a non-null `event:subagent_stop` trigger.
+      expect(result.lastThinkingToIdleTrigger).toBeNull();
+      // The inputs are correct, not force-recovered by a watchdog.
+      expect(result.staleThinkingCompensations).toBe(0);
+      expect(result.forceThinkingCompensations).toBe(0);
+    });
+
+    it('settles to idle once the PARENT fires its own Stop at depth 0', () => {
+      // Append the parent's real Stop (an Idle arriving after the subagent has
+      // fully returned, depth 0). It is NOT a subagent Stop, so it ends the
+      // turn - guarding the inverse: the gate must not leave the turn stuck.
+      const events = [
+        ...loadFixture(FIXTURE),
+        { ts: 1781459958000, type: EventType.Idle } as SessionEvent,
+      ];
+      const result = replay(events);
+      expect(result.finalActivity).toBe('idle');
+      expect(result.finalState.turnActive).toBe(false);
+      expect(result.lastThinkingToIdleTrigger).toMatch(/^event:idle/);
+    });
+  });
+
   describe('cross-fixture invariants', () => {
     it('all fixtures produce a deterministic outcome (no flakiness)', () => {
       const fixtures = [
@@ -698,6 +749,7 @@ describe('ActivityEngine replay tests', () => {
         'session-013-task-notification-missed-end.jsonl',
         'session-013-task-notification-missed-end-corrected.jsonl',
         'session-014-named-shell-output-liveness.jsonl',
+        'session-017-false-idle-during-live-subagent.jsonl',
       ];
       for (const name of fixtures) {
         const events = loadFixture(name);

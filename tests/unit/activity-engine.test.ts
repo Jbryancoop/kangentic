@@ -269,20 +269,29 @@ describe('ActivityEngine', () => {
       expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
     });
 
-    it('subagent keeps thinking until SubagentStop drops depth', () => {
+    it('a subagent Idle does not end the parent turn; the parent Stop at depth 0 does', () => {
       engine.processEvent(SESSION_ID, event(EventType.Prompt));
       engine.processEvent(SESSION_ID, event(EventType.SubagentStart));
       transitions.length = 0;
 
+      // A subagent's inner-loop Stop arrives as Idle while the subagent is live
+      // (subagentDepth > 0). It is the SUBAGENT's stop, not the parent's, so it
+      // must NOT end the parent turn: the session stays thinking.
       engine.processEvent(SESSION_ID, event(EventType.Idle));
       vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
-      // Subagent holds thinking despite Stop + window
       expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
       const reason = asSubagent(engine.getActivityReason(SESSION_ID)!);
       expect(reason.depth).toBe(1);
 
+      // The subagent returns (depth -> 0). The parent turn is still active
+      // (turnActive was never cleared by the subagent's Idle), so the session
+      // stays thinking - the parent is about to consume the subagent result.
       engine.processEvent(SESSION_ID, event(EventType.SubagentStop));
-      // SubagentStop is from a counter clearing, also goes through the window
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+      // The parent fires its OWN Stop (Idle at depth 0): now the turn ends.
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
       vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
       expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
     });
@@ -332,12 +341,13 @@ describe('ActivityEngine', () => {
       expect(engine.getState(SESSION_ID)!.currentTool).toBe('Edit');
     });
 
-    it('Stop with BOTH subagent and bg shell active waits for both (composite)', () => {
+    it('Stop with BOTH subagent and bg shell active holds until both drain AND the parent Stop', () => {
       engine.processEvent(SESSION_ID, event(EventType.Prompt));
       engine.processEvent(SESSION_ID, event(EventType.SubagentStart));
       engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart));
       transitions.length = 0;
 
+      // The subagent's inner Idle does not end the parent turn (depth > 0).
       engine.processEvent(SESSION_ID, event(EventType.Idle));
       vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
       expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
@@ -349,12 +359,18 @@ describe('ActivityEngine', () => {
 
       engine.processEvent(SESSION_ID, event(EventType.BackgroundShellEnd));
       vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      // Subagent and bg shell both drained, but the parent turn is still active.
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+      // The parent's own Stop (Idle at depth 0, no holders) ends the turn.
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
       expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
       const idles = transitions.filter((t) => t.activity === 'idle');
       expect(idles).toHaveLength(1);
     });
 
-    it('reverse composite order works (bg shell ends first, then subagent)', () => {
+    it('reverse composite order (bg shell ends first, then subagent), then the parent Stop', () => {
       engine.processEvent(SESSION_ID, event(EventType.Prompt));
       engine.processEvent(SESSION_ID, event(EventType.SubagentStart));
       engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart));
@@ -367,9 +383,78 @@ describe('ActivityEngine', () => {
 
       engine.processEvent(SESSION_ID, event(EventType.SubagentStop));
       vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      // Both holders drained, but the parent turn is still active.
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+      // The parent's own Stop (Idle at depth 0) ends the turn.
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
       expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
       const idles = transitions.filter((t) => t.activity === 'idle');
       expect(idles).toHaveLength(1);
+    });
+
+    it('permission idle at subagentDepth > 0 does NOT clear turnActive (new depth gate)', () => {
+      // Regression guard for the TURN_ENDING_EVENTS gate introduced in the
+      // false-idle-during-live-subagent fix. Before the fix, any Idle event
+      // (including idle:permission) cleared turnActive unconditionally. The fix
+      // gates the clear on subagentDepth === 0 (or EventType.Interrupted).
+      //
+      // Sequence: parent Prompt -> SubagentStart -> permission Idle at depth 1.
+      // The permission flag must be set (so activity = 'permission'), but
+      // turnActive must remain true - the parent turn is NOT over, it is blocked
+      // by the live subagent that triggered the permission prompt.
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStart));
+      transitions.length = 0;
+
+      engine.processEvent(SESSION_ID, event(EventType.Idle, { detail: IdleReason.Permission }));
+
+      // Permission is immediate (no stability window).
+      expect(transitions).toHaveLength(1);
+      expect(transitions[0].activity).toBe('permission');
+
+      const state = engine.getState(SESSION_ID)!;
+      // The permission flag is set - the UI must display the permission prompt.
+      expect(state.permissionPending).toBe(true);
+      // The depth gate must have preserved turnActive - the parent turn is not done.
+      expect(state.turnActive).toBe(true);
+    });
+
+    it('Interrupted at subagentDepth > 0 clears turnActive (depth gate bypass)', () => {
+      // The Interrupted arm in TURN_ENDING_EVENTS is the ONLY path that clears
+      // turnActive when subagentDepth > 0. applyInterruptedBypass (which fires
+      // immediately after) resets counters but does NOT touch turnActive, so
+      // without the `event.type === EventType.Interrupted` branch, an interrupt
+      // inside a subagent context would leave turnActive stuck true permanently.
+      //
+      // Sequence: Prompt -> SubagentStart -> plain Idle (held by gate, depth > 0)
+      // -> Interrupted. After the plain Idle the turn must still be active;
+      // after the Interrupted both turnActive and subagentDepth must be zero.
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStart));
+
+      // Plain subagent Idle - gate holds turnActive.
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 10);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.turnActive).toBe(true);
+      // Reason is 'subagent' while the subagent counter still holds.
+      expect(engine.getActivityReason(SESSION_ID)!.kind).toBe('subagent');
+      transitions.length = 0;
+
+      // User presses Ctrl+C - Interrupted fires while subagentDepth === 1.
+      engine.processEvent(SESSION_ID, event(EventType.Interrupted));
+
+      // Interrupted bypasses the stability window.
+      expect(transitions).toHaveLength(1);
+      expect(transitions[0].activity).toBe('idle');
+
+      const state = engine.getState(SESSION_ID)!;
+      // The Interrupted || branch must have cleared turnActive.
+      expect(state.turnActive).toBe(false);
+      // applyInterruptedBypass zeroes the subagent counter.
+      expect(state.subagentDepth).toBe(0);
     });
   });
 

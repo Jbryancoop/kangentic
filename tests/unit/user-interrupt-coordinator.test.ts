@@ -244,29 +244,32 @@ describe('UserInterruptCoordinator', () => {
     });
   });
 
-  describe('fireIfStillHot suppression: pendingToolCount===0 && !turnActive', () => {
-    it('is suppressed when thinking is held only by subagents (no tool, no turnActive)', () => {
-      // The thinking predicate includes subagentDepth. The coordinator's
-      // stillHot check is pendingToolCount>0 || turnActive. If only subagents
-      // hold thinking, stillHot is false and no event is synthesized.
-      // This is intentional: a subagent's own hooks should recover it.
+  describe('fireIfStillHot suppression: not stuck (pendingTools===0, turn self-recovering)', () => {
+    it('is suppressed when thinking is held only by a live subagent (turnActive held, no tool)', () => {
+      // A live subagent keeps the parent's turnActive set: its inner Stop no
+      // longer ends the parent turn (see ActivityEngine.processEvent's
+      // turn-ending gate). The coordinator's stillHot check is
+      // pendingToolCount>0 || (turnActive && subagentDepth===0): a subagent
+      // holding the turn is NOT "stuck" - its own SubagentStop self-recovers
+      // the state - so no Interrupted is synthesized. Forcing idle here would
+      // be a false idle while the subagent is still running.
       const { coordinator, engine, pushedEvents } = makeCoordinator();
       engine.initSession(SESSION_ID);
       engine.processEvent(SESSION_ID, { ts: Date.now(), type: EventType.Prompt });
       engine.processEvent(SESSION_ID, { ts: Date.now(), type: EventType.SubagentStart });
-      // Idle clears turnActive but not subagentDepth.
+      // The subagent's inner Stop (Idle at depth > 0) does NOT clear turnActive.
       engine.processEvent(SESSION_ID, { ts: Date.now(), type: EventType.Idle });
-      // With idleStabilityWindowMs=0 the predicate re-evaluates immediately -
-      // subagentDepth>0 keeps activity as 'thinking'.
+      // subagentDepth>0 keeps activity 'thinking'; turnActive stays set.
       expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
-      expect(engine.getState(SESSION_ID)?.turnActive).toBe(false);
+      expect(engine.getState(SESSION_ID)?.turnActive).toBe(true);
+      expect(engine.getState(SESSION_ID)?.subagentDepth).toBe(1);
       expect(engine.getState(SESSION_ID)?.pendingToolCount).toBe(0);
 
       coordinator.notify(SESSION_ID);
       vi.advanceTimersByTime(SETTLE_MS + 10);
 
-      // stillHot check: pendingToolCount(0) > 0 is false; turnActive is false.
-      // So no event synthesized even though activity is 'thinking'.
+      // stillHot: pendingToolCount(0) > 0 is false; turnActive is true but
+      // subagentDepth>0 excludes it. So no event synthesized.
       expect(pushedEvents).toHaveLength(0);
 
       coordinator.dispose();
@@ -304,6 +307,42 @@ describe('UserInterruptCoordinator', () => {
       // pendingToolCount > 0 satisfies stillHot's OR even though turnActive=false.
       expect(pushedEvents).toHaveLength(1);
       expect(pushedEvents[0].event.type).toBe(EventType.Interrupted);
+
+      coordinator.dispose();
+      engine.dispose();
+    });
+
+    it('fires when turnActive=true, pendingToolCount=0, subagentDepth=0 (bare stuck turn)', () => {
+      // Regression guard for the `(turnActive && subagentDepth === 0)` arm of
+      // stillHot introduced alongside the subagent depth gate. This arm catches
+      // the case where a Prompt set turnActive but no hook (ToolStart / Stop)
+      // has fired yet - the turn is genuinely stuck with no self-recovering
+      // holder. If someone re-simplifies stillHot to drop the turnActive arm
+      // (e.g. `pendingToolCount > 0` only), this test fails and the regression
+      // is caught before shipping.
+      //
+      // A Prompt event sets turnActive=true and pendingToolCount=0 on a fresh
+      // session. idleStabilityWindowMs=0 so state settles immediately.
+      const { coordinator, engine, pushedEvents } = makeCoordinator();
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, { ts: Date.now(), type: EventType.Prompt });
+
+      // Verify the state that stillHot's turnActive arm targets.
+      const state = engine.getState(SESSION_ID)!;
+      expect(state.turnActive).toBe(true);
+      expect(state.pendingToolCount).toBe(0);
+      expect(state.subagentDepth).toBe(0);
+      expect(state.activity).toBe('thinking');
+
+      coordinator.notify(SESSION_ID);
+      vi.advanceTimersByTime(SETTLE_MS + 10);
+
+      // pendingToolCount(0) > 0 is false, but turnActive && subagentDepth===0
+      // is true, so stillHot is true and one Interrupted must be synthesized.
+      expect(pushedEvents).toHaveLength(1);
+      expect(pushedEvents[0].sessionId).toBe(SESSION_ID);
+      expect(pushedEvents[0].event.type).toBe(EventType.Interrupted);
+      expect(pushedEvents[0].event.detail).toBe('user-ctrl-c');
 
       coordinator.dispose();
       engine.dispose();

@@ -1,0 +1,11 @@
+{"ts":1781459841000,"type":"session_start"}
+{"ts":1781459842000,"type":"prompt"}
+{"ts":1781459848763,"type":"tool_start","tool":"Agent","detail":"Doc anchor audit for shapes.ts"}
+{"ts":1781459848922,"type":"subagent_start","detail":"doc-auditor"}
+{"ts":1781459848965,"type":"tool_end","tool":"Agent"}
+{"ts":1781459859603,"type":"tool_start","tool":"Read","detail":"src/shared/types.ts"}
+{"ts":1781459870157,"type":"tool_end","tool":"Read"}
+{"ts":1781459870198,"type":"idle"}
+{"ts":1781459873090,"type":"subagent_stop","detail":""}
+{"ts":1781459883574,"type":"subagent_stop","detail":""}
+{"ts":1781459923682,"type":"subagent_stop","detail":"doc-auditor"}

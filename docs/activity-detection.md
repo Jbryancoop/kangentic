@@ -188,11 +188,11 @@ Notably absent: `pendingToolCount` is NOT in the predicate. An explicit `Idle` e
 
 ### turnActive
 
-Set on any "thinking-initiating" event (`ToolStart`, `Prompt`, `SubagentStart`, `Compact`, `WorktreeCreate`, `BackgroundShellStart`). Cleared by `Idle`, `Interrupted`. Also re-armed when a permission pause resolves (see [Permission flag](#permission-flag)). Persists across the silent gaps between tool calls so the spinner doesn't flicker.
+Set on any "thinking-initiating" event (`ToolStart`, `Prompt`, `SubagentStart`, `Compact`, `WorktreeCreate`, `BackgroundShellStart`). Cleared by `Interrupted`, and by `Idle` **only when `subagentDepth === 0`** (an `Idle` arriving while a subagent is live is the subagent's own inner Stop and must not end the parent turn - see [Subagent depth](#subagent-depth)). Also re-armed when a permission pause resolves (see [Permission flag](#permission-flag)). Persists across the silent gaps between tool calls so the spinner doesn't flicker.
 
 ### Subagent depth
 
-Tracks nested subagent invocations. SubagentStop decrements (clamped to 0). When the main agent fires Stop while a subagent is still running, `turnActive = false` but `subagentDepth > 0` keeps the predicate true. Idle emits when depth hits 0 (and no other counter holds).
+Tracks nested subagent invocations. `SubagentStart` increments; `SubagentStop` decrements (clamped to 0). A subagent runs synchronously inside the parent's turn, so when its inner loop finishes it fires a `Stop` hook (mapped to `Idle`) **while it is still tracked as live**. That `Idle` is the subagent's, not the parent's: the engine therefore does NOT clear the parent's `turnActive` when `subagentDepth > 0` (the parent is blocked on / about to consume the subagent result and has not finished). The parent's own Stop arrives only after every `SubagentStop` (i.e. at `subagentDepth === 0`), and that is the `Idle` that clears `turnActive`. Without this gate, a subagent's inner Stop cleared the parent turn early; combined with a spurious empty-detail `SubagentStop` zeroing the depth, the board went idle for the whole tail of the subagent's run (the inverse of a false-active). Pinned by the `session-017-false-idle-during-live-subagent` replay fixture; the raw hook payloads confirm a subagent-context Stop carries `agent_id` while the main-agent Stop does not.
 
 ### Background-shell tracking (Set + anonymous fallback)
 

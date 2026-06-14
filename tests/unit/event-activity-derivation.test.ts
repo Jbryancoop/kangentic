@@ -681,17 +681,25 @@ describe('Event-derived activity state', () => {
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.SubagentStart, detail: 'Explore' });
     await waitForWatcher();
 
-    // 3. Stop fires → idle suppressed (depth > 0), pending idle set
+    // 3. The subagent's inner Stop fires as Idle while it is live (depth > 0).
+    //    It is the subagent's stop, not the parent's, so it does not end the
+    //    parent turn: the session stays thinking.
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.Idle });
     await waitForWatcher();
     expect(manager.getActivityCache()[session.id]).toBe('thinking');
 
-    // 4. Subagent finishes (depth → 0) → deferred idle emits
+    // 4. Subagent finishes (depth → 0). The parent turn is still active, so
+    //    the session stays thinking - the parent is about to consume the result.
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.SubagentStop, detail: 'Explore' });
+    await waitForWatcher();
+    expect(manager.getActivityCache()[session.id]).toBe('thinking');
+
+    // 5. The parent fires its OWN Stop (Idle at depth 0) → idle.
+    appendEvent(eventsPath, { ts: Date.now(), type: EventType.Idle });
     await waitForWatcher();
     expect(manager.getActivityCache()[session.id]).toBe('idle');
 
-    // 5. Main agent resumes with tool_start → thinking
+    // 6. Main agent resumes with tool_start → thinking
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.ToolStart, tool: 'Edit' });
     await waitForWatcher();
 
@@ -749,7 +757,7 @@ describe('Event-derived activity state', () => {
     expect(states).toEqual(['thinking']);
   });
 
-  it('deferred idle emits when last subagent finishes', async () => {
+  it('idle emits only when the parent Stops after the last subagent finishes', async () => {
     const { session, eventsPath } = await spawnWithEvents();
     const states = collectActivity(manager, session.id);
 
@@ -761,15 +769,19 @@ describe('Event-derived activity state', () => {
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.SubagentStart, detail: 'Explore' });
     await waitForWatcher();
 
-    // 3. Stop fires → idle suppressed, pending flag set
+    // 3. The subagent's inner Stop (Idle at depth > 0) does not end the parent turn.
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.Idle });
     await waitForWatcher();
     expect(manager.getActivityCache()[session.id]).toBe('thinking');
 
-    // 4. Subagent finishes (depth → 0) → deferred idle emits
+    // 4. Subagent finishes (depth → 0); the parent turn is still active.
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.SubagentStop, detail: 'Explore' });
     await waitForWatcher();
+    expect(manager.getActivityCache()[session.id]).toBe('thinking');
 
+    // 5. The parent's OWN Stop (Idle at depth 0) finally emits idle.
+    appendEvent(eventsPath, { ts: Date.now(), type: EventType.Idle });
+    await waitForWatcher();
     expect(manager.getActivityCache()[session.id]).toBe('idle');
     expect(states).toEqual(['thinking', 'idle']);
   });
@@ -839,20 +851,24 @@ describe('Event-derived activity state', () => {
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.SubagentStart, detail: 'Plan' });
     await waitForWatcher();
 
-    // 4. Stop fires → idle suppressed
+    // 4. A subagent's inner Stop (Idle at depth 2) does not end the parent turn.
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.Idle });
     await waitForWatcher();
     expect(manager.getActivityCache()[session.id]).toBe('thinking');
 
-    // 5. First subagent finishes (depth → 1) -- still > 0, no deferred idle
+    // 5. First subagent finishes (depth → 1) - still > 0, stays thinking.
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.SubagentStop, detail: 'Explore' });
     await waitForWatcher();
     expect(manager.getActivityCache()[session.id]).toBe('thinking');
 
-    // 6. Second subagent finishes (depth → 0) → deferred idle emits
+    // 6. Second subagent finishes (depth → 0); the parent turn is still active.
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.SubagentStop, detail: 'Plan' });
     await waitForWatcher();
+    expect(manager.getActivityCache()[session.id]).toBe('thinking');
 
+    // 7. The parent's OWN Stop (Idle at depth 0) emits idle once all are done.
+    appendEvent(eventsPath, { ts: Date.now(), type: EventType.Idle });
+    await waitForWatcher();
     expect(manager.getActivityCache()[session.id]).toBe('idle');
     expect(states).toEqual(['thinking', 'idle']);
   });
@@ -949,18 +965,23 @@ describe('Event-derived activity state', () => {
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.SubagentStart, detail: 'Explore' });
     await waitForWatcher();
 
-    // 3. idle → suppressed (pending = true)
+    // 3. idle at depth > 0 → does not end the parent turn (stays thinking)
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.Idle });
     await waitForWatcher();
     expect(manager.getActivityCache()[session.id]).toBe('thinking');
 
-    // 4. idle → suppressed again (pending still true, idempotent)
+    // 4. idle again at depth > 0 → idempotent (still thinking)
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.Idle });
     await waitForWatcher();
     expect(manager.getActivityCache()[session.id]).toBe('thinking');
 
-    // 5. subagent_stop → depth 0 → deferred idle emits once
+    // 5. subagent_stop → depth 0; the parent turn is still active (thinking)
     appendEvent(eventsPath, { ts: Date.now(), type: EventType.SubagentStop, detail: 'Explore' });
+    await waitForWatcher();
+    expect(manager.getActivityCache()[session.id]).toBe('thinking');
+
+    // 6. The parent's OWN Stop (Idle at depth 0) emits idle once.
+    appendEvent(eventsPath, { ts: Date.now(), type: EventType.Idle });
     await waitForWatcher();
     expect(manager.getActivityCache()[session.id]).toBe('idle');
 

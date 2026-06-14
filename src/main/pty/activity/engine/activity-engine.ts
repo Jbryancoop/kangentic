@@ -202,7 +202,20 @@ export class ActivityEngine {
       // A fresh thinking signal cancels any pending stability-window idle.
       state.pendingIdleAt = null;
     } else if (TURN_ENDING_EVENTS.has(event.type)) {
-      state.turnActive = false;
+      // A subagent's inner-loop Stop arrives as `Idle` while the parent is
+      // still blocked on the live subagent (subagentDepth > 0): it must NOT end
+      // the PARENT's turn - the parent has not finished, it is about to consume
+      // the subagent's result. (Verified against raw hook payloads: a
+      // subagent-context Stop carries agent_id while the main agent's Stop does
+      // not, so a Stop seen while a subagent is live is the subagent's, not the
+      // parent's.) `Interrupted` is a hard abort, so this arm clears turnActive
+      // regardless of depth: applyInterruptedBypass below resets the counters
+      // and commits idle immediately but does NOT touch turnActive, so this is
+      // the only path that clears it for an interrupt (without it, an interrupt
+      // at subagentDepth > 0 would leave turnActive stuck true).
+      if (event.type === EventType.Interrupted || state.subagentDepth === 0) {
+        state.turnActive = false;
+      }
     } else if (event.type === EventType.IdleHint && idleHintEndsTurn(state)) {
       // The agent signaled it is waiting for input and nothing else is
       // holding the turn (no pending tools, subagents, bg shells, or
