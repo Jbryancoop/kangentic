@@ -129,9 +129,24 @@ Summarize:
 
 **Skip this step entirely in main repo mode** - you're already on the branch.
 
-The project root (determined in pre-flight step 3) always has the source branch checked out. Run `git -C <projectRoot> pull --ff-only` to fast-forward it to match the remote.
+The project root (determined in pre-flight step 3) always has the source branch checked out. Keeping it in sync matters: it is the dogfooding checkout (`npm start` serves the main process from it).
 
-If this fails (e.g., non-fast-forward divergence), report the warning but do not treat it as a fatal error - the remote is already updated.
+1. Fast-forward it: `git -C <projectRoot> pull --ff-only`. If this succeeds, you are done.
+
+2. **If it fails, do NOT just log a soft warning - that is how divergence compounds.** A fast-forward is impossible the moment the local source branch has even one commit the remote lacks, so a single direct commit to the local checkout makes THIS step fail on every future merge-back, and the checkout silently drifts further behind each run. Diagnose and surface it loudly:
+
+   a. Run `git -C <projectRoot> status -sb` to read the ahead/behind counts.
+   b. If the local branch is **behind only** (ahead 0) and the ff still failed, the working tree likely has uncommitted changes. Report that and stop - do not stash or discard the user's work.
+   c. If the local branch is **ahead** (has unpushed local commits), list them with `git -C <projectRoot> log --oneline origin/<sourceBranch>..<sourceBranch>` and name them in the report. These are the snowball: each blocks every future ff-pull until reconciled.
+
+3. **Offer to reconcile the ahead case** (do not do it silently - the user may want to drop a local-only commit rather than carry it forward):
+   - Rebase: `git -C <projectRoot> rebase origin/<sourceBranch>` (replays the local commits on top of the remote).
+   - If the user wants those commits on the source branch, push: `git -C <projectRoot> push origin <sourceBranch>`.
+   - **On conflict, abort cleanly:** `git -C <projectRoot> rebase --abort`, then report the manual steps. NEVER leave the running dogfooding checkout in a half-finished rebase.
+
+The remote source branch is already updated by Step 4 regardless, so a failure here is non-fatal to the merge - but it is not "ignore and move on": an un-surfaced local commit will keep breaking this step.
+
+**Prevention:** the local source-branch checkout should only ever fast-forward. Do not commit directly to it - use a worktree or feature branch. A direct commit to the local source branch is the root cause of the divergence this step has to repair.
 
 ## Rules
 
