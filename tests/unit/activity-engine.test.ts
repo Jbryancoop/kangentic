@@ -476,8 +476,8 @@ describe('ActivityEngine', () => {
     it('permission-resolving tool_end restores thinking immediately (AskUserQuestion / ExitPlanMode resume)', () => {
       // A permission-class pause (AskUserQuestion, ExitPlanMode plan-approval,
       // tool prompt) begins with idle:permission, which clears turnActive. When
-      // it resolves, the only signal is a depth-0 tool_end - a LOG_ONLY event
-      // that clears permissionPending but never re-arms turnActive. Without the
+      // it resolves, the only signal is a depth-0 tool_end - a non-turn-initiating
+      // event that clears permissionPending but never re-arms turnActive. Without the
       // fix the predicate drops to idle and the card sits idle until the PTY
       // force-thinking net catches up seconds later. The resumed turn must show
       // as thinking the instant the pause resolves.
@@ -1705,6 +1705,34 @@ describe('ActivityEngine', () => {
         (transition) => transition.trigger === 'timer:stale-thinking',
       );
       expect(staleTransitions).toHaveLength(0);
+    });
+
+    it('re-anchors on tool_end so a long tool gets a fresh window, but a lost Stop still recovers', () => {
+      // The false-idle-after-long-foreground-tool fix: tool_end refreshes
+      // lastSignalAt (it is NOT log-only). A foreground tool that runs longer
+      // than the stale timeout must therefore hand the post-tool thinking gap a
+      // FRESH stale-thinking window, not the frozen tool_start anchor that
+      // force-idled the card the instant the tool ended.
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash', toolId: 'tool-long' }));
+      // Tool runs longer than the stale timeout (held by the stuck-pending-tools
+      // hold, whose 5s window does not fire here). lastSignalAt is now stale.
+      vi.advanceTimersByTime(TEST_STALE_TIMEOUT_MS + 500);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { tool: 'Bash', toolId: 'tool-long' }));
+      // Just under the threshold measured from tool_end: still thinking (green).
+      // Pre-fix the frozen anchor is already 1500ms stale, so it would be idle.
+      vi.advanceTimersByTime(TEST_STALE_TIMEOUT_MS - 100);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.staleThinking).toBe(0);
+
+      // Inverse guard: the Stop hook never arrives, so stale-thinking must still
+      // recover within the threshold of the genuinely-last activity (tool_end).
+      vi.advanceTimersByTime(200);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(engine.getState(SESSION_ID)?.turnActive).toBe(false);
+      expect(engine.getState(SESSION_ID)?.compensationCounters.staleThinking).toBe(1);
     });
   });
 

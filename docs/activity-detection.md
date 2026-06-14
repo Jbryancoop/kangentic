@@ -119,7 +119,7 @@ The 22 `EventType` values written to `events.jsonl` by `event-bridge.js`, define
 |---------------|-------------|------------------|-------|
 | `Prompt` | `prompt` | `thinking` | User submitted a prompt; agent is starting a turn |
 | `ToolStart` | `tool_start` | `thinking` | Agent began invoking a tool |
-| `ToolEnd` | `tool_end` | log-only | Tool returned; counters update but state does not |
+| `ToolEnd` | `tool_end` | log-only | Tool returned; counters update and `lastSignalAt` refreshes (a `PostToolUse` hook proves the agent is alive, so `tool_end` is NOT in the engine's `LOG_ONLY_EVENTS` set), but the activity state does not change |
 | `Idle` | `idle` | `idle` | Agent finished its turn (Stop hook, prompt-regex, or silence timer) |
 | `Interrupted` | `interrupted` | `idle` | User pressed Esc / Ctrl+C; clears counters and commits idle |
 | `SessionStart` | `session_start` | log-only | Session began; carries adapter session metadata |
@@ -215,7 +215,7 @@ Set when an `Idle` event fires with `detail: 'permission'`. The engine also reco
 
 Unrelated subagent-tool events at depth>0 (different or absent toolId) do NOT clear permission (parallel-subagent tool churn must not dismiss a prompt that is still awaiting approval). The approved-tool clear is pinned by the `session-010` replay fixture (task #194's stuck 77s window).
 
-**Resume restores `turnActive`.** A permission pause begins with `Idle{detail:'permission'}`, which clears `turnActive` (Idle is a turn-ending event). When the pause resolves, the wake is typically a depth-0 `ToolEnd` (e.g. the `AskUserQuestion` / `ExitPlanMode` tool ending after the user answers/approves) - a LOG_ONLY event that clears `permissionPending` but does not re-arm `turnActive`. The resumed turn emits no fresh `Prompt`/`ToolStart` hook, so without intervention the predicate would see no holder and drop to **idle** until the PTY force-thinking net catches up seconds later. To avoid that, `processEvent` restores `turnActive = true` whenever `permissionPending` transitions `true -> false` on a non-turn-ending event (i.e. not `Idle`/`Interrupted`, which are genuine end-of-turn). This is classified by the generic permission-clear shape, not by tool or agent name, so it covers every permission-class pause. Pinned by the `session-006`/`session-007` replay fixtures.
+**Resume restores `turnActive`.** A permission pause begins with `Idle{detail:'permission'}`, which clears `turnActive` (Idle is a turn-ending event). When the pause resolves, the wake is typically a depth-0 `ToolEnd` (e.g. the `AskUserQuestion` / `ExitPlanMode` tool ending after the user answers/approves) - a non-turn-initiating event that clears `permissionPending` but does not re-arm `turnActive`. The resumed turn emits no fresh `Prompt`/`ToolStart` hook, so without intervention the predicate would see no holder and drop to **idle** until the PTY force-thinking net catches up seconds later. To avoid that, `processEvent` restores `turnActive = true` whenever `permissionPending` transitions `true -> false` on a non-turn-ending event (i.e. not `Idle`/`Interrupted`, which are genuine end-of-turn). This is classified by the generic permission-clear shape, not by tool or agent name, so it covers every permission-class pause. Pinned by the `session-006`/`session-007` replay fixtures.
 
 ### Tool tracking (stack with correlation IDs + LIFO-by-name fallback)
 
@@ -263,7 +263,7 @@ When only ANONYMOUS bg shells (`anonymousBackgroundShellCount`, no shell_id) hol
 
 ### 3. Stale-thinking watchdog (180s)
 
-Held by `turnActive` alone (no tools, no subagent, no bg shells) for 180 seconds. The matching Idle/Stop hook never arrived. Emits synthetic `Idle/Timeout`, clears `turnActive`. Bypasses the stability window (the 180s already debounced any flicker). Anchored to `lastSignalAt`; PTY output does NOT defer it (idle TUI repaints must still time out).
+Held by `turnActive` alone (no tools, no subagent, no bg shells) for 180 seconds. The matching Idle/Stop hook never arrived. Emits synthetic `Idle/Timeout`, clears `turnActive`. Bypasses the stability window (the 180s already debounced any flicker). Anchored to `lastSignalAt`, which every non-log-only event refreshes - including `tool_end` (a `PostToolUse` hook is proof of liveness). A foreground tool longer than 180s that ends while the turn continues therefore gets a fresh window instead of being force-idled the instant it ends (task #229; pinned by `session-016-false-idle-after-long-foreground-tool`). PTY output does NOT defer it (idle TUI repaints must still time out).
 
 ### 4. Stuck-pending-tools watchdog (5 min)
 

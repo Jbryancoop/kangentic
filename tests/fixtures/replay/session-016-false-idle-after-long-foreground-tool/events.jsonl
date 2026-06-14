@@ -1,0 +1,10 @@
+{"ts":1781200000000,"type":"session_start"}
+{"ts":1781200001000,"type":"prompt"}
+{"ts":1781200002000,"type":"tool_start","tool":"PowerShell","toolId":"toolu_long0000000000000001","detail":"npx playwright test --project=ui"}
+{"ts":1781200275000,"type":"tool_end","tool":"PowerShell","toolId":"toolu_long0000000000000001"}
+{"ts":1781200295000,"type":"tool_start","tool":"Grep","toolId":"toolu_grep0000000000000002","detail":"activity-engine"}
+{"ts":1781200295500,"type":"tool_end","tool":"Grep","toolId":"toolu_grep0000000000000002"}
+{"ts":1781200300000,"type":"tool_start","tool":"Read","toolId":"toolu_read0000000000000003","detail":"src/main/pty/activity/engine/activity-engine.ts"}
+{"ts":1781200300300,"type":"tool_end","tool":"Read","toolId":"toolu_read0000000000000003"}
+{"ts":1781200305000,"type":"idle"}
+{"ts":1781200306000,"type":"session_end"}

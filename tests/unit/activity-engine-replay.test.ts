@@ -379,8 +379,8 @@ describe('ActivityEngine replay tests', () => {
     // 037d97e9-ae42-49e7-ae69-b22b5016b848 (sanitized). The agent called
     // AskUserQuestion, which fired idle:permission (turnActive cleared). When
     // the user answered, the only signal was the AskUserQuestion tool_end at
-    // depth 0 - a LOG_ONLY event that clears permissionPending but does not
-    // re-arm turnActive. Pre-fix, the predicate dropped to idle and the card
+    // depth 0 - a non-turn-initiating event that clears permissionPending but does
+    // not re-arm turnActive. Pre-fix, the predicate dropped to idle and the card
     // sat idle (~65s observed) until the PTY force-thinking net caught up. The
     // resumed turn must show as thinking the instant the pause resolves.
     let result: ReplayResult;

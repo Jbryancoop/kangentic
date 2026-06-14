@@ -411,6 +411,14 @@ export interface ActivityEngineCallbacks {
  * (sometimes during true idle, e.g. Notification "Context getting full")
  * and treating them as alive signals would falsely keep idle sessions
  * in the thinking state.
+ *
+ * `EventType.ToolEnd` is deliberately NOT a member: a `PostToolUse` hook
+ * is concrete proof the agent process is alive and progressing, which is
+ * exactly what `lastSignalAt` tracks, so it must refresh the anchor (see
+ * the regression-guard note where it would otherwise sit). The "fires
+ * during true idle" worry does not apply to it: ToolEnd never toggles
+ * `turnActive`, and refreshing `lastSignalAt` is inert unless a watchdog
+ * hold is armed (`activity === 'thinking'`).
  */
 export const LOG_ONLY_EVENTS = new Set<EventType>([
   EventType.SessionStart,
@@ -428,7 +436,15 @@ export const LOG_ONLY_EVENTS = new Set<EventType>([
   EventType.ModelStart,
   EventType.ModelEnd,
   EventType.ToolSelectionStart,
-  EventType.ToolEnd,
+  // EventType.ToolEnd intentionally NOT here. A `PostToolUse` hook proves
+  // the agent is alive, so it refreshes `lastSignalAt`. Re-adding it
+  // reintroduces the false-idle-after-long-foreground-tool bug: a single
+  // foreground tool (e.g. `npx playwright test`) longer than the 180s
+  // stale-thinking timeout, emitting no nested hook signals, would hand the
+  // turn off to the stale-thinking hold with an already-expired anchor and
+  // force a false idle the instant it ends. Pinned by the
+  // `session-016-false-idle-after-long-foreground-tool` trace fixture. It
+  // still does not toggle `turnActive` (not in TURN_*_EVENTS).
   EventType.SubagentStop,
   EventType.BackgroundShellEnd,
 ]);

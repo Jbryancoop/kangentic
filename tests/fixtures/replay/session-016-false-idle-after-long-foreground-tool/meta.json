@@ -1,0 +1,5 @@
+{
+  "sessionId": "00000000-0000-0000-0000-000000000000",
+  "capturedAt": "2026-06-14",
+  "note": "Reconstruction of task #229 (session c13bcda7) false-idle-after-long-foreground-tool: a 273s foreground `npx playwright test` (no nested hook events, silent status heartbeat) ends while the turn continues, handing the stale-thinking hold a frozen tool_start anchor. pty-chunks downsampled to 5s buckets."
+}

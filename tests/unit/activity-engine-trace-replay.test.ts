@@ -295,6 +295,46 @@ describe('ActivityEngine trace-bundle replay', () => {
     });
   });
 
+  // Reconstruction of task #229 (session c13bcda7): a single foreground
+  // `npx playwright test --project=ui` runs 273s (longer than the 180s
+  // stale-thinking timeout) with PTY streaming but no nested hook events and a
+  // silent status heartbeat, then ENDS while the turn continues (the agent
+  // analyzes output and calls its next tool ~20s later). Because tool_end now
+  // refreshes lastSignalAt (it is NOT log-only), the stale-thinking hold gets a
+  // fresh anchor at the hand-off instead of the frozen tool_start one, so the
+  // post-tool thinking gap is not force-idled. Pre-fix (ToolEnd back in
+  // LOG_ONLY_EVENTS) the stale-thinking watchdog fires the instant the tool
+  // ends, flashing the card idle until force-thinking recovers it ~13s later.
+  describe('session-016-false-idle-after-long-foreground-tool', () => {
+    let result: ReplayResult;
+    beforeEach(() => {
+      const bundle = loadTraceBundle(
+        path.join(FIXTURES_DIR, 'session-016-false-idle-after-long-foreground-tool'),
+      );
+      result = replayBundle(bundle);
+    });
+
+    it('does not fire the stale-thinking watchdog when the long tool ends and the turn continues', () => {
+      // The reliable signal: pre-fix this is 1 (false idle at the hand-off),
+      // post-fix it is 0 (the refreshed anchor gives a fresh 180s budget).
+      expect(result.compensationCounters.staleThinking).toBe(0);
+    });
+
+    it('records no thinking -> idle stale-thinking transition mid-stream', () => {
+      const staleIdles = result.transitions.filter(
+        (transition) =>
+          transition.from === 'thinking'
+          && transition.to === 'idle'
+          && transition.trigger === 'timer:stale-thinking',
+      );
+      expect(staleIdles).toEqual([]);
+    });
+
+    it('settles idle after the real turn ends (clean Stop)', () => {
+      expect(result.finalActivity).toBe('idle');
+    });
+  });
+
   // Concrete regression fixture for Task #121 (plan-composition gap).
   // Skipped until the bundle has been captured via
   // `kangentic_devtools_capture_trace`. Drop the .skip when the fixture

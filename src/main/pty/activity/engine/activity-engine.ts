@@ -188,6 +188,11 @@ export class ActivityEngine {
     updateCounters(state, event);
     updatePermissionFlag(state, event);
 
+    // Refresh the liveness anchor for every non-log-only event. ToolEnd is
+    // deliberately NOT log-only (see LOG_ONLY_EVENTS): a PostToolUse hook is
+    // proof the agent is alive, so a long foreground tool that ends while the
+    // turn continues hands the stale-thinking hold a fresh anchor instead of
+    // the frozen tool_start one.
     if (!LOG_ONLY_EVENTS.has(event.type)) {
       state.lastSignalAt = this.now();
     }
