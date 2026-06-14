@@ -53,21 +53,30 @@ export interface InjectionPlan {
   /**
    * Number of leading commands in `sequence` that are safe to verify against
    * the agent's transcript. This covers the deterministic adapter-emitted
-   * writes (`/model X`, `/effort Y` from `getInjectionSequence`) but excludes
-   * any trailing user-supplied auto_command, because the verifier cannot tell
-   * a `/`-prefixed user command from a settings command and would risk
-   * dropping the user's intended action after retry exhaustion.
+   * writes (`/effort Y` from `getInjectionSequence`) but excludes any trailing
+   * user-supplied auto_command, because the verifier cannot tell a `/`-prefixed
+   * user command from a settings command and would risk dropping the user's
+   * intended action after retry exhaustion.
    */
   verifiedPrefixLength: number;
   /**
-   * The model/effort the live session will be at once this burst applies -
-   * present only for fields whose value actually changed to a concrete target
-   * (i.e. a `/model` / `/effort` slash was emitted). The caller persists these
-   * via `sessionRepo.updateAppliedSettings` after scheduling so the next column
-   * transition diffs against the session's true running value. Absent when the
-   * burst carries only an auto_command (no settings delta).
+   * Set when the destination has a CONCRETE model different from the session's
+   * running model. A model change is never applied as a live `/model` swap on an
+   * automated path (column transition or column-config edit); the caller must
+   * suspend + `--resume --model X` instead. See the rationale on
+   * `needsRestartForModel` below. When set, `sequence` may be empty (model-only
+   * change) and the caller must act on this flag BEFORE scheduling any writes.
    */
-  appliedSettings?: { model?: string; effort?: string };
+  needsRestartForModel: boolean;
+  /**
+   * The effort the live session will be at once this burst applies - present
+   * only when effort changed to a concrete target (i.e. a `/effort` slash was
+   * emitted). The caller persists this via `sessionRepo.updateAppliedSettings`
+   * after scheduling so the next column transition diffs against the session's
+   * true running value. Model is never recorded here: a model change restarts,
+   * and the respawn records `applied_model` itself via its `--model` flag.
+   */
+  appliedSettings?: { effort?: string };
 }
 
 export function prepareInjectionPlan(input: InjectionPlanInput): InjectionPlan | null {
@@ -91,11 +100,24 @@ export function prepareInjectionPlan(input: InjectionPlanInput): InjectionPlan |
   const modelChanged = targetModel !== sourceModel;
   const effortChanged = targetEffort !== sourceEffort;
 
-  // Settings writes come from the adapter so the IPC layer never names a
-  // slash. An adapter without getInjectionSequence contributes none.
+  // A MODEL change on an automated path (column transition or column-config
+  // edit) is applied by a full exit + `--resume --model`, NOT a live `/model`
+  // swap: a live mid-session model switch left the agent paused after a
+  // Planning -> Executing handoff (it stopped instead of continuing). Only a
+  // concrete destination model restarts; a null target is the "Default" column
+  // (`--resume` preserves the saved model and there is no `/model <agent-default>`
+  // slash), which is not a real change. The caller suspends + respawns when this
+  // is set.
+  const needsRestartForModel = modelChanged && targetModel !== null;
+
+  // Settings writes come from the adapter so the IPC layer never names a slash.
+  // An adapter without getInjectionSequence contributes none. We pass
+  // `modelChanged: false` so this helper NEVER emits `/model` (a model change is
+  // handled by the restart above, not a live write); `/effort` still flows
+  // through for a live swap.
   const settingsSequence = adapter?.getInjectionSequence?.({
     model: targetModel,
-    modelChanged,
+    modelChanged: false,
     effort: targetEffort,
     effortChanged,
   }) ?? [];
@@ -105,7 +127,10 @@ export function prepareInjectionPlan(input: InjectionPlanInput): InjectionPlan |
     ? [...settingsSequence, trimmedAutoCommand]
     : settingsSequence;
 
-  if (sequence.length === 0) return null;
+  // Return null only when there is nothing to do at all: no live writes AND no
+  // restart needed. A model-only change has an empty sequence but must still
+  // return a plan so the caller can act on `needsRestartForModel`.
+  if (sequence.length === 0 && !needsRestartForModel) return null;
 
   // Verifier is best-effort: needs adapter support + a captured agent_session_id.
   // null is a documented fallback to time-based settle in
@@ -115,19 +140,19 @@ export function prepareInjectionPlan(input: InjectionPlanInput): InjectionPlan |
     ? buildCommandInjectionVerifier(adapter, sessionRepo, task.id, record)
     : null;
 
-  // What the session will be at after this burst: only fields that changed to a
-  // concrete value (i.e. a slash was actually emitted). A change to a null
-  // target ("Default" column) emits no slash and leaves the session as-is, so
-  // it is not recorded.
-  const appliedSettings: { model?: string; effort?: string } = {};
-  if (modelChanged && targetModel !== null) appliedSettings.model = targetModel;
+  // What the session will be at after this burst: only effort, and only when it
+  // changed to a concrete value (i.e. a `/effort` slash was emitted). Model is
+  // never live-applied here (it restarts), and a change to a null target
+  // ("Default" column) emits no slash and leaves the session as-is.
+  const appliedSettings: { effort?: string } = {};
   if (effortChanged && targetEffort !== null) appliedSettings.effort = targetEffort;
-  const hasApplied = appliedSettings.model !== undefined || appliedSettings.effort !== undefined;
+  const hasApplied = appliedSettings.effort !== undefined;
 
   return {
     sequence,
     verifier,
     verifiedPrefixLength: settingsSequence.length,
+    needsRestartForModel,
     ...(hasApplied ? { appliedSettings } : {}),
   };
 }

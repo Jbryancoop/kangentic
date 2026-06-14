@@ -78,8 +78,9 @@ const taskMoveControllers = new Map<string, AbortController>();
  * Suspend a live PTY session so Phase 3 can respawn it with new CLI flags:
  * capture metrics while caches are populated, mark the DB record suspended
  * (or exited for queued records that never started), suspend the PTY, and
- * clear task.session_id. Shared by the two same-agent respawn triggers
- * (model/effort delta with no live swap, permission-mode delta).
+ * clear task.session_id. Shared by the two same-agent respawn triggers on a
+ * column move: a model change (the primary restart marker), and an effort delta
+ * to a concrete target on an adapter with no live `/effort` swap.
  */
 async function suspendLiveSessionForRespawn(args: {
   context: IpcContext;
@@ -531,54 +532,24 @@ export async function handleTaskMove(
           );
           // Fall through to Phase 2/3 (handoff spawn) by not returning null.
         } else {
-          // Same agent. A permission-mode delta cannot be applied to a live
-          // session: no adapter exposes a non-interactive permission-mode
-          // switch (Claude's only mechanism is interactive shift+tab
-          // cycling), so this check runs BEFORE live injection. When the
-          // destination's EFFECTIVE permission mode differs from the mode
-          // this session was spawned with (the session record, not the
-          // source lane, is the ground truth), suspend + respawn: --resume
-          // keeps the full conversation while --permission-mode / --model /
-          // --effort from the destination column land as CLI flags. If an
-          // adapter ever grows a live permission switch, the right evolution
-          // is a permissionMode field on SettingsChangeSpec.
-          const recordedPermissionMode = activeRecord?.permission_mode ?? null;
-          if (toLane && recordedPermissionMode !== null) {
-            const effectiveTargetPermissionMode = toLane.permission_mode
-              ?? context.configManager.getEffectiveConfig(resolvedProjectPath || undefined).agent.permissionMode;
-            if (recordedPermissionMode !== effectiveTargetPermissionMode) {
-              await suspendLiveSessionForRespawn({
-                context,
-                tasks,
-                sessionRepo,
-                usageHistoryRepo,
-                taskId: task.id,
-                liveSessionId: task.session_id,
-                record: activeRecord,
-              });
-              console.log(
-                `[TASK_MOVE] Suspending session for task ${task.id.slice(0, 8)}`
-                + ` (permission mode ${recordedPermissionMode} -> ${effectiveTargetPermissionMode},`
-                + ` no live permission switch exists). Will respawn with destination column flags.`,
-              );
-              return {
-                task,
-                fromSwimlaneId,
-                originalPosition,
-                toLane,
-                skipPromptTemplate,
-                resolvedProjectId,
-                resolvedProjectPath,
-                continuationPrompt: options?.continuationPrompt,
-                suppressAutoCommand,
-              };
-            }
-          }
-
-          // Delegate the model/effort/auto_command translation
-          // to the destination adapter via prepareInjectionPlan - adapters
-          // own their slash syntax and verification semantics, so this
-          // branch stays agent-agnostic.
+          // Same agent, live session. For this column transition:
+          //   1. MODEL change  -> the ONLY restart marker: suspend + `--resume`
+          //      so the resumed spawn re-applies model + effort + permission as
+          //      launch flags and re-delivers the column auto_command / plan-exit
+          //      continuation. A live `/model` swap is deliberately NOT used: it
+          //      left the agent paused after a Planning -> Executing handoff.
+          //   2. EFFORT-only change (same model) -> live `/effort` injection (or a
+          //      respawn for adapters with no live effort swap and a concrete target).
+          //   3. PERMISSION-only change, or no change -> keep the live session
+          //      running untouched. A permission delta NEVER restarts: in the
+          //      canonical Planning -> Executing flow the user already approved the
+          //      plan in the terminal and Claude left plan mode in-session, so the
+          //      recorded spawn-time permission mode is a stale signal that must
+          //      not churn the PTY.
+          //
+          // Translation of the model/effort/auto_command delta is delegated to
+          // prepareInjectionPlan so adapters own their slash syntax and the
+          // model-restart policy stays in one place (agent-agnostic here).
           const adapter = task.agent ? agentRegistry.get(task.agent) : undefined;
           const interpolatedAuto = toLane?.auto_command?.trim()
             ? interpolateTemplate(toLane.auto_command, buildAutoCommandVars(task))
@@ -590,6 +561,40 @@ export async function handleTaskMove(
             toLane: toLane ?? null,
             autoCommand: interpolatedAuto,
           });
+
+          // 1. Model change -> suspend + respawn. Checked BEFORE live injection
+          // so a model change never live-swaps. Phase 3 re-applies the flags and
+          // delivers the auto_command / continuation via spawnAgent.
+          if (plan?.needsRestartForModel) {
+            await suspendLiveSessionForRespawn({
+              context,
+              tasks,
+              sessionRepo,
+              usageHistoryRepo,
+              taskId: task.id,
+              liveSessionId: task.session_id,
+              record: activeRecord,
+            });
+            console.log(
+              `[TASK_MOVE] Suspending session for task ${task.id.slice(0, 8)}`
+              + ` (model change requires respawn). Will respawn with destination column flags.`,
+            );
+            return {
+              task,
+              fromSwimlaneId,
+              originalPosition,
+              toLane,
+              skipPromptTemplate,
+              resolvedProjectId,
+              resolvedProjectPath,
+              continuationPrompt: options?.continuationPrompt,
+              suppressAutoCommand,
+            };
+          }
+
+          // 2a. Effort-only change (and/or auto_command) with a live-swap plan ->
+          // inject into the running PTY. With no model delta the sequence carries
+          // at most `/effort` + the auto_command.
           if (plan) {
             context.terminalSubmitScheduler.scheduleKeystrokes(task.id, task.session_id, plan.sequence, {
               verifier: plan.verifier,
@@ -607,37 +612,21 @@ export async function handleTaskMove(
             return null;
           }
 
-          // If plan is null, check if adapter doesn't support live swap but
-          // settings changed. For adapters with no live swap, trigger respawn
-          // instead of keeping the session alive (respawn applies new flags).
-          // Source is the session's ACTUAL applied value (same ground truth
-          // prepareInjectionPlan uses), NOT the leaving column's config - else a
-          // null/drifted `fromLane` would churn the PTY with a needless respawn.
-          // Per-task overrides still win (no respawn when the task pinned the
-          // field, since source = target = pin).
-          const sourceModel = task.model_override ?? activeRecord?.applied_model ?? null;
-          const targetModel = task.model_override ?? toLane?.model_override ?? null;
+          // 2b. No live-swap plan, but an EFFORT delta to a concrete target on an
+          // adapter with no live `/effort` swap -> suspend + respawn to apply the
+          // new effort as a CLI flag. (Model deltas are handled in step 1 above; a
+          // null target is the "Default" column, which `--resume` preserves, so no
+          // respawn.) Source is the session's ACTUAL applied value (same ground
+          // truth prepareInjectionPlan uses), NOT the leaving column's config - a
+          // null/drifted `fromLane` would otherwise churn the PTY. Per-task
+          // overrides win (no respawn when the task pinned the field). The
+          // `!interpolatedAuto` guard is structurally redundant (an auto_command
+          // would have produced a non-null plan above) but kept for safety.
           const sourceEffort = task.effort_override ?? activeRecord?.applied_effort ?? null;
           const targetEffort = task.effort_override ?? toLane?.effort_override ?? null;
+          const restartNeededForEffort = targetEffort !== sourceEffort && targetEffort !== null;
 
-          const hasModelDelta = targetModel !== sourceModel;
-          const hasEffortDelta = targetEffort !== sourceEffort;
-
-          // Only respawn when the destination has a CONCRETE target value to
-          // apply. When the target is null (entering a column whose override
-          // is "Default" / unset) there is nothing to set: adapters have no
-          // `/model <agent-default>` slash, and `--resume <id>` preserves the
-          // saved model regardless of the absent `--model` flag, so the
-          // respawn would just churn the PTY without changing anything.
-          // Matches the same recovery contract in `task-runtime-override.ts`
-          // (see "Empty injection sequence with no concrete target value").
-          const restartNeededForModel = hasModelDelta && targetModel !== null;
-          const restartNeededForEffort = hasEffortDelta && targetEffort !== null;
-          const restartNeeded = restartNeededForModel || restartNeededForEffort;
-
-          if (restartNeeded && !interpolatedAuto) {
-            // Settings changed but adapter returned no plan (no live swap).
-            // Suspend and respawn to apply settings via command flags.
+          if (restartNeededForEffort && !interpolatedAuto) {
             await suspendLiveSessionForRespawn({
               context,
               tasks,
@@ -649,7 +638,7 @@ export async function handleTaskMove(
             });
             console.log(
               `[TASK_MOVE] Suspending session for task ${task.id.slice(0, 8)}`
-              + ` (model/effort changed, adapter has no live swap). Will respawn with new settings.`,
+              + ` (effort changed, adapter has no live swap). Will respawn with new settings.`,
             );
             // Fall through to Phase 2/3 (spawn with new settings)
             return {
@@ -665,12 +654,12 @@ export async function handleTaskMove(
             };
           }
 
-          // No live swap plan and no settings delta, or there's an auto_command
-          // without live swap support (treat auto_command as fire-and-forget would
-          // break the semantics - just keep the session alive).
+          // 3. Permission-only delta, or no delta -> keep the live session alive.
+          // A permission change never restarts (see header); there is no
+          // model/effort delta to apply.
           console.log(
-            `[TASK_MOVE] Task ${task.id.slice(0, 8)} already has active session`
-            + ` (no model/effort delta or no live swap support, same agent). Keeping session alive.`,
+            `[TASK_MOVE] Task ${task.id.slice(0, 8)} keeping active session alive`
+            + ` (no model change; permission-only or no delta, same agent).`,
           );
           return null;
         }

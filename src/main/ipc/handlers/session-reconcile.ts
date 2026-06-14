@@ -1,10 +1,11 @@
 import { SessionRepository } from '../../db/repositories/session-repository';
 import { UsageHistoryRepository } from '../../db/repositories/usage-history-repository';
 import { getProjectDb } from '../../db/database';
-import { getProjectRepos } from '../helpers';
+import { getProjectRepos, createTransitionEngine, resolveSpawnOverrides } from '../helpers';
 import { captureSessionMetrics } from './session-metrics';
 import { markRecordExited, markRecordSuspended } from '../../engine/session-lifecycle';
 import { decideSuspendDbAction, isLiveSession } from '../../pty/session-registry';
+import { isAbortError } from '../../../shared/abort-utils';
 import type { Session, SuspendedBy, Task } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
 
@@ -49,6 +50,89 @@ export function applySuspendDbWrites(
     markRecordExited(sessionRepo, record.id);
   }
   tasks.update({ id: taskId, session_id: null });
+}
+
+/**
+ * Suspend a live session and re-spawn it in place to apply a settings change
+ * (a model change) as CLI flags, WITHOUT re-running the destination column's
+ * auto_command or transition actions and WITHOUT sending a continuation prompt.
+ * The session resumes idle (the in-progress turn is interrupted; the full
+ * conversation is preserved via `--resume`).
+ *
+ * This is the "settings change in place" restart shared by the user-driven
+ * ContextBar model pick (`task:setRuntimeOverride`) and the column-config edit
+ * (`SWIMLANE_UPDATE`). It is NOT the column-MOVE restart: a move respawns through
+ * `spawnAgent` so it can deliver the column auto_command / plan-exit continuation.
+ *
+ * Recovery contract: `suspend` (not `kill`) keeps `--resume <id>` valid, so on a
+ * respawn failure the record stays `suspended` and the existing "Resume" UI can
+ * retry. Persisting of the new model/effort override is the caller's job and must
+ * happen BEFORE this runs.
+ *
+ * Caller MUST hold `withTaskLock(taskId)` (this mutates per-task session state)
+ * and pass a resolved `projectId` / `projectPath`. Returns `{ ok: false }` rather
+ * than throwing so callers can surface a reason without unwinding a batch.
+ */
+export async function restartSessionForSettingsChange(
+  context: IpcContext,
+  projectId: string,
+  projectPath: string,
+  taskId: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    const { tasks, swimlanes, actions, attachments } = getProjectRepos(context, projectId);
+    const task = tasks.getById(taskId);
+    // Nothing live to restart. The persisted override is picked up on the next
+    // spawn/resume via prepare-spawn, so this is a benign no-op, not a failure.
+    if (!task?.session_id) return { ok: true };
+    const sessionId = task.session_id;
+
+    try {
+      applySuspendDbWrites(context, projectId, taskId, 'system');
+      await context.sessionManager.suspend(sessionId);
+    } catch (suspendError) {
+      const message = suspendError instanceof Error ? suspendError.message : String(suspendError);
+      return { ok: false, reason: `suspend failed: ${message}` };
+    }
+
+    // Re-read after applySuspendDbWrites cleared session_id: executeSpawnAgent
+    // walks back to getLatestForTask to decide resume-vs-fresh, and a stale
+    // session_id would make it deduplicate against the just-suspended PTY. Re-read
+    // the lane too in case the task moved during the unlocked suspend.
+    const updatedTask = tasks.getById(taskId);
+    if (!updatedTask) return { ok: false, reason: 'task disappeared during restart' };
+    const updatedLane = swimlanes.getById(updatedTask.swimlane_id);
+
+    const sessionRepo = new SessionRepository(getProjectDb(projectId));
+    const engine = createTransitionEngine(
+      context, actions, tasks, sessionRepo, attachments, projectId, projectPath,
+    );
+
+    try {
+      await engine.resumeSuspendedSession(
+        updatedTask,
+        updatedLane?.permission_mode,
+        true, // skipPromptTemplate - resume idle, do not re-send the original prompt
+        undefined, // resumePrompt - no continuation; this is a settings change, not a handoff
+        undefined, // signal
+        undefined, // targetAgent - resolved internally from the task/session
+        undefined, // handoffPromptPrefix
+        resolveSpawnOverrides(updatedTask, updatedLane),
+      );
+      return { ok: true };
+    } catch (respawnError) {
+      if (isAbortError(respawnError)) return { ok: false, reason: 'respawn aborted' };
+      const message = respawnError instanceof Error ? respawnError.message : String(respawnError);
+      return { ok: false, reason: `respawn failed: ${message}` };
+    }
+  } catch (unexpectedError) {
+    // Honor the documented no-throw contract: a DB error from the repo reads or
+    // applySuspendDbWrites must surface as { ok: false } so the fire-and-forget
+    // SWIMLANE_UPDATE caller (void withTaskLock) cannot raise an unhandled
+    // rejection. The override is already persisted, so the Resume UI can retry.
+    const message = unexpectedError instanceof Error ? unexpectedError.message : String(unexpectedError);
+    return { ok: false, reason: `restart failed: ${message}` };
+  }
 }
 
 /**

@@ -8,6 +8,8 @@ import { SessionRepository } from '../../db/repositories/session-repository';
 import { getProjectDb } from '../../db/database';
 import { agentRegistry } from '../../agent/agent-registry';
 import { prepareInjectionPlan } from '../../engine/injection-plan';
+import { restartSessionForSettingsChange } from './session-reconcile';
+import { withTaskLock } from '../task-lifecycle-lock';
 import { runWithProjectLogContext } from '../../diagnostics/project-log-context';
 import type { ShortcutConfig } from '../../../shared/types';
 import type { IpcContext } from '../ipc-context';
@@ -94,9 +96,16 @@ export function registerBoardHandlers(context: IpcContext): void {
     // propagates to a session running at the default, but re-saving a column at
     // a value the session already has injects nothing. `before` only gates that
     // the swimlane existed pre-update.
+    //
+    // A MODEL change restarts the session (suspend + `--resume --model`) rather
+    // than live-injecting `/model`, for consistency with the column-transition
+    // and ContextBar paths (a live model swap left the agent paused after a
+    // Planning -> Executing handoff). An EFFORT change still swaps live.
+    const projectId = context.currentProjectId;
+    const projectPath = context.currentProjectPath;
     if (before) {
-      const sessionRepo = context.currentProjectId
-        ? new SessionRepository(getProjectDb(context.currentProjectId))
+      const sessionRepo = projectId
+        ? new SessionRepository(getProjectDb(projectId))
         : null;
       for (const task of tasks.list(result.id)) {
         if (!task.session_id) continue;
@@ -112,6 +121,31 @@ export function registerBoardHandlers(context: IpcContext): void {
           toLane: result,
         });
         if (!plan) continue;
+
+        // Model change: suspend + respawn in place. Run in the background so the
+        // config save stays responsive (the session updates the UI via
+        // session-changed events); per-task locked so it can't race a user drag.
+        if (plan.needsRestartForModel) {
+          if (projectId && projectPath) {
+            const taskId = task.id;
+            void withTaskLock(taskId, async () => {
+              const restart = await restartSessionForSettingsChange(context, projectId, projectPath, taskId);
+              if (!restart.ok) {
+                console.warn(
+                  `[SWIMLANE_UPDATE] Could not restart session for task ${taskId.slice(0, 8)}`
+                  + ` after model change in column "${result.name}": ${restart.reason}`,
+                );
+              }
+            });
+          } else {
+            console.warn(
+              `[SWIMLANE_UPDATE] Skipping model-change restart for task ${task.id.slice(0, 8)}`
+              + ` in column "${result.name}": no resolved project context.`,
+            );
+          }
+          continue;
+        }
+
         context.terminalSubmitScheduler.scheduleKeystrokes(task.id, task.session_id, plan.sequence, {
           verifier: plan.verifier,
           verifiedPrefixLength: plan.verifiedPrefixLength,

@@ -8,12 +8,12 @@
  *
  * Covers the three apply paths plus the recovery contract:
  *   - `persisted`: task has no live session
- *   - `live`: adapter implements getInjectionSequence -> slash injection
- *   - `restart`: adapter has empty getInjectionSequence -> suspend + resume
+ *   - `live`: adapter implements getInjectionSequence -> effort-only slash injection
+ *   - `restart`: model change (always) or adapter has empty getInjectionSequence
+ *     for a concrete-target effort -> shared restartSessionForSettingsChange helper
  *   - `ok: false` (pre-persist): unknown agent on a task with a session
- *   - `ok: false` (post-persist): respawn failure leaves session in `suspended`
- *     state and the override IS persisted so the existing Resume UI affordance
- *     can re-spawn with whatever the user picks next
+ *   - `ok: false` (post-persist): restartSessionForSettingsChange returns ok:false
+ *     but the override IS persisted so the existing Resume UI affordance can retry
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -26,6 +26,7 @@ const capturedHandlers = new Map<string, (...args: unknown[]) => unknown>();
 
 const hoisted = vi.hoisted(() => ({
   updateAppliedSettings: vi.fn(),
+  restartSessionForSettingsChange: vi.fn(async () => ({ ok: true })),
 }));
 
 vi.mock('electron', () => ({
@@ -43,27 +44,26 @@ vi.mock('../../src/main/db/repositories/session-repository', () => ({
   },
 }));
 
+// getProjectRepos is used by the handler directly (to read task + swimlane),
+// plus it is called internally by restartSessionForSettingsChange (which we mock
+// away). The mock only needs to cover the handler's own usage.
 const mockGetProjectRepos = vi.fn();
-const mockCreateTransitionEngine = vi.fn();
-const mockResolveSpawnOverrides = vi.fn((task: { model_override?: string | null; effort_override?: string | null } | undefined, lane: { model_override?: string | null; effort_override?: string | null } | null | undefined) => ({
-  model: task?.model_override ?? lane?.model_override,
-  effort: task?.effort_override ?? lane?.effort_override,
-}));
 
 vi.mock('../../src/main/ipc/helpers', () => ({
   getProjectRepos: (...args: unknown[]) => mockGetProjectRepos(...args),
-  createTransitionEngine: (...args: unknown[]) => mockCreateTransitionEngine(...args),
-  resolveSpawnOverrides: (...args: unknown[]) => mockResolveSpawnOverrides(...(args as [never, never])),
 }));
 
-const mockApplySuspendDbWrites = vi.fn();
+// restartSessionForSettingsChange is the shared helper the handler delegates
+// all suspend+respawn work to. We test it in isolation in a dedicated file.
 vi.mock('../../src/main/ipc/handlers/session-reconcile', () => ({
-  applySuspendDbWrites: (...args: unknown[]) => mockApplySuspendDbWrites(...args),
+  restartSessionForSettingsChange: (...args: unknown[]) =>
+    hoisted.restartSessionForSettingsChange(...args),
 }));
 
 const mockBuildCommandInjectionVerifier = vi.fn(() => null);
 vi.mock('../../src/main/engine/injection-plan', () => ({
-  buildCommandInjectionVerifier: (...args: unknown[]) => mockBuildCommandInjectionVerifier(...(args as [never, never, never])),
+  buildCommandInjectionVerifier: (...args: unknown[]) =>
+    mockBuildCommandInjectionVerifier(...(args as [never, never, never])),
 }));
 
 const mockAgentRegistryGet = vi.fn();
@@ -97,7 +97,10 @@ interface MockTask {
 interface MockContext {
   currentProjectId: string | null;
   currentProjectPath: string | null;
-  sessionManager: { suspend: ReturnType<typeof vi.fn>; getSessionAgentName: ReturnType<typeof vi.fn> };
+  sessionManager: {
+    suspend: ReturnType<typeof vi.fn>;
+    getSessionAgentName: ReturnType<typeof vi.fn>;
+  };
   terminalSubmitScheduler: { scheduleKeystrokes: ReturnType<typeof vi.fn> };
 }
 
@@ -117,7 +120,10 @@ function createMockContext(overrides: Partial<MockContext> = {}): MockContext {
   return {
     currentProjectId: 'proj-1',
     currentProjectPath: '/mock/project',
-    sessionManager: { suspend: vi.fn(async () => {}), getSessionAgentName: vi.fn(() => undefined) },
+    sessionManager: {
+      suspend: vi.fn(async () => {}),
+      getSessionAgentName: vi.fn(() => undefined),
+    },
     terminalSubmitScheduler: { scheduleKeystrokes: vi.fn() },
     ...overrides,
   };
@@ -138,11 +144,12 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
   let task: MockTask;
   let taskRepo: { getById: ReturnType<typeof vi.fn>; updateOverrides: ReturnType<typeof vi.fn> };
   let swimlaneRepo: { getById: ReturnType<typeof vi.fn> };
-  let engine: { resumeSuspendedSession: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     vi.clearAllMocks();
     hoisted.updateAppliedSettings.mockReset();
+    hoisted.restartSessionForSettingsChange.mockReset();
+    hoisted.restartSessionForSettingsChange.mockResolvedValue({ ok: true });
     capturedHandlers.clear();
 
     task = createMockTask();
@@ -151,10 +158,12 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
       updateOverrides: vi.fn(),
     };
     swimlaneRepo = {
-      getById: vi.fn(() => ({ id: 'lane-1', permission_mode: null, model_override: null, effort_override: null })),
-    };
-    engine = {
-      resumeSuspendedSession: vi.fn(async () => {}),
+      getById: vi.fn(() => ({
+        id: 'lane-1',
+        permission_mode: null,
+        model_override: null,
+        effort_override: null,
+      })),
     };
 
     mockGetProjectRepos.mockReturnValue({
@@ -163,7 +172,6 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
       actions: {},
       attachments: {},
     });
-    mockCreateTransitionEngine.mockReturnValue(engine);
 
     context = createMockContext();
     registerTaskRuntimeOverrideHandlers(context as never);
@@ -197,20 +205,21 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
 
     const result = await callHandler({ taskId: 'task-1', model: 'sonnet' });
     expect(result).toEqual({ ok: false, reason: 'unknown agent "made-up-agent"' });
-    expect(taskRepo.updateOverrides).not.toHaveBeenCalled(); // pre-persist failure
+    expect(taskRepo.updateOverrides).not.toHaveBeenCalled();
   });
 
   it('resolves the adapter from the live session when task.agent is null (default-agent task)', async () => {
     // Default-agent tasks never write the project default into `task.agent`.
     // The handler must fall back to the live session's registry agent name so
     // the override applies instead of being rejected with "unknown agent".
+    // Use an EFFORT change so this stays on the live path and asserts adapter resolution.
     task = createMockTask({ agent: null });
     taskRepo.getById.mockReturnValue(task);
     context.sessionManager.getSessionAgentName.mockReturnValue('claude');
-    const getInjectionSequence = vi.fn(() => ['/model sonnet']);
+    const getInjectionSequence = vi.fn(() => ['/effort high']);
     mockAgentRegistryGet.mockReturnValue({ getInjectionSequence });
 
-    const result = await callHandler({ taskId: 'task-1', model: 'sonnet' });
+    const result = await callHandler({ taskId: 'task-1', effort: 'high' });
 
     expect(result).toEqual({ ok: true, mode: 'live' });
     expect(context.sessionManager.getSessionAgentName).toHaveBeenCalledWith('session-1');
@@ -218,15 +227,12 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
     expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
       'task-1',
       'session-1',
-      ['/model sonnet'],
+      ['/effort high'],
       expect.objectContaining({ verifiedPrefixLength: 1 }),
     );
   });
 
   it('returns unknown agent when task.agent is null and the live session has no tracked agent', async () => {
-    // The guard is preserved: if neither the task row nor the live session can
-    // name an agent, we still reject before persisting so the renderer rolls
-    // back its optimistic update.
     task = createMockTask({ agent: null });
     taskRepo.getById.mockReturnValue(task);
     context.sessionManager.getSessionAgentName.mockReturnValue(undefined);
@@ -250,8 +256,8 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
       model_override: 'sonnet',
       effort_override: null,
     });
-    expect(context.sessionManager.suspend).not.toHaveBeenCalled();
-    expect(engine.resumeSuspendedSession).not.toHaveBeenCalled();
+    expect(hoisted.restartSessionForSettingsChange).not.toHaveBeenCalled();
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
   });
 
   it('returns mode:"persisted" without further work when the spec is a no-op delta', async () => {
@@ -259,102 +265,106 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
     task = createMockTask({ model_override: 'sonnet' });
     taskRepo.getById.mockReturnValue(task);
     mockAgentRegistryGet.mockReturnValue({
-      getInjectionSequence: vi.fn(() => ['/model sonnet']), // would emit, but spec is no-op
+      getInjectionSequence: vi.fn(() => ['/model sonnet']),
     });
 
     const result = await callHandler({ taskId: 'task-1', model: 'sonnet' });
     expect(result).toEqual({ ok: true, mode: 'persisted' });
     expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
-    expect(context.sessionManager.suspend).not.toHaveBeenCalled();
+    expect(hoisted.restartSessionForSettingsChange).not.toHaveBeenCalled();
   });
 
-  it('schedules slash commands and returns mode:"live" when the adapter emits a sequence', async () => {
+  it('MODEL change returns mode:"restart" and calls restartSessionForSettingsChange (never live-swaps)', async () => {
+    // A model change ALWAYS restarts (suspend + --resume --model X), never emits
+    // a live /model swap. restartSessionForSettingsChange is the shared helper.
     const getInjectionSequence = vi.fn(() => ['/model sonnet']);
     mockAgentRegistryGet.mockReturnValue({ getInjectionSequence });
 
     const result = await callHandler({ taskId: 'task-1', model: 'sonnet' });
+
+    expect(result).toEqual({ ok: true, mode: 'restart' });
+    // The helper is called with the correct project coordinates.
+    expect(hoisted.restartSessionForSettingsChange).toHaveBeenCalledWith(
+      expect.anything(),
+      'proj-1',
+      '/mock/project',
+      'task-1',
+    );
+    // Live slash injection must NOT fire on a model restart.
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
+    // getInjectionSequence is NOT the path that decides model vs restart here -
+    // the handler checks restartForModel BEFORE calling the adapter. The adapter
+    // mock is registered but the handler branches before calling scheduleKeystrokes.
+  });
+
+  it('EFFORT-only change returns mode:"live" when the adapter emits a sequence', async () => {
+    // Effort changes via live injection when the adapter supports it.
+    const getInjectionSequence = vi.fn(() => ['/effort high']);
+    mockAgentRegistryGet.mockReturnValue({ getInjectionSequence });
+
+    const result = await callHandler({ taskId: 'task-1', effort: 'high' });
+
     expect(result).toEqual({ ok: true, mode: 'live' });
-    expect(getInjectionSequence).toHaveBeenCalledWith({
-      model: 'sonnet',
-      modelChanged: true,
-      effort: null,
-      effortChanged: false,
-    });
     expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
       'task-1',
       'session-1',
-      ['/model sonnet'],
+      ['/effort high'],
       expect.objectContaining({ verifiedPrefixLength: 1 }),
     );
-    expect(context.sessionManager.suspend).not.toHaveBeenCalled();
-    // Gap 3: persistence wiring. The recorded applied_model must be updated so a
-    // subsequent column move diffs against 'sonnet' and does not re-inject /model.
-    expect(hoisted.updateAppliedSettings).toHaveBeenCalledWith('session-1', { model: 'sonnet' });
+    // Effort is persisted to the session record so the next column move diffs
+    // against the true running value and does not re-inject.
+    expect(hoisted.updateAppliedSettings).toHaveBeenCalledWith('session-1', { effort: 'high' });
+    expect(hoisted.restartSessionForSettingsChange).not.toHaveBeenCalled();
   });
 
-  it('"Use column default" resolves through to the swimlane override and stays a live-switch', async () => {
-    // Regression guard: clearing a per-task override (input.model = null)
-    // must NOT short-circuit to the restart path when the swimlane has a
-    // model override that can be applied via slash command. Without this,
-    // selecting "Use column default" would unnecessarily kill and respawn
-    // the PTY even though `/model <swimlane-default>` would have worked.
-    task = createMockTask({ model_override: 'sonnet' }); // task currently pinned to sonnet
+  it('"Use column default" resolves through to the swimlane override and RESTARTS (concrete model target)', async () => {
+    // task pinned 'sonnet', swimlane 'opus', input.model=null -> effective model
+    // sonnet->opus is a CONCRETE model change -> must restart (not live-inject).
+    task = createMockTask({ model_override: 'sonnet' });
     taskRepo.getById.mockReturnValue(task);
     swimlaneRepo.getById.mockReturnValue({
       id: 'lane-1',
       permission_mode: null,
-      model_override: 'opus', // swimlane default is opus
+      model_override: 'opus',
       effort_override: null,
     });
-    const getInjectionSequence = vi.fn((spec) => {
+    const getInjectionSequence = vi.fn((spec: { modelChanged: boolean; model: string | null }) => {
       const out: string[] = [];
       if (spec.modelChanged && spec.model) out.push(`/model ${spec.model}`);
       return out;
     });
     mockAgentRegistryGet.mockReturnValue({ getInjectionSequence });
 
-    // User clicks "Use column default" -> input.model = null
     const result = await callHandler({ taskId: 'task-1', model: null });
 
-    expect(result).toEqual({ ok: true, mode: 'live' });
-    // Spec should resolve OLD effective = 'sonnet' (task override) and
-    // NEW effective = 'opus' (swimlane fallback), NOT { model: null }.
-    expect(getInjectionSequence).toHaveBeenCalledWith({
-      model: 'opus',
-      modelChanged: true,
-      effort: null,
-      effortChanged: false,
-    });
-    expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
-      'task-1',
-      'session-1',
-      ['/model opus'],
+    expect(result).toEqual({ ok: true, mode: 'restart' });
+    expect(hoisted.restartSessionForSettingsChange).toHaveBeenCalledWith(
       expect.anything(),
+      'proj-1',
+      '/mock/project',
+      'task-1',
     );
-    expect(context.sessionManager.suspend).not.toHaveBeenCalled();
-    // DB write persists the cleared override (null), not the resolved effective value.
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
+    // The cleared override (null) is persisted, not the resolved effective value.
     expect(taskRepo.updateOverrides).toHaveBeenCalledWith('task-1', {
       model_override: null,
       effort_override: null,
     });
   });
 
-  it('"Use column default" with no swimlane override stays as a no-op live-side (just persisted)', async () => {
-    // UX requirement: clearing a per-task override on a column that has no
-    // override of its own must NOT restart the live session. There's no
-    // concrete value to apply via either slash or respawn flag - the live
-    // CLI keeps running with whatever it has, and the next manual spawn
-    // (after the user moves the task or hits Resume) picks up the agent
-    // default. Restarting here would feel like the app yanked the rug.
+  it('"Use column default" with no swimlane override stays as mode:"persisted" (no concrete target)', async () => {
+    // Clearing a per-task override on a column that has no model override of its
+    // own: new effective model is null. A null target is not a real change (no
+    // --model flag to set) so restarting would churn the PTY for nothing.
     task = createMockTask({ model_override: 'sonnet' });
     taskRepo.getById.mockReturnValue(task);
     swimlaneRepo.getById.mockReturnValue({
       id: 'lane-1',
       permission_mode: null,
-      model_override: null, // no swimlane fallback
+      model_override: null,
       effort_override: null,
     });
-    const getInjectionSequence = vi.fn((spec) => {
+    const getInjectionSequence = vi.fn((spec: { modelChanged: boolean; model: string | null }) => {
       const out: string[] = [];
       if (spec.modelChanged && spec.model) out.push(`/model ${spec.model}`);
       return out;
@@ -364,20 +374,16 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
     const result = await callHandler({ taskId: 'task-1', model: null });
 
     expect(result).toEqual({ ok: true, mode: 'persisted' });
-    // Critically, no PTY restart for an empty target.
-    expect(context.sessionManager.suspend).not.toHaveBeenCalled();
-    expect(engine.resumeSuspendedSession).not.toHaveBeenCalled();
-    // DB write still persists the cleared override.
+    expect(hoisted.restartSessionForSettingsChange).not.toHaveBeenCalled();
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
     expect(taskRepo.updateOverrides).toHaveBeenCalledWith('task-1', {
       model_override: null,
       effort_override: null,
     });
   });
 
-  it('clearing one field (e.g. effort) when the other field needs a restart does restart', async () => {
-    // Codex-style adapter: no slash, picking a specific model -> restart
-    // is required so the new --model flag reaches the CLI on respawn.
-    // The cleared effort field doesn't block this.
+  it('clearing one field when the other needs restart does restart (model change)', async () => {
+    // codex, model 'gpt-5', effort null: model is concrete so restart fires.
     task = createMockTask({ agent: 'codex', model_override: null, effort_override: 'high' });
     taskRepo.getById.mockReturnValue(task);
     swimlaneRepo.getById.mockReturnValue({
@@ -388,43 +394,86 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
     });
     mockAgentRegistryGet.mockReturnValue({ getInjectionSequence: vi.fn(() => []) });
 
-    const updatedTask = { ...task, model_override: 'gpt-5', effort_override: null, session_id: null };
-    taskRepo.getById.mockReturnValueOnce(task).mockReturnValueOnce(updatedTask);
-
-    // User picks a new model AND clears effort in one call.
     const result = await callHandler({ taskId: 'task-1', model: 'gpt-5', effort: null });
 
     expect(result).toEqual({ ok: true, mode: 'restart' });
-    expect(context.sessionManager.suspend).toHaveBeenCalled();
+    expect(hoisted.restartSessionForSettingsChange).toHaveBeenCalledWith(
+      expect.anything(),
+      'proj-1',
+      '/mock/project',
+      'task-1',
+    );
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
   });
 
-  it('falls back to suspend + resumeSuspendedSession when the adapter has no live-switch slash', async () => {
-    // Codex-style adapter: has getInjectionSequence but returns []
+  it('falls back to restart when the adapter has no live-switch slash for a model change', async () => {
+    // Codex-style adapter: getInjectionSequence returns [] but model changed ->
+    // restartSessionForSettingsChange is called. The detailed suspend/respawn
+    // mechanics are tested in restart-session-for-settings-change.test.ts.
     const getInjectionSequence = vi.fn(() => []);
     mockAgentRegistryGet.mockReturnValue({ getInjectionSequence });
-
-    // After applySuspendDbWrites, session_id is cleared; mock the second
-    // getById to reflect that state.
-    const updatedTask = { ...task, session_id: null };
-    taskRepo.getById
-      .mockReturnValueOnce(task)        // first read at top of handler
-      .mockReturnValueOnce(updatedTask); // re-read after suspend
 
     const result = await callHandler({ taskId: 'task-1', model: 'gpt-5' });
     expect(result).toEqual({ ok: true, mode: 'restart' });
 
-    // DB persist happened
+    // DB persist happened before the restart.
     expect(taskRepo.updateOverrides).toHaveBeenCalledWith('task-1', {
       model_override: 'gpt-5',
       effort_override: null,
     });
-    // Suspend ran on the original session id
-    expect(context.sessionManager.suspend).toHaveBeenCalledWith('session-1');
-    expect(mockApplySuspendDbWrites).toHaveBeenCalledWith(expect.anything(), 'proj-1', 'task-1', 'system');
-    // Respawn called with the cleared task and the new override
-    expect(engine.resumeSuspendedSession).toHaveBeenCalled();
-    // No live-switch slash should fire on the restart path
+    // Delegate to the shared helper; do NOT call suspend/engine directly.
+    expect(hoisted.restartSessionForSettingsChange).toHaveBeenCalledWith(
+      expect.anything(),
+      'proj-1',
+      '/mock/project',
+      'task-1',
+    );
+    // No live-switch slash should fire on the restart path.
     expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
+  });
+
+  it('EFFORT change with empty getInjectionSequence and concrete target takes the RESTART path', async () => {
+    // Gap: an EFFORT change where the adapter returns [] from getInjectionSequence
+    // (no live `/effort` slash) AND the resolved effective effort is a concrete
+    // non-null target must restart (suspend + respawn), not stay on the persisted path.
+    // The task starts with no effort override (null) and the swimlane also has no
+    // override, so newEffectiveEffort comes from the input (`'xhigh'`).
+    // The adapter signals it cannot live-swap effort (empty sequence), so
+    // `restartNeededForEffort` becomes true, and the restart path is taken.
+    task = createMockTask({ model_override: null, effort_override: null });
+    taskRepo.getById.mockReturnValue(task);
+    swimlaneRepo.getById.mockReturnValue({
+      id: 'lane-1',
+      permission_mode: null,
+      model_override: null,
+      effort_override: null,
+    });
+    // Adapter that has no live-switch slash for effort changes.
+    const getInjectionSequence = vi.fn(() => []);
+    mockAgentRegistryGet.mockReturnValue({ getInjectionSequence });
+
+    const result = await callHandler({ taskId: 'task-1', effort: 'xhigh' });
+
+    // The handler must return mode:'restart', not mode:'persisted'.
+    expect(result).toEqual({ ok: true, mode: 'restart' });
+
+    // restartSessionForSettingsChange must have been called with the correct
+    // project context - this is the key assertion the gap was about.
+    expect(hoisted.restartSessionForSettingsChange).toHaveBeenCalledWith(
+      expect.anything(),
+      'proj-1',
+      '/mock/project',
+      'task-1',
+    );
+
+    // Live slash injection must NOT fire (adapter returned empty sequence).
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
+
+    // The DB persist must have happened first (override captured before PTY action).
+    expect(taskRepo.updateOverrides).toHaveBeenCalledWith('task-1', {
+      model_override: null,
+      effort_override: 'xhigh',
+    });
   });
 
   // =========================================================================
@@ -433,14 +482,17 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
 
   it('returns ok:false on suspend failure but leaves the override persisted (recovery contract)', async () => {
     mockAgentRegistryGet.mockReturnValue({ getInjectionSequence: vi.fn(() => []) });
-    context.sessionManager.suspend.mockRejectedValue(new Error('PTY already exited'));
+    hoisted.restartSessionForSettingsChange.mockResolvedValue({
+      ok: false,
+      reason: 'suspend failed: PTY already exited',
+    });
 
     const result = await callHandler({ taskId: 'task-1', model: 'gpt-5' });
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      // Renderer relies on the 'suspend failed' prefix to decide NOT to roll
-      // back the optimistic UI - the DB persist is the source of truth.
+      // The 'suspend failed' prefix tells the renderer NOT to roll back the
+      // optimistic UI - the DB persist is the source of truth.
       expect(result.reason).toMatch(/^suspend failed:/);
     }
     expect(taskRepo.updateOverrides).toHaveBeenCalledWith('task-1', {
@@ -451,20 +503,18 @@ describe('TASK_SET_RUNTIME_OVERRIDE handler', () => {
 
   it('returns ok:false on respawn failure but leaves the override persisted (recovery contract)', async () => {
     mockAgentRegistryGet.mockReturnValue({ getInjectionSequence: vi.fn(() => []) });
-    engine.resumeSuspendedSession.mockRejectedValue(new Error('CLI exited'));
-
-    const updatedTask = { ...task, session_id: null };
-    taskRepo.getById.mockReturnValueOnce(task).mockReturnValueOnce(updatedTask);
+    hoisted.restartSessionForSettingsChange.mockResolvedValue({
+      ok: false,
+      reason: 'respawn failed: CLI exited',
+    });
 
     const result = await callHandler({ taskId: 'task-1', model: 'gpt-5' });
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      // Same prefix contract as suspend failures.
       expect(result.reason).toMatch(/^respawn failed:/);
     }
-    // The override IS persisted - critical for the recovery story so the user
-    // can hit "Resume" from the existing UI and the saved override applies.
+    // The override IS persisted so the user can hit "Resume" with the saved choice.
     expect(taskRepo.updateOverrides).toHaveBeenCalledWith('task-1', {
       model_override: 'gpt-5',
       effort_override: null,

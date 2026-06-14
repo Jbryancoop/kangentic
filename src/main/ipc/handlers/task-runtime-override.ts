@@ -4,10 +4,9 @@ import { withTaskLock } from '../task-lifecycle-lock';
 import { agentRegistry } from '../../agent/agent-registry';
 import { SessionRepository } from '../../db/repositories/session-repository';
 import { getProjectDb } from '../../db/database';
-import { getProjectRepos, createTransitionEngine, resolveSpawnOverrides } from '../helpers';
+import { getProjectRepos } from '../helpers';
 import { resolveProjectContext } from '../helpers/project-repos';
-import { applySuspendDbWrites } from './session-reconcile';
-import { isAbortError } from '../../../shared/abort-utils';
+import { restartSessionForSettingsChange } from './session-reconcile';
 import { buildCommandInjectionVerifier } from '../../engine/injection-plan';
 import type { SettingsChangeSpec } from '../../agent/agent-adapter';
 import type {
@@ -21,15 +20,19 @@ import type { IpcContext } from '../ipc-context';
  * and/or effort override and applies the change to the live PTY session if
  * one exists.
  *
- * Three apply paths, picked by the adapter and current session state:
+ * Three apply paths, picked by what changed and the adapter's capability:
  *   - `persisted`: no live session. The override lands in the DB and the
  *     next manual spawn/resume picks it up via `prepare-spawn.ts`.
- *   - `live`: adapter implements `getInjectionSequence` (e.g. Claude returns
- *     `/model X` and `/effort Y`). The slash commands are scheduled into the
- *     running PTY with the adapter's command-injection verifier.
- *   - `restart`: adapter has no live-switch slash. We `suspend` (NOT kill)
- *     so the agent's session file stays on disk for `--resume <id>`, then
- *     re-spawn with the new overrides.
+ *   - `live`: an EFFORT change on an adapter that implements
+ *     `getInjectionSequence` (e.g. Claude returns `/effort Y`). The slash is
+ *     scheduled into the running PTY with the adapter's command-injection verifier.
+ *   - `restart`: a MODEL change (always), or an effort change on an adapter with
+ *     no live-switch slash. We `suspend` (NOT kill) so the agent's session file
+ *     stays on disk for `--resume <id>`, then re-spawn with the new overrides via
+ *     the shared `restartSessionForSettingsChange` helper. A model change
+ *     pauses + resumes for consistency with the column-transition and
+ *     column-config-edit paths (a live `/model` swap left the agent paused after
+ *     a Planning -> Executing handoff).
  *
  * Recovery contract (the user must never get stuck):
  *   - DB persist happens FIRST. Any downstream failure still leaves the
@@ -50,7 +53,7 @@ export function registerTaskRuntimeOverrideHandlers(context: IpcContext): void {
       }
 
       return withTaskLock(input.taskId, async () => {
-        const { tasks, swimlanes, actions, attachments } = getProjectRepos(context, projectId);
+        const { tasks, swimlanes } = getProjectRepos(context, projectId);
         const task = tasks.getById(input.taskId);
         if (!task) return { ok: false, reason: 'task not found' };
 
@@ -128,103 +131,67 @@ export function registerTaskRuntimeOverrideHandlers(context: IpcContext): void {
           return { ok: true, mode: 'persisted' };
         }
 
-        const sequence = adapter.getInjectionSequence?.(spec) ?? [];
+        // A MODEL change pauses + resumes (suspend + `--resume --model`), never a
+        // live `/model` swap - consistent with the column-transition and
+        // column-config-edit paths. (A live mid-session model switch left the
+        // agent paused after a Planning -> Executing handoff.) A concrete target
+        // only: clearing the model to "use default" (newEffectiveModel === null)
+        // has no `--model` to set and `--resume` preserves the current model, so
+        // restarting would churn for nothing.
+        const restartForModel = spec.modelChanged && newEffectiveModel !== null;
 
-        if (sequence.length > 0) {
-          // Live-switch path. Verifier confirms each slash command was parsed
-          // by the agent (defends against Enter-key races concatenating
-          // commands). Shares the wrapper with prepareInjectionPlan so both
-          // the column-transition burst and the user-driven popover use the
-          // same SubmissionVerifier-to-CommandVerifier adapter.
-          const sessionRepo = new SessionRepository(getProjectDb(projectId));
-          const verifier = buildCommandInjectionVerifier(adapter, sessionRepo, task.id);
-          context.terminalSubmitScheduler.scheduleKeystrokes(
-            input.taskId,
-            task.session_id,
-            sequence,
-            { verifier, verifiedPrefixLength: sequence.length },
-          );
-          // Record the session's new running value (changed concrete fields only)
-          // so a later column move diffs against it instead of re-injecting.
-          sessionRepo.updateAppliedSettings(task.session_id, {
-            ...(spec.modelChanged && spec.model !== null ? { model: spec.model } : {}),
-            ...(spec.effortChanged && spec.effort !== null ? { effort: spec.effort } : {}),
-          });
-          return { ok: true, mode: 'live' };
-        }
-
-        // Empty injection sequence with no concrete target value to apply
-        // (e.g. user clicked "Use column default" on a column that has no
-        // override of its own). Restarting the PTY here would just kill the
-        // session for no reason - there's no `--model` flag to set on a
-        // respawn either. The next spawn naturally uses the agent default
-        // because prepare-spawn passes `undefined` when both task and
-        // swimlane are null. Just persist and leave the live session alone.
-        const restartNeededForModel = spec.modelChanged && newEffectiveModel !== null;
-        const restartNeededForEffort = spec.effortChanged && newEffectiveEffort !== null;
-        if (!restartNeededForModel && !restartNeededForEffort) {
-          return { ok: true, mode: 'persisted' };
-        }
-
-        // No live-switch slash for this adapter, but we DO have a concrete
-        // target value (Codex/OpenCode picking a specific model, etc.) ->
-        // suspend + respawn so the new value reaches the CLI as a spawn flag.
-        // Suspend (not kill) keeps `--resume <id>` viable.
-        const sessionId = task.session_id;
-        applySuspendDbWrites(context, projectId, input.taskId, 'system');
-        try {
-          await context.sessionManager.suspend(sessionId);
-        } catch (suspendError) {
-          // Suspend failed - DB row may still claim 'suspended' but PTY may be
-          // in an unknown state. Override is persisted; surface the error so
-          // the renderer can let the user retry from the existing UI.
-          const message = suspendError instanceof Error ? suspendError.message : String(suspendError);
-          return { ok: false, reason: `suspend failed: ${message}` };
-        }
-
-        // Re-read after applySuspendDbWrites cleared session_id. Both the
-        // cleared session_id and a fresh swimlane lookup are required before
-        // engine.resumeSuspendedSession runs: executeSpawnAgent walks back to
-        // sessionRepo.getLatestForTask to decide resume-vs-fresh, and a stale
-        // session_id on the task row would make the spawn branch deduplicate
-        // against the just-killed PTY instead of starting a new one.
-        const updatedTask = tasks.getById(input.taskId);
-        if (!updatedTask) return { ok: false, reason: 'task disappeared during restart' };
-        // Re-read the lane in case the task moved during the unlocked suspend.
-        // Reusing the `lane` captured at handler entry would be stale.
-        const updatedLane = swimlanes.getById(updatedTask.swimlane_id);
-
-        const sessionRepo = new SessionRepository(getProjectDb(projectId));
-        const engine = createTransitionEngine(
-          context, actions, tasks, sessionRepo, attachments, projectId, projectPath,
-        );
-
-        try {
-          await engine.resumeSuspendedSession(
-            updatedTask,
-            updatedLane?.permission_mode,
-            true, // skipPromptTemplate - we're not re-sending the original prompt, just changing settings
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            // Pass the explicit values rather than relying on resolveSpawnOverrides
-            // so the new override is applied even though it already lives on the
-            // task row - belt and suspenders against future refactors.
-            resolveSpawnOverrides(updatedTask, updatedLane),
-          );
-          return { ok: true, mode: 'restart' };
-        } catch (respawnError) {
-          if (isAbortError(respawnError)) {
-            return { ok: false, reason: 'respawn aborted' };
+        if (!restartForModel) {
+          // Effort-only change (or a model cleared to default, which emits no
+          // `/model`). Live-inject `/effort` when the adapter supports it.
+          const sequence = adapter.getInjectionSequence?.(spec) ?? [];
+          if (sequence.length > 0) {
+            // Live-switch path. Verifier confirms each slash command was parsed
+            // by the agent (defends against Enter-key races concatenating
+            // commands). Shares the wrapper with prepareInjectionPlan so both
+            // the column-transition burst and the user-driven popover use the
+            // same SubmissionVerifier-to-CommandVerifier adapter.
+            const sessionRepo = new SessionRepository(getProjectDb(projectId));
+            const verifier = buildCommandInjectionVerifier(adapter, sessionRepo, task.id);
+            context.terminalSubmitScheduler.scheduleKeystrokes(
+              input.taskId,
+              task.session_id,
+              sequence,
+              { verifier, verifiedPrefixLength: sequence.length },
+            );
+            // Record the session's new running effort (concrete change only) so a
+            // later column move diffs against it instead of re-injecting. Model is
+            // never live-applied here (it restarts).
+            sessionRepo.updateAppliedSettings(task.session_id, {
+              ...(spec.effortChanged && spec.effort !== null ? { effort: spec.effort } : {}),
+            });
+            return { ok: true, mode: 'live' };
           }
-          // Session record stays in 'suspended' state because applySuspendDbWrites
-          // already marked it. The existing "Resume" UI affordance can be used
-          // by the user to retry with a different model/effort if this one is
-          // broken.
-          const message = respawnError instanceof Error ? respawnError.message : String(respawnError);
-          return { ok: false, reason: `respawn failed: ${message}` };
+
+          // Empty injection sequence with no concrete effort target to apply
+          // (e.g. user clicked "Use column default" on a column that has no
+          // override of its own). Restarting the PTY here would just kill the
+          // session for no reason - there's no `--effort` flag to set on a
+          // respawn either. The next spawn naturally uses the agent default
+          // because prepare-spawn passes `undefined` when both task and swimlane
+          // are null. Just persist and leave the live session alone.
+          const restartNeededForEffort = spec.effortChanged && newEffectiveEffort !== null;
+          if (!restartNeededForEffort) {
+            return { ok: true, mode: 'persisted' };
+          }
         }
+
+        // Restart path: a model change (always), or an effort change on an
+        // adapter with no live `/effort` swap and a concrete target. Suspend +
+        // respawn so the new model/effort reach the CLI as spawn flags. The shared
+        // helper resumes idle (no auto_command, no continuation) and keeps
+        // `--resume` viable, so a respawn failure leaves the record `suspended`
+        // for the existing "Resume" UI to retry.
+        const result = await restartSessionForSettingsChange(
+          context, projectId, projectPath, input.taskId,
+        );
+        return result.ok
+          ? { ok: true, mode: 'restart' }
+          : { ok: false, reason: result.reason };
       });
     },
   );
