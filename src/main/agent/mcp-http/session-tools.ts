@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod/v4';
 import { callHandler, runHandler, withProject, PROJECT_SELECTOR_DESCRIPTION } from './handler-helpers';
+import { TRANSCRIPT_TAIL_MAX, TRANSCRIPT_CHAR_BUDGET_MAX } from '../../../shared/transcript-format';
 import type { RequestResolver } from './project-resolver';
 
 /**
@@ -145,18 +146,28 @@ export function registerSessionTools(server: McpServer, resolver: RequestResolve
   server.registerTool(
     'kangentic_get_transcript',
     {
-      description: 'Get a session transcript for a task, for reviewing what an agent did, debugging, or auditing. Two formats. format="structured" (default): the parsed conversation - user prompts, assistant text, tool calls and results - as clean markdown, read from the agent\'s native session history. Supported for Claude, Droid, Codex, Gemini, Qwen, Kimi, and OpenCode; agents without a parser (e.g. Aider) report that structured is unsupported. format="raw": the verbatim ANSI-stripped PTY scrollback (the full terminal output, including TUI redraws), available for every agent. Find the task ID first with kangentic_find_task or kangentic_search_tasks. Pass `project` to read a transcript from a different project.',
+      description: 'Inspect what the agent on another task (or another project) said - "check the response from Task #25" or "read the full transcript from Task #30". Resolves the task\'s latest session by default. format="structured" (default): the parsed conversation (user prompts, assistant text, tool calls and results) as clean markdown from the agent\'s native session history (Claude, Droid, Codex, Gemini, Qwen, Kimi, OpenCode; agents without a parser, e.g. Aider, report that structured is unsupported and to use raw). Shape it with: view ("full" default, "responses" = assistant text only, "result" = the final answer); tail (last N entries / most recent messages); search (keep only entries containing a term). Output is capped (~50k chars) and keeps the most recent entries when long - raise maxChars for the full dump. format="raw": the verbatim ANSI-stripped PTY scrollback (also capped). taskId accepts the board\'s #N display id; find it with kangentic_find_task or kangentic_search_tasks. Pass `project` to read a transcript from a different project.',
       inputSchema: z.object({
-        taskId: z.string().optional().describe('Task ID (numeric display ID like "42" or full UUID). Returns transcript from the most recent session for this task.'),
+        taskId: z.string().optional().describe('Task ID (numeric display ID like "42" or full UUID). Returns the transcript from the most recent session for this task (see sessionIndex for older ones).'),
         sessionId: z.string().optional().describe('Session UUID for a specific session. Use kangentic_list_sessions to find session IDs.'),
+        sessionIndex: z.number().int().min(0).optional().describe('When taskId is given, which session to pick: 0 = newest (default), 1 = previous, etc. Sessions are ordered started_at DESC.'),
         format: z.enum(['structured', 'raw']).optional().describe('"structured" (default) = parsed conversation as markdown from native session history; "raw" = verbatim ANSI-stripped terminal scrollback.'),
+        view: z.enum(['full', 'responses', 'result']).optional().describe('Structured only. "full" (default) = whole conversation; "responses" = assistant text turns only (no tool calls/results/thinking); "result" = just the final assistant text (the Agent SDK ResultMessage.result). Ignored for raw.'),
+        tail: z.number().int().min(1).max(TRANSCRIPT_TAIL_MAX).optional().describe('Structured only. Return just the last N transcript entries (most recent messages). Hard cap 2000. Ignored for view="result" and for raw.'),
+        search: z.string().optional().describe('Structured only. Case-insensitive substring; return only entries whose content (incl. inlined tool results) contains it. Ignored for raw.'),
+        maxChars: z.number().int().min(1000).max(TRANSCRIPT_CHAR_BUDGET_MAX).optional().describe('Override the default ~50k-char output cap (hard ceiling 500000). Use to pull a long transcript in full. Applies to structured and raw.'),
         project: z.string().optional().describe(PROJECT_SELECTOR_DESCRIPTION),
       }),
     },
-    async ({ taskId, sessionId, format, project }) => withProject(resolver, project, (ctx) => callHandler('get_transcript', {
+    async ({ taskId, sessionId, sessionIndex, format, view, tail, search, maxChars, project }) => withProject(resolver, project, (ctx) => callHandler('get_transcript', {
       taskId: taskId ?? null,
       sessionId: sessionId ?? null,
+      sessionIndex: sessionIndex ?? null,
       format: format ?? null,
+      view: view ?? null,
+      tail: tail ?? null,
+      search: search ?? null,
+      maxChars: maxChars ?? null,
     }, ctx, 'Failed to get transcript')),
   );
 

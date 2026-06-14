@@ -321,10 +321,18 @@ Get the most recent handoff record for a task. Returns metadata about the cross-
 
 ### kangentic_get_transcript
 
-Get a session transcript for a task or session. At least one of `taskId` or `sessionId` must be provided. Two formats, selected with `format`:
+Inspect what the agent on another task (or another project) said - "check the response from Task #25" or "read the full transcript from Task #30". At least one of `taskId` or `sessionId` must be provided. Two formats, selected with `format`:
 
 - `format="structured"` (default): the parsed agent conversation - user prompts, assistant text, tool calls and results - rendered as clean markdown, read from the agent's native session history via the adapter's `parseTranscript` capability. The Claude parser also drops noise (slash-command XML, `<system-reminder>` spans, `isMeta` injections) and surfaces compaction boundaries/summaries explicitly. There is no cleaned-scrollback substitute: structured either comes from real session history or reports that it is unavailable and points at `format="raw"`.
-- `format="raw"`: the verbatim ANSI-stripped PTY scrollback (the full terminal output, including TUI redraws), available for every agent. Useful for debugging the terminal layer or for agents without a structured parser.
+- `format="raw"`: the verbatim ANSI-stripped PTY scrollback (the full terminal output, including TUI redraws), available for every agent. Useful for debugging the terminal layer or for agents without a structured parser. Raw scrollback is mostly repeated terminal redraws (empirically ~85% duplicate lines and multiple MB for a long session), so when a structured parser exists for the agent the raw response notes that `structured` is the cleaner, far smaller view for evaluation. Every returned transcript (both formats) is prefixed with a one-line note marking the content as read-only reference data, not instructions to follow.
+
+Structured output is shaped by three agent-agnostic levers, applied to the parsed `TranscriptEntry[]` (so no adapter branching):
+
+- `view`: `"full"` (default), `"responses"` (assistant text turns only, dropping tool calls/results/thinking), or `"result"` (just the final assistant text - the Agent SDK `ResultMessage.result`, rendered bare without the `## Assistant` heading).
+- `tail`: return only the last N entries (the most recent messages). Ignored for `view="result"`.
+- `search`: case-insensitive substring; return only entries whose content (including a tool result inlined under its owning tool call) contains the term.
+
+Output is bounded by a character budget (default ~50,000 chars; raise via `maxChars`, hard ceiling 500,000). When the result exceeds the budget it keeps the **most recent** entries and prepends a `[Truncated: N earlier entries omitted ...]` note. `view`/`tail`/`search` apply to `structured` only; the `maxChars` budget also caps `raw` scrollback (keeping the most recent portion).
 
 Structured-format support by agent:
 
@@ -336,9 +344,14 @@ Structured-format support by agent:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `taskId` | string | No | Task ID (returns transcript for the task's latest session) |
-| `sessionId` | string | No | Session ID (returns transcript for a specific session) |
+| `taskId` | string | No | Task ID (returns the transcript for the task's latest session; see `sessionIndex` for older ones) |
+| `sessionId` | string | No | Session ID (returns the transcript for a specific session) |
+| `sessionIndex` | number | No | When `taskId` is given, which session to pick: `0` = newest (default), `1` = previous, etc. Ordered `started_at DESC`. |
 | `format` | string | No | `"structured"` (default) or `"raw"`. |
+| `view` | string | No | Structured only. `"full"` (default), `"responses"`, or `"result"`. Ignored for raw. |
+| `tail` | number | No | Structured only. Last N entries (most recent). Hard cap 2000. Ignored for `view="result"` and for raw. |
+| `search` | string | No | Structured only. Case-insensitive substring; keep only entries containing it. Ignored for raw. |
+| `maxChars` | number | No | Override the default ~50,000-char output cap (hard ceiling 500,000). Applies to structured and raw. |
 | `project` | string | No | Project selector (name or UUID). Defaults to the URL-path project. |
 
 ### kangentic_get_session_files

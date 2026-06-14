@@ -252,6 +252,13 @@ export class SessionRepository {
     ).get(taskId) as SessionRecord | undefined;
   }
 
+  /** All session records for a task, newest first. Used by index-based pickers (sessionIndex). */
+  listForTaskNewestFirst(taskId: string): SessionRecord[] {
+    return this.db.prepare(
+      `SELECT * FROM sessions WHERE task_id = ? ORDER BY started_at DESC`
+    ).all(taskId) as SessionRecord[];
+  }
+
   /**
    * Find the latest session record for a task, scoped to session_type AND the
    * isolated swimlane (null = the main session). This is the resume-decision
