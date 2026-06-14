@@ -34,6 +34,13 @@ function sanitize(line) {
   cleaned = cleaned.replace(usernameRegex, '\\Users\\dev\\');
   // Forward-slash unix-style
   cleaned = cleaned.replace(usernameRegexFwd, '/Users/dev/');
+  // Claude project-dir slug form (path separators collapsed to hyphens), e.g.
+  // C--Users-tyler-Documents-GitHub-... -> C--Users-dev-Documents-GitHub-...
+  cleaned = cleaned.replace(/-Users-tyler-/gi, '-Users-dev-');
+  // General catch-all: any `Users<sep>tyler` with one-or-more slash/backslash
+  // separators (covers JSON-in-JSON paths escaped to 4 backslashes, which the
+  // fixed-form regexes above miss). Preserves the separators, swaps the name.
+  cleaned = cleaned.replace(/(Users[\\/]+)tyler/gi, '$1dev');
   // Anonymize all UUIDs (session ids, transcript ids)
   cleaned = cleaned.replace(uuidRegex, '00000000-0000-0000-0000-000000000000');
   return cleaned;

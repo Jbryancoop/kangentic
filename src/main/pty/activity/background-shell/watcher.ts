@@ -49,6 +49,18 @@ export interface BgShellWatcherCallbacks {
   onNaturalExit(sessionId: string, exitedCount: number): void;
   /** Tier A: a tracked shell PID is no longer alive. */
   onShellPidExited(sessionId: string, shellId: string): void;
+  /**
+   * A NAMED bg shell with no captured Tier A PID has been reclaimed by the
+   * output-quiescence path: its on-disk output file has not grown for
+   * `NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES` consecutive cycles AND the OS process
+   * tree shows a persistent deficit (its shell process is gone). This is the
+   * dropped-`background_shell_end` case (a fast command like `npm run build`
+   * that exited without the engine ever draining its named id). The engine
+   * should drain the named shell by id. Distinct from `onShellPidExited` (no OS
+   * PID was ever tracked) and from `onNaturalExit` (whose anonymous count drain
+   * deliberately refuses named ids).
+   */
+  onNamedShellLikelyExited(sessionId: string, shellId: string): void;
   /** Called when the Claude CLI itself dies. Engine should forceIdle. */
   onRootProcessDied(sessionId: string): void;
   /**
@@ -195,11 +207,14 @@ interface SessionWatchState {
    * Per-named-shell output-file samples. The resolved path is cached after the
    * first hit (the session-id segment is globbed, which is the costly part);
    * growth in size or mtime since the previous cycle is positive liveness for
-   * a named shell whose OS PID was never captured (Incident B). Entries are
-   * pruned when the engine stops tracking the shell, and dropped (to force a
-   * re-resolve) if the file vanishes.
+   * a named shell whose OS PID was never captured (Incident B). `quiescentCycles`
+   * counts consecutive cycles with NO growth (reset to 0 on any growth); once it
+   * reaches `NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES` and the process tree also
+   * shows a persistent deficit, the shell is reclaimed as a dropped-end-hook
+   * orphan. Entries are pruned when the engine stops tracking the shell, and
+   * dropped (to force a re-resolve) if the file vanishes.
    */
-  shellOutputFiles: Map<string, { filePath: string; sizeBytes: number; mtimeMs: number }>;
+  shellOutputFiles: Map<string, { filePath: string; sizeBytes: number; mtimeMs: number; quiescentCycles: number }>;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -211,6 +226,21 @@ const DEFAULT_POLL_INTERVAL_MS = 2_000;
  * the engine's 5-min named-shell cap.
  */
 const PID_CAPTURE_RETRY_CYCLES = 3;
+
+/**
+ * How many consecutive poll cycles a NAMED bg shell's output file must show NO
+ * growth (size and mtime both unchanged) before it becomes eligible for the
+ * output-quiescence reclaim. This is the slow, safe half of the discriminator;
+ * the fast half is a persistent process-tree deficit (the shell's OS process is
+ * gone). A dead PID-less named shell whose `background_shell_end` hook was
+ * dropped is the ONLY state that is BOTH quiescent AND in deficit, so requiring
+ * both protects a genuinely-quiet-but-alive shell (process still present, so no
+ * deficit) and a live-but-churning shell (#216 Incident B, output still
+ * growing). At the 2s default poll cadence ~30 cycles is ~60s: 5x faster than
+ * the 5-min named cap and far safer than either signal alone. Must stay > 2 so
+ * the short-horizon "stops growing, falls back to caps" behavior is unchanged.
+ */
+export const NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES = 30;
 
 export class BgShellWatcher {
   private readonly callbacks: BgShellWatcherCallbacks;
@@ -532,9 +562,13 @@ export class BgShellWatcher {
     // ANY growing shell suffices: the hold anchor is session-level and one
     // genuinely-running bg shell justifies ACTIVE; a phantom sibling is
     // reclaimed once the live shell ends (task-notification end or Tier A exit)
-    // and stops refreshing. Growth-STOPPED is deliberately NOT an exit signal -
-    // a quiet live shell is indistinguishable from a dead one, so the absence
-    // of growth simply falls through to the existing heuristics and caps.
+    // and stops refreshing. Growth-STOPPED is not an exit signal ON ITS OWN - a
+    // quiet live shell is indistinguishable from a dead one by output alone. But
+    // sustained quiescence is COUNTED per shell in `sampleNamedShellOutputGrowth`
+    // (the `quiescentCycles` field); when it coincides with a persistent
+    // process-tree deficit (the shell's OS process is gone) the deficit branch
+    // reclaims it as a dropped-end-hook orphan.
+    // Quiescence WITHOUT a deficit still just falls through to the caps.
     if (!livenessConfirmed && namedIds.length > 0) {
       if (this.sampleNamedShellOutputGrowth(sessionId, state, namedIds)) {
         this.callbacks.onShellsObservedAlive(sessionId);
@@ -628,12 +662,31 @@ export class BgShellWatcher {
         }
       } else if (namedIds.length > 0) {
         // Only named shells are tracked and none has a captured PID to
-        // attribute this deficit to (helper churn under the bg shell, e.g.
-        // the app-under-test shells of a backgrounded E2E exiting). Do NOT
-        // rebase `preExistingHelpers` down and do NOT fire: the named shell
-        // is governed by Tier A liveness (above) + the 5-min cap, and
-        // shrinking the baseline here would corrupt the eventual re-sync once
-        // the named shell clears.
+        // attribute this deficit to. Two sub-cases:
+        //  - Helper churn under a genuinely-live shell (e.g. the app-under-test
+        //    shells of a backgrounded E2E exiting): that shell keeps writing
+        //    output, so its `quiescentCycles` stays 0 and it is NOT reclaimed.
+        //  - A dead PID-less named shell whose `background_shell_end` hook was
+        //    dropped (e.g. a fast `npm run build` that exited without the engine
+        //    draining its id): its output file has been frozen for many cycles.
+        // Reclaim the latter: a named shell with no Tier A PID whose output has
+        // been quiescent past the threshold, most-quiescent first, bounded by
+        // the deficit so we never drain more than the count says vanished. Do
+        // NOT rebase `preExistingHelpers` down (that would corrupt the re-sync
+        // once a still-live named shell clears).
+        const reclaimable: Array<{ shellId: string; quiescentCycles: number }> = [];
+        for (const shellId of namedIds) {
+          if (state.trackedShellPids.has(shellId)) continue; // has a Tier A PID
+          const entry = state.shellOutputFiles.get(shellId);
+          if (entry === undefined) continue; // no on-disk output to judge by
+          if (entry.quiescentCycles < NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES) continue;
+          reclaimable.push({ shellId, quiescentCycles: entry.quiescentCycles });
+        }
+        reclaimable.sort((a, b) => b.quiescentCycles - a.quiescentCycles);
+        for (const candidate of reclaimable.slice(0, delta)) {
+          state.shellOutputFiles.delete(candidate.shellId);
+          this.callbacks.onNamedShellLikelyExited(sessionId, candidate.shellId);
+        }
       } else {
         // No engine-tracked shells to attribute the exit to. A
         // pre-existing helper (MCP server, statusline worker)
@@ -687,7 +740,12 @@ export class BgShellWatcher {
         const sample = this.statOutputFileFn(filePath);
         if (!sample) continue;
         // First observation is a baseline, not growth.
-        state.shellOutputFiles.set(shellId, { filePath, sizeBytes: sample.sizeBytes, mtimeMs: sample.mtimeMs });
+        state.shellOutputFiles.set(shellId, {
+          filePath,
+          sizeBytes: sample.sizeBytes,
+          mtimeMs: sample.mtimeMs,
+          quiescentCycles: 0,
+        });
         continue;
       }
       const sample = this.statOutputFileFn(entry.filePath);
@@ -698,6 +756,13 @@ export class BgShellWatcher {
       }
       if (sample.sizeBytes > entry.sizeBytes || sample.mtimeMs > entry.mtimeMs) {
         grew = true;
+        entry.quiescentCycles = 0;
+      } else {
+        // No advance in size or mtime: the shell produced no output this cycle.
+        // Accrue toward the output-quiescence reclaim threshold (acted on only
+        // when the process tree also shows a persistent deficit; see the named
+        // arm of the deficit branch in cycleSession).
+        entry.quiescentCycles += 1;
       }
       entry.sizeBytes = sample.sizeBytes;
       entry.mtimeMs = sample.mtimeMs;

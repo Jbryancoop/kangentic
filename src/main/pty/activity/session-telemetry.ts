@@ -221,6 +221,20 @@ export class SessionTelemetry {
             this.pushEvent(sessionId, syntheticEvent);
             this.activityEngine.markBackgroundShellEnded(sessionId, shellId);
           },
+          onNamedShellLikelyExited: (sessionId, shellId) => {
+            // Watcher reclaimed a PID-less named bg shell whose output file has
+            // been quiescent past the threshold while the OS process tree shows
+            // a persistent deficit (its `background_shell_end` hook was dropped).
+            // Drain it by id, same as a Tier A PID exit - the engine's named
+            // drain is identity-aware.
+            const syntheticEvent: SessionEvent = {
+              ts: Date.now(),
+              type: EventType.BackgroundShellEnd,
+              detail: shellId,
+            };
+            this.pushEvent(sessionId, syntheticEvent);
+            this.activityEngine.markBackgroundShellEnded(sessionId, shellId);
+          },
           onRootProcessDied: (sessionId) => {
             this.activityEngine.forceIdle(sessionId);
           },

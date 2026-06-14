@@ -4,7 +4,7 @@
  * spawning real children.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { BgShellWatcher, type BgShellWatcherCallbacks, type OutputFileSample } from '../../src/main/pty/activity/background-shell/watcher';
+import { BgShellWatcher, NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES, type BgShellWatcherCallbacks, type OutputFileSample } from '../../src/main/pty/activity/background-shell/watcher';
 import type { ProcessInfo, ProcessTreeProbe } from '../../src/main/pty/activity/background-shell/process-tree';
 
 class MockProcessTreeProbe implements ProcessTreeProbe {
@@ -66,6 +66,7 @@ class MockProcessTreeProbe implements ProcessTreeProbe {
 interface CallbackLog {
   naturalExits: Array<{ sessionId: string; exitedCount: number }>;
   shellPidExited: Array<{ sessionId: string; shellId: string }>;
+  namedShellLikelyExited: Array<{ sessionId: string; shellId: string }>;
   rootDied: string[];
   observedAlive: string[];
 }
@@ -80,7 +81,7 @@ function makeWatcher(opts?: {
   mockFiles?: Map<string, OutputFileSample>;
 }) {
   const probe = new MockProcessTreeProbe();
-  const log: CallbackLog = { naturalExits: [], shellPidExited: [], rootDied: [], observedAlive: [] };
+  const log: CallbackLog = { naturalExits: [], shellPidExited: [], namedShellLikelyExited: [], rootDied: [], observedAlive: [] };
   const rootPids = opts?.rootPidMap ?? new Map<string, number>();
   const shellCounts = opts?.shellCountMap ?? new Map<string, number>();
   const pendingTools = opts?.pendingToolMap ?? new Map<string, number>();
@@ -101,6 +102,9 @@ function makeWatcher(opts?: {
     },
     onShellPidExited(sessionId, shellId) {
       log.shellPidExited.push({ sessionId, shellId });
+    },
+    onNamedShellLikelyExited(sessionId, shellId) {
+      log.namedShellLikelyExited.push({ sessionId, shellId });
     },
     onRootProcessDied(sessionId) {
       log.rootDied.push(sessionId);
@@ -1668,7 +1672,7 @@ describe('BgShellWatcher', () => {
       watcher.dispose();
     });
 
-    it('does not confirm liveness once the output file stops growing (falls back to caps)', async () => {
+    it('does not confirm liveness once the output file stops growing (short horizon: no reclaim yet)', async () => {
       const { watcher, probe, shellCounts, namedShells, mockFiles, log } = setupPidlessNamedShell();
       watcher.registerSession('s1');
       await watcher.pollNow();
@@ -1682,10 +1686,79 @@ describe('BgShellWatcher', () => {
       expect(log.observedAlive).toContain('s1');
 
       log.observedAlive.length = 0;
-      // No further writes: size and mtime unchanged. No new confirmation.
+      // No further writes: size and mtime unchanged. No new confirmation, and at
+      // this SHORT horizon (2 quiescent cycles, far below the reclaim threshold)
+      // the shell is NOT reclaimed either - it stays governed by the caps. The
+      // longer-horizon output-quiescence reclaim is covered by the next test.
       await watcher.pollNow();
       await watcher.pollNow();
       expect(log.observedAlive).not.toContain('s1');
+      expect(log.namedShellLikelyExited).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('reclaims a PID-less named shell after sustained output quiescence + a persistent deficit (this bug)', async () => {
+      // The task #225 incident: a named `npm run build` was auto-backgrounded,
+      // its Tier A PID capture stayed ambiguous (never tracked), its
+      // `background_shell_end` hook was dropped, and the build exited in seconds.
+      // Its output file froze while the engine held the task "thinking" on its
+      // corpse. The watcher now reclaims it once the output has been quiescent
+      // past NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES (30) AND the process tree shows
+      // a persistent deficit (the build's shell is gone). Red-green: disabling
+      // the reclaim block leaves namedShellLikelyExited empty forever.
+      const { watcher, probe, shellCounts, namedShells, mockFiles, log } = setupPidlessNamedShell();
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor: preExisting=0
+
+      // Named shell tracked, no PID captured; its OS shell is gone -> permanent
+      // deficit (expected=1, shellLikeCount=0), anonCount===0, pendingTools=0.
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgB']);
+      probe.trees.set(1234, []);
+      await watcher.pollNow(); // baseline output sample (quiescentCycles=0)
+
+      // The build's output is frozen at the baseline; poll well past the
+      // threshold (the deficit branch only re-checks every other cycle, so allow
+      // margin). The reclaim fires once; the engine's id drain is simulated by
+      // the watcher dropping its cached sample, and the test window stays below
+      // a second re-accrual past the threshold.
+      for (let i = 0; i < NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES + 10; i++) {
+        await watcher.pollNow();
+      }
+
+      // Reclaimed exactly once, by id; never via the anonymous or PID paths.
+      expect(log.namedShellLikelyExited).toEqual([{ sessionId: 's1', shellId: 'bgB' }]);
+      expect(log.naturalExits).toHaveLength(0);
+      expect(log.shellPidExited).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('does NOT reclaim a quiescent named shell while its OS process is still present (no deficit)', async () => {
+      // A genuinely quiet-but-alive named shell (e.g. a backgrounded server that
+      // logs nothing while idle) keeps its shell process in the tree, so the
+      // count is in sync (no deficit). Output quiescence alone must NOT reclaim
+      // it - only quiescence corroborated by a process-tree deficit does. This
+      // shell stays held (by the in-sync liveness path + the 5-min cap), exactly
+      // as before this fix.
+      const { watcher, probe, shellCounts, namedShells, mockFiles, log } = setupPidlessNamedShell();
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor: preExisting=0
+
+      // Named shell tracked AND its shell process is present: shellLikeCount=1,
+      // expected=preExisting(0)+tracked(1)=1 -> in sync, no deficit.
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgB']);
+      probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
+      await watcher.pollNow(); // baseline output sample
+
+      // Output frozen far past the threshold, but the process never leaves.
+      for (let i = 0; i < NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES + 10; i++) {
+        await watcher.pollNow();
+      }
+
+      // Never reclaimed: the in-sync branch keeps confirming liveness instead.
+      expect(log.namedShellLikelyExited).toHaveLength(0);
+      expect(log.observedAlive).toContain('s1');
       watcher.dispose();
     });
 
@@ -1748,6 +1821,298 @@ describe('BgShellWatcher', () => {
       mockFiles.set('/mock/tmp/bgB.output', { sizeBytes: 80, mtimeMs: 4000 });
       await watcher.pollNow(); // growth
       expect(log.observedAlive).toContain('s1');
+      watcher.dispose();
+    });
+
+    // -------------------------------------------------------------------------
+    // Gap 2 (sibling): still-growing sibling survives while quiescent one is
+    // reclaimed; growing sibling's quiescentCycles resets to 0 on output growth.
+    // -------------------------------------------------------------------------
+
+    it('reclaims only the quiescent-past-threshold shell when a sibling is still growing (sibling survives, quiescentCycles resets)', async () => {
+      // Task #225 scenario with TWO named bg shells:
+      //   bgDead: fast `npm run build` - exited; output frozen for many cycles.
+      //   bgLive: a backgrounded `npx playwright test` that keeps writing output.
+      //
+      // The fix must reclaim only bgDead (output quiescent + deficit), NOT bgLive
+      // (output still growing; quiescentCycles resets to 0 on each growth cycle).
+      // Red-green: removing the `entry.quiescentCycles < threshold continue` guard
+      // reclaims both shells, making this test fail with length 2 instead of 1.
+
+      const outputPaths = new Map<string, string>([
+        ['bgDead', '/mock/tmp/bgDead.output'],
+        ['bgLive', '/mock/tmp/bgLive.output'],
+      ]);
+      const mockFiles = new Map<string, OutputFileSample>([
+        ['/mock/tmp/bgDead.output', { sizeBytes: 500, mtimeMs: 1000 }],
+        ['/mock/tmp/bgLive.output', { sizeBytes: 500, mtimeMs: 1000 }],
+      ]);
+      const harness = makeWatcher({ outputPathMap: outputPaths, mockFiles });
+      const { watcher, probe, shellCounts, namedShells, log } = harness;
+      harness.rootPids.set('s1', 1234);
+      harness.probe.alive.add(1234);
+      harness.probe.trees.set(1234, []);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor: preExisting=0
+
+      // Both named shells tracked; OS process tree shows deficit of 2
+      // (both builds' shells are gone). anonCount=0, pendingTools=0.
+      shellCounts.set('s1', 2);
+      namedShells.set('s1', ['bgDead', 'bgLive']);
+      probe.trees.set(1234, []);
+      await watcher.pollNow(); // baseline samples for both files
+
+      // Poll many cycles: bgDead's file stays frozen (accumulates quiescentCycles);
+      // bgLive grows on every cycle (quiescentCycles resets to 0 each time).
+      for (let cycle = 0; cycle < NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES + 10; cycle++) {
+        // bgLive produces new output each cycle.
+        const currentLiveSize = mockFiles.get('/mock/tmp/bgLive.output')!.sizeBytes;
+        mockFiles.set('/mock/tmp/bgLive.output', {
+          sizeBytes: currentLiveSize + 100,
+          mtimeMs: 2000 + cycle * 10,
+        });
+        await watcher.pollNow();
+      }
+
+      // Only bgDead is reclaimed (quiescent + in deficit).
+      // bgLive is NOT reclaimed: its output kept growing so its quiescentCycles
+      // never reached the threshold.
+      expect(log.namedShellLikelyExited).toHaveLength(1);
+      expect(log.namedShellLikelyExited[0]).toEqual({ sessionId: 's1', shellId: 'bgDead' });
+      // The growing sibling fires observedAlive every cycle (it grows each time).
+      expect(log.observedAlive).toContain('s1');
+      // Anonymous exit path must not fire (both shells are named).
+      expect(log.naturalExits).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    // -------------------------------------------------------------------------
+    // Gap 3: most-quiescent-first sort with delta=1 (only one OS process
+    // vanished) reclaims the MORE-quiescent candidate in the SAME reclaim call.
+    // -------------------------------------------------------------------------
+
+    it('reclaims the most-quiescent candidate first when delta=1 and two candidates qualify', async () => {
+      // Two named shells both past the quiescence threshold simultaneously,
+      // and the process tree lost only ONE shell (delta=1). The sort must pick
+      // the MORE-quiescent candidate in that single reclaim call.
+      //
+      // Setup:
+      //   Phase 1: count is in sync (no deficit) so no reclaim fires, but both
+      //   shells' quiescentCycles accrue freely. bgOld starts accruing at the
+      //   baseline poll. bgNew grows for the first 5 cycles (resets its count),
+      //   then freezes. After 35 more cycles with both frozen:
+      //     bgOld.quiescentCycles = 35 + 5(initial) = 40
+      //     bgNew.quiescentCycles = 35
+      //   Both are past the 30-cycle threshold.
+      //   Phase 2: introduce a deficit of 1 for the first time. Both are now
+      //   simultaneously in `reclaimable` (both quiescent >= 30). delta=1.
+      //   reclaimable.sort(descending).slice(0, 1) -> picks bgOld (40 cycles).
+      //
+      // Red-green: reversing the sort to ascending reclaims bgNew (35 cycles)
+      // first, making log.namedShellLikelyExited[0].shellId === 'bgNew'.
+      //
+      // NOTE: Phase 1 requires in-sync count so no deficit fires. We achieve
+      // this by keeping shellCounts=2 and probe.trees with BOTH bash processes
+      // present (shellLike=2 = expected=2, no deficit). The quiescentCycles
+      // accrual happens in sampleNamedShellOutputGrowth which runs BEFORE the
+      // surplus/deficit check (whenever !livenessConfirmed && namedIds.length>0),
+      // so quiescentCycles still accumulate even when the count is in sync.
+
+      const outputPaths = new Map<string, string>([
+        ['bgOld', '/mock/tmp/bgOld3.output'],
+        ['bgNew', '/mock/tmp/bgNew3.output'],
+      ]);
+      const mockFiles = new Map<string, OutputFileSample>([
+        ['/mock/tmp/bgOld3.output', { sizeBytes: 200, mtimeMs: 1000 }],
+        ['/mock/tmp/bgNew3.output', { sizeBytes: 200, mtimeMs: 1000 }],
+      ]);
+      const harness = makeWatcher({ outputPathMap: outputPaths, mockFiles });
+      const { watcher, probe, shellCounts, namedShells, log } = harness;
+      harness.rootPids.set('s1', 1234);
+      harness.probe.alive.add(1234);
+      harness.probe.trees.set(1234, []);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor: preExisting=0
+
+      // Phase 1: count in sync so no deficit fires. Both shells tracked,
+      // both bash processes present: expected=2, shellLike=2, in sync.
+      shellCounts.set('s1', 2);
+      namedShells.set('s1', ['bgOld', 'bgNew']);
+      probe.trees.set(1234, [
+        { pid: 5001, ppid: 1234, comm: 'bash' },
+        { pid: 5002, ppid: 1234, comm: 'bash' },
+      ]);
+      await watcher.pollNow(); // baseline for both files; in sync (no deficit)
+
+      // bgNew grows for 5 cycles; bgOld stays frozen. In-sync, no deficit.
+      for (let cycle = 0; cycle < 5; cycle++) {
+        const currentSize = mockFiles.get('/mock/tmp/bgNew3.output')!.sizeBytes;
+        mockFiles.set('/mock/tmp/bgNew3.output', { sizeBytes: currentSize + 10, mtimeMs: 2000 + cycle });
+        await watcher.pollNow();
+      }
+      // bgOld.quiescentCycles=5; bgNew.quiescentCycles=0. Still in sync.
+
+      // Both files now frozen. Both accumulate. Poll 35 more cycles.
+      // bgOld reaches 40; bgNew reaches 35. Both past threshold. No deficit yet.
+      for (let cycle = 0; cycle < 35; cycle++) {
+        await watcher.pollNow();
+      }
+      // No reclaim has fired yet (in-sync throughout).
+      expect(log.namedShellLikelyExited).toHaveLength(0);
+
+      // Phase 2: introduce a deficit of 1 for the first time. Remove one bash.
+      // shellLike=1, expected=2, delta=1. Both bgOld and bgNew are in
+      // reclaimable (bgOld.quiescentCycles=40, bgNew.quiescentCycles=35).
+      // First deficit cycle: consecutiveDeficitCycles=1 (lag grace, no fire).
+      probe.trees.set(1234, [{ pid: 5001, ppid: 1234, comm: 'bash' }]);
+      await watcher.pollNow();
+      // Second deficit cycle: consecutiveDeficitCycles=2, fires.
+      await watcher.pollNow();
+
+      // The sort (descending by quiescentCycles) must have picked bgOld (40).
+      expect(log.namedShellLikelyExited).toHaveLength(1);
+      expect(log.namedShellLikelyExited[0]).toEqual({ sessionId: 's1', shellId: 'bgOld' });
+      watcher.dispose();
+    });
+
+    // -------------------------------------------------------------------------
+    // Gap 4: trackedShellPids skip-guard - a named shell WITH a live Tier A PID
+    // must not also be reclaimed by the quiescence path.
+    // -------------------------------------------------------------------------
+
+    it('does NOT reclaim a named shell that has a captured Tier A PID (skip-guard)', async () => {
+      // The skip-guard at the top of the deficit named arm:
+      //   `if (state.trackedShellPids.has(shellId)) continue;`
+      // must prevent a Tier A-owned shell from being reclaimed via the quiescence
+      // path even when its output file has been frozen past the threshold.
+      //
+      // The guard can only be exercised when `livenessConfirmed = false` (so the
+      // output-file sampling path runs at all). The Tier A allNamedAlive check
+      // at the top of cycleSession sets livenessConfirmed=true only when EVERY
+      // named shell has an alive PID. Using two named shells - one with a Tier A
+      // PID alive, one without - keeps allNamedAlive=false and lets the sampling
+      // path accumulate quiescentCycles for both shells.
+      //
+      // Setup:
+      //   - Two named shells: bgTracked (has Tier A PID 6001 alive in tree)
+      //     and bgNoPid (no captured PID).
+      //   - Both shell output files are frozen (no growth -> quiescentCycles climbs).
+      //   - Persistent deficit: OS tree has zero bash descendants after anchor.
+      //   - After NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES cycles, both shells are
+      //     quiescent past the threshold, but only bgNoPid should be reclaimed.
+      //
+      // Red-green: commenting out the guard causes bgTracked to also appear in
+      // `reclaimable` and be reclaimed via onNamedShellLikelyExited. The assertion
+      // `namedShellLikelyExited` has only bgNoPid fails because bgTracked is also
+      // present.
+
+      const outputPathsGuard = new Map<string, string>([
+        ['bgTracked', '/mock/tmp/bgTracked4.output'],
+        ['bgNoPid', '/mock/tmp/bgNoPid4.output'],
+      ]);
+      const mockFilesGuard = new Map<string, OutputFileSample>([
+        ['/mock/tmp/bgTracked4.output', { sizeBytes: 300, mtimeMs: 1000 }],
+        ['/mock/tmp/bgNoPid4.output', { sizeBytes: 300, mtimeMs: 1000 }],
+      ]);
+      const harness = makeWatcher({ outputPathMap: outputPathsGuard, mockFiles: mockFilesGuard });
+      const { watcher, probe, shellCounts, namedShells, log } = harness;
+      harness.rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      // Anchor: bgTracked's bash (PID 6001) is present so it gets captured.
+      // anonCount = max(0, 1 - 0) = 1 at anchor -> preExistingHelpers = 1.
+      probe.trees.set(1234, [
+        { pid: 6001, ppid: 1234, comm: 'bash' },
+      ]);
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor: preExistingHelpers=1
+
+      // Report both named shells. Register bgTracked's Tier A PID.
+      shellCounts.set('s1', 2);
+      namedShells.set('s1', ['bgTracked', 'bgNoPid']);
+      probe.alive.add(6001);
+      watcher.registerShellPid('s1', 'bgTracked', 6001);
+
+      await watcher.pollNow(); // baseline output sample for both shells
+
+      // OS tree: bgTracked's bash (6001) still alive; bgNoPid never had one.
+      // allNamedAlive check: bgTracked has PID 6001 alive, bgNoPid has no PID
+      // -> allNamedAlive=false -> livenessConfirmed=false -> sampling path runs.
+      // Count: shellLikeCount=1 (only 6001), expected=preExisting(1)+tracked(2)=3
+      // -> delta=2, anonCount=max(0,1-2)=0 -> named arm fires.
+      // In the reclaimable loop: bgTracked has trackedShellPids entry -> SKIP.
+      // bgNoPid has no PID and quiescentCycles past threshold -> reclaimed.
+      probe.trees.set(1234, [{ pid: 6001, ppid: 1234, comm: 'bash' }]);
+      for (let cycle = 0; cycle < NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES + 10; cycle++) {
+        await watcher.pollNow();
+      }
+
+      // Only bgNoPid is reclaimed. bgTracked (Tier A PID still alive) is NOT.
+      expect(log.namedShellLikelyExited).toEqual([{ sessionId: 's1', shellId: 'bgNoPid' }]);
+      // Tier A path did NOT fire (PID 6001 is still alive in the tree).
+      expect(log.shellPidExited).toHaveLength(0);
+      // No anonymous drain (anonCount=0 throughout the deficit cycles).
+      expect(log.naturalExits).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    // -------------------------------------------------------------------------
+    // Gap 5: file-vanish mid-accrual resets quiescentCycles; reclaim is
+    // deferred until the file returns AND the deficit persists.
+    // -------------------------------------------------------------------------
+
+    it('file vanish mid-accrual resets quiescentCycles; reclaim deferred until file returns and deficit persists', async () => {
+      // The shell's output file disappears mid-accrual (e.g. /tmp cleanup
+      // or agent restarts its output). The watcher drops the cached entry
+      // (quiescentCycles included) and forces a re-resolve on the next cycle
+      // where the path is found again. After the file reappears, the
+      // quiescentCycles counter starts from zero, so premature reclaim is
+      // impossible until the new threshold is met.
+      //
+      // Red-green: removing the `mockFiles.delete` (file never vanishes) would
+      // cause quiescentCycles to reach the threshold without interruption,
+      // triggering onNamedShellLikelyExited BEFORE the vanish/reappear cycle.
+      // With the vanish the first reclaim attempt is discarded and a full
+      // new quiescence window must elapse.
+
+      const { watcher, probe, shellCounts, namedShells, mockFiles, log } = setupPidlessNamedShell();
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor: preExisting=0
+
+      // Named shell tracked, no PID captured; OS process gone (persistent deficit).
+      shellCounts.set('s1', 1);
+      namedShells.set('s1', ['bgB']);
+      probe.trees.set(1234, []);
+      await watcher.pollNow(); // baseline output sample at {100, 1000}
+
+      // Accrue quiescentCycles to just below the threshold.
+      const partialAccrual = NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES - 5;
+      for (let cycle = 0; cycle < partialAccrual; cycle++) {
+        await watcher.pollNow();
+      }
+      // Not yet at the threshold: no reclaim yet.
+      expect(log.namedShellLikelyExited).toHaveLength(0);
+
+      // File vanishes mid-accrual: the watcher drops its cached entry.
+      // This resets quiescentCycles (the entry is gone from shellOutputFiles).
+      mockFiles.delete('/mock/tmp/bgB.output');
+      await watcher.pollNow(); // entry dropped (file gone)
+      expect(log.namedShellLikelyExited).toHaveLength(0);
+
+      // File reappears with fresh content.
+      mockFiles.set('/mock/tmp/bgB.output', { sizeBytes: 999, mtimeMs: 9999 });
+      await watcher.pollNow(); // re-baseline (quiescentCycles restarted at 0)
+      // Still no reclaim: the counter restarted, so even though the deficit
+      // persists we need ANOTHER full quiescence window.
+      expect(log.namedShellLikelyExited).toHaveLength(0);
+
+      // Now poll past the threshold AGAIN (file stays frozen).
+      for (let cycle = 0; cycle < NAMED_SHELL_QUIESCENT_RECLAIM_CYCLES + 10; cycle++) {
+        await watcher.pollNow();
+      }
+
+      // After the second full window, the reclaim fires exactly once.
+      expect(log.namedShellLikelyExited).toEqual([{ sessionId: 's1', shellId: 'bgB' }]);
+      expect(log.naturalExits).toHaveLength(0);
       watcher.dispose();
     });
 

@@ -221,6 +221,50 @@ describe('ActivityEngine replay tests', () => {
     });
   });
 
+  describe('session-015-orphaned-named-bg-shell-no-pid', () => {
+    // Real capture of task #225. A foreground `npm run build` auto-backgrounds
+    // to the NAMED shell `benxug1zq` while a concurrent `npx vitest run` churns
+    // the process tree, so Tier A PID capture stays ambiguous and is abandoned.
+    // The agent never collects the build output, so its `background_shell_end`
+    // hook never fires - contrast `bhflp7qsn` (a later bg shell) which DID get
+    // its end. The pure event stream therefore leaves the engine holding the
+    // orphan with no end. The engine is CORRECT to hold a named shell it has no
+    // end for; detecting the DEAD OS process and draining it is the
+    // BgShellWatcher's job (the watcher path that reclaims a PID-less,
+    // output-quiescent named shell in deficit is covered in
+    // bg-shell-watcher.test.ts - the replay harness drives only the engine, not
+    // the watcher, so this fixture characterizes the engine's faithful hold of
+    // the false-active condition, it is NOT the fix's red-green).
+    let result: ReplayResult;
+    beforeEach(() => {
+      const events = loadFixture('session-015-orphaned-named-bg-shell-no-pid.jsonl');
+      result = replay(events);
+    });
+
+    it('ends thinking, held solely by the orphaned named bg shell', () => {
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.turnActive).toBe(false);
+      expect(result.finalState.pendingToolCount).toBe(0);
+      expect(result.finalState.subagentDepth).toBe(0);
+      expect(result.finalState.permissionPending).toBe(false);
+      // Held by named shells only (no anonymous count involved).
+      expect(result.finalState.anonymousBackgroundShellCount).toBe(0);
+    });
+
+    it('keeps `benxug1zq` tracked (no end event) but drained `bhflp7qsn` (had its end)', () => {
+      expect(result.finalState.activeBackgroundShellIds).toContain('benxug1zq');
+      expect(result.finalState.activeBackgroundShellIds).not.toContain('bhflp7qsn');
+    });
+
+    it('the trailing idle_hint does NOT settle idle (and no bg-shell-hatch fires) while a bg shell holds the turn', () => {
+      // The stream ends with a "Claude is waiting for your input" idle_hint, but
+      // the orphan bg shell still holds the predicate, so the hint cannot flip
+      // it to idle. This is exactly the user-visible false-active symptom.
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.lastThinkingToIdleTrigger).not.toBe('timer:bg-shell-hatch');
+    });
+  });
+
   describe('session-002-many-bg-shells', () => {
     let result: ReplayResult;
     beforeEach(() => {

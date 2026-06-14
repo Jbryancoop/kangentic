@@ -432,3 +432,137 @@ describe('SessionTelemetry: ingestEvents - named vs anonymous BackgroundShellSta
     expect(engineState?.anonymousBackgroundShellCount).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gap 1: onNamedShellLikelyExited wiring (output-quiescence reclaim -> engine drain)
+// ---------------------------------------------------------------------------
+
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+describe('SessionTelemetry: onNamedShellLikelyExited -> BackgroundShellEnd + markBackgroundShellEnded wiring', () => {
+  // Exercises the onNamedShellLikelyExited closure in session-telemetry.ts end-
+  // to-end: drives the full path from watcher output-quiescence reclaim through
+  // SessionTelemetry's closure body, verifying:
+  //   a) a BackgroundShellEnd synthetic event with detail === shellId appears in
+  //      the session log (not the NaturalExit sentinel used by onNaturalExit).
+  //   b) activityEngine.markBackgroundShellEnded(sessionId, shellId) is called,
+  //      draining the named shell by identity and transitioning to idle.
+  //
+  // Red-green: deleting the onNamedShellLikelyExited body in session-telemetry.ts
+  // leaves the engine holding the orphaned named shell, so assertion (b)
+  // "activity === idle" stays 'thinking'.
+  //
+  // The watcher's statOutputFile is wired to fs.statSync inside SessionTelemetry
+  // (not injectable through its public API). We therefore use a real temp file
+  // whose stat stays frozen between polls, causing quiescentCycles to accumulate
+  // to the reclaim threshold naturally.
+
+  const ORPHANED_SHELL_ID = 'bld9x3r2q';
+  const QUIESCENT_RECLAIM_CYCLES = 30;
+
+  let probe: MockProcessTreeProbe;
+  let rootPids: Map<string, number>;
+  let log: CallbackLog;
+  let telemetry: SessionTelemetry;
+  let tmpOutputFile: string;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    probe = new MockProcessTreeProbe();
+    rootPids = new Map();
+    log = { activityChanges: [], events: [] };
+    const callbacks = makeCallbacks(log);
+
+    // Create a real temp file. Its stat will never change between polls,
+    // so the watcher accumulates quiescentCycles on every cycle.
+    const tmpDir = os.tmpdir();
+    tmpOutputFile = path.join(tmpDir, `kangentic-test-${Date.now()}-bgshell.output`);
+    fs.writeFileSync(tmpOutputFile, 'initial build output');
+
+    telemetry = new SessionTelemetry(
+      {
+        ...callbacks,
+        getSessionRootPid: (sessionId) => rootPids.get(sessionId),
+        resolveBackgroundShellOutputFile: (_sessionId, shellId) =>
+          shellId === ORPHANED_SHELL_ID ? tmpOutputFile : null,
+      },
+      {
+        processTreeProbe: probe,
+        disableBgShellWatcher: false,
+        activityEngineOptions: {
+          bgShellEscapeHatchMs: 300_000,
+          staleThinkingTimeoutMs: 300_000,
+          idleStabilityWindowMs: 0,
+        },
+      },
+    );
+  });
+
+  afterEach(() => {
+    telemetry.dispose();
+    vi.useRealTimers();
+    try { fs.unlinkSync(tmpOutputFile); } catch { /* already deleted */ }
+  });
+
+  it('onNamedShellLikelyExited pushes BackgroundShellEnd with shellId detail and drains the named shell from the engine', async () => {
+    // Full end-to-end wiring: after QUIESCENT_RECLAIM_CYCLES + margin polls
+    // with no output-file growth AND a persistent process-tree deficit,
+    // the watcher fires onNamedShellLikelyExited(sessionId, shellId).
+    // SessionTelemetry's closure must push the event with detail === shellId
+    // and drain the shell via markBackgroundShellEnded(sessionId, shellId).
+
+    const rootPid = 8001;
+    rootPids.set('s-orphan', rootPid);
+    probe.alive.add(rootPid);
+    // The named shell's OS process is already gone (permanent deficit).
+    probe.trees.set(rootPid, []);
+
+    telemetry.initSession('s-orphan');
+
+    // Anchor cycle: no bg shells yet (preExisting=0).
+    await telemetry.bgShellWatcher!.pollNow();
+
+    // Engine: Prompt activates a turn; BackgroundShellStart registers the
+    // orphaned named shell (its end hook was never delivered); Idle closes
+    // the turn but the bg shell keeps the predicate active ('thinking').
+    // This is the exact false-active symptom from task #225.
+    telemetry.ingestEvents('s-orphan', [
+      { ts: Date.now(), type: EventType.Prompt },
+      { ts: Date.now(), type: EventType.BackgroundShellStart, detail: ORPHANED_SHELL_ID },
+      { ts: Date.now(), type: EventType.Idle },
+    ]);
+
+    const stateAfterIngest = telemetry.activityEngine.getState('s-orphan');
+    expect(stateAfterIngest?.activeBackgroundShellIds.has(ORPHANED_SHELL_ID)).toBe(true);
+    expect(stateAfterIngest?.activity).toBe('thinking');
+
+    const eventsBefore = log.events.length;
+
+    // Poll through the quiescence threshold. The output file never changes
+    // (we do not write to it), so every cycle increments quiescentCycles.
+    // The deficit branch re-checks every 2 cycles after the lag-tolerance
+    // window, so allow QUIESCENT_RECLAIM_CYCLES + 10 cycles for margin.
+    for (let cycle = 0; cycle < QUIESCENT_RECLAIM_CYCLES + 10; cycle++) {
+      await telemetry.bgShellWatcher!.pollNow();
+    }
+
+    // a) A BackgroundShellEnd event was pushed with detail === shellId.
+    const newEvents = log.events.slice(eventsBefore);
+    const bgShellEndEvents = newEvents.filter(
+      (entry) =>
+        entry.sessionId === 's-orphan' &&
+        entry.event.type === EventType.BackgroundShellEnd,
+    );
+    expect(bgShellEndEvents).toHaveLength(1);
+    // The detail must be the named shell id, NOT the anonymous NaturalExit sentinel.
+    expect(bgShellEndEvents[0]?.event.detail).toBe(ORPHANED_SHELL_ID);
+    expect(bgShellEndEvents[0]?.event.detail).not.toBe('natural-exit');
+
+    // b) The engine drained the named shell by identity.
+    const stateAfterDrain = telemetry.activityEngine.getState('s-orphan');
+    expect(stateAfterDrain?.activeBackgroundShellIds.has(ORPHANED_SHELL_ID)).toBe(false);
+    expect(stateAfterDrain?.activity).toBe('idle');
+  });
+});
