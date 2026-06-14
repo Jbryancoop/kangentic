@@ -23,6 +23,16 @@ export const handleCreateTask: CommandHandler = (
   const priority = params.priority as number | null;
   const rawLabels = params.labels as Array<string | { name: string; color?: string }> | null;
 
+  // Observability for the "labels dropped on a large description" bug
+  // (task #229). Logs what `labels` actually reached the handler. If it is
+  // null/absent here while the description is large, the drop is upstream of
+  // Kangentic (the MCP client never sent it). The decisive raw-byte capture
+  // lives in mcp-http-server.ts.
+  console.log('[create_task] received args:', {
+    descriptionLength: description.length,
+    labels: rawLabels,
+  });
+
   if (!title.trim()) {
     return { success: false, error: 'Task title is required' };
   }
@@ -116,6 +126,13 @@ export const handleUpdateTask: CommandHandler = (
   const newLabels = params.labels as string[] | null;
   const newBaseBranch = params.baseBranch as string | null;
   const newUseWorktree = params.useWorktree as boolean | null;
+
+  // Observability for the "labels dropped on a large description" bug
+  // (task #229). See the matching note in handleCreateTask.
+  console.log('[update_task] received args:', {
+    descriptionLength: typeof newDescription === 'string' ? newDescription.length : null,
+    labels: newLabels,
+  });
 
   if (!taskId) {
     return { success: false, error: 'taskId is required' };

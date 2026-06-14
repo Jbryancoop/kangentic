@@ -29,6 +29,7 @@ import { registerSearchTools } from './mcp-http/search-tools';
 import { registerDiagnosticsTools } from './mcp-http/diagnostics-tools';
 import { registerDevtoolsMcpTools } from '../../devtools/mcp/register';
 import { buildServerInstructions } from './mcp-http/server-instructions';
+import { logMcpToolArguments } from './mcp-http/tool-call-logging';
 import type { RequestResolver } from './mcp-http/project-resolver';
 
 const SERVER_NAME = 'kangentic';
@@ -225,7 +226,32 @@ async function handleHttpRequest(
 
   try {
     await mcpServer.connect(transport);
-    await transport.handleRequest(req, res);
+    if (req.method === 'POST') {
+      // Own the POST body read instead of delegating to the SDK's Node to Web
+      // Request conversion. Node-native buffering is reliable for multi-chunk
+      // bodies, lets us capture the raw tool-call arguments for the labels-drop
+      // diagnostic (task #229), and we hand the parsed value back to the SDK
+      // via its supported `parsedBody` parameter so nothing downstream changes.
+      let parsedBody: unknown;
+      try {
+        parsedBody = JSON.parse(await readRequestBody(req));
+      } catch {
+        // Malformed or empty JSON body. Emit the JSON-RPC parse error
+        // ourselves rather than re-reading the now-consumed stream.
+        if (!res.headersSent) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }));
+        }
+        return;
+      }
+      // Diagnostics must never break dispatch.
+      try { logMcpToolArguments(parsedBody); } catch { /* ignore logging failure */ }
+      await transport.handleRequest(req, res, parsedBody);
+    } else {
+      // GET (SSE stream) and DELETE (session teardown) carry no JSON body.
+      await transport.handleRequest(req, res);
+    }
   } catch (error) {
     // If connect() or handleRequest() threw before the response was
     // committed, write a 500 so the client doesn't hang waiting for a
@@ -243,3 +269,18 @@ async function handleHttpRequest(
     try { await transport.close(); } catch { /* already closed */ }
   }
 }
+
+/**
+ * Buffer the full request body as a UTF-8 string. Node-native chunk
+ * assembly handles multi-chunk bodies correctly; the caller JSON.parses the
+ * result and hands it to the SDK via `handleRequest(req, res, parsedBody)`.
+ */
+function readRequestBody(req: IncomingMessage): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('error', reject);
+  });
+}
+

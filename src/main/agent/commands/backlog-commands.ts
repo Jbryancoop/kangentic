@@ -69,6 +69,14 @@ export const handleCreateBacklogTask: CommandHandler = (
   const rawLabels = (params.labels as Array<string | { name: string; color: string }>) ?? [];
   const attachments = params.attachments as Array<{ filePath: string; filename?: string }> | null;
 
+  // Observability for the "labels dropped on a large description" bug
+  // (task #229). Logs the raw `labels` value as received (before the `?? []`
+  // fallback above), so an absent key is visible as null.
+  console.log('[create_backlog_task] received args:', {
+    descriptionLength: description.length,
+    labels: params.labels ?? null,
+  });
+
   // Normalize labels: extract names for DB storage and colors for config
   const labelNames: string[] = [];
   const labelColorMap: Record<string, string> = {};
@@ -139,6 +147,13 @@ export const handleUpdateBacklogItem: CommandHandler = (
   const newDescription = (params.description ?? null) as string | null;
   const newPriority = (params.priority ?? null) as number | null;
   const rawLabels = (params.labels ?? null) as Array<string | { name: string; color: string }> | null;
+
+  // Observability for the "labels dropped on a large description" bug
+  // (task #229). See the matching note in handleCreateBacklogTask.
+  console.log('[update_backlog_item] received args:', {
+    descriptionLength: typeof newDescription === 'string' ? newDescription.length : null,
+    labels: rawLabels,
+  });
 
   if (!itemId) {
     return { success: false, error: 'itemId is required' };

@@ -40,6 +40,9 @@ export function buildServerInstructions(resolver: RequestResolver): string {
     '',
     'PROJECT ROUTING RULE (important):',
     'Tools that accept an optional `project` argument default to the active project above. If the user\'s request names a different Kangentic project (e.g. "create a task in kangentic to fix ...", "move task #7 in acme to Done"), pass that project name as `project` on the tool call instead of relying on the active default. Do not file a task into the active project when the user clearly targeted another one.',
+    '',
+    'LABELS WITH A LONG DESCRIPTION (known limitation):',
+    'When a kangentic_create_task or kangentic_update_task call carries both a long description (roughly 1KB or more) and labels, the labels can be dropped before they reach the server. To make labels stick, set them in a separate labels-only kangentic_update_task call after creating or updating the task with the long description.',
   ];
 
   if (projects.length > 0) {
