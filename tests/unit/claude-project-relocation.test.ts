@@ -30,11 +30,19 @@ import { migrateClaudeProjectData } from '../../src/main/agent/adapters/claude/p
 import { claudeProjectSlug } from '../../src/main/agent/adapters/claude/transcript-parser';
 import { toForwardSlash } from '../../src/shared/paths';
 
-// Resolved project locations. path.resolve makes them absolute on the host OS
-// (drive-prefixed on Windows) so the slugs and ~/.claude.json keys match what
-// production would compute.
-const OLD_PATH = path.resolve(path.join('/', 'projects', 'old-app'));
-const NEW_PATH = path.resolve(path.join('/', 'projects', 'new-app'));
+// Resolved project locations, created fresh under the OS temp dir for each test.
+// They MUST be real, writable paths inside the sandbox: production discovers
+// worktrees by listing `<newPath>/.kangentic/worktrees` on disk (see
+// collectRelocationPairs), and one test creates that directory for real. A
+// hardcoded absolute root like `/projects/new-app` is writable on a developer's
+// Windows drive (C:\projects\new-app) but EACCES on CI's Linux runner, where
+// `/projects` is the unwritable filesystem root. Deriving them from a temp dir
+// keeps every write inside the sandbox on all platforms; path.resolve still
+// yields the absolute, drive-prefixed form production computes, so the slugs and
+// ~/.claude.json keys match.
+let tmpProjectsParent: string;
+let OLD_PATH: string;
+let NEW_PATH: string;
 
 function projectsRoot(): string {
   return path.join(tmpHome, '.claude', 'projects');
@@ -71,10 +79,14 @@ function projectKey(projectPath: string): string {
 
 beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-relocate-'));
+  tmpProjectsParent = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-relocate-proj-'));
+  OLD_PATH = path.join(tmpProjectsParent, 'old-app');
+  NEW_PATH = path.join(tmpProjectsParent, 'new-app');
 });
 
 afterEach(() => {
   fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(tmpProjectsParent, { recursive: true, force: true });
 });
 
 describe('migrateClaudeProjectData - transcript directories', () => {
@@ -237,7 +249,7 @@ describe('migrateClaudeProjectData - ~/.claude.json', () => {
   });
 
   it('leaves unrelated projects keys untouched', async () => {
-    const otherKey = toForwardSlash(path.resolve(path.join('/', 'projects', 'other')));
+    const otherKey = toForwardSlash(path.join(tmpProjectsParent, 'other'));
     writeClaudeJson({
       projects: {
         [projectKey(OLD_PATH)]: { hasTrustDialogAccepted: true },
@@ -315,7 +327,7 @@ describe('migrateClaudeProjectData - ~/.claude.json', () => {
   });
 
   it('does not write at all when no projects key matches', async () => {
-    const otherKey = toForwardSlash(path.resolve(path.join('/', 'projects', 'other')));
+    const otherKey = toForwardSlash(path.join(tmpProjectsParent, 'other'));
     writeClaudeJson({ projects: { [otherKey]: { hasTrustDialogAccepted: true } } });
 
     await migrateClaudeProjectData(OLD_PATH, NEW_PATH);
