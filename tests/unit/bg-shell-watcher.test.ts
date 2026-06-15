@@ -2257,4 +2257,69 @@ describe('BgShellWatcher', () => {
       watcher.dispose();
     });
   });
+
+  describe('public-API guards and lifecycle (coverage completeness)', () => {
+    it('re-registering an existing session updates rootPid without double-arming polling', () => {
+      const { watcher, rootPids, probe } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      watcher.registerSession('s1');
+      const timerCount = vi.getTimerCount();
+      // Re-register (hits the states.has branch: update rootPid + return).
+      rootPids.set('s1', 5678);
+      probe.alive.add(5678);
+      watcher.registerSession('s1');
+      expect(vi.getTimerCount()).toBe(timerCount); // no second interval armed
+      watcher.dispose();
+    });
+
+    it('unregistering the last session stops polling', () => {
+      const { watcher, rootPids, probe } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      watcher.registerSession('s1');
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      watcher.unregisterSession('s1');
+      expect(vi.getTimerCount()).toBe(0);
+      watcher.dispose();
+    });
+
+    it('registerShellPid ignores unknown sessions, invalid pids, and post-dispose calls', () => {
+      const { watcher, rootPids, probe } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      watcher.registerSession('s1');
+      expect(() => {
+        watcher.registerShellPid('ghost', 'sh', 100); // unknown session
+        watcher.registerShellPid('s1', 'sh', 0);       // invalid pid (<= 0)
+        watcher.registerShellPid('s1', 'sh', -5);      // invalid pid
+        watcher.registerShellPid('s1', 'sh', 1.5);     // non-integer pid
+      }).not.toThrow();
+      watcher.dispose();
+      expect(() => watcher.registerShellPid('s1', 'sh', 100)).not.toThrow(); // post-dispose
+    });
+
+    it('noteBackgroundShellStarted ignores unknown sessions, already-tracked ids, and post-dispose calls', () => {
+      const { watcher, rootPids, probe } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      watcher.registerSession('s1');
+      watcher.registerShellPid('s1', 'sh', 999); // now Tier-A tracked
+      expect(() => {
+        watcher.noteBackgroundShellStarted('ghost', 'sh'); // unknown session
+        watcher.noteBackgroundShellStarted('s1', 'sh');    // already tracked -> return
+      }).not.toThrow();
+      watcher.dispose();
+      expect(() => watcher.noteBackgroundShellStarted('s1', 'sh2')).not.toThrow(); // post-dispose
+    });
+
+    it('a cycle is a no-op after dispose', async () => {
+      const { watcher, rootPids, probe } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      watcher.registerSession('s1');
+      watcher.dispose();
+      await expect(watcher.pollNow()).resolves.toBeUndefined();
+    });
+  });
 });

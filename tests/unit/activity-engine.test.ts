@@ -2001,4 +2001,154 @@ describe('ActivityEngine', () => {
       expect(triggers[triggers.length - 1]).toBe('force-thinking');
     });
   });
+
+  describe('guards and edge branches (coverage completeness)', () => {
+    it('initSession is a no-op after dispose (no transition, no state)', () => {
+      engine.dispose();
+      transitions.length = 0;
+      engine.initSession(SESSION_ID);
+      expect(transitions).toHaveLength(0);
+      expect(engine.getState(SESSION_ID)).toBeUndefined();
+    });
+
+    it('processEvent lazily creates state for an unknown (never-initialized) session', () => {
+      // No initSession: getOrCreateState must materialize the state so a stray
+      // event for a session the engine never saw still tracks correctly.
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash' }));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.pendingToolCount).toBe(1);
+    });
+
+    it('every force / mark / adopt / processEvent entry point is a no-op after dispose', () => {
+      engine.initSession(SESSION_ID);
+      engine.dispose();
+      expect(() => {
+        engine.forceThinking(SESSION_ID);
+        engine.forceIdle(SESSION_ID);
+        engine.markThinkingSignal(SESSION_ID);
+        engine.markBackgroundShellsAlive(SESSION_ID);
+        engine.markPtyOutput(SESSION_ID);
+        engine.markBackgroundShellEnded(SESSION_ID, 'x');
+        engine.adoptAnonymousBackgroundShells(SESSION_ID, 1);
+        engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      }).not.toThrow();
+      // dispose() cleared the state map and nothing recreated it.
+      expect(engine.getState(SESSION_ID)).toBeUndefined();
+    });
+
+    it('mark / end entry points are no-ops for an unknown session (no state created)', () => {
+      expect(() => {
+        engine.markThinkingSignal('ghost');
+        engine.markBackgroundShellsAlive('ghost');
+        engine.markPtyOutput('ghost');
+        engine.markBackgroundShellEnded('ghost', 'shell');
+      }).not.toThrow();
+      expect(engine.getState('ghost')).toBeUndefined();
+    });
+
+    it('anonymous bg-shell end while a named shell is tracked is a no-op and warns (ambiguity guard)', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { detail: 'bx6k8r2cr' }));
+      engine.processEvent(SESSION_ID, event(EventType.Idle));
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      // Anonymous decrement (no shellId) while anon=0 but a named shell is
+      // tracked: must NOT drain the real named shell.
+      engine.markBackgroundShellEnded(SESSION_ID);
+      expect(engine.getState(SESSION_ID)?.activeBackgroundShellIds.has('bx6k8r2cr')).toBe(true);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(warn).toHaveBeenCalledOnce();
+      warn.mockRestore();
+    });
+
+    it('anonymous bg-shell end with nothing tracked is a silent no-op (no warn)', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      engine.initSession(SESSION_ID);
+      engine.markBackgroundShellEnded(SESSION_ID);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('a holder appearing during the stability window suppresses the deferred idle', () => {
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.Prompt)); // thinking, turnActive
+      engine.processEvent(SESSION_ID, event(EventType.Idle));   // turnActive=false -> idle deferred
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.pendingIdleAt).not.toBeNull();
+      // A bg shell is adopted mid-window. Unlike a turn-initiating event it does
+      // NOT clear pendingIdleAt, so when the window elapses onTick re-derives,
+      // finds the bg-shell holder, and reschedules instead of committing idle.
+      engine.adoptAnonymousBackgroundShells(SESSION_ID, 1);
+      transitions.length = 0;
+      vi.advanceTimersByTime(TEST_STABILITY_WINDOW_MS + 20);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(transitions.filter((transition) => transition.activity === 'idle')).toHaveLength(0);
+    });
+
+    it('ToolEnd with a non-matching toolId falls back to LIFO-by-name', () => {
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash', toolId: 't1' }));
+      // ToolEnd carries a toolId that matches nothing in the stack, but the name
+      // does: id-no-match drops to the LIFO-by-name fallback so the stack drains.
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { tool: 'Bash', toolId: 'no-match' }));
+      expect(engine.getState(SESSION_ID)?.pendingToolCount).toBe(0);
+      expect(engine.getState(SESSION_ID)?.currentTool).toBeNull();
+    });
+
+    it('a foreground Bash auto-backgrounded as the only pending tool hard-resets the stack', () => {
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash', toolId: 't1' }));
+      expect(engine.getState(SESSION_ID)?.pendingToolCount).toBe(1);
+      // Claude auto-backgrounds the running Bash: BackgroundShellStart carries the
+      // SAME toolId. The pending tool is promoted (not ended); the count drops to
+      // exactly zero, hard-resetting the stack and currentTool.
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { toolId: 't1', detail: 'bx6k8r2cr' }));
+      const state = engine.getState(SESSION_ID)!;
+      expect(state.pendingToolCount).toBe(0);
+      expect(state.currentTool).toBeNull();
+      expect(state.pendingToolStack).toHaveLength(0);
+      expect(state.activeBackgroundShellIds.has('bx6k8r2cr')).toBe(true);
+      // Now held solely by the backgrounded shell.
+      expect(state.activity).toBe('thinking');
+    });
+
+    it('ToolEnd carrying an unmatched toolId and no tool name still decrements (LIFO fallback skipped)', () => {
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash', toolId: 't1' }));
+      // toolId present but matches nothing, AND no tool name: the LIFO-by-name
+      // fallback (else-if event.tool) is skipped; the count still drops to zero
+      // and the hard reset clears the dangling stack entry.
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { toolId: 'no-match' }));
+      expect(engine.getState(SESSION_ID)?.pendingToolCount).toBe(0);
+      expect(engine.getState(SESSION_ID)?.currentTool).toBeNull();
+    });
+
+    it('LIFO-by-name fallback skips a non-matching top entry to drain the right tool', () => {
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Read', toolId: 'r1' }));
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash', toolId: 'b1' }));
+      // ToolEnd for 'Read' with a non-matching id: LIFO scans from the top
+      // ('Bash' - no match) down to 'Read' (match), draining the right entry and
+      // leaving 'Bash' as the still-running current tool.
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { tool: 'Read', toolId: 'no-match' }));
+      const state = engine.getState(SESSION_ID)!;
+      expect(state.pendingToolCount).toBe(1);
+      expect(state.currentTool).toBe('Bash');
+    });
+
+    it('auto-backgrounding one of several pending tools leaves the rest pending (no hard reset)', () => {
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Read', toolId: 'r1' }));
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash', toolId: 'b1' }));
+      // The Bash auto-backgrounds; the count drops 2 -> 1 (NOT zero), so the
+      // stack is NOT hard-reset and the still-running Read remains current.
+      engine.processEvent(SESSION_ID, event(EventType.BackgroundShellStart, { toolId: 'b1', detail: 'bx6k8r2cr' }));
+      const state = engine.getState(SESSION_ID)!;
+      expect(state.pendingToolCount).toBe(1);
+      expect(state.currentTool).toBe('Read');
+      expect(state.activeBackgroundShellIds.has('bx6k8r2cr')).toBe(true);
+    });
+  });
 });
