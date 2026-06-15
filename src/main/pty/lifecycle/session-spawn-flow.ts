@@ -356,6 +356,18 @@ export async function performSpawn(
   // PTY exit cleanup sequence. Don't overwrite 'suspended' - suspend()
   // sets that before killing the PTY, and the new status must survive.
   const ptyExitDisposable = ptyProcess.onExit(({ exitCode }: { exitCode: number }) => {
+    // Captured BEFORE the status mutation below. `intentional` means Kangentic
+    // ended this session deliberately, so a non-zero force-kill exit must not be
+    // misclassified as a crash. Two deliberate-end mechanisms set it:
+    //   - suspend() sets status='suspended' before the force-kill (move-to-Done,
+    //     isolated-session switch, settings restart, idle auto-suspend, user
+    //     Suspend).
+    //   - kill(sessionId, true) sets session.intentionalExit before the
+    //     force-kill for hard-reset teardown that does NOT suspend (move-to-To-Do
+    //     reset, task delete, move-to-Backlog via cleanupTaskSession).
+    // The flag rides the 'exit' event so App.tsx can suppress the false crash
+    // notification without depending on cross-channel store-status ordering.
+    const intentional = session.status === 'suspended' || session.intentionalExit === true;
     if (session.status !== 'suspended') {
       session.status = 'exited';
       // Synthetic session_end - Claude Code's hook won't fire on kill
@@ -404,7 +416,7 @@ export async function performSpawn(
     // reattaches.
     traceRecorder.clearSessionDir(id);
 
-    context.emit('exit', id, exitCode);
+    context.emit('exit', id, exitCode, intentional);
     context.sessionQueue.notifySlotFreed();
   });
 

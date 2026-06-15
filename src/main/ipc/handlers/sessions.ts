@@ -467,7 +467,7 @@ export function registerSessionHandlers(context: IpcContext): void {
     }
   });
 
-  context.sessionManager.on('exit', (sessionId: string, exitCode: number) => {
+  context.sessionManager.on('exit', (sessionId: string, exitCode: number, intentional?: boolean) => {
     const resolvedProjectId = context.sessionManager.getSessionProjectId(sessionId);
 
     // Analytics: track session exit with duration (skip recovered sessions with no start time)
@@ -489,7 +489,7 @@ export function registerSessionHandlers(context: IpcContext): void {
     }
 
     if (!context.mainWindow.isDestroyed()) {
-      context.mainWindow.webContents.send(IPC.SESSION_EXIT, sessionId, exitCode, resolvedProjectId);
+      context.mainWindow.webContents.send(IPC.SESSION_EXIT, sessionId, exitCode, resolvedProjectId, intentional);
     }
 
     // Persist exit status to session DB -- use the session's own projectId

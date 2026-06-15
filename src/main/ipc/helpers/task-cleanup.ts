@@ -28,6 +28,9 @@ export async function cleanupTaskSession(
   // awaiting exit ensures those handles are released before cleanup.
   if (task.session_id) {
     try {
+      // kill() always tags the exit intentional, so this deliberate hard
+      // reset (move-to-To-Do, move-to-Backlog, task delete) never surfaces a
+      // false "Session crashed" toast from the non-zero force-kill exit.
       context.sessionManager.kill(task.session_id);
       await context.sessionManager.awaitExit(task.session_id);
       context.sessionManager.remove(task.session_id);

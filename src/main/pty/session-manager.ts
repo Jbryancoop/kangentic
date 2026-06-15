@@ -496,6 +496,17 @@ export class SessionManager extends EventEmitter {
 
   kill(sessionId: string): void {
     const session = this.registry.get(sessionId);
+    // Every kill() is a deliberate Kangentic-initiated teardown (user kill,
+    // session reset, task delete, worktree cleanup, move-to-To-Do/Backlog,
+    // project relocate, shutdown), never a crash. Mark the session BEFORE the
+    // force-kill so the async onExit handler (session-spawn-flow.ts) and the
+    // queued-session direct emit below tag the 'exit' event intentional, so the
+    // renderer suppresses the false "Session crashed" notification. A genuine
+    // crash never calls kill() - the PTY's onExit fires on its own with
+    // intentionalExit unset. Unlike suspend(), kill() does not set
+    // status='suspended' (a hard reset is 'exited', not resumable), so this
+    // orthogonal marker carries the intent.
+    if (session) session.intentionalExit = true;
     if (session?.pty) {
       const ptyRef = session.pty;
       session.pty = null; // prevent double-kill (conpty heap corruption on Windows)
@@ -514,7 +525,9 @@ export class SessionManager extends EventEmitter {
     if (this.sessionQueue.remove(sessionId) && session) {
       session.status = 'exited';
       session.exitCode = -1;
-      this.emit('exit', sessionId, -1);
+      // Queued sessions never spawn a PTY, so onExit (which reads
+      // intentionalExit) never runs; forward the flag on this direct emit.
+      this.emit('exit', sessionId, -1, true);
     }
     // A slot may have opened - let the queue promote
     this.sessionQueue.notifySlotFreed();

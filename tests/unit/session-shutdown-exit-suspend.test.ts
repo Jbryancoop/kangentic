@@ -173,6 +173,21 @@ function fireExit(sessionId: string, exitCode: number) {
   exitHandler(sessionId, exitCode);
 }
 
+/**
+ * Like fireExit, but forwards the `intentional` flag and returns the context
+ * so the test can assert on the renderer-bound webContents.send payload.
+ */
+function fireExitReturningContext(sessionId: string, exitCode: number, intentional?: boolean) {
+  const context = buildMockContext();
+  registerSessionHandlers(context as never);
+  const exitHandler = capturedSessionEventHandlers.get('exit');
+  if (!exitHandler) throw new Error('exit handler was not registered');
+  exitHandler(sessionId, exitCode, intentional);
+  return context;
+}
+
+const SESSION_EXIT_CHANNEL = 'session:exit';
+
 beforeEach(() => {
   vi.clearAllMocks();
   capturedSessionEventHandlers.clear();
@@ -238,5 +253,37 @@ describe('PTY exit listener: shutdown-race suspend hardening', () => {
 
     expect(markRecordSuspendedMock).toHaveBeenCalledWith(expect.anything(), 'rec-fallback', 'system');
     expect(markRecordExitedMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('PTY exit listener: intentional-suspend flag propagation to SESSION_EXIT', () => {
+  // The flag rides the renderer-bound SESSION_EXIT event so App.tsx can suppress
+  // the false "Session crashed" notification on a deliberate suspend without
+  // depending on cross-channel SESSION_STATUS ordering. The forwarder must pass
+  // it through unchanged as the trailing argument, after the resolved projectId.
+  it('forwards intentional=true for a deliberate suspend force-kill', () => {
+    const context = fireExitReturningContext('pty-1', 1073807364, true);
+
+    expect(context.mainWindow.webContents.send).toHaveBeenCalledWith(
+      SESSION_EXIT_CHANNEL, 'pty-1', 1073807364, 'proj-test', true,
+    );
+  });
+
+  it('forwards intentional=false for a genuine crash exit', () => {
+    const context = fireExitReturningContext('pty-1', 1, false);
+
+    expect(context.mainWindow.webContents.send).toHaveBeenCalledWith(
+      SESSION_EXIT_CHANNEL, 'pty-1', 1, 'proj-test', false,
+    );
+  });
+
+  it('forwards intentional=undefined when the emitter omits the flag (back-compat)', () => {
+    // Older emit sites (spawn failure, queued-session removal) pass no flag;
+    // undefined is falsy, so the renderer still treats it as a crash.
+    const context = fireExitReturningContext('pty-1', 1);
+
+    expect(context.mainWindow.webContents.send).toHaveBeenCalledWith(
+      SESSION_EXIT_CHANNEL, 'pty-1', 1, 'proj-test', undefined,
+    );
   });
 });

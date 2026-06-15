@@ -170,7 +170,7 @@ const api: ElectronAPI = {
       return () => ipcRenderer.removeListener(IPC.SESSION_FIRST_OUTPUT, handler);
     },
     onExit: (callback) => {
-      const handler = (_event: Electron.IpcRendererEvent, sessionId: string, exitCode: number, projectId?: string) => callback(sessionId, exitCode, projectId);
+      const handler = (_event: Electron.IpcRendererEvent, sessionId: string, exitCode: number, projectId?: string, intentional?: boolean) => callback(sessionId, exitCode, projectId, intentional);
       ipcRenderer.on(IPC.SESSION_EXIT, handler);
       return () => ipcRenderer.removeListener(IPC.SESSION_EXIT, handler);
     },

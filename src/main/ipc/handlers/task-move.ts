@@ -273,6 +273,9 @@ export async function handleTaskMove(
         // session stays in the map - cleanupTaskResources needs it there for
         // awaitExit to wait for the process to actually die before removing
         // the worktree (Windows file handles aren't released until exit).
+        // kill() always tags the exit intentional, so this deliberate hard
+        // reset's non-zero force-kill exit never surfaces a false "Session
+        // crashed" toast.
         context.sessionManager.killByTaskId(task.id);
         await cleanupTaskResources(context, task, tasks, resolvedProjectId, resolvedProjectPath);
         // Re-read the task to check if worktree_path was actually cleared

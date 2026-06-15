@@ -262,7 +262,7 @@ export function App() {
 
     // Session exit events
     if (sessions.onExit) {
-      cleanups.push(sessions.onExit((sessionId, exitCode, projectId) => {
+      cleanups.push(sessions.onExit((sessionId, exitCode, projectId, intentional) => {
         const currentSession = useSessionStore.getState().sessions.find((s) => s.id === sessionId);
         const exitedTaskId = currentSession?.taskId;
         if (exitedTaskId) {
@@ -272,7 +272,16 @@ export function App() {
             autoNameTimers.delete(exitedTaskId);
           }
         }
-        if (currentSession?.status === 'suspended') return;
+        // `intentional` is set by the main process when the session was ended
+        // deliberately, so a non-zero force-kill exit is not a crash. It covers
+        // both suspend()-based ends (move-to-Done, isolated switch, settings
+        // restart, idle auto-suspend, user Suspend) and kill()-based hard-reset
+        // teardown (move-to-To-Do reset, task delete, move-to-Backlog).
+        // SESSION_EXIT can arrive before the suspended SESSION_STATUS updates the
+        // store, so the store-status check alone races; the flag rides the exit
+        // event itself, so it is race-proof. The store check stays as a
+        // defense-in-depth fallback. See session-spawn-flow.ts onExit.
+        if (intentional || currentSession?.status === 'suspended') return;
 
         // Transient sessions (command terminal) are ephemeral - skip toasts and notifications
         if (currentSession?.transient) {

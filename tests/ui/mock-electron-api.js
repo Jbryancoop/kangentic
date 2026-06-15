@@ -1242,8 +1242,22 @@
           if (idx >= 0) listeners.splice(idx, 1);
         };
       },
-      onExit: function () {
-        return noop;
+      onExit: function (callback) {
+        // Tests can fire this via
+        // window.__mockFireExit(sessionId, exitCode, projectId, intentional).
+        if (!window.__mockExitListeners) window.__mockExitListeners = [];
+        window.__mockExitListeners.push(callback);
+        if (!window.__mockFireExit) {
+          window.__mockFireExit = function (sessionId, exitCode, projectId, intentional) {
+            var listeners = (window.__mockExitListeners || []).slice();
+            for (var i = 0; i < listeners.length; i++) { listeners[i](sessionId, exitCode, projectId, intentional); }
+          };
+        }
+        return function () {
+          var listeners = window.__mockExitListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
       },
       onStatus: function (callback) {
         // Tests can fire this via window.__mockFireStatus(sessionId, session).

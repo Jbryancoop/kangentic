@@ -478,6 +478,50 @@ describe('KillAll', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 5b. kill() tags exits intentional (self-maintaining false-crash suppression)
+// ---------------------------------------------------------------------------
+
+describe('kill() marks deliberate teardown intentional', () => {
+  let manager: SessionManager;
+
+  beforeEach(() => {
+    manager = new SessionManager();
+  });
+
+  afterEach(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+
+  async function spawnSession() {
+    const mock = createMockPty();
+    vi.mocked(pty.spawn).mockReturnValue(mock.mockPty as unknown as pty.IPty);
+    const session = await manager.spawn({ taskId: 'task-kill', command: '', cwd: tmpDir });
+    return { session, ...mock };
+  }
+
+  // Every kill() is a deliberate teardown, never a crash. The force-kill exits
+  // non-zero, so without the intentional tag the renderer fires a false
+  // "Session crashed" notification. kill() must mark the session so onExit tags
+  // the 'exit' event intentional - and it must do so unconditionally, so no
+  // current or future caller (SESSION_RESET, executeCleanupWorktree, MCP
+  // onTaskDeleted, ...) can forget and reintroduce the false crash.
+  it('emits the exit event with intentional=true after kill()', async () => {
+    const { session } = await spawnSession();
+    const exitEvents: unknown[][] = [];
+    manager.on('exit', (...args: unknown[]) => exitEvents.push(args));
+
+    manager.kill(session.id);
+    // The mock PTY's kill() schedules its onExit callback on the next tick.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const exitCall = exitEvents.find((call) => call[0] === session.id);
+    expect(exitCall).toBeDefined();
+    // Positional args: (sessionId, exitCode, intentional).
+    expect(exitCall![2]).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 6. PTY Spawn Failure
 // ---------------------------------------------------------------------------
 
