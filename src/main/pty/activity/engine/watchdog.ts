@@ -1,6 +1,27 @@
 import type { SessionEngineState, TransitionTrigger } from './shapes';
 
 /**
+ * Declarative timer-anchor strategy for a watchdog hold: which timestamp the
+ * hold's deadline is measured from. Co-located with the hold (rather than
+ * inferred from `trigger` inside the engine) so a new hold must choose an
+ * anchor explicitly, and a new anchor kind becomes a compile error in
+ * `watchdogBaseTime` instead of a silent `lastSignalAt` fall-through.
+ *
+ * - `bg-shell-hold-since`: `state.bgShellHoldSince`. Signal-only keep-alives
+ *   (`markThinkingSignal`) cannot move it; only a watcher-confirmed
+ *   `markBackgroundShellsAlive` advances it, so a phantom is still reclaimed
+ *   at its threshold. Also drives `scheduleTimer`'s stamp/clear maintenance.
+ * - `signal-or-pty-output`: the FRESHER of `lastSignalAt` and
+ *   `lastPtyOutputAt` - streaming TUI output keeps a genuinely-running
+ *   foreground tool alive even when hooks and the status heartbeat are silent.
+ * - `signal`: `lastSignalAt` only.
+ */
+export type WatchdogAnchor =
+  | 'bg-shell-hold-since'
+  | 'signal-or-pty-output'
+  | 'signal';
+
+/**
  * A "watchdog hold" describes a state shape where the engine could be
  * stuck in `thinking` because of one specific holder (bg shells, stuck
  * pending tools, or a hanging turnActive flag) and what to do if that
@@ -27,6 +48,12 @@ export interface WatchdogHold {
   thresholdMs: number;
   /** Audit-log label written to the transition record. */
   trigger: TransitionTrigger;
+  /**
+   * Which timestamp this hold's deadline is measured from. Read by
+   * `watchdogBaseTime` (arming + firing) and, for `bg-shell-hold-since`,
+   * by `scheduleTimer`'s `bgShellHoldSince` stamp/clear maintenance.
+   */
+  anchor: WatchdogAnchor;
   /** Mutates state to clear the stuck holder. Called once threshold fires. */
   reset(state: SessionEngineState): void;
   /**
@@ -91,6 +118,7 @@ export function buildWatchdogHolds(config: WatchdogConfig): readonly WatchdogHol
         && !state.permissionPending,
       thresholdMs: config.bgShellEscapeHatchMs,
       trigger: 'timer:bg-shell-hatch',
+      anchor: 'bg-shell-hold-since',
       reset: (state) => {
         state.activeBackgroundShellIds.clear();
         state.anonymousBackgroundShellCount = 0;
@@ -116,6 +144,7 @@ export function buildWatchdogHolds(config: WatchdogConfig): readonly WatchdogHol
         && !state.permissionPending,
       thresholdMs: config.bgShellOnlyGraceMs,
       trigger: 'timer:bg-shell-hatch',
+      anchor: 'bg-shell-hold-since',
       reset: (state) => {
         state.activeBackgroundShellIds.clear();
         state.anonymousBackgroundShellCount = 0;
@@ -141,6 +170,7 @@ export function buildWatchdogHolds(config: WatchdogConfig): readonly WatchdogHol
         && !state.permissionPending,
       thresholdMs: config.bgShellEscapeHatchMs,
       trigger: 'timer:stuck-pending-tools',
+      anchor: 'signal-or-pty-output',
       reset: (state) => {
         state.pendingToolCount = 0;
         state.pendingToolStack.length = 0;
@@ -164,6 +194,7 @@ export function buildWatchdogHolds(config: WatchdogConfig): readonly WatchdogHol
         && !state.permissionPending,
       thresholdMs: config.staleThinkingTimeoutMs,
       trigger: 'timer:stale-thinking',
+      anchor: 'signal',
       reset: (state) => {
         state.turnActive = false;
       },

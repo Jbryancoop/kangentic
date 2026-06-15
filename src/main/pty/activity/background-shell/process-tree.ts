@@ -434,16 +434,19 @@ class PosixProbe implements ProcessTreeProbe {
   }
 }
 
+/** A processes-grouped-by-parent-PID index, built once and walked many times. */
+export type ProcessIndexByParent = Map<number, ProcessInfo[]>;
+
 /**
- * Walk the parent->child map and collect all descendants of `rootPid`.
- * Cycle-safe: tracks visited PIDs.
- *
- * Exported so the bg-shell watcher can call it directly with a
- * shared `listAllProcesses` snapshot, avoiding N PowerShell spawns
- * per cycle on Windows.
+ * Group every process by its parent PID. The bg-shell watcher builds this ONCE
+ * per poll cycle from the shared `listAllProcesses` snapshot and reuses it for
+ * every session's `walkDescendantsFromIndex` call - rebuilding it per session
+ * (as a bare `walkDescendants` per session would) repeats the O(P) grouping S
+ * times per cycle for no benefit, since the snapshot is identical across
+ * sessions.
  */
-export function walkDescendants(all: ProcessInfo[], rootPid: number): ProcessInfo[] {
-  const byParent = new Map<number, ProcessInfo[]>();
+export function indexByParent(all: ProcessInfo[]): ProcessIndexByParent {
+  const byParent: ProcessIndexByParent = new Map();
   for (const info of all) {
     let bucket = byParent.get(info.ppid);
     if (!bucket) {
@@ -452,6 +455,18 @@ export function walkDescendants(all: ProcessInfo[], rootPid: number): ProcessInf
     }
     bucket.push(info);
   }
+  return byParent;
+}
+
+/**
+ * Collect all descendants of `rootPid` from a pre-built parent index.
+ * Cycle-safe: tracks visited PIDs. See `indexByParent` for why the index is
+ * built once per cycle rather than per call.
+ */
+export function walkDescendantsFromIndex(
+  byParent: ProcessIndexByParent,
+  rootPid: number,
+): ProcessInfo[] {
   const result: ProcessInfo[] = [];
   const visited = new Set<number>();
   const queue: number[] = [rootPid];
@@ -467,6 +482,16 @@ export function walkDescendants(all: ProcessInfo[], rootPid: number): ProcessInf
     }
   }
   return result;
+}
+
+/**
+ * Build the parent index and walk all descendants of `rootPid` in one call.
+ * Used by one-shot callers (resume-time adoption, tests). The bg-shell watcher
+ * does not use this on its hot path: it builds the index once per cycle via
+ * `indexByParent` and calls `walkDescendantsFromIndex` per session instead.
+ */
+export function walkDescendants(all: ProcessInfo[], rootPid: number): ProcessInfo[] {
+  return walkDescendantsFromIndex(indexByParent(all), rootPid);
 }
 
 /**

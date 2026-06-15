@@ -1338,11 +1338,15 @@ describe('BgShellWatcher', () => {
     // resolve only after we advance time). The probe call count must
     // remain 1 for the first tick window, confirming the second tick
     // was dropped.
-    const { watcher, probe, rootPids } = makeWatcher({ pollIntervalMs: 100 });
+    const { watcher, probe, rootPids, shellCounts } = makeWatcher({ pollIntervalMs: 100 });
     rootPids.set('s1', 1234);
     probe.alive.add(1234);
     probe.trees.set(1234, []);
     watcher.registerSession('s1');
+    // Give the session a tracked bg shell so every cycle needs the process
+    // tree (otherwise the per-cycle laziness gate skips the enumeration and the
+    // overlap guard under test is never reached).
+    shellCounts.set('s1', 1);
 
     // Anchor first cycle synchronously so the guard state is clean.
     await watcher.pollNow();
@@ -1385,6 +1389,135 @@ describe('BgShellWatcher', () => {
     // Exactly one listAllProcesses call despite two ticks firing.
     expect(probe.listAllCalls).toBe(1);
     watcher.dispose();
+  });
+
+  describe('per-cycle laziness (skips OS enumeration when no session needs the tree)', () => {
+    it('skips listAllProcesses once every session is idle-anchored', async () => {
+      // A registered-but-idle session (no tracked bg shells, no pending tools,
+      // helper baseline already anchored) has no descendant-tracking work, so
+      // the cycle must not pay for the OS enumeration.
+      const { watcher, probe, rootPids, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, []);
+
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // first-cycle anchor needs the tree
+      expect(probe.listAllCalls).toBe(1);
+
+      probe.listAllCalls = 0;
+      await watcher.pollNow();
+      await watcher.pollNow();
+      expect(probe.listAllCalls).toBe(0); // idle: enumeration skipped
+      expect(log.rootDied).toHaveLength(0);
+      expect(log.observedAlive).toHaveLength(0);
+      expect(log.naturalExits).toHaveLength(0);
+      watcher.dispose();
+    });
+
+    it('still detects root death on a skipped cycle via the cheap isAlive probe', async () => {
+      const { watcher, probe, rootPids, log } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, []);
+
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor
+      probe.listAllCalls = 0;
+
+      // Claude CLI dies while the session is otherwise idle.
+      probe.alive.delete(1234);
+      await watcher.pollNow();
+
+      expect(log.rootDied).toEqual(['s1']);
+      expect(probe.listAllCalls).toBe(0); // root death found without enumerating
+      watcher.dispose();
+    });
+
+    it('resumes the full enumeration once a foreground tool or bg shell appears', async () => {
+      const { watcher, probe, rootPids, shellCounts, pendingTools } = makeWatcher();
+      rootPids.set('s1', 1234);
+      probe.alive.add(1234);
+      probe.trees.set(1234, []);
+
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor
+      probe.listAllCalls = 0;
+
+      await watcher.pollNow();
+      expect(probe.listAllCalls).toBe(0); // idle: skipped
+
+      // A foreground tool starts: the auto-background memo path needs the tree.
+      pendingTools.set('s1', 1);
+      await watcher.pollNow();
+      expect(probe.listAllCalls).toBe(1);
+
+      // Tool ends, but a tracked bg shell remains: still needs the tree.
+      pendingTools.set('s1', 0);
+      shellCounts.set('s1', 1);
+      await watcher.pollNow();
+      expect(probe.listAllCalls).toBe(2);
+      watcher.dispose();
+    });
+
+    it('skips for an idle session but enumerates when a sibling session is active', async () => {
+      // The gate is whole-fleet: one active session keeps the shared
+      // enumeration on for the cycle (the snapshot is shared anyway).
+      const { watcher, probe, rootPids, shellCounts } = makeWatcher();
+      rootPids.set('idle', 1000);
+      rootPids.set('busy', 2000);
+      probe.alive.add(1000);
+      probe.alive.add(2000);
+      probe.trees.set(1000, []);
+      probe.trees.set(2000, [{ pid: 2001, ppid: 2000, comm: 'bash' }]);
+      shellCounts.set('busy', 1);
+
+      watcher.registerSession('idle');
+      watcher.registerSession('busy');
+      await watcher.pollNow(); // anchor both
+      probe.listAllCalls = 0;
+
+      await watcher.pollNow();
+      expect(probe.listAllCalls).toBe(1); // 'busy' keeps the cycle enumerating
+      watcher.dispose();
+    });
+
+    it('keeps a non-zero helper baseline fresh so a helper exit cannot later false-fire a natural exit', async () => {
+      // Regression guard for the laziness gate: a shell-like helper that exits
+      // while the session looks idle must still be reconciled. The gate must NOT
+      // skip while preExistingHelpers > 0 - otherwise the stale-high baseline
+      // makes the next bg-shell cycle see a phantom deficit and drains the
+      // just-started shell (a false natural exit that flips the session idle).
+      const { watcher, probe, rootPids, shellCounts, log } = makeWatcher();
+      rootPids.set('s1', 1000);
+      probe.alive.add(1000);
+      probe.alive.add(5000);
+      probe.trees.set(1000, [{ pid: 5000, ppid: 1000, comm: 'bash' }]); // one shell-like helper
+
+      watcher.registerSession('s1');
+      await watcher.pollNow(); // anchor: preExistingHelpers = 1
+
+      // Helper exits while the session has no bg shells and no pending tools.
+      // preExistingHelpers > 0 keeps the gate open, so the deficit rebases the
+      // baseline down to 0 (no tracked shells -> no natural exit fired).
+      probe.alive.delete(5000);
+      probe.trees.set(1000, []);
+      await watcher.pollNow();
+      await watcher.pollNow(); // deficit acts on the 2nd consecutive cycle
+      expect(log.naturalExits).toEqual([]);
+
+      // An anonymous bg shell now starts and its bash appears in the tree.
+      shellCounts.set('s1', 1);
+      probe.alive.add(6000);
+      probe.trees.set(1000, [{ pid: 6000, ppid: 1000, comm: 'bash' }]);
+      await watcher.pollNow();
+      await watcher.pollNow();
+
+      // In sync against the corrected (0) baseline: the bg shell is NOT drained.
+      expect(log.naturalExits).toEqual([]);
+      expect(log.observedAlive).toContain('s1');
+      watcher.dispose();
+    });
   });
 
   describe('onShellsObservedAlive (positive-liveness keep-alive)', () => {

@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import {
   filterTopmostShellLikeDescendants,
+  indexByParent,
   isShellLike,
-  walkDescendants,
-  type ProcessInfo,
+  walkDescendantsFromIndex,
+  type ProcessIndexByParent,
   type ProcessTreeProbe,
 } from './process-tree';
 
@@ -34,9 +35,12 @@ import {
  *   - Shell-like filter misses (e.g. python test runner) -> Tier B
  *     under-counts -> falls back to the engine's escape hatch.
  *
- * Watcher is lazy: idle when no session has tracked shells. Polling
- * begins when the first session registers a non-zero count and stops
- * when all sessions drop to zero.
+ * Polling runs while any session is registered, but each cycle is lazy: when no
+ * session has descendant-tracking work (no shell-like helper baseline, no
+ * tracked bg shells, no in-flight PID capture, no running foreground tool), the
+ * cycle skips the OS process enumeration and does only a cheap per-PID
+ * root-death probe. The full tree walk runs only on cycles where at least one
+ * session needs it. Polling stops when all sessions unregister.
  */
 
 export interface BgShellWatcherCallbacks {
@@ -381,6 +385,25 @@ export class BgShellWatcher {
       const sessionIds = Array.from(this.states.keys());
       if (sessionIds.length === 0) return;
 
+      // Per-cycle laziness: when NO session has descendant-tracking work this
+      // cycle (no shell-like helper baseline, no tracked bg shells, no in-flight
+      // PID capture, no running foreground tool - see `sessionNeedsTree`), skip
+      // the expensive OS enumeration entirely and do only the cheap per-PID
+      // root-death probe. `isAlive` is a native process.kill(pid, 0);
+      // `listAllProcesses` spawns a PowerShell CIM query (~200ms) on Windows.
+      // Any path to a new bg shell first raises pendingToolCount or
+      // activeShellCount (engine state updates synchronously on the event), so
+      // the next cycle re-enters the full path before the watcher must act -
+      // bg-shell detection was already 2s-granular, so this adds no delay.
+      const anyNeedsTree = sessionIds.some((sessionId) => {
+        const state = this.states.get(sessionId);
+        return state !== undefined && this.sessionNeedsTree(sessionId, state);
+      });
+      if (!anyNeedsTree) {
+        for (const sessionId of sessionIds) this.skipCycleSession(sessionId);
+        return;
+      }
+
       // Single OS query shared across all sessions in this cycle.
       // Without this, each session's cycleSession would call
       // `listDescendants` which spawns its own PowerShell on Windows.
@@ -392,18 +415,70 @@ export class BgShellWatcher {
       // in cycleSession. Avoids an O(N) linear scan per session
       // (O(M*N) total) when the host has many processes.
       const allProcessPids = new Set(allProcesses.map((process) => process.pid));
+      // Group processes by parent PID ONCE per cycle. Every session's subtree
+      // walk reuses this shared index; rebuilding it per session would repeat
+      // the O(P) grouping S times against the identical snapshot.
+      const byParent = indexByParent(allProcesses);
 
       for (const sessionId of sessionIds) {
-        await this.cycleSession(sessionId, allProcesses, allProcessPids);
+        await this.cycleSession(sessionId, byParent, allProcessPids);
       }
     } finally {
       this.polling = false;
     }
   }
 
+  /**
+   * Does this session have any tracking work that requires the full process
+   * tree this cycle? Root-death detection does NOT (it uses the cheap
+   * `isAlive(rootPid)` probe); everything else needs the enumeration. The arms:
+   *
+   * - `preExistingHelpers !== 0`: the baseline is unanchored (`null`, first
+   *   cycle) OR there ARE shell-like helpers (`> 0`). A non-zero baseline must
+   *   be kept fresh every cycle: if a helper exits during a skip gap the stale
+   *   high count would make the next bg-shell cycle see a phantom deficit and
+   *   false-fire a natural exit. Only a zero baseline (no shell-like helpers to
+   *   lose) is safe to skip - a deficit is then impossible and a new helper is a
+   *   benign surplus reconciled when the tree is next walked.
+   * - tracked bg shells / in-flight PID captures: Tier A and the count
+   *   heuristic need the tree to confirm liveness and detect exits.
+   * - `pendingToolCount > 0`: the surplus branch memoizes a foreground bash PID
+   *   for the auto-background Tier A path, and every route to a new bg shell
+   *   passes through a running foreground tool first, so keeping the tree warm
+   *   while one runs keeps `helperPids` pruned and the memo fresh.
+   */
+  private sessionNeedsTree(sessionId: string, state: SessionWatchState): boolean {
+    return (
+      state.preExistingHelpers !== 0
+      || state.pendingCaptures.size > 0
+      || state.trackedShellPids.size > 0
+      || this.callbacks.getActiveShellCount(sessionId) > 0
+      || this.callbacks.getPendingToolCount(sessionId) > 0
+    );
+  }
+
+  /**
+   * Per-session work for a skipped (no-enumeration) cycle. The full
+   * `cycleSession` is not run, so do the two things it would that do not need
+   * the tree: clear the foreground-shell memo (only valid while a foreground
+   * tool runs, and we skip only when every session has `pendingToolCount === 0`,
+   * mirroring cycleSession's own clear), and the cheap `isAlive(rootPid)`
+   * root-death probe (fires `onRootProcessDied` + unregisters, as cycleSession
+   * does).
+   */
+  private skipCycleSession(sessionId: string): void {
+    const state = this.states.get(sessionId);
+    if (!state) return;
+    state.candidateForegroundShellPid = null;
+    if (!this.probe.isAlive(state.rootPid)) {
+      this.callbacks.onRootProcessDied(sessionId);
+      this.unregisterSession(sessionId);
+    }
+  }
+
   private async cycleSession(
     sessionId: string,
-    allProcesses: ProcessInfo[],
+    byParent: ProcessIndexByParent,
     allProcessPids: Set<number>,
   ): Promise<void> {
     const state = this.states.get(sessionId);
@@ -416,10 +491,9 @@ export class BgShellWatcher {
       return;
     }
 
-    // Walk the per-session subtree from the shared cycle snapshot.
-    // walkDescendants is in-memory only; sub-millisecond regardless
-    // of process count.
-    const descendants = walkDescendants(allProcesses, state.rootPid);
+    // Walk the per-session subtree from the shared cycle index. In-memory
+    // only; sub-millisecond regardless of process count.
+    const descendants = walkDescendantsFromIndex(byParent, state.rootPid);
     const topmostShellLike = filterTopmostShellLikeDescendants(descendants, this.isShellLikeFn);
     const shellLikeCount = topmostShellLike.length;
 
@@ -437,7 +511,7 @@ export class BgShellWatcher {
     // post-exit state, trapping leaked anonymous bg-shell counts in
     // an indefinite skip loop until the 5-min bg-shell-hatch fired.
     // Snapshot health is the actual, precise discriminator.
-    if (allProcesses.length === 0 || !allProcessPids.has(state.rootPid)) {
+    if (allProcessPids.size === 0 || !allProcessPids.has(state.rootPid)) {
       return;
     }
 

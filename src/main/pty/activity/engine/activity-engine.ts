@@ -634,15 +634,17 @@ export class ActivityEngine {
     hold: WatchdogHold,
     fallback: number,
   ): number {
-    if (hold.trigger === 'timer:bg-shell-hatch') {
-      return state.bgShellHoldSince ?? fallback;
+    switch (hold.anchor) {
+      case 'bg-shell-hold-since':
+        return state.bgShellHoldSince ?? fallback;
+      case 'signal-or-pty-output': {
+        const signals = [state.lastSignalAt, state.lastPtyOutputAt]
+          .filter((timestamp): timestamp is number => timestamp !== null);
+        return signals.length > 0 ? Math.max(...signals) : fallback;
+      }
+      case 'signal':
+        return state.lastSignalAt ?? fallback;
     }
-    if (hold.trigger === 'timer:stuck-pending-tools') {
-      const signals = [state.lastSignalAt, state.lastPtyOutputAt]
-        .filter((timestamp): timestamp is number => timestamp !== null);
-      return signals.length > 0 ? Math.max(...signals) : fallback;
-    }
-    return state.lastSignalAt ?? fallback;
   }
 
   private scheduleTimer(sessionId: string, state: SessionEngineState): void {
@@ -663,7 +665,7 @@ export class ActivityEngine {
     // A fresh BackgroundShellStart re-arms it: that event sets turnActive, so
     // the hold predicate briefly goes false (clearing the anchor here), then
     // the following Idle drops turnActive and the next scheduleTimer re-stamps.
-    if (hold?.trigger === 'timer:bg-shell-hatch') {
+    if (hold?.anchor === 'bg-shell-hold-since') {
       if (state.bgShellHoldSince === null) state.bgShellHoldSince = this.now();
     } else {
       state.bgShellHoldSince = null;

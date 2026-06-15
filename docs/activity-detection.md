@@ -34,8 +34,8 @@ This subsystem aims to be near-100% accurate: notification fires within seconds 
                 ┌────────────────────┼─────────────────┬──────────────┐
                 ▼                    ▼                 ▼              ▼
    ┌───────────────────┐ ┌─────────────────────────┐ ┌────────────┐ ┌────────────┐
-   │ Stability window  │ │ Watchdog table (3 holds)│ │ BgShell    │ │ Ctrl+C     │
-   │ (400ms)           │ │ - bg-shell hatch (5min) │ │ Watcher    │ │ synthesis  │
+   │ Stability window  │ │ Watchdog table (4 holds)│ │ BgShell    │ │ Ctrl+C     │
+   │ (400ms)           │ │ - bg-shell 5min + 30s   │ │ Watcher    │ │ synthesis  │
    │                   │ │ - stuck-tools  (5min)   │ │ (proc-tree)│ │ (3s settle)│
    │                   │ │ - stale-think  (180s)   │ │            │ │            │
    └───────────────────┘ └─────────────────────────┘ └────────────┘ └────────────┘
@@ -249,21 +249,21 @@ Configurable via `ActivityEngineOptions.idleStabilityWindowMs`. Tests set this t
 
 ## Four safety nets (the watchdog table)
 
-The predicate handles the common case. Four timer-driven safety nets in `engine/watchdog.ts` catch hook-loss / orphan situations. Each is a `WatchdogHold` describing a state shape, threshold, reset action, and audit-log label. `findActiveWatchdogHold(state, holds)` picks the matching one each cycle (first match wins).
+The predicate handles the common case. Four timer-driven safety nets in `engine/watchdog.ts` catch hook-loss / orphan situations. Each is a `WatchdogHold` describing a state shape, threshold, timer anchor (a `WatchdogAnchor`: which timestamp the deadline is measured from), reset action, and audit-log label. `findActiveWatchdogHold(state, holds)` picks the matching one each cycle (first match wins).
 
 ### 1. Named bg-shell sole-holder cap (5 min)
 
 Once the turn is over and a NAMED background shell (`activeBackgroundShellIds`, declared by a `background_shell_start` hook with a shell_id) is the only holder of `thinking`, the engine reclaims it at the long 5-min cap (`timer:bg-shell-hatch`). A named shell is positive evidence of real agent-initiated work, so absence of watcher confirmation must EXTEND, not shorten, the hold. It is reclaimed sooner by positive exit evidence (a `BackgroundShellEnd` event or a Tier A PID death) or held active indefinitely by the watcher confirming its PID alive each cycle (`markBackgroundShellsAlive`, see below). The reset clears the bg-shell counters and emits idle through the stability window.
 
-The deadline is anchored to when bg shells became the sole holder (`bgShellHoldSince`), NOT to `lastSignalAt`. An earlier design had the watcher refresh `lastSignalAt` every 2s while it saw any shell-like descendant; for an orphan whose exit the watcher could not attribute, that pulse pushed the deadline out forever and pinned the session `active` indefinitely (tasks #175/#180). Anchoring to the hold-start makes the deadline immovable by signal-only keep-alives; only watcher-confirmed liveness (`markBackgroundShellsAlive`) advances it. The original design used a single 30s grace for ALL bg shells, which false-idled a genuinely-running 10-min E2E at turn end when the watcher could not confirm it alive (tasks #210/#212); splitting named (5-min cap, Tier A liveness) from anonymous (30s grace) fixed that.
+The deadline is anchored to when bg shells became the sole holder (`bgShellHoldSince`; `anchor: 'bg-shell-hold-since'`), NOT to `lastSignalAt`. An earlier design had the watcher refresh `lastSignalAt` every 2s while it saw any shell-like descendant; for an orphan whose exit the watcher could not attribute, that pulse pushed the deadline out forever and pinned the session `active` indefinitely (tasks #175/#180). Anchoring to the hold-start makes the deadline immovable by signal-only keep-alives; only watcher-confirmed liveness (`markBackgroundShellsAlive`) advances it. The original design used a single 30s grace for ALL bg shells, which false-idled a genuinely-running 10-min E2E at turn end when the watcher could not confirm it alive (tasks #210/#212); splitting named (5-min cap, Tier A liveness) from anonymous (30s grace) fixed that.
 
 ### 2. Anonymous bg-shell sole-holder grace (30s)
 
-When only ANONYMOUS bg shells (`anonymousBackgroundShellCount`, no shell_id) hold `thinking` and the turn is over, the engine reclaims them after a short 30s grace (also `timer:bg-shell-hatch`). Anonymous shells are heuristic adoptions (resume-time descendants with no `background_shell_start` hook), so fast reclaim stays correct. Same anchor and reset as the named cap; only the threshold differs. The watcher's attributed drain (`onNaturalExit`, ~4s) still wins for clean exits; the grace is the backstop for the unattributable case.
+When only ANONYMOUS bg shells (`anonymousBackgroundShellCount`, no shell_id) hold `thinking` and the turn is over, the engine reclaims them after a short 30s grace (also `timer:bg-shell-hatch`). Anonymous shells are heuristic adoptions (resume-time descendants with no `background_shell_start` hook), so fast reclaim stays correct. Same anchor (`'bg-shell-hold-since'`) and reset as the named cap; only the threshold differs. The watcher's attributed drain (`onNaturalExit`, ~4s) still wins for clean exits; the grace is the backstop for the unattributable case.
 
 ### 3. Stale-thinking watchdog (180s)
 
-Held by `turnActive` alone (no tools, no subagent, no bg shells) for 180 seconds. The matching Idle/Stop hook never arrived. Emits synthetic `Idle/Timeout`, clears `turnActive`. Bypasses the stability window (the 180s already debounced any flicker). Anchored to `lastSignalAt`, which every non-log-only event refreshes - including `tool_end` (a `PostToolUse` hook is proof of liveness). A foreground tool longer than 180s that ends while the turn continues therefore gets a fresh window instead of being force-idled the instant it ends (task #229; pinned by `session-016-false-idle-after-long-foreground-tool`). PTY output does NOT defer it (idle TUI repaints must still time out).
+Held by `turnActive` alone (no tools, no subagent, no bg shells) for 180 seconds. The matching Idle/Stop hook never arrived. Emits synthetic `Idle/Timeout`, clears `turnActive`. Bypasses the stability window (the 180s already debounced any flicker). Anchored to `lastSignalAt` (`anchor: 'signal'`), which every non-log-only event refreshes - including `tool_end` (a `PostToolUse` hook is proof of liveness). A foreground tool longer than 180s that ends while the turn continues therefore gets a fresh window instead of being force-idled the instant it ends (task #229; pinned by `session-016-false-idle-after-long-foreground-tool`). PTY output does NOT defer it (idle TUI repaints must still time out).
 
 ### 4. Stuck-pending-tools watchdog (5 min)
 
@@ -271,7 +271,7 @@ Held by `pendingToolCount > 0` alone for 5 minutes. Common cause: user pressed C
 
 Resets `pendingToolCount`, the stack, `currentTool`, AND `turnActive` (the matching Stop hook for this turn was lost along with the PostToolUse). Goes through the stability window for the same reason as the bg-shell holds.
 
-This hold is anchored to the FRESHER of `lastSignalAt` and `lastPtyOutputAt` (`watchdogBaseTime`). A long quiet foreground tool (a single test run streaming output for >5 min with no nested hook events and a silent status heartbeat) used to be force-idled here, because for hooks-based agents the `PtyActivityTracker` is suppressed and PTY data never refreshed `lastSignalAt` (task #210, empirical `stuckPendingTools: 2`). `markPtyOutput` (called unconditionally on every PTY chunk by the spawn flow) refreshes `lastPtyOutputAt`, so streaming TUI output keeps a genuinely-running tool active; after Ctrl+C / a lost PostToolUse the CLI sits at a quiet prompt, output stops, and the hatch fires 5 min after the last chunk.
+This hold is anchored to the FRESHER of `lastSignalAt` and `lastPtyOutputAt` (`anchor: 'signal-or-pty-output'`, resolved in `watchdogBaseTime`). A long quiet foreground tool (a single test run streaming output for >5 min with no nested hook events and a silent status heartbeat) used to be force-idled here, because for hooks-based agents the `PtyActivityTracker` is suppressed and PTY data never refreshed `lastSignalAt` (task #210, empirical `stuckPendingTools: 2`). `markPtyOutput` (called unconditionally on every PTY chunk by the spawn flow) refreshes `lastPtyOutputAt`, so streaming TUI output keeps a genuinely-running tool active; after Ctrl+C / a lost PostToolUse the CLI sits at a quiet prompt, output stops, and the hatch fires 5 min after the last chunk.
 
 ### Adding a new watchdog
 
@@ -282,12 +282,13 @@ Append to the table in `buildWatchdogHolds()`:
   predicate: (state) => /* what state shape qualifies as stuck */,
   thresholdMs: config.someThresholdMs,
   trigger: 'timer:my-watchdog',
+  anchor: 'signal', // WatchdogAnchor: which timestamp gates the deadline
   reset: (state) => { /* mutations to clear the hold */ },
   applyStabilityWindow: true,
 }
 ```
 
-The predicates partition the state space, so `findActiveWatchdogHold` returns the first match. The two bg-shell holds share the `timer:bg-shell-hatch` trigger (the engine's anchor and compensation-counter logic key off the trigger string, so both behave as the same hold class with different thresholds). If a new hold's predicate could overlap an existing one, mind the table order.
+The predicates partition the state space, so `findActiveWatchdogHold` returns the first match. Each hold declares its timer anchor explicitly via the `anchor` field, and `watchdogBaseTime` (plus `scheduleTimer`'s `bgShellHoldSince` maintenance) dispatches on it; a new `WatchdogAnchor` kind is a compile-time error rather than a silent fall-through. The `trigger` string is only the audit-log label and the key for the compensation-counter tally. The two bg-shell holds share both `trigger: 'timer:bg-shell-hatch'` and `anchor: 'bg-shell-hold-since'`, so they behave as the same hold class with different thresholds. If a new hold's predicate could overlap an existing one, mind the table order.
 
 ## Ctrl+C user-interrupt synthesis (3s)
 
