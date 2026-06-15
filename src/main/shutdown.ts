@@ -6,11 +6,13 @@ import { markRecordSuspended, markRecordExited } from './engine/session-lifecycl
 import { captureSessionMetrics } from './ipc/handlers/session-metrics';
 import type { SessionManager } from './pty/session-manager';
 import type { BoardConfigManager } from './config/board-config-manager';
+import type { DiffWatcher } from './git/diff-watcher';
 import type { TerminalSubmitScheduler } from './engine/terminal-submit-scheduler';
 
 interface ShutdownDependencies {
   getSessionManager: () => SessionManager;
   getBoardConfigManager: () => BoardConfigManager;
+  getDiffWatcher: () => DiffWatcher | null;
   getTerminalSubmitScheduler: () => TerminalSubmitScheduler;
   getCurrentProjectId: () => string | null;
   deleteProjectFromIndex: (projectId: string) => void;
@@ -41,6 +43,12 @@ export function syncShutdownCleanup(dependencies: ShutdownDependencies): void {
   try {
     // Close active project's file watchers before killing sessions
     dependencies.getBoardConfigManager().detach();
+
+    // Close the recursive worktree fs.watch handles. These are libuv
+    // FSWatcher handles (one per subscribed worktree, many after a
+    // multi-project recovery session) that keep the event loop alive past
+    // a clean quit if never closed - the failsafe-on-normal-close symptom.
+    dependencies.getDiffWatcher()?.closeAll();
 
     const sessionManager = dependencies.getSessionManager();
     dependencies.getTerminalSubmitScheduler().cancelAll();
@@ -126,6 +134,31 @@ export function syncShutdownCleanup(dependencies: ShutdownDependencies): void {
     console.error('[APP] Shutdown error:', error);
   }
   console.log('[SHUTDOWN] cleanup:done');
+  // Dev-only diagnostic; a no-op in production (dead-code-eliminated via __KANGENTIC_DEV__).
+  logActiveHandlesAtShutdown();
+}
+
+/**
+ * Dev-only diagnostic: log the libuv handles still alive at `cleanup:done`,
+ * summarized by resource type (e.g. PipeWrap from a node-pty pipe, StatWatcher
+ * from an fs.watch poll, Timeout from an un-unref'd interval, TCP* from a
+ * server). If any remain, Electron's normal quit cannot complete and the 6s
+ * hard failsafe force-kills the tree (non-clean exit 1). This is the empirical
+ * tripwire for that recurring leak class (HTTP keep-alive sockets in 2026-05;
+ * worktree watchers / PTY pipes since). Gated by `__KANGENTIC_DEV__` so esbuild
+ * dead-code-eliminates it from production builds.
+ */
+function logActiveHandlesAtShutdown(): void {
+  if (!__KANGENTIC_DEV__) return;
+  try {
+    const activeHandleCounts: Record<string, number> = {};
+    for (const handleTypeName of process.getActiveResourcesInfo()) {
+      activeHandleCounts[handleTypeName] = (activeHandleCounts[handleTypeName] ?? 0) + 1;
+    }
+    console.log('[SHUTDOWN] active-handles at cleanup:done:', activeHandleCounts);
+  } catch {
+    // Diagnostic only - never let it affect the shutdown path.
+  }
 }
 
 /**

@@ -30,6 +30,11 @@ export interface ShutdownSession {
   status: SessionStatus;
   startedAt: string;
   exitSequence: string[];
+  /** onData / onExit listener disposables, detached at kill so node-pty
+   *  stops invoking our callbacks after the session dir is deleted. See
+   *  ManagedSession.ptyDisposables for the full contract: only set on the
+   *  normal-spawn path, left undefined for placeholder/queued sessions. */
+  ptyDisposables?: pty.IDisposable[];
 }
 
 export interface ShutdownContext<S extends ShutdownSession = ShutdownSession> {
@@ -136,6 +141,22 @@ export function killAllSessions<S extends ShutdownSession>(
       const ptyRef = session.pty;
       session.pty = null; // prevent double-kill (conpty heap corruption on Windows)
       context.killPty(ptyRef);
+    }
+    // Detach our onData / onExit listeners so node-pty stops invoking the
+    // callbacks on a later tick. Without this a final ConPTY chunk fires
+    // onData into the session dir detachAndDelete is about to remove (the
+    // dev-only trace-recorder ENOENT), and every late callback keeps the
+    // libuv loop referenced past a clean quit. Shutdown-only: the graceful
+    // per-session paths (suspend, remove) must keep onExit live.
+    if (session.ptyDisposables) {
+      for (const disposable of session.ptyDisposables) {
+        try {
+          disposable.dispose();
+        } catch {
+          // Best-effort - node-pty may have already torn down the emitter.
+        }
+      }
+      session.ptyDisposables = undefined;
     }
     context.sessionFiles.detachAndDelete(session.id);
   }

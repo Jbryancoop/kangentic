@@ -101,6 +101,8 @@ function buildRunningSession(overrides: Partial<Session> = {}): Session {
 }
 
 function buildMockDependencies(sessions: Session[]) {
+  // Stable diffWatcher stub so a test can assert closeAll() ran during cleanup.
+  const diffWatcher = { closeAll: vi.fn() };
   return {
     getSessionManager: vi.fn(() => ({
       listSessions: vi.fn(() => sessions),
@@ -113,6 +115,7 @@ function buildMockDependencies(sessions: Session[]) {
     getBoardConfigManager: vi.fn(() => ({
       detach: vi.fn(),
     })),
+    getDiffWatcher: vi.fn(() => diffWatcher),
     getTerminalSubmitScheduler: vi.fn(() => ({
       cancelAll: vi.fn(),
     })),
@@ -164,6 +167,14 @@ describe('syncShutdownCleanup history wire-up', () => {
     const dependencies = buildMockDependencies([]);
     syncShutdownCleanup(dependencies);
     expect(mockCaptureSessionMetrics).not.toHaveBeenCalled();
+  });
+
+  it('closes the diff watchers so recursive fs.watch handles do not keep the process alive past quit', () => {
+    const dependencies = buildMockDependencies([]);
+    syncShutdownCleanup(dependencies);
+    // getDiffWatcher returns the same stub on every call, so reading it here
+    // gives the instance the cleanup path acted on.
+    expect(dependencies.getDiffWatcher().closeAll).toHaveBeenCalledTimes(1);
   });
 
   it('does NOT call captureSessionMetrics for queued sessions (never spawned - nothing to capture)', () => {

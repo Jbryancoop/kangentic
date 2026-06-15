@@ -114,5 +114,9 @@ export class FileWatcher {
         this.onFileChange();
       }
     }, this.pollIntervalMs);
+    // A file-watcher poll must never, on its own, keep the process alive.
+    // Without unref, a reader not detached before quit holds the libuv loop
+    // open past a clean shutdown and trips the 6s hard failsafe.
+    this.pollTimer.unref();
   }
 }

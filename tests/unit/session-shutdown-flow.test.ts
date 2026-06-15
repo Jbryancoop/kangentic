@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type * as pty from 'node-pty';
-import { writeExitSequence } from '../../src/main/pty/shutdown/session-shutdown';
+import { writeExitSequence, killAllSessions } from '../../src/main/pty/shutdown/session-shutdown';
+import type { ShutdownSession, ShutdownContext } from '../../src/main/pty/shutdown/session-shutdown';
 
 describe('writeExitSequence', () => {
   it('writes every command in order', () => {
@@ -32,7 +33,86 @@ describe('writeExitSequence', () => {
   });
 });
 
-// Note: suspendAllSessions and killAllSessions are covered end-to-end via
+// Note: suspendAllSessions is covered end-to-end via
 // tests/unit/session-suspend.test.ts and session-manager.test.ts integration paths.
-// A direct unit test here would require mocking 4 collaborators and would
-// duplicate coverage without adding signal.
+
+describe('killAllSessions', () => {
+  function makeDisposable() {
+    return { dispose: vi.fn() };
+  }
+
+  function makeSession(overrides: Partial<ShutdownSession> = {}): ShutdownSession {
+    return {
+      id: 'sess-1',
+      taskId: 'task-1',
+      pty: { write: vi.fn(), kill: vi.fn() } as unknown as pty.IPty,
+      status: 'running',
+      startedAt: '2026-01-01T00:00:00Z',
+      exitSequence: [],
+      ...overrides,
+    };
+  }
+
+  function makeContext(sessions: ShutdownSession[]) {
+    const sessionMap = new Map(sessions.map((session) => [session.id, session]));
+    const detachAndDelete = vi.fn();
+    const killPty = vi.fn(() => true);
+    const sessionQueueClear = vi.fn();
+    const firstOutputClear = vi.fn();
+    const context = {
+      sessions: sessionMap,
+      sessionQueue: { clear: sessionQueueClear },
+      sessionFiles: { detachAndDelete },
+      firstOutputTracker: { clear: firstOutputClear },
+      killPty,
+    } as unknown as ShutdownContext;
+    return { context, sessionMap, detachAndDelete, killPty, sessionQueueClear, firstOutputClear };
+  }
+
+  it('disposes each retained PTY listener so node-pty stops invoking callbacks after kill', () => {
+    const dataDisposable = makeDisposable();
+    const exitDisposable = makeDisposable();
+    const session = makeSession({
+      ptyDisposables: [dataDisposable, exitDisposable] as unknown as pty.IDisposable[],
+    });
+    const { context, killPty } = makeContext([session]);
+
+    killAllSessions(context);
+
+    expect(killPty).toHaveBeenCalledTimes(1);
+    expect(dataDisposable.dispose).toHaveBeenCalledTimes(1);
+    expect(exitDisposable.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op for a session that never retained disposables', () => {
+    const session = makeSession({ ptyDisposables: undefined });
+    const { context, detachAndDelete } = makeContext([session]);
+
+    expect(() => killAllSessions(context)).not.toThrow();
+    expect(detachAndDelete).toHaveBeenCalledWith('sess-1');
+  });
+
+  it('keeps tearing down when one disposable throws (best-effort)', () => {
+    const throwing = { dispose: vi.fn(() => { throw new Error('emitter already gone'); }) };
+    const healthy = makeDisposable();
+    const session = makeSession({
+      ptyDisposables: [throwing, healthy] as unknown as pty.IDisposable[],
+    });
+    const { context, detachAndDelete } = makeContext([session]);
+
+    expect(() => killAllSessions(context)).not.toThrow();
+    expect(healthy.dispose).toHaveBeenCalledTimes(1);
+    expect(detachAndDelete).toHaveBeenCalledWith('sess-1');
+  });
+
+  it('clears the session, queue, and first-output maps', () => {
+    const session = makeSession();
+    const { context, sessionMap, sessionQueueClear, firstOutputClear } = makeContext([session]);
+
+    killAllSessions(context);
+
+    expect(sessionMap.size).toBe(0);
+    expect(sessionQueueClear).toHaveBeenCalledTimes(1);
+    expect(firstOutputClear).toHaveBeenCalledTimes(1);
+  });
+});

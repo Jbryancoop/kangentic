@@ -286,7 +286,7 @@ export async function performSpawn(
   //     self-reported session ID (ANSI-stripped for ConPTY).
   //   - Stream telemetry parser (adapter-specific, lazy init on first chunk).
   //   - PTY activity detection (yields to hook-based for 'hooks_and_pty').
-  ptyProcess.onData((data: string) => {
+  const ptyDataDisposable = ptyProcess.onData((data: string) => {
     context.bufferManager.onData(id, data);
 
     // Dev-only: record chunk arrival for the trace replay pipeline.
@@ -355,7 +355,7 @@ export async function performSpawn(
 
   // PTY exit cleanup sequence. Don't overwrite 'suspended' - suspend()
   // sets that before killing the PTY, and the new status must survive.
-  ptyProcess.onExit(({ exitCode }: { exitCode: number }) => {
+  const ptyExitDisposable = ptyProcess.onExit(({ exitCode }: { exitCode: number }) => {
     if (session.status !== 'suspended') {
       session.status = 'exited';
       // Synthetic session_end - Claude Code's hook won't fire on kill
@@ -407,6 +407,11 @@ export async function performSpawn(
     context.emit('exit', id, exitCode);
     context.sessionQueue.notifySlotFreed();
   });
+
+  // Retain the listener disposables so the synchronous shutdown path
+  // (killAllSessions) can detach them at kill, stopping node-pty from
+  // invoking our callbacks on a later tick after the session dir is deleted.
+  session.ptyDisposables = [ptyDataDisposable, ptyExitDisposable];
 
   context.emit('session-changed', id, toSession(session));
 

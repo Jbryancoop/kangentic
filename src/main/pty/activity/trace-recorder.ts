@@ -115,6 +115,10 @@ function tryRecord(sessionId: string, fileName: string, line: string): void {
     );
     setCounter(sessionId, fileName, newBytes);
   } catch (error) {
+    // ENOENT is the expected shutdown race: killAllSessions deletes the
+    // session dir while a final PTY chunk is still in flight. Swallow it
+    // silently - it is noise, not a fault. Log other errors once per session.
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return;
     if (!errorOnceLogged.has(sessionId)) {
       errorOnceLogged.add(sessionId);
       const message = error instanceof Error ? error.message : String(error);

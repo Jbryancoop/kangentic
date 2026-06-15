@@ -731,6 +731,7 @@ function getShutdownDependencies() {
   return {
     getSessionManager,
     getBoardConfigManager,
+    getDiffWatcher: () => getOptionalIpcContext()?.diffWatcher ?? null,
     getTerminalSubmitScheduler,
     getCurrentProjectId,
     deleteProjectFromIndex,
