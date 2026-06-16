@@ -143,6 +143,17 @@ export function pickWatchdog(snapshot: ActivityStatsSnapshot): WatchdogPick | nu
   ) {
     return { thresholdMs: 180_000, shortLabel: 'stale-thinking 180s' };
   }
+  if (
+    snapshot.subagentDepth > 0
+    && snapshot.pendingToolCount === 0
+    && bgShells === 0
+  ) {
+    // A subagent whose named terminal stop was dropped (only its ignored
+    // empty-detail inner stop arrived): depth stuck > 0. Reclaimed at the
+    // long 5-min cap (signal-or-pty-output anchored). Disjoint from the holds
+    // above, which all require subagentDepth === 0.
+    return { thresholdMs: 5 * 60_000, shortLabel: 'stuck-subagent 5m' };
+  }
   return null;
 }
 
@@ -153,6 +164,8 @@ const COUNTER_LABELS: Record<keyof ActivityStatsSnapshot['compensationCounters']
   forceThinking: 'force-thinking',
   forceIdle: 'force-idle',
   unmatchedBgShellEnd: 'unmatched-bg-shell-end',
+  ignoredInnerSubagentStop: 'ignored-inner-subagent-stop',
+  stuckSubagent: 'stuck-subagent',
 };
 
 interface ActivityTimelineProps {

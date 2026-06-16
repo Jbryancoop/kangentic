@@ -781,20 +781,35 @@ describe('pickWatchdog', () => {
     });
   });
 
-  describe('multi-holder thinking (no single watchdog applies)', () => {
-    it('returns null when thinking with both turnActive=true and pendingTools>0', () => {
-      // No branch matches: turnActive=true means bg-shell-hatch fails (requires
-      // turnActive=false), but pendingTools>0 means stuck-pending-tools fires
-      // first - actually this DOES match stuck-pending-tools.
-      // Per the code: stuck-pending-tools only checks pendingToolCount > 0,
-      // subagentDepth === 0, bgShells === 0. turnActive is NOT checked. So
-      // turnActive=true AND pendingTools=1 still returns stuck-pending-tools.
-      // The "multi-holder" null case only occurs with subagents or combinations
-      // that fall through all three branches: e.g. subagentDepth > 0.
+  describe('stuck-subagent branch (5 minutes)', () => {
+    it('returns stuck-subagent when subagentDepth>0 is the sole holder (pendingTools=0, bgShells=0)', () => {
+      // A subagent whose named terminal stop was dropped leaves subagentDepth
+      // stuck > 0 with no other holder. Mirrors the engine's stuck-subagent
+      // hold; without this branch the overlay showed no deadline line.
       const snapshot = makeSnapshot({
         activity: 'thinking' as ActivityState,
-        turnActive: false,
+        turnActive: true,
         pendingToolCount: 0,
+        subagentDepth: 2,
+        backgroundShellIds: [],
+        anonymousBackgroundShellCount: 0,
+      });
+      const result = pickWatchdog(snapshot);
+      expect(result).not.toBeNull();
+      expect(result?.shortLabel).toBe('stuck-subagent 5m');
+      expect(result?.thresholdMs).toBe(5 * 60_000);
+    });
+  });
+
+  describe('multi-holder thinking (no single watchdog applies)', () => {
+    it('returns null when thinking with both a subagent and pending tools', () => {
+      // stuck-subagent requires pendingToolCount=0; stuck-pending-tools
+      // requires subagentDepth=0. With both non-zero, neither branch matches
+      // and we fall through to the final null.
+      const snapshot = makeSnapshot({
+        activity: 'thinking' as ActivityState,
+        turnActive: true,
+        pendingToolCount: 1,
         subagentDepth: 1,
         backgroundShellIds: [],
         anonymousBackgroundShellCount: 0,
@@ -817,14 +832,17 @@ describe('pickWatchdog', () => {
       expect(pickWatchdog(snapshot)).toBeNull();
     });
 
-    it('returns null when thinking with subagentDepth > 0 and no other single holders', () => {
+    it('returns null when thinking with both a subagent and bg shells', () => {
+      // stuck-subagent requires bgShells=0; bg-shell-hatch requires
+      // subagentDepth=0. With both non-zero, neither matches and we fall
+      // through to the final null.
       const snapshot = makeSnapshot({
         activity: 'thinking' as ActivityState,
         turnActive: false,
         pendingToolCount: 0,
         subagentDepth: 2,
         backgroundShellIds: [],
-        anonymousBackgroundShellCount: 0,
+        anonymousBackgroundShellCount: 1,
       });
       expect(pickWatchdog(snapshot)).toBeNull();
     });

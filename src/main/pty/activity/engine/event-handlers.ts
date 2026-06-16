@@ -24,7 +24,10 @@ import { looksLikeShellId } from '../background-shell/looks-like-shell-id';
  *                         turn is done, any unmatched ToolStart events
  *                         are stale by definition (PostToolUse hook
  *                         dropped, tool force-killed, etc.).
- * - `SubagentStart/Stop`  adjusts `subagentDepth` (clamped at zero).
+ * - `SubagentStart`       increments `subagentDepth`.
+ * - `SubagentStop`        decrements `subagentDepth` (clamped at zero),
+ *                         EXCEPT an empty-string detail ("") which is a
+ *                         subagent's spurious inner-loop Stop and is ignored.
  * - `BackgroundShellStart` first closes any in-flight pending tool whose
  *                         id matches `event.toolId` (a foreground Bash that
  *                         Claude auto-backgrounded on timeout - the tool
@@ -121,6 +124,22 @@ export function updateCounters(state: SessionEngineState, event: SessionEvent): 
       state.subagentDepth += 1;
       break;
     case EventType.SubagentStop:
+      // An empty-STRING detail ("") marks a subagent's spurious inner-loop
+      // Stop: each subagent fires one when its inner turn ends, long before
+      // the Task tool returns its authoritative NAMED terminal Stop. Counting
+      // it over-decrements depth while the subagent is still live, which lets
+      // a later idle/idle_hint end the parent turn early -> false idle
+      // (task #237; real capture 87524f38, where every subagent emitted
+      // exactly one empty inner stop then one named terminal stop). A
+      // detail-LESS stop (no `detail` field at all, e.g. session-008's
+      // stream) and a named stop are real terminal stops and still decrement.
+      // The guard is strictly `=== ''`, NOT `!event.detail`: a detail-less
+      // terminal stop must still count, and session-008's replay test is the
+      // CI backstop that fails if this is ever weakened to `!event.detail`.
+      if (event.detail === '') {
+        state.compensationCounters.ignoredInnerSubagentStop += 1;
+        break;
+      }
       state.subagentDepth = Math.max(0, state.subagentDepth - 1);
       break;
     case EventType.BackgroundShellStart: {

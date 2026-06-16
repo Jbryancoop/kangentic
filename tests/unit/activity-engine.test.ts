@@ -1046,6 +1046,61 @@ describe('ActivityEngine', () => {
     });
   });
 
+  describe('5-min stuck-subagent watchdog (dropped named SubagentStop recovery)', () => {
+    beforeEach(() => {
+      engine.initSession(SESSION_ID);
+      transitions.length = 0;
+      syntheticEvents.length = 0;
+    });
+
+    it('recovers a subagentDepth stuck > 0 after the named terminal stop is lost', () => {
+      // Real shape introduced by the task #237 fix: a subagent starts, fires
+      // its spurious empty-detail inner stop (ignored by updateCounters, so
+      // depth stays > 0), but its authoritative NAMED terminal stop is dropped
+      // - depth never returns to 0. Every OTHER watchdog gates on
+      // subagentDepth === 0 and the PTY-tracker forceIdle is suppressed for
+      // hook-active agents, so without this hold the board is stuck thinking.
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStart, { detail: 'Explore' }));
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStop, { detail: '' }));
+      const state = engine.getState(SESSION_ID)!;
+      expect(state.activity).toBe('thinking');
+      expect(state.subagentDepth).toBe(1);
+
+      // Advance past the 5-min cap + stability window.
+      vi.advanceTimersByTime(TEST_BG_SHELL_HATCH_MS + TEST_STABILITY_WINDOW_MS + 50);
+
+      expect(transitions.at(-1)?.activity).toBe('idle');
+      expect(state.subagentDepth).toBe(0);
+      expect(state.turnActive).toBe(false);
+      expect(engine.getStatsSnapshot(SESSION_ID)?.compensationCounters.stuckSubagent).toBe(1);
+      // Synthetic Idle/Timeout event was emitted to the activity log.
+      expect(syntheticEvents.at(-1)?.event.type).toBe(EventType.Idle);
+      expect(syntheticEvents.at(-1)?.event.detail).toBe(IdleReason.Timeout);
+    });
+
+    it('does NOT fire while a nested tool keeps refreshing the signal (genuine work)', () => {
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStart, { detail: 'Explore' }));
+      // Half the cap passes, then a nested tool event refreshes lastSignalAt.
+      vi.advanceTimersByTime(TEST_BG_SHELL_HATCH_MS / 2);
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Read' }));
+      engine.processEvent(SESSION_ID, event(EventType.ToolEnd, { tool: 'Read' }));
+      // Half the cap AGAIN - total exceeds the cap, but the deadline re-armed.
+      vi.advanceTimersByTime(TEST_BG_SHELL_HATCH_MS / 2 + 50);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.subagentDepth).toBe(1);
+    });
+
+    it('does NOT fire while pending tools co-exist (mutual exclusion)', () => {
+      engine.processEvent(SESSION_ID, event(EventType.SubagentStart, { detail: 'Explore' }));
+      engine.processEvent(SESSION_ID, event(EventType.ToolStart, { tool: 'Bash' }));
+      vi.advanceTimersByTime(TEST_BG_SHELL_HATCH_MS + TEST_STABILITY_WINDOW_MS + 50);
+      // pendingToolCount > 0 -> the stuck-subagent predicate (pending === 0)
+      // does not match, and the stuck-pending predicate (depth === 0) does
+      // not match either; no recovery fires while both holders co-exist.
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+    });
+  });
+
   describe('user Ctrl+C interrupt synthesis', () => {
     // The synthesis itself is wired in SessionTelemetry, not the engine,
     // but the engine MUST handle a synthetic Interrupted event the same

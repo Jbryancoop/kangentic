@@ -148,7 +148,7 @@ export interface PendingTool {
  * Increments live for the lifetime of the session - never decremented.
  * Surfaced via `ActivityStatsSnapshot` so the debug overlay can render
  * a "click into the timeline to see what happened" cue when the
- * counters go non-zero. In a clean session, all six read zero.
+ * counters go non-zero. In a clean session, all eight read zero.
  *
  * Reset only on `initSession()` (fresh state) or `dispose()`.
  */
@@ -171,6 +171,24 @@ export interface CompensationCounters {
    * emitted a spurious bg-shell end (e.g. a tool-blind remap leaked one).
    */
   unmatchedBgShellEnd: number;
+  /**
+   * A `subagent_stop` with an empty-STRING detail ("") was ignored rather
+   * than decrementing `subagentDepth`. These are a subagent's spurious
+   * inner-loop Stops (fired before the Task tool returns its named terminal
+   * Stop); counting them drove depth to 0 while subagents were still live ->
+   * false idle (task #237). Non-zero is normal and healthy on any session
+   * that ran subagents - it is the count of noise the engine correctly
+   * discarded, not an error.
+   */
+  ignoredInnerSubagentStop: number;
+  /**
+   * `timer:stuck-subagent` fired: `subagentDepth` was stuck > 0 (a named
+   * terminal `subagent_stop` was lost after its empty inner stop was
+   * ignored) with no other holder, and no other watchdog could reclaim it
+   * because they all gate on `subagentDepth === 0`. Non-zero means a named
+   * SubagentStop hook was dropped and the recovery hold cleared the depth.
+   */
+  stuckSubagent: number;
 }
 
 /**
@@ -327,6 +345,7 @@ export interface SessionEngineState {
  *   - `timer:bg-shell-hatch`       - 30s sole-holder orphan-bg-shell grace
  *   - `timer:stale-thinking`       - 180s stale-thinking watchdog
  *   - `timer:stuck-pending-tools`  - 5-min hatch for orphan tool_starts
+ *   - `timer:stuck-subagent`       - 5-min hatch for a stuck subagentDepth
  *   - `interrupted`                - Interrupted event reset everything
  */
 export type TransitionTrigger =

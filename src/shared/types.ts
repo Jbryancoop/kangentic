@@ -572,7 +572,7 @@ export interface ActivityStatsSnapshot {
    * Increments on each watchdog fire or force-* call; never decrements.
    * Used by the debug overlay's counter strip to flag silent
    * compensations that don't visibly flip the activity pill. In a
-   * clean session, all six fields read 0.
+   * clean session, all eight fields read 0.
    */
   compensationCounters: {
     /** `timer:stale-thinking` watchdog fires (turnActive held alone). */
@@ -587,6 +587,10 @@ export interface ActivityStatsSnapshot {
     forceIdle: number;
     /** Unmatchable `background_shell_end` made a no-op (spurious end leaked). */
     unmatchedBgShellEnd: number;
+    /** Empty-string `subagent_stop` (spurious inner-loop Stop) ignored, not counted. */
+    ignoredInnerSubagentStop: number;
+    /** `timer:stuck-subagent` fired (a named SubagentStop was dropped, depth reclaimed). */
+    stuckSubagent: number;
   };
   /**
    * Bucketed PTY-chunk arrivals over the last ~120 seconds (100ms

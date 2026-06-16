@@ -1,0 +1,32 @@
+{"ts":1781495793151,"type":"session_start"}
+{"ts":1781495793442,"type":"prompt"}
+{"ts":1781495814353,"type":"tool_start","tool":"Agent","detail":"Map activity engine core state machine"}
+{"ts":1781495814560,"type":"subagent_start","detail":"Explore"}
+{"ts":1781495814613,"type":"tool_end","tool":"Agent"}
+{"ts":1781495821800,"type":"tool_start","tool":"Agent","detail":"Explore replay test infrastructure"}
+{"ts":1781495822060,"type":"subagent_start","detail":"Explore"}
+{"ts":1781495822300,"type":"tool_end","tool":"Agent"}
+{"ts":1781495838010,"type":"tool_start","tool":"Agent","detail":"Explore subagent hooks and watcher"}
+{"ts":1781495838257,"type":"subagent_start","detail":"Explore"}
+{"ts":1781495838500,"type":"tool_end","tool":"Agent"}
+{"ts":1781495852757,"type":"idle"}
+{"ts":1781495854333,"type":"subagent_stop","detail":""}
+{"ts":1781495885797,"type":"subagent_stop","detail":""}
+{"ts":1781495912958,"type":"idle_hint","detail":"Claude is waiting for your input"}
+{"ts":1781495937077,"type":"subagent_stop","detail":""}
+{"ts":1781495941505,"type":"subagent_stop","detail":"Explore"}
+{"ts":1781495941728,"type":"prompt"}
+{"ts":1781495945094,"type":"idle"}
+{"ts":1781495948619,"type":"subagent_stop","detail":"Explore"}
+{"ts":1781495948819,"type":"prompt"}
+{"ts":1781495951106,"type":"idle"}
+{"ts":1781495959325,"type":"subagent_stop","detail":"Explore"}
+{"ts":1781495959530,"type":"prompt"}
+{"ts":1781496102649,"type":"tool_start","tool":"Agent","detail":"Design the false-idle fix"}
+{"ts":1781496102753,"type":"subagent_start","detail":"Plan"}
+{"ts":1781496103000,"type":"tool_end","tool":"Agent"}
+{"ts":1781496122589,"type":"idle"}
+{"ts":1781496136190,"type":"subagent_stop","detail":""}
+{"ts":1781496182759,"type":"idle_hint","detail":"Claude is waiting for your input"}
+{"ts":1781496252476,"type":"subagent_stop","detail":"Plan"}
+{"ts":1781496252680,"type":"prompt"}

@@ -47,6 +47,9 @@ interface ReplayResult {
   /** Times the named/anonymous bg-shell escape hatch (5-min cap) fired. Zero
    *  in replay (no timers advanced) UNLESS the stream itself forces it. */
   bgShellHatchCompensations: number;
+  /** Empty-string `subagent_stop` events ignored as spurious inner-loop Stops
+   *  (the fix for task #237's false idle). */
+  ignoredInnerSubagentStopCompensations: number;
   /** Trigger of the last committed thinking->idle transition, or null. */
   lastThinkingToIdleTrigger: string | null;
 }
@@ -97,6 +100,8 @@ function replay(events: SessionEvent[]): ReplayResult {
     forceThinkingCompensations: snapshot.compensationCounters.forceThinking,
     unmatchedBgShellEndCompensations: snapshot.compensationCounters.unmatchedBgShellEnd,
     bgShellHatchCompensations: snapshot.compensationCounters.bgShellHatch,
+    ignoredInnerSubagentStopCompensations:
+      snapshot.compensationCounters.ignoredInnerSubagentStop,
     lastThinkingToIdleTrigger: lastThinkingToIdle?.trigger ?? null,
   };
   engine.dispose();
@@ -733,6 +738,80 @@ describe('ActivityEngine replay tests', () => {
     });
   });
 
+  // ───────────────────────────────────────────────────────────────────
+  // The harder ordering session-017 does NOT cover. Real capture (session
+  // 87524f38, task #234's own plan-mode session running 3 parallel `Explore`
+  // agents then a `Plan` agent). Each subagent emits TWO stops: a spurious
+  // empty-detail ("") inner-loop Stop when its inner turn ends, then its
+  // authoritative NAMED terminal Stop when the Task tool returns. The empty
+  // inner stops arrive FIRST and drove `subagentDepth` to 0 while subagents
+  // were still live. With depth prematurely 0:
+  //   - a real `idle` (a subagent's inner Stop) cleared the parent turn ->
+  //     the two `Explore` flickers, and
+  //   - an `idle_hint` ("waiting for your input") ended the parent turn ->
+  //     the ~69s `Plan` window.
+  // session-017's c44ff281 depth-0 gate could not help because the count it
+  // gates on was already corrupted. The fix ignores the empty-string inner
+  // stops so `subagentDepth` stays accurate and those gates do their job. A
+  // detail-LESS stop (session-008) still decrements; only `detail === ""` is
+  // ignored. Pinned here; red with the empty-stop skip removed.
+  // ───────────────────────────────────────────────────────────────────
+  describe('session-018-parallel-subagent-false-idle', () => {
+    const FIXTURE = 'session-018-parallel-subagent-false-idle.jsonl';
+
+    it('stays thinking through the whole parallel+nested subagent run (no false idle)', () => {
+      const result = replay(loadFixture(FIXTURE));
+      // The parent turn is live the entire window (it resumes after each
+      // subagent returns), so the board must stay thinking throughout.
+      expect(result.finalActivity).toBe('thinking');
+      expect(result.finalState.turnActive).toBe(true);
+      // All named terminal stops landed: depth balances back to 0.
+      expect(result.finalState.subagentDepth).toBe(0);
+      // The crux: no thinking->idle ever committed. Pre-fix this was a real
+      // `event:idle` (the Explore flickers) or `event:idle_hint` (the Plan
+      // window), because the empty inner stops zeroed depth first.
+      expect(result.lastThinkingToIdleTrigger).toBeNull();
+      // Once the turn goes active it never dips back to idle (the leading
+      // entry is the pre-turn initSession baseline idle, which is expected).
+      const firstActive = result.transitions.findIndex((activity) => activity !== 'idle');
+      expect(firstActive).toBeGreaterThanOrEqual(0);
+      expect(result.transitions.slice(firstActive)).not.toContain('idle');
+      // The empty-detail inner stops were recognized and discarded, not just
+      // absent (4 in this stream: 3 Explore + 1 Plan).
+      expect(result.ignoredInnerSubagentStopCompensations).toBe(4);
+      // Held by correct inputs, not force-recovered by a watchdog.
+      expect(result.staleThinkingCompensations).toBe(0);
+      expect(result.forceThinkingCompensations).toBe(0);
+    });
+
+    it('still settles to idle once the PARENT fires its own Stop at depth 0 (inverse preserved)', () => {
+      // Append the parent's real terminal Stop after every subagent has
+      // returned (depth 0). It is NOT a subagent inner stop, so it ends the
+      // turn: the fix must not leave the turn stuck thinking.
+      const events = [
+        ...loadFixture(FIXTURE),
+        { ts: 1781496300000, type: EventType.Idle } as SessionEvent,
+      ];
+      const result = replay(events);
+      expect(result.finalActivity).toBe('idle');
+      expect(result.finalState.turnActive).toBe(false);
+      expect(result.lastThinkingToIdleTrigger).toMatch(/^event:idle/);
+    });
+
+    it('classifies a trailing AskUserQuestion as permission, unchanged by the fix', () => {
+      // The real capture's next state was a (correct) permission prompt. The
+      // fix touches neither the permission flag nor derivePredicate, so an
+      // idle:permission after the run still classifies as permission.
+      const events = [
+        ...loadFixture(FIXTURE),
+        { ts: 1781496300000, type: EventType.Idle, detail: 'permission' } as SessionEvent,
+      ];
+      const result = replay(events);
+      expect(result.finalActivity).toBe('permission');
+      expect(result.finalState.permissionPending).toBe(true);
+    });
+  });
+
   describe('cross-fixture invariants', () => {
     it('all fixtures produce a deterministic outcome (no flakiness)', () => {
       const fixtures = [
@@ -750,6 +829,7 @@ describe('ActivityEngine replay tests', () => {
         'session-013-task-notification-missed-end-corrected.jsonl',
         'session-014-named-shell-output-liveness.jsonl',
         'session-017-false-idle-during-live-subagent.jsonl',
+        'session-018-parallel-subagent-false-idle.jsonl',
       ];
       for (const name of fixtures) {
         const events = loadFixture(name);

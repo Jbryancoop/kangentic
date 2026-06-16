@@ -737,6 +737,8 @@ export class ActivityEngine {
         state.compensationCounters.bgShellHatch += 1;
       } else if (hold.trigger === 'timer:stuck-pending-tools') {
         state.compensationCounters.stuckPendingTools += 1;
+      } else if (hold.trigger === 'timer:stuck-subagent') {
+        state.compensationCounters.stuckSubagent += 1;
       }
       const delta = formatCounterDelta(before, snapshotCounters(state));
       // Schedule the idle commit through the stability window unless

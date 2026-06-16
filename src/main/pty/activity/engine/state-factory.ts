@@ -30,6 +30,8 @@ export function createSessionEngineState(): SessionEngineState {
       forceThinking: 0,
       forceIdle: 0,
       unmatchedBgShellEnd: 0,
+      ignoredInnerSubagentStop: 0,
+      stuckSubagent: 0,
     },
     recentPtyChunks: [],
   };

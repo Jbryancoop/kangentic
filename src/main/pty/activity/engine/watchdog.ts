@@ -200,6 +200,36 @@ export function buildWatchdogHolds(config: WatchdogConfig): readonly WatchdogHol
       },
       applyStabilityWindow: false,
     },
+    {
+      // Held by `subagentDepth` alone: a subagent's NAMED terminal
+      // `subagent_stop` was lost AFTER its empty-detail inner stop was
+      // (correctly) ignored, so depth is stuck > 0. Every OTHER hold above
+      // requires `subagentDepth === 0`, and the PTY-tracker forceIdle that
+      // would otherwise zero depth is suppressed for hook-active agents
+      // (see session-telemetry.ts:maybeSuppressPtyTracker), so nothing else
+      // can reclaim this - without this hold the board would be stuck
+      // `thinking` forever. Disjoint from the holds above by the
+      // `subagentDepth > 0` predicate. A genuinely live subagent refreshes
+      // the `signal-or-pty-output` anchor via its nested tool events and
+      // streaming output, so this only fires after a real, long silence; the
+      // long 5-min cap (matching stuck-pending-tools) keeps it conservative.
+      predicate: (state) =>
+        state.subagentDepth > 0
+        && state.pendingToolCount === 0
+        && (state.activeBackgroundShellIds.size + state.anonymousBackgroundShellCount) === 0
+        && !state.permissionPending,
+      thresholdMs: config.bgShellEscapeHatchMs,
+      trigger: 'timer:stuck-subagent',
+      anchor: 'signal-or-pty-output',
+      reset: (state) => {
+        state.subagentDepth = 0;
+        // The matching named SubagentStop was lost along with, most likely,
+        // the parent's own Stop, so clear turnActive too - otherwise the
+        // predicate would still read thinking after depth zeroes.
+        state.turnActive = false;
+      },
+      applyStabilityWindow: true,
+    },
   ];
 }
 
