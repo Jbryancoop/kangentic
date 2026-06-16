@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.23.0] - 2026-06-16
+
+### Features
+
+- Unify in-app overlay motion and add double-click-to-maximize (8a3f488a)
+- Cross-agent get_transcript views (responses/result, tail, search, size caps) (a3cd5ab4)
+- Structured get_transcript for all agents via parseTranscript capability (cb4bacd3)
+- One-step project relocation (move folder + quiesce own sessions) (3cc7796d)
+- Suppress auto_command on the first move out of Done (3ab750e1)
+- Extend project-relocation data migration to all agents (adefcc80)
+- Center first diff on open, restore scroll on revisit (ab796a7f)
+- Migrate Claude per-project data on project relocation (e38667f9)
+- Larger add/edit task dialogs with maximize and close UX (28ec4ec1)
+
+### Fixes
+
+- Guard New Task and Task Detail submit against double-submit (73c008bd)
+- Stop false idle during parallel/nested subagents (aca71c32)
+- Skip session respawn on no-op column config save (67fa6929)
+- Root relocation test paths in os.tmpdir() so CI's Linux runner can write them (d38df3be)
+- Suppress false "Session crashed" notification on deliberate teardown (8c213908)
+- Release watcher and PTY handles so a clean quit exits 0 (217f896c)
+- Stop false idle while a subagent is still running (c44ff281)
+- Stop false idle after a long foreground tool ends (839fe5cd)
+- Instrument and mitigate labels drop on large-description tasks (b2be81cb)
+- Restart agent on model change only, not permission delta (2a516bac)
+- Reclaim orphaned PID-less named bg shell via output quiescence (f85166e6)
+- Diff model/effort against the session's applied value, not column config (2c7ec98e)
+- Route task/session mutations by interaction-time projectId (c20cfbc2)
+- Stop Done-move worktree delete from stalling the git queue (a78ca1ad)
+- Refresh remote refs before the Move-to-Done unpushed-commit warning (84c2c2ef)
+- Ground-truth signals for PID-less named background shells (44fcbafb)
+- Make Move-to-Done dialog name the real branch and right-size loss warnings (cd590e9c)
+- Keep tasks active while a long-running test shell is alive (e4fc50e2)
+- Capture session id only from the announced banner (957373ab)
+- Show MCP-created tasks without a drag; log agent push pipeline (7fc370c5)
+- Mount FlyingCard on drop to close the drop-to-Done flash (01a6b46b)
+
+### Other
+
+- Skip idle process-tree polling and declare watchdog anchors (5ef72929)
+- Complete empirically-grounded coverage of the activity engine (f932a4d3)
+- Cover Monaco DiffEditor disposal and quiet its benign teardown error (1874a123)
+- Guard against tests writing to hardcoded absolute roots (3de58325)
+- Move Changes panel controls into the diff toolbar (13170617)
+- Switch swimlane overrides to opus/xhigh, drop TortoiseGit shortcut (b50a74e8)
+- Harden merge-back Step 6 divergence handling (9873edc5)
+- Correct worker-crash flake taxonomy with verified root cause (ddd57c02)
+- Add /debug-activity skill and transition-trace reference (be6c22d5)
+- Normalize launcher package.json bin and repository fields (f9ee6fa9)
+
 ## [v0.22.1] - 2026-06-10
 
 ### Fixes
