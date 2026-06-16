@@ -32,11 +32,12 @@ All git commands below run from the **current working directory** - never use `c
 
 Report the mode, branch name, source branch, and working tree status before proceeding.
 
-## Step 0 - Install Dependencies, Type Check, and Lint
+## Step 0 - Install Dependencies, Type Check, Lint, and Guard
 
 1. Run `npm ci`. This ensures `node_modules` matches the lockfile exactly, preventing typecheck failures from stale or missing packages. The `postinstall` script automatically rebuilds native modules for Electron. If it fails with EBUSY, stop with: "A file in node_modules is locked by a running process. Close the Kangentic dev server (`npm start`) and retry."
 2. Run `npm run typecheck`. If it fails, report the type errors and stop - do not proceed with the merge. Type errors must be fixed before merging back.
 3. Run `npm run lint`. ESLint runs in CI (`.github/workflows/ci.yml`), so a lint error will fail the push you are about to make. If it reports any errors, report them and stop - fix them before merging back. Warnings (e.g. `react-hooks/exhaustive-deps`) do not fail lint and do not block the merge.
+4. Run `npx vitest run tests/unit/test-fs-writes-sandboxed.test.ts`. This is a sub-second static scan that catches a test writing to a hardcoded absolute root (e.g. `/projects/new-app`), which is green on a Windows dev drive but `EACCES` on CI's Linux runner - the failure mode that kept `main` red for days. The full unit tier already runs per-task via `/test` in the Test column; this single-file guard is the fast pre-push backstop for a test edited after that gate or a merge-back that skipped it. If it fails, report the offending `file:line` and stop - move the write under `os.tmpdir()` before merging back. Enforces `.claude/rules/cross-platform-parity.md`.
 
 ## Step 1 - Commit Changes
 

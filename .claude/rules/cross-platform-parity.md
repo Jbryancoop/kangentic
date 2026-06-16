@@ -56,12 +56,27 @@ A test must pass on CI's headless Linux runner, not merely on local Windows. Con
   state over re-measuring pixels.
 - **No machine-specific paths or personal info** in fixtures (use `C:\\Users\\dev`, `/mock/...`).
   See [[text-formatting]] for the em-dash ban that also applies to authored test text.
+- **Test filesystem writes stay under `os.tmpdir()`.** Derive every write target from
+  `fs.mkdtempSync(path.join(os.tmpdir(), ...))` or a mocked home directory. Never pass a
+  hardcoded absolute root (`/projects/...`, `C:\\...`) to a write call (`mkdirSync`,
+  `writeFileSync`, `rmSync`, `mkdtempSync`, and the like): it is writable on a developer's
+  Windows drive but `EACCES` on CI's Linux runner, where `/` is the unwritable filesystem root.
+  This is green locally and red on every CI push. A `cwd:` / `path:` string passed to a command
+  builder or pure path function is fine; the ban is on actual on-disk write arguments.
 
 ## Enforcement (self-maintaining)
 
 - **CI is the mechanical backstop for tests (primary):** the `validate` job runs the unit and UI
   tiers on `ubuntu-latest` on every push (`.github/workflows/ci.yml`), so a Windows-only-green
   test fails CI. This is the load-bearing guarantee; keep the UI tier in the required checks.
+- **Author-time guard for test fs writes (runs locally on Windows AND Linux):**
+  `tests/unit/test-fs-writes-sandboxed.test.ts` statically scans `tests/**` for a write call
+  (`mkdirSync`, `writeFileSync`, `rmSync`, `mkdtempSync`, and the rest) whose first argument is a
+  hardcoded absolute string literal, and fails before the test ever runs. It rides the unit tier
+  (so `/test` runs it per task via the Test column) and also runs in `/merge-back` Step 0 as the
+  pre-push backstop. This is the one mechanical layer that catches the absolute-write subclass
+  without a Linux runner, closing the "green locally, red on CI" gap that let `main` go red by
+  design.
 - **Review for code:** the `platform-guard` agent audits `src/main/pty`, `src/main/agent`,
   `src/main/git`, and any `path` / `fs.rm` / `child_process` usage for the code rules above
   (hardcoded `C:\\Users\\`, missing platform guards, missing `{ force: true }`, em-dashes).
@@ -70,11 +85,13 @@ A test must pass on CI's headless Linux runner, not merely on local Windows. Con
   single-instance bypass, scrollback races) and is the right tool for de-flaking an
   environment-sensitive test.
 
-Mechanical coverage of the test-authoring conventions is intentionally CI itself (run the tests
-on Linux) rather than a static scan, because "depends on cross-test state" and "pixel-exact
-assertion" are not reliably detectable by a lint rule. The read-trigger gap (a brand-new test
-file does not pre-load this rule) is covered by that same CI backstop: a fragile new test is
-caught the first time it runs on Linux.
+The one fs-write subclass excepted, mechanical coverage of the test-authoring conventions is
+intentionally CI itself (run the tests on Linux) rather than a static scan, because "depends on
+cross-test state" and "pixel-exact assertion" are not reliably detectable by a lint rule. The
+read-trigger gap (a brand-new test file does not pre-load this rule) is closed for absolute
+writes by the fs-write guard above, which scans the file whether or not the rule loaded, and for
+the un-mechanizable conventions by that same CI backstop: a fragile new test is caught the first
+time it runs on Linux.
 
 ## Scope
 
