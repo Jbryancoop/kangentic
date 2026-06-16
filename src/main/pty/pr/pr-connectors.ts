@@ -49,6 +49,15 @@ export interface PRConnector {
   extract(scrollback: string): DetectedPR | null;
 
   /**
+   * Extract the single canonical PR reference from authored text (a task
+   * description), or null when the text names zero or several distinct PRs.
+   * Unlike `extract` - which returns the most recent of many scrollback URLs -
+   * this is deliberately conservative: it returns a match only when there is no
+   * ambiguity, so a description is never guessed at. Optional per platform.
+   */
+  extractCanonical?(text: string): DetectedPR | null;
+
+  /**
    * Authoritatively resolve the PR for a branch via the platform API, run from
    * inside the repo/worktree at `repoCwd`. Returns null when no PR matches the
    * head ref; throws `PRResolverUnavailableError` when the CLI is unavailable so
@@ -94,6 +103,21 @@ export function matchesPRCommand(commandDetail: string): boolean {
 export function detectPR(scrollback: string): DetectedPR | null {
   for (const connector of connectors) {
     const result = connector.extract(scrollback);
+    if (result) return result;
+  }
+  return null;
+}
+
+/**
+ * Extract a single canonical PR reference from authored text (a task
+ * description) via the first connector that recognizes exactly one PR. Returns
+ * null when no connector finds an unambiguous match - so a description that
+ * names several PRs, or none, is never guessed at.
+ */
+export function detectCanonicalPR(text: string): DetectedPR | null {
+  for (const connector of connectors) {
+    if (!connector.extractCanonical) continue;
+    const result = connector.extractCanonical(text);
     if (result) return result;
   }
   return null;

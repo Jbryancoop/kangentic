@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { gitHubPRConnector } from '../../src/main/pty/pr/github-pr-detector';
-import { matchesPRCommand, detectPR } from '../../src/main/pty/pr/pr-connectors';
+import { matchesPRCommand, detectPR, detectCanonicalPR } from '../../src/main/pty/pr/pr-connectors';
 
 describe('gitHubPRConnector.extract', () => {
   it('extracts PR URL from gh pr create bare output', () => {
@@ -115,6 +115,38 @@ describe('gitHubPRConnector.extract', () => {
   });
 });
 
+describe('gitHubPRConnector.extractCanonical', () => {
+  const canonical = (text: string) => gitHubPRConnector.extractCanonical?.(text) ?? null;
+
+  it('returns the single PR URL named in a task description', () => {
+    const text = 'This task reviews https://github.com/owner/repo/pull/708 for the blog fix.';
+    expect(canonical(text)).toEqual({ url: 'https://github.com/owner/repo/pull/708', number: 708 });
+  });
+
+  it('returns the match when the same PR URL appears more than once', () => {
+    const text = 'See https://github.com/owner/repo/pull/708 - again at https://github.com/owner/repo/pull/708';
+    expect(canonical(text)).toEqual({ url: 'https://github.com/owner/repo/pull/708', number: 708 });
+  });
+
+  it('returns null when the description names several distinct PRs (ambiguous)', () => {
+    const text = 'Compare https://github.com/owner/repo/pull/708 against https://github.com/owner/repo/pull/702';
+    expect(canonical(text)).toBeNull();
+  });
+
+  it('does not match a bare "Merge pull request #702" git log line', () => {
+    const text = 'cac5dbf Merge pull request #702 from Troy-Web-Consulting/fix/682-blog-not-publishing-prod';
+    expect(canonical(text)).toBeNull();
+  });
+
+  it('does not match a bare owner/repo#123 shorthand', () => {
+    expect(canonical('Fixed in owner/repo#123')).toBeNull();
+  });
+
+  it('returns null for empty text', () => {
+    expect(canonical('')).toBeNull();
+  });
+});
+
 describe('gitHubPRConnector.matchesCommand', () => {
   it('matches gh pr create', () => {
     expect(gitHubPRConnector.matchesCommand('gh pr create --title "Fix bug" --body "desc"')).toBe(true);
@@ -154,5 +186,16 @@ describe('PR connector registry', () => {
 
   it('detectPR returns null when no connector matches', () => {
     expect(detectPR('no PR URLs here')).toBeNull();
+  });
+
+  it('detectCanonicalPR returns the single PR named in text', () => {
+    expect(detectCanonicalPR('Review https://github.com/owner/repo/pull/42')).toEqual({
+      url: 'https://github.com/owner/repo/pull/42',
+      number: 42,
+    });
+  });
+
+  it('detectCanonicalPR returns null on ambiguous text', () => {
+    expect(detectCanonicalPR('https://github.com/o/r/pull/1 and https://github.com/o/r/pull/2')).toBeNull();
   });
 });

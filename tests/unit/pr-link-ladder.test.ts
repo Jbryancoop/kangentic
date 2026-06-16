@@ -11,18 +11,26 @@ import type { Task } from '../../src/shared/types';
  * tested in isolation (no gh CLI, no native DB).
  */
 
-const git = vi.hoisted(() => ({ branch: 'real-branch' as string | null, sha: 'sha-current' as string | null }));
+const git = vi.hoisted(() => ({
+  branch: 'real-branch' as string | null,
+  sha: 'sha-current' as string | null,
+  // `rev-list --parents -n 1` output: commit SHA + parent SHAs. Two tokens = a
+  // normal (single-parent) commit; isMergeCommit treats >2 tokens as a merge.
+  parents: 'commit-sha parent-sha',
+}));
 const conn = vi.hoisted(() => ({
   byNumber: null as unknown,
   byBranch: null as unknown,
   byCommit: null as unknown,
   detect: null as unknown,
+  canonical: null as unknown,
   calls: [] as string[],
 }));
 
 vi.mock('simple-git', () => ({
   simpleGit: () => ({
     revparse: async (args: string[]) => (args.includes('--abbrev-ref') ? (git.branch ?? 'HEAD') : git.sha),
+    raw: async () => git.parents,
   }),
 }));
 
@@ -50,6 +58,7 @@ vi.mock('../../src/main/pty/pr/pr-connectors', () => {
     resolvePRForBranch: make('byBranch'),
     resolvePRByCommit: make('byCommit'),
     detectPR: () => conn.detect ?? null,
+    detectCanonicalPR: () => conn.canonical ?? null,
   };
 });
 
@@ -82,8 +91,8 @@ function depsFor(task: Task, opts: { updateSpy?: ReturnType<typeof vi.fn>; force
 const resolved = (number: number, state = 'open') => ({ url: `u${number}`, number, state });
 
 beforeEach(() => {
-  conn.byNumber = null; conn.byBranch = null; conn.byCommit = null; conn.detect = null; conn.calls = [];
-  git.branch = 'real-branch'; git.sha = 'sha-current';
+  conn.byNumber = null; conn.byBranch = null; conn.byCommit = null; conn.detect = null; conn.canonical = null; conn.calls = [];
+  git.branch = 'real-branch'; git.sha = 'sha-current'; git.parents = 'commit-sha parent-sha';
 });
 
 describe('resolveAndLinkPRForTask confidence ladder', () => {
@@ -122,6 +131,15 @@ describe('resolveAndLinkPRForTask confidence ladder', () => {
     expect(conn.calls).toContain('byBranch');
   });
 
+  it('tier 3: skips the commit anchor when HEAD is a merge commit (base-branch tip)', async () => {
+    git.parents = 'merge-sha parent-1 parent-2'; // a `Merge pull request #N` commit has two parents
+    conn.byCommit = resolved(702, 'merged'); // the PR that merge commit closed - not this task's PR
+    const task = makeTask({ worktree_path: null, branch_name: null, head_sha: 'develop-tip-merge' });
+    const result = await resolveAndLinkPRForTask(task.id, depsFor(task));
+    expect(conn.calls).not.toContain('byCommit');
+    expect(result.status).toBe('not-found');
+  });
+
   it('write-only-on-change: returns unchanged and does not write when the PR is already current', async () => {
     conn.byNumber = resolved(50, 'open');
     const updateSpy = vi.fn();
@@ -156,6 +174,63 @@ describe('resolveAndLinkPRForTask confidence ladder', () => {
     const result = await resolveAndLinkPRForTask(task.id, depsFor(task, { updateSpy }));
     expect(updateSpy).toHaveBeenCalledWith(expect.objectContaining({ head_sha: 'sha-new' }));
     expect(result.status).toBe('not-found');
+  });
+});
+
+describe('resolveAndLinkPRForTask description anchor (tier 0)', () => {
+  it('tier 0: a PR URL in the description wins over the develop-tip commit anchor', async () => {
+    conn.canonical = { url: 'https://github.com/o/r/pull/708', number: 708 };
+    conn.byNumber = resolved(708, 'open');
+    conn.byCommit = resolved(702, 'merged'); // what the develop-tip merge commit would resolve to
+    const task = makeTask({ head_sha: 'develop-tip', description: 'Reviews https://github.com/o/r/pull/708' });
+    const result = await resolveAndLinkPRForTask(task.id, depsFor(task));
+    expect(result.task?.pr_number).toBe(708);
+    expect(result.task?.pr_state).toBe('open');
+    expect(conn.calls).not.toContain('byCommit');
+    expect(conn.calls).not.toContain('byBranch');
+  });
+
+  it('tier 0 self-heals an already-mislinked task (pr_number flips on the next resolve)', async () => {
+    conn.canonical = { url: 'https://github.com/o/r/pull/706', number: 706 };
+    conn.byNumber = resolved(706, 'open');
+    const task = makeTask({ pr_number: 702, pr_url: 'u702', pr_state: 'merged', head_sha: 'develop-tip' });
+    const result = await resolveAndLinkPRForTask(task.id, depsFor(task));
+    expect(result.status).toBe('linked');
+    expect(result.task?.pr_number).toBe(706);
+    expect(result.task?.pr_state).toBe('open');
+  });
+
+  it('tier 0 links url+number with unknown state when the named PR cannot be confirmed', async () => {
+    conn.canonical = { url: 'https://github.com/o/r/pull/708', number: 708 };
+    conn.byNumber = null; // gh ran cleanly but matched nothing
+    conn.byCommit = resolved(702, 'merged');
+    const task = makeTask({ head_sha: 'develop-tip' });
+    const result = await resolveAndLinkPRForTask(task.id, depsFor(task));
+    expect(result.task?.pr_number).toBe(708);
+    expect(result.task?.pr_state).toBeNull();
+    expect(conn.calls).not.toContain('byCommit');
+  });
+
+  it('tier 0 degrades to the scraper when the resolver is unavailable (error propagates, not swallowed)', async () => {
+    conn.canonical = { url: 'https://github.com/o/r/pull/708', number: 708 };
+    conn.byNumber = new PRResolverUnavailableError('gh CLI not found'); // gh down on the Tier 0 lookup
+    conn.byCommit = resolved(702, 'merged'); // the wrong PR the commit tier would have linked
+    const task = makeTask({ head_sha: 'develop-tip' });
+    const result = await resolveAndLinkPRForTask(task.id, depsFor(task)); // no getScrollback -> nothing to scrape
+    expect(result.status).toBe('resolver-unavailable');
+    expect(result.message).toMatch(/gh/i);
+    expect(conn.calls).not.toContain('byCommit'); // never fell through to the wrong git tiers
+  });
+
+  it('tier 0: a description PR URL is itself an anchor when the task has no git state', async () => {
+    conn.canonical = { url: 'https://github.com/o/r/pull/708', number: 708 };
+    conn.byNumber = resolved(708, 'open');
+    // No pr_number, branch, head_sha, or worktree - the old guard would no-anchor bail here.
+    const task = makeTask({ pr_number: null, branch_name: null, head_sha: null, worktree_path: null });
+    const result = await resolveAndLinkPRForTask(task.id, depsFor(task));
+    expect(result.status).toBe('linked');
+    expect(result.task?.pr_number).toBe(708);
+    expect(result.task?.pr_state).toBe('open');
   });
 });
 

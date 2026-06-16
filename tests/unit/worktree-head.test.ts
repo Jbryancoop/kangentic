@@ -15,17 +15,18 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// One shared mock object that both revparse calls route through. The revparse
-// mock is configured per-test to return the desired values.
+// One shared mock object that both revparse and raw calls route through. The
+// mocks are configured per-test to return the desired values.
 const mockGit = {
   revparse: vi.fn<(args: string[]) => Promise<string>>(),
+  raw: vi.fn<(args: string[]) => Promise<string>>(),
 };
 
 vi.mock('simple-git', () => ({
   simpleGit: vi.fn(() => mockGit),
 }));
 
-import { readWorktreeHead } from '../../src/main/git/worktree-head';
+import { readWorktreeHead, isMergeCommit } from '../../src/main/git/worktree-head';
 
 describe('readWorktreeHead', () => {
   beforeEach(() => {
@@ -115,5 +116,49 @@ describe('readWorktreeHead', () => {
 
     expect(result.branch).toBe('release/v2.0');
     expect(result.sha).toBe('beef1234');
+  });
+});
+
+/**
+ * isMergeCommit is the merge-commit guard that keeps the PR confidence ladder
+ * from attributing a base-branch `Merge pull request #N` tip (which a freshly
+ * branched review worktree sits on) to the task. `rev-list --parents -n 1 <sha>`
+ * prints the commit SHA followed by its parent SHAs on one line: 1 token = root
+ * commit, 2 = a normal single-parent commit, >2 = a merge commit.
+ */
+describe('isMergeCommit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns false for a single-parent commit (two tokens)', async () => {
+    mockGit.raw.mockResolvedValue('abc123 parent1');
+    expect(await isMergeCommit('/mock/repo', 'abc123')).toBe(false);
+  });
+
+  it('returns true for a merge commit (more than two tokens)', async () => {
+    mockGit.raw.mockResolvedValue('mergesha parent1 parent2');
+    expect(await isMergeCommit('/mock/repo', 'mergesha')).toBe(true);
+  });
+
+  it('returns false for a root commit with no parents (one token)', async () => {
+    mockGit.raw.mockResolvedValue('rootsha');
+    expect(await isMergeCommit('/mock/repo', 'rootsha')).toBe(false);
+  });
+
+  it('tolerates surrounding whitespace and a trailing newline', async () => {
+    mockGit.raw.mockResolvedValue('  mergesha parent1 parent2\n');
+    expect(await isMergeCommit('/mock/repo', 'mergesha')).toBe(true);
+  });
+
+  it('returns false when git throws (best-effort degrade, never propagates)', async () => {
+    mockGit.raw.mockRejectedValue(new Error('fatal: bad object missing'));
+    expect(await isMergeCommit('/mock/repo', 'missing')).toBe(false);
+  });
+
+  it('queries rev-list --parents for the given SHA', async () => {
+    mockGit.raw.mockResolvedValue('abc123 parent1');
+    await isMergeCommit('/mock/repo', 'abc123');
+    expect(mockGit.raw).toHaveBeenCalledWith(['rev-list', '--parents', '-n', '1', 'abc123']);
   });
 });

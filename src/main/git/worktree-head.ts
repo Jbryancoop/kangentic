@@ -22,3 +22,25 @@ export async function readWorktreeHead(worktreePath: string): Promise<{ branch: 
     return { branch: null, sha: null };
   }
 }
+
+/**
+ * Whether `sha` is a merge commit (more than one parent). A merge commit is
+ * never a task's own work - in particular a base-branch `Merge pull request #N`
+ * tip, which a freshly-branched code-review worktree sits on - so the commit-SHA
+ * PR anchor must not attribute that commit's originating PR to the task.
+ *
+ * `rev-list --parents -n 1 <sha>` prints the commit's SHA followed by its parent
+ * SHAs on one line, so more than two tokens means two or more parents. The merge
+ * commit survives in the object store after the worktree is reclaimed, so this
+ * works from the main repo too. Best-effort: returns false on any git error so
+ * resolution still proceeds.
+ */
+export async function isMergeCommit(repoCwd: string, sha: string): Promise<boolean> {
+  try {
+    const git = simpleGit(repoCwd);
+    const line = (await git.raw(['rev-list', '--parents', '-n', '1', sha])).trim();
+    return line.split(/\s+/).length > 2;
+  } catch {
+    return false;
+  }
+}
