@@ -350,4 +350,168 @@ describe('SWIMLANE_UPDATE handler - restart-on-model and effort live-inject bran
     // No restart should have been triggered for an effort-only change.
     expect(hoisted.restartSessionForSettingsChange).not.toHaveBeenCalled();
   });
+
+  // =========================================================================
+  // Test 3: NO-OP / non-override save -> loop is skipped entirely
+  // =========================================================================
+
+  it('NO-OP save (overrides unchanged, only name changed): skips the loop, no restart, no inject, no plan', async () => {
+    // A running task lives in the column, so if the loop ran it WOULD reach
+    // prepareInjectionPlan. The column's model/effort overrides are identical
+    // before and after; only the name changed. The handler must short-circuit
+    // before touching the running session.
+    const task = createTaskInLane({ id: 'task-board-3', session_id: 'session-board-3' });
+    const swimlaneBefore = createSwimlaneBefore({
+      id: 'lane-executing',
+      model_override: 'opus',
+      effort_override: 'xhigh',
+    });
+    const updatedSwimlane = { ...swimlaneBefore, name: 'Executing (renamed)' };
+
+    const repos = buildProjectRepos(swimlaneBefore, updatedSwimlane, [task]);
+    mockGetProjectRepos.mockReturnValue(repos);
+
+    context.sessionManager.getSession.mockReturnValue({ status: 'running' });
+    mockAgentRegistryGet.mockReturnValue({ name: 'claude' });
+
+    await callSwimlaneUpdate({ id: 'lane-executing', name: 'Executing (renamed)' }, context);
+
+    // The per-task loop must be skipped: the override-change gate is false, so
+    // prepareInjectionPlan is never consulted and neither side-effect fires.
+    expect(hoisted.prepareInjectionPlan).not.toHaveBeenCalled();
+    expect(hoisted.restartSessionForSettingsChange).not.toHaveBeenCalled();
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
+  });
+
+  // =========================================================================
+  // Test 4: before === null (new swimlane / first save) -> loop is skipped
+  // =========================================================================
+
+  it('new swimlane (before === null): skips the loop even with a running task present', async () => {
+    // Scenario: the swimlane row did not exist before this update (e.g. first
+    // save of a just-created column). swimlanes.getById returns null, so `!!before`
+    // is false and `overridesChanged` is false regardless of the override values
+    // on the result. The per-task loop must not run.
+    //
+    // Red-green rationale: if the gate were `if (before)` (the pre-fix
+    // condition) instead of `if (overridesChanged)`, this test would FAIL because
+    // `before` being null makes the whole expression false -- but if the gate
+    // checked the result's overrides directly, the loop could erroneously fire.
+    // The `!!before` guard is the "swimlane existed pre-update" invariant; this
+    // test locks it.
+    const task = createTaskInLane({ id: 'task-board-4', session_id: 'session-board-4' });
+
+    // Pass null as swimlaneBefore so getById returns null.
+    const updatedSwimlane = createSwimlaneBefore({
+      id: 'lane-new',
+      model_override: 'opus',
+      effort_override: 'xhigh',
+    });
+    const repos = buildProjectRepos(null, updatedSwimlane, [task]);
+    mockGetProjectRepos.mockReturnValue(repos);
+
+    context.sessionManager.getSession.mockReturnValue({ status: 'running' });
+    mockAgentRegistryGet.mockReturnValue({ name: 'claude' });
+
+    await callSwimlaneUpdate({ id: 'lane-new', model_override: 'opus' }, context);
+
+    // overridesChanged is false when before is null; the loop body never executes.
+    expect(hoisted.prepareInjectionPlan).not.toHaveBeenCalled();
+    expect(hoisted.restartSessionForSettingsChange).not.toHaveBeenCalled();
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
+  });
+
+  // =========================================================================
+  // Test 5: both-null no-op (WIP-limit / color edit on a plain column)
+  // =========================================================================
+
+  it('both-null no-op (name/color edit, no overrides ever set): skips the loop, null !== null is false', async () => {
+    // Scenario: a column that has never had model or effort overrides (both
+    // fields null). The user edits only the name or color. Before and after
+    // both carry null overrides. The `null !== null` comparison for both OR
+    // arms is false, so overridesChanged is false and the loop is skipped.
+    //
+    // Red-green rationale: this documents that the `||` condition is correctly
+    // short-circuited when both arms evaluate to `null !== null` (false). If the
+    // gate were inadvertently changed to `before.model_override !== undefined`
+    // or a truthy coercion, this test would catch the regression.
+    const task = createTaskInLane({ id: 'task-board-5', session_id: 'session-board-5' });
+    const swimlaneBefore = createSwimlaneBefore({
+      id: 'lane-plain',
+      model_override: null,
+      effort_override: null,
+    });
+    const updatedSwimlane = { ...swimlaneBefore, name: 'Plain (renamed)' };
+
+    const repos = buildProjectRepos(swimlaneBefore, updatedSwimlane, [task]);
+    mockGetProjectRepos.mockReturnValue(repos);
+
+    context.sessionManager.getSession.mockReturnValue({ status: 'running' });
+    mockAgentRegistryGet.mockReturnValue({ name: 'claude' });
+
+    await callSwimlaneUpdate({ id: 'lane-plain', name: 'Plain (renamed)' }, context);
+
+    // null !== null is false for both arms of the OR; the per-task loop is skipped.
+    expect(hoisted.prepareInjectionPlan).not.toHaveBeenCalled();
+    expect(hoisted.restartSessionForSettingsChange).not.toHaveBeenCalled();
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).not.toHaveBeenCalled();
+  });
+
+  // =========================================================================
+  // Test 6: effort-only change with non-null, unchanged model (OR right arm)
+  // =========================================================================
+
+  it('effort-only change with non-null unchanged model: OR right arm fires, scheduleKeystrokes called, no restart', async () => {
+    // Scenario: a column already has model_override='opus' (non-null, unchanged).
+    // Only effort_override changes (null -> 'xhigh'). The left arm of the OR is
+    // `'opus' !== 'opus'` = false; the right arm is `null !== 'xhigh'` = true.
+    // overridesChanged is true, the loop runs, and since prepareInjectionPlan
+    // returns needsRestartForModel: false, scheduleKeystrokes fires.
+    //
+    // Red-green rationale: this proves the OR's right arm independently triggers
+    // the loop even when the left arm (model) is equal-but-non-null. Without the
+    // right arm, an effort-only change on a column with a pre-existing model would
+    // silently skip injection. If the gate were changed to check model_override
+    // only, this test would fail (loop skipped) because the model is unchanged.
+    const task = createTaskInLane({
+      id: 'task-board-6',
+      session_id: 'session-board-6',
+      agent: 'claude',
+    });
+    const swimlaneBefore = createSwimlaneBefore({
+      id: 'lane-with-model',
+      model_override: 'opus',
+      effort_override: null,
+    });
+    const updatedSwimlane = { ...swimlaneBefore, effort_override: 'xhigh' };
+
+    const repos = buildProjectRepos(swimlaneBefore, updatedSwimlane, [task]);
+    mockGetProjectRepos.mockReturnValue(repos);
+
+    context.sessionManager.getSession.mockReturnValue({ status: 'running' });
+    mockAgentRegistryGet.mockReturnValue({ name: 'claude' });
+
+    // prepareInjectionPlan returns a live-inject plan (model unchanged, no restart needed).
+    hoisted.prepareInjectionPlan.mockReturnValue({
+      sequence: ['/effort xhigh'],
+      verifier: null,
+      verifiedPrefixLength: 1,
+      needsRestartForModel: false,
+      appliedSettings: { effort: 'xhigh' },
+    });
+
+    await callSwimlaneUpdate({ id: 'lane-with-model', effort_override: 'xhigh' }, context);
+
+    // The OR's right arm (effort change) triggered the loop. scheduleKeystrokes must fire.
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledTimes(1);
+    expect(context.terminalSubmitScheduler.scheduleKeystrokes).toHaveBeenCalledWith(
+      'task-board-6',
+      'session-board-6',
+      ['/effort xhigh'],
+      { verifier: null, verifiedPrefixLength: 1 },
+    );
+
+    // Model is unchanged, so no restart should be triggered.
+    expect(hoisted.restartSessionForSettingsChange).not.toHaveBeenCalled();
+  });
 });

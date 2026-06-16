@@ -94,16 +94,29 @@ export function registerBoardHandlers(context: IpcContext): void {
     // delta source is each session's recorded `applied_model`/`applied_effort`
     // (its true running value), so editing a column from e.g. Default to xhigh
     // propagates to a session running at the default, but re-saving a column at
-    // a value the session already has injects nothing. `before` only gates that
-    // the swimlane existed pre-update.
+    // a value the session already has injects nothing.
+    //
+    // We gate the whole loop on the column's `model_override`/`effort_override`
+    // actually changing in this save (`overridesChanged`). A color/title/icon/WIP
+    // edit, or a re-save that re-selects the same model/effort, leaves the
+    // overrides untouched and must NOT suspend/respawn or inject into in-flight
+    // sessions. This holds even when a running session's recorded `applied_*` is
+    // stale (e.g. NULL on a session predating applied-settings recording), where
+    // the per-session delta alone would otherwise see a phantom change and
+    // needlessly restart the session. (`before` also guards that the swimlane
+    // existed pre-update.)
     //
     // A MODEL change restarts the session (suspend + `--resume --model`) rather
     // than live-injecting `/model`, for consistency with the column-transition
     // and ContextBar paths (a live model swap left the agent paused after a
     // Planning -> Executing handoff). An EFFORT change still swaps live.
-    const projectId = context.currentProjectId;
-    const projectPath = context.currentProjectPath;
-    if (before) {
+    const overridesChanged = !!before && (
+      before.model_override !== result.model_override
+      || before.effort_override !== result.effort_override
+    );
+    if (overridesChanged) {
+      const projectId = context.currentProjectId;
+      const projectPath = context.currentProjectPath;
       const sessionRepo = projectId
         ? new SessionRepository(getProjectDb(projectId))
         : null;
