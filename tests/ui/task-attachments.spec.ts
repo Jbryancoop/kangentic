@@ -17,8 +17,20 @@ test.afterAll(async () => {
   await browser?.close();
 });
 
+/**
+ * Wait for all dialog backdrops (fixed inset-0 overlays) to fully unmount.
+ * BaseDialog animates close over 150ms and only unmounts on `animationend`.
+ * Without this wait, a backdrop from the prior test intercepts clicks on "Add
+ * task" in the next test, causing deterministic timeouts in a shared-page suite.
+ */
+async function waitForNoBackdrop(): Promise<void> {
+  await expect(page.locator('.fixed.inset-0')).toHaveCount(0, { timeout: 2000 });
+}
+
 /** Open the New Task dialog in the To Do column */
 async function openNewTaskDialog() {
+  // Ensure any dialog/backdrop from a prior test is fully gone before clicking.
+  await waitForNoBackdrop();
   const column = page.locator('[data-swimlane-name="To Do"]');
   const addButton = column.locator('text=Add task');
   await addButton.click();
@@ -30,6 +42,7 @@ test.describe('New Task Dialog Layout', () => {
     await openNewTaskDialog();
     const dialog = page.locator('.w-\\[840px\\]');
     await expect(dialog).toBeVisible();
+    // Form is clean - Escape closes directly (no ConfirmDialog) and animates out.
     await page.keyboard.press('Escape');
   });
 
@@ -41,6 +54,7 @@ test.describe('New Task Dialog Layout', () => {
     // 280px floor when the dialog is windowed.
     const container = page.locator('.min-h-\\[280px\\]');
     await expect(container).toBeVisible();
+    // Form is clean - Escape closes directly (no ConfirmDialog) and animates out.
     await page.keyboard.press('Escape');
   });
 
@@ -52,8 +66,10 @@ test.describe('New Task Dialog Layout', () => {
     const textarea = page.locator('textarea');
     await textarea.fill('hello');
     await expect(page.locator('text=Paste or drop files here')).not.toBeVisible();
-    // Form is dirty (title filled) -- Escape is blocked, use Cancel button
+    // Form is dirty (text typed) - Cancel shows "Discard unsaved changes?" confirm.
+    // Dismiss via Discard so the dialog fully closes before the next test opens it.
     await page.locator('button:has-text("Cancel")').click();
+    await page.locator('button:has-text("Discard")').click();
   });
 
   test('shows image count next to thumbnails', async () => {
@@ -76,8 +92,10 @@ test.describe('New Task Dialog Layout', () => {
 
     await page.waitForTimeout(500);
     await expect(page.locator('text=1 attachment')).toBeVisible();
-    // Form is dirty (image attached) -- Escape is blocked, use Cancel button
+    // Form is dirty (image attached) - Cancel shows "Discard unsaved changes?" confirm.
+    // Dismiss via Discard so the dialog fully closes before the next describe block.
     await page.locator('button:has-text("Cancel")').click();
+    await page.locator('button:has-text("Discard")').click();
   });
 });
 
@@ -117,8 +135,10 @@ test.describe('Image Attachments', () => {
     const images = thumbnails.locator('img');
     expect(await images.count()).toBeGreaterThanOrEqual(1);
 
-    // Form is dirty (image attached) -- Escape is blocked, use Cancel button
+    // Form is dirty (image attached) - Cancel shows "Discard unsaved changes?" confirm.
+    // Dismiss via Discard so the dialog fully closes before the next test opens it.
     await page.locator('button:has-text("Cancel")').click();
+    await page.locator('button:has-text("Discard")').click();
   });
 
   test('delete thumbnail removes it', async () => {
@@ -160,7 +180,8 @@ test.describe('Image Attachments', () => {
     // Thumbnails container should disappear (no attachments)
     await expect(thumbnails).not.toBeVisible();
 
-    // After deleting the only attachment the form is clean -- but use Cancel for safety
+    // After deleting the only attachment the form is clean (no title/description/
+    // attachments) - Cancel closes directly without a ConfirmDialog.
     await page.locator('button:has-text("Cancel")').click();
   });
 
@@ -238,6 +259,7 @@ test.describe('Image Attachments', () => {
 
     await expect(dropOverlay).not.toBeVisible();
 
+    // Form is clean - Escape closes directly (no ConfirmDialog) and animates out.
     await page.keyboard.press('Escape');
   });
 });

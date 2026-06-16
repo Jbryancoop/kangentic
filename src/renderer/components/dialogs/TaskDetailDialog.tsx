@@ -185,6 +185,16 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
     return true;
   }, [confirmDiscard, isEditing, isEditDirty]);
 
+  // BaseDialog publishes its animated, guard-aware close here. The custom-header
+  // X button and the panel.close keybinding route through it so they play the
+  // exit animation (and run the unsaved-changes guard while editing) instead of
+  // unmounting instantly. Falls back to onClose if invoked before mount.
+  const dialogCloseRef = useRef<(() => void) | null>(null);
+  const closeWithAnimation = useCallback(() => {
+    if (dialogCloseRef.current) dialogCloseRef.current();
+    else onClose();
+  }, [onClose]);
+
   const handleToggleBrowser = useCallback(() => {
     // Mutually exclusive with the changes panel for the 2-col layout.
     if (!browserOpen && changesOpen) toggleChangesOpen(task.id);
@@ -278,7 +288,7 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   // global board/backlog toggle while the dialog is open, which works because
   // this capture-phase listener runs first.
   useKeybinding('panel.maximize', () => toggleMaximized(task.id), { capture: true });
-  useKeybinding('panel.close', () => { if (handleCloseAttempt()) onClose(); }, { capture: true });
+  useKeybinding('panel.close', closeWithAnimation, { capture: true });
   useKeybinding('taskDetail.toggleBrowser', () => handleToggleBrowser(), { capture: true, enabled: canShowBrowser });
   useKeybinding('taskDetail.toggleChanges', () => handleToggleChanges(), { capture: true, enabled: sessionState.canShowChanges });
 
@@ -336,7 +346,7 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
   const customHeader = (
     <TaskDetailHeader
       task={task}
-      onClose={onClose}
+      onClose={closeWithAnimation}
       isEditing={isEditing}
       setIsEditing={setIsEditing}
       canToggle={sessionState.canToggle}
@@ -371,6 +381,8 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
     <>
       <BaseDialog
         onClose={onClose}
+        closeRef={dialogCloseRef}
+        onHeaderDoubleClick={handleToggleMaximized}
         {...(isEditing
           ? {
             title: (

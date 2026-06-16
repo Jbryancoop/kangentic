@@ -317,6 +317,7 @@ export function NewBacklogTaskDialog({ onClose, onCreate, editTask, onUpdate }: 
       <form onSubmit={handleSubmit}>
         <BaseDialog
           onClose={onClose}
+          onHeaderDoubleClick={handleToggleMaximized}
           onCloseRequest={handleCloseAttempt}
           title={isEditMode ? 'Edit Backlog Task' : 'New Backlog Task'}
           icon={<Plus size={14} className="text-fg-muted" />}

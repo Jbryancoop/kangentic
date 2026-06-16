@@ -1,6 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { GitBranch, Search, Loader2, ChevronDown } from 'lucide-react';
 import { usePopoverPosition } from '../../hooks/usePopoverPosition';
+import { OverlayPopover } from '../OverlayPopover';
 import { Pill } from '../Pill';
 
 interface BranchPickerProps {
@@ -126,10 +127,8 @@ export function BranchPicker({ value, defaultBranch, onChange, variant = 'chip',
     </button>
   );
 
-  const dropdown = (
-    <div ref={dropdownRef} style={dropdownStyle} className={`absolute bg-surface-raised border border-edge-input rounded-md shadow-xl z-50 overflow-hidden ${
-      variant === 'input' ? 'left-0 right-0' : 'w-64'
-    }`}>
+  const dropdownContent = (
+    <>
       {/* Search input */}
       <div className="p-2 border-b border-edge">
         <div className="relative">
@@ -176,13 +175,23 @@ export function BranchPicker({ value, defaultBranch, onChange, variant = 'chip',
           ))
         )}
       </div>
-    </div>
+    </>
   );
 
   return (
     <div className={`relative ${variant === 'input' ? 'w-full' : 'inline-block'}`} ref={containerRef}>
       {variant === 'input' ? inputButton : chipButton}
-      {open && dropdown}
+      <OverlayPopover
+        open={open}
+        popoverRef={dropdownRef}
+        style={dropdownStyle}
+        transformOrigin="top left"
+        className={`absolute bg-surface-raised border border-edge-input rounded-md shadow-xl z-50 overflow-hidden ${
+          variant === 'input' ? 'left-0 right-0' : 'w-64'
+        }`}
+      >
+        {dropdownContent}
+      </OverlayPopover>
     </div>
   );
 }

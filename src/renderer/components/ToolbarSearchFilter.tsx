@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Search, Filter, X } from 'lucide-react';
 import { CountBadge } from './CountBadge';
 import { FilterPopover } from './FilterPopover';
+import { OverlayPopover } from './OverlayPopover';
 
 interface ToolbarSearchFilterProps {
   searchValue: string;
@@ -118,24 +119,24 @@ export function ToolbarSearchFilter({
           )}
         </button>
 
-        {showFilterPopover && (
-          <div
-            ref={filterPopoverRef}
-            className="absolute right-0 top-full mt-1 z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-2 w-[260px] max-h-[380px] overflow-y-auto"
-          >
-            <FilterPopover
-              priorities={priorities}
-              priorityFilters={priorityFilters}
-              onTogglePriority={onTogglePriority}
-              allLabels={allLabels}
-              labelColors={labelColors}
-              labelFilters={labelFilters}
-              onToggleLabel={onToggleLabel}
-              onClearAll={onClearFilters}
-              hasActiveFilters={hasActiveFilters}
-            />
-          </div>
-        )}
+        <OverlayPopover
+          open={showFilterPopover}
+          popoverRef={filterPopoverRef}
+          transformOrigin="top right"
+          className="absolute right-0 top-full mt-1 z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-2 w-[260px] max-h-[380px] overflow-y-auto"
+        >
+          <FilterPopover
+            priorities={priorities}
+            priorityFilters={priorityFilters}
+            onTogglePriority={onTogglePriority}
+            allLabels={allLabels}
+            labelColors={labelColors}
+            labelFilters={labelFilters}
+            onToggleLabel={onToggleLabel}
+            onClearAll={onClearFilters}
+            hasActiveFilters={hasActiveFilters}
+          />
+        </OverlayPopover>
       </div>
     </div>
   );

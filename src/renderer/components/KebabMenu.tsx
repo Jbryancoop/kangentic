@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { MoreHorizontal } from 'lucide-react';
 import { usePopoverPosition } from '../hooks/usePopoverPosition';
+import { OverlayPopover } from './OverlayPopover';
 
 interface KebabMenuProps {
   /** Render menu items. Call `close` to dismiss the menu after an action. */
@@ -40,15 +41,14 @@ export function KebabMenu({ children }: KebabMenuProps) {
       >
         <MoreHorizontal size={16} />
       </button>
-      {open && (
-        <div
-          ref={popoverRef}
-          style={style}
-          className="absolute min-w-[170px] bg-surface-raised border border-edge-input rounded-md shadow-xl z-50 py-1"
-        >
-          {children(close)}
-        </div>
-      )}
+      <OverlayPopover
+        open={open}
+        popoverRef={popoverRef}
+        style={style}
+        className="absolute min-w-[170px] bg-surface-raised border border-edge-input rounded-md shadow-xl z-50 py-1"
+      >
+        {children(close)}
+      </OverlayPopover>
     </div>
   );
 }

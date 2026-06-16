@@ -19,21 +19,25 @@ import { resolveShortcutCommand } from '../../../shared/template-vars';
 import { ICON_REGISTRY } from '../../utils/swimlane-icons';
 import { resolveProjectRoot } from '../../../shared/git-utils';
 import { getIsHmrReload } from '../../utils/hmr-flag';
+import { useOverlayPhase } from '../../hooks/useOverlayPhase';
+import { MaximizeOnDoubleClick } from '../dialogs/MaximizeOnDoubleClick';
 import type { AgentCommand } from '../../../shared/types';
 
 const ChangesPanel = lazy(() => import('../dialogs/task-detail/changes/ChangesPanel').then((module) => ({ default: module.ChangesPanel })));
 
 const COMMAND_TERMINAL_ENTITY_ID = 'command-terminal';
 
-type Phase = 'entering' | 'visible' | 'exiting';
-
 interface CommandBarOverlayProps {
   onClose: () => void;
 }
 
 export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
-  // Skip entry animation on HMR remount to avoid flashing
-  const [phase, setPhase] = useState<Phase>(() => getIsHmrReload() ? 'visible' : 'entering');
+  // Shared overlay phase machine; skipEnterOnHmr avoids replaying the entrance
+  // animation on a Vite HMR remount.
+  const { phase, requestClose, backdropClassName, contentClassName, onAnimationEnd } = useOverlayPhase(
+    onClose,
+    { variant: 'command-bar', skipEnterOnHmr: true },
+  );
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [branch, setBranch] = useState<string | null>(null);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -49,6 +53,8 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
   const isMaximized = useSessionStore((s) => s.maximizedTasks.has(COMMAND_TERMINAL_ENTITY_ID));
   const toggleMaximized = useSessionStore((s) => s.toggleMaximized);
   const handleToggleMaximized = useCallback(() => toggleMaximized(COMMAND_TERMINAL_ENTITY_ID), [toggleMaximized]);
+
+  // (header double-click to toggle maximize is handled by MaximizeOnDoubleClick)
   const maximizeCombo = useFormattedCombo('panel.maximize');
   const closeCombo = useFormattedCombo('panel.close');
   const backdropMouseDown = useRef(false);
@@ -249,38 +255,15 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
     window.electronAPI.shell.exec(resolved, cwd);
   }, [projectPath, branch]);
 
-  const requestClose = useCallback(() => {
-    if (phase !== 'exiting') setPhase('exiting');
-  }, [phase]);
-
   // Command Terminal hotkeys, mirroring the task detail dialog, read from the
   // central keybinding registry. Capture phase so they beat the embedded xterm's
   // control-char handling (Ctrl+W = 0x17, Ctrl+M = CR).
   useKeybinding('panel.maximize', () => handleToggleMaximized(), { capture: true });
   useKeybinding('panel.close', () => requestClose(), { capture: true });
 
-  const handleAnimationEnd = () => {
-    if (phase === 'entering') setPhase('visible');
-    if (phase === 'exiting') onClose();
-  };
-
-  const backdropAnimation = phase === 'entering'
-    ? 'dialog-backdrop-in 150ms ease-out forwards'
-    : phase === 'exiting'
-      ? 'dialog-backdrop-out 100ms ease-in forwards'
-      : 'none';
-
-  const contentAnimation = phase === 'entering'
-    ? 'command-bar-in 150ms ease-out forwards'
-    : phase === 'exiting'
-      ? 'command-bar-out 100ms ease-in forwards'
-      : 'none';
-
   return (
     <div
-      className={`fixed ${isMaximized ? 'inset-x-0 top-10 bottom-9' : 'inset-0'} bg-black/60 z-50`}
-      style={{ animation: backdropAnimation }}
-      onAnimationEnd={handleAnimationEnd}
+      className={`fixed ${isMaximized ? 'inset-x-0 top-10 bottom-9' : 'inset-0'} bg-black/60 z-50 ${backdropClassName}`}
       onMouseDown={(event) => { backdropMouseDown.current = event.target === event.currentTarget; }}
       onMouseUp={(event) => {
         if (event.target === event.currentTarget && backdropMouseDown.current) requestClose();
@@ -289,15 +272,18 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
       data-testid="command-bar-overlay"
     >
       <div
-        className={isMaximized
+        className={`${isMaximized
           ? 'absolute inset-0'
-          : `absolute top-20 left-1/2 -translate-x-1/2 transition-[width,max-width] duration-200 ${changesOpen ? 'w-[90vw] max-w-none' : 'w-[70%] max-w-5xl'}`}
-        style={{ animation: contentAnimation }}
+          : `absolute top-20 left-1/2 -translate-x-1/2 transition-[width,max-width] duration-200 ${changesOpen ? 'w-[90vw] max-w-none' : 'w-[70%] max-w-5xl'}`} ${contentClassName}`}
+        onAnimationEnd={onAnimationEnd}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className={`bg-surface-raised border border-edge shadow-2xl overflow-hidden flex flex-col ${isMaximized ? 'h-full rounded-none' : 'rounded-lg'}`}>
           {/* Header */}
-          <div className="flex items-center gap-3 px-4 py-2.5 border-b border-edge flex-shrink-0">
+          <MaximizeOnDoubleClick
+            onToggle={handleToggleMaximized}
+            className="flex items-center gap-3 px-4 py-2.5 border-b border-edge flex-shrink-0"
+          >
             <button
               onClick={handleTerminate}
               className="p-1 rounded-full text-red-400 hover:bg-red-400/10 transition-colors flex-shrink-0"
@@ -462,7 +448,7 @@ export function CommandBarOverlay({ onClose }: CommandBarOverlayProps) {
             >
               <X size={16} />
             </button>
-          </div>
+          </MaximizeOnDoubleClick>
 
           {/* Body */}
           <div className={`relative flex ${isMaximized ? 'flex-1' : 'h-[60vh]'}`}>

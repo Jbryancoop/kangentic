@@ -67,8 +67,8 @@ export function TaskContextMenu({
   return (
     <div
       ref={menuRef}
-      className="fixed z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-1 min-w-[180px]"
-      style={menuStyle}
+      className="fixed z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-1 min-w-[180px] overlay-popover-in"
+      style={{ ...menuStyle, transformOrigin: 'top left' }}
     >
       <button
         type="button"

@@ -19,7 +19,7 @@ describe('maximizedDialogLayout', () => {
   describe('windowed state (isMaximized = false)', () => {
     it('returns the caller-supplied windowedClassName as dialogClassName', () => {
       const result = maximizedDialogLayout(false, WINDOWED_CLASS);
-      expect(result.dialogClassName).toBe(WINDOWED_CLASS);
+      expect(result.dialogClassName).toBe(`${WINDOWED_CLASS} dialog-maximize-anim`);
     });
 
     it('uses full-window backdrop position (inset-0)', () => {
@@ -40,7 +40,7 @@ describe('maximizedDialogLayout', () => {
     it('returns the full expected shape for windowed state', () => {
       const result = maximizedDialogLayout(false, WINDOWED_CLASS);
       expect(result).toEqual({
-        dialogClassName: 'w-[840px] max-w-[90vw]',
+        dialogClassName: 'w-[840px] max-w-[90vw] dialog-maximize-anim',
         backdropPositionClass: 'inset-0',
         backdropClassName: 'p-6',
         contentRadiusClass: 'rounded-lg',
@@ -51,7 +51,7 @@ describe('maximizedDialogLayout', () => {
   describe('maximized state (isMaximized = true)', () => {
     it('ignores windowedClassName and fills the available area (w-full h-full)', () => {
       const result = maximizedDialogLayout(true, WINDOWED_CLASS);
-      expect(result.dialogClassName).toBe('w-full h-full');
+      expect(result.dialogClassName).toBe('w-full h-full dialog-maximize-anim');
     });
 
     it('insets the backdrop to clear the title bar and status bar', () => {
@@ -74,7 +74,7 @@ describe('maximizedDialogLayout', () => {
     it('returns the full expected shape for maximized state', () => {
       const result = maximizedDialogLayout(true, WINDOWED_CLASS);
       expect(result).toEqual({
-        dialogClassName: 'w-full h-full',
+        dialogClassName: 'w-full h-full dialog-maximize-anim',
         backdropPositionClass: 'inset-x-0 top-10 bottom-9',
         backdropClassName: '',
         contentRadiusClass: 'rounded-none',
@@ -84,7 +84,7 @@ describe('maximizedDialogLayout', () => {
     it('ignores the windowedClassName value entirely when maximized', () => {
       const alternativeClass = 'w-[500px]';
       const result = maximizedDialogLayout(true, alternativeClass);
-      expect(result.dialogClassName).toBe('w-full h-full');
+      expect(result.dialogClassName).toBe('w-full h-full dialog-maximize-anim');
       expect(result.dialogClassName).not.toContain(alternativeClass);
     });
   });

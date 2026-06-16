@@ -108,6 +108,11 @@ function BrowserPaneActive({
   const [canGoForward, setCanGoForward] = useState(false);
   const [inspectActive, setInspectActive] = useState(false);
   const [pickedElement, setPickedElement] = useState<BrowserPickedElement | null>(null);
+  // Gate a dark loading cover over the webview until its first paint. The
+  // <webview> shows a white default surface before the page loads, which
+  // flashed in as the pane slid open. We cover it with the app's surface color
+  // (plus a spinner) and lift the cover on the first dom-ready / stop-loading.
+  const [pageReady, setPageReady] = useState(false);
 
   const webviewRef = useRef<WebviewElement | null>(null);
   const overlayContainerRef = useRef<HTMLDivElement | null>(null);
@@ -154,6 +159,24 @@ function BrowserPaneActive({
       webview.removeEventListener('did-navigate-in-page', onUrlChanged);
     };
   }, [recordNavigation]);
+
+  // Lift the dark loading cover once the webview paints. One-shot: it stays
+  // lifted across later navigations (the old page remains visible until the new
+  // one paints, the normal browser behavior). A short fallback guarantees the
+  // cover never sticks if a webview revision fires its ready event before this
+  // listener attaches, or in tests where the stub never fires one.
+  useEffect(() => {
+    const webview = webviewRef.current;
+    const reveal = () => setPageReady(true);
+    const fallback = setTimeout(reveal, 2500);
+    webview?.addEventListener('dom-ready', reveal);
+    webview?.addEventListener('did-stop-loading', reveal);
+    return () => {
+      clearTimeout(fallback);
+      webview?.removeEventListener('dom-ready', reveal);
+      webview?.removeEventListener('did-stop-loading', reveal);
+    };
+  }, []);
 
   // F5 / Ctrl+R reload when focus is *outside* the embedded webview (e.g. in
   // the URL bar or any pane chrome). The matching main-process
@@ -530,6 +553,14 @@ function BrowserPaneActive({
           }}
           data-testid="browser-overlay"
         />
+        {!pageReady && (
+          <div
+            className="absolute inset-0 flex items-center justify-center bg-surface pointer-events-none"
+            data-testid="browser-pane-page-loading"
+          >
+            <Loader2 size={20} className="animate-spin text-fg-muted" />
+          </div>
+        )}
       </div>
 
       <AttachmentChips

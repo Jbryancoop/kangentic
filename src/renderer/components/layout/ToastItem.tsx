@@ -48,7 +48,7 @@ export function ToastItem({ toast, onDismiss }: ToastItemProps) {
       onTransitionEnd={handleTransitionEnd}
       className={`pointer-events-auto flex items-stretch overflow-hidden rounded-md border
         bg-surface shadow-xl shadow-black/40 text-sm
-        transition-all duration-300 ease-out
+        transition-all duration-[var(--toast-duration)] ease-out
         ${variantStyles[toast.variant].border}
         ${visible && !exiting ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}
       `}

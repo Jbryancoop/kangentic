@@ -31,16 +31,20 @@ export interface MaximizedDialogLayout {
  * default full-window backdrop and rounded corners.
  */
 export function maximizedDialogLayout(isMaximized: boolean, windowedClassName: string): MaximizedDialogLayout {
+  // `dialog-maximize-anim` transitions the content's width/height/border-radius
+  // so the box smoothly grows/shrinks when the maximize toggle flips between
+  // these two sizes (see index.css). It is present in both states so the
+  // transition applies in either direction.
   if (isMaximized) {
     return {
-      dialogClassName: 'w-full h-full',
+      dialogClassName: 'w-full h-full dialog-maximize-anim',
       backdropPositionClass: 'inset-x-0 top-10 bottom-9',
       backdropClassName: '',
       contentRadiusClass: 'rounded-none',
     };
   }
   return {
-    dialogClassName: windowedClassName,
+    dialogClassName: `${windowedClassName} dialog-maximize-anim`,
     backdropPositionClass: 'inset-0',
     backdropClassName: 'p-6',
     contentRadiusClass: 'rounded-lg',

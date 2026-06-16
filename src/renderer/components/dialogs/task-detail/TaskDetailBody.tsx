@@ -80,7 +80,16 @@ export function TaskDetailBody({
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const { ratio: splitRatio, isResizing: isSplitResizing, onResizeStart: onSplitResizeStart } =
     useTaskSplitResize(task.id, splitContainerRef);
-  const changesExpanded = changesOpen && changesViewMode === 'expanded';
+  // The right panel (Changes diff / Browser) opens and closes instantly, like a
+  // split pane in VS Code / JetBrains. Opening it reflows the split - the
+  // terminal resizes and re-fits its canvas - and an entrance animation only
+  // drew the eye to that unavoidable repaint (it read as a "flash"), so there is
+  // none. The two panels are mutually exclusive: this is just which one (if any)
+  // is showing.
+  const rightPanelPresent = changesOpen || browserOpen;
+  const showBrowser = browserOpen;
+  const changesPresent = rightPanelPresent && !showBrowser;
+  const changesExpanded = changesPresent && changesViewMode === 'expanded';
   const handleChangesExpand = () => setChangesViewMode(task.id, 'expanded');
   const handleChangesCollapse = () => setChangesViewMode(task.id, 'split');
   const taskLabels = task.labels ?? [];
@@ -139,28 +148,35 @@ export function TaskDetailBody({
     );
   }
 
-  const changesPanelElement = changesOpen && (
-    <div
-      className={`flex-1 min-h-0 min-w-0 overflow-hidden ${changesExpanded ? '' : 'border-l border-edge'}`}
+  const changesContent = (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center h-full">
+          <Loader2 size={20} className="animate-spin text-fg-muted" />
+        </div>
+      }
     >
-      <Suspense
-        fallback={
-          <div className="flex items-center justify-center h-full">
-            <Loader2 size={20} className="animate-spin text-fg-muted" />
-          </div>
-        }
-      >
-        <ChangesPanel
-          entityId={task.id}
-          scrollKey={task.id}
-          projectPath={projectPath}
-          worktreePath={task.worktree_path ?? undefined}
-          baseBranch={task.base_branch || defaultBaseBranch || 'main'}
-          panelMode={changesViewMode}
-          onExpand={handleChangesExpand}
-          onCollapse={handleChangesCollapse}
-        />
-      </Suspense>
+      <ChangesPanel
+        entityId={task.id}
+        scrollKey={task.id}
+        projectPath={projectPath}
+        worktreePath={task.worktree_path ?? undefined}
+        baseBranch={task.base_branch || defaultBaseBranch || 'main'}
+        panelMode={changesViewMode}
+        onExpand={handleChangesExpand}
+        onCollapse={handleChangesCollapse}
+      />
+    </Suspense>
+  );
+
+  // The diff panel for the suspended / changes-only layouts (never the Browser
+  // pane, which needs an active session). Shown instantly with no reveal
+  // animation; the parent's overflow-hidden keeps it within the dialog edge.
+  const changesPanelElement = changesPresent && (
+    <div className={`flex-1 min-h-0 min-w-0 overflow-hidden ${changesExpanded ? '' : 'border-l border-edge'}`}>
+      <div className="h-full">
+        {changesContent}
+      </div>
     </div>
   );
 
@@ -168,15 +184,22 @@ export function TaskDetailBody({
   if (sessionId && displayKind !== 'queued' && displayKind !== 'suspended') {
     // Browser pane and changes panel are mutually exclusive; when either shares
     // the row with the terminal, a draggable divider sets the per-task split.
-    const rightPanelOpen = browserOpen || changesOpen;
-    const showDivider = rightPanelOpen && !changesExpanded;
-    const browserPaneElement = browserOpen && (
-      <div className="flex-1 min-h-0 min-w-0 overflow-hidden border-l border-edge">
-        <BrowserPane
-          sessionId={sessionId}
-          taskId={task.id}
-          cwd={task.worktree_path ?? projectPath}
-        />
+    const showDivider = rightPanelPresent && !changesExpanded;
+    // Browser pane (active-session only) or the diff panel - mutually exclusive,
+    // shown instantly with no reveal animation.
+    const rightPanelElement = rightPanelPresent && (
+      <div className={`flex-1 min-h-0 min-w-0 overflow-hidden ${changesExpanded ? '' : 'border-l border-edge'}`}>
+        <div className="h-full">
+          {showBrowser ? (
+            <BrowserPane
+              sessionId={sessionId}
+              taskId={task.id}
+              cwd={task.worktree_path ?? projectPath}
+            />
+          ) : (
+            changesContent
+          )}
+        </div>
       </div>
     );
 
@@ -186,8 +209,8 @@ export function TaskDetailBody({
         <div ref={splitContainerRef} className="flex-1 min-h-0 flex">
           {!changesExpanded && (
             <div
-              className={`${rightPanelOpen ? 'flex-shrink-0 flex-grow-0' : 'flex-1'} min-h-0 relative overflow-hidden`}
-              style={rightPanelOpen ? { flexBasis: `${splitRatio * 100}%` } : undefined}
+              className={`${rightPanelPresent ? 'flex-shrink-0 flex-grow-0' : 'flex-1'} min-h-0 relative overflow-hidden`}
+              style={rightPanelPresent ? { flexBasis: `${splitRatio * 100}%` } : undefined}
             >
               <div className="absolute inset-0">
                 <TerminalTab
@@ -221,7 +244,7 @@ export function TaskDetailBody({
               />
             </div>
           )}
-          {browserOpen ? browserPaneElement : changesPanelElement}
+          {rightPanelElement}
           {/* While dragging, an overlay keeps mouse events flowing over the
               Electron <webview> (Browser pane) and the xterm canvas. */}
           {isSplitResizing && <div className="fixed inset-0 z-50 cursor-col-resize" />}
@@ -243,7 +266,7 @@ export function TaskDetailBody({
         <>
           <div className="flex-1 min-h-0 flex">
             {!changesExpanded && (
-              <div className={`${changesOpen ? 'w-1/2' : 'flex-1'} min-h-0 relative`}>
+              <div className={`${changesPresent ? 'w-1/2' : 'flex-1'} min-h-0 relative`}>
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-surface">
                   <ShimmerOverlay label={pendingCommandLabel} />
                 </div>
@@ -270,7 +293,7 @@ export function TaskDetailBody({
       <>
         <div className="flex-1 min-h-0 flex">
           {!changesExpanded && (
-            <div className={`${changesOpen ? 'w-1/2' : 'flex-1'} flex flex-col items-center justify-center gap-3 bg-surface/50`}>
+            <div className={`${changesPresent ? 'w-1/2' : 'flex-1'} flex flex-col items-center justify-center gap-3 bg-surface/50`}>
               <button
                 onClick={handleToggle}
                 disabled={toggling}
@@ -302,8 +325,10 @@ export function TaskDetailBody({
     );
   }
 
-  // Changes-only view (no session but changes panel open)
-  if (changesOpen) {
+  // Changes-only view (no session but changes panel open). Uses changesPresent
+  // (not changesOpen) for parity with the active-session branches above; the
+  // panel shows and hides instantly, with no exit animation (see top of render).
+  if (changesPresent) {
     return (
       <>
         <div className="flex-1 min-h-0 flex">

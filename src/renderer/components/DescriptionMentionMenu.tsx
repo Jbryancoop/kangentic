@@ -32,7 +32,8 @@ export function DescriptionMentionMenu({
 
   return (
     <div
-      className="absolute inset-x-3 bottom-3 z-10 overflow-hidden rounded-md border border-edge-input bg-surface-raised shadow-xl"
+      className="absolute inset-x-3 bottom-3 z-10 overflow-hidden rounded-md border border-edge-input bg-surface-raised shadow-xl overlay-popover-in"
+      style={{ transformOrigin: 'bottom center' }}
       data-testid="description-mention-menu"
     >
       <div className="max-h-60 overflow-y-auto py-1">

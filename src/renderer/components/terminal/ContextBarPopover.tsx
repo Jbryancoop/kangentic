@@ -98,14 +98,14 @@ export function ContextBarPopover({
   return (
     <div
       ref={popoverRef}
-      style={popoverStyle}
+      style={{ ...popoverStyle, transformOrigin: 'bottom center' }}
       // `w-max` sizes to the widest row so long model ids
       // (e.g. `claude-haiku-4-5-20251001`) stay on one line; short option
       // sets like effort levels ("low" .. "max") stay snug. The max-w caps
       // pathological CLI-reported names with ellipsis truncation so they
       // can't push the popover off-screen; the full value still surfaces in
       // the button's title attribute.
-      className="absolute z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-1 w-max max-w-[420px] max-h-[340px] overflow-y-auto"
+      className="absolute z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-1 w-max max-w-[420px] max-h-[340px] overflow-y-auto overlay-popover-in"
       data-testid={testId}
     >
       <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-fg-faint">

@@ -99,8 +99,8 @@ export function CommandPalettePopover({ triggerRef, cwd, onSelect, onClose }: Co
   return (
     <div
       ref={popoverRef}
-      style={popoverStyle}
-      className="absolute w-[280px] max-h-[300px] bg-surface-raised border border-edge-input rounded-md shadow-xl z-50 flex flex-col overflow-hidden"
+      style={{ ...popoverStyle, transformOrigin: 'top center' }}
+      className="absolute w-[280px] max-h-[300px] bg-surface-raised border border-edge-input rounded-md shadow-xl z-50 flex flex-col overflow-hidden overlay-popover-in"
       data-testid="command-palette-popover"
       onKeyDown={handleKeyDown}
     >

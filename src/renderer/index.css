@@ -385,11 +385,50 @@
   animation: value-update 350ms ease-out;
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Overlay motion tokens (single source of truth)
+
+   Every in-app overlay - dialogs, panels, popovers, context menus, command bar,
+   search palette - reads its timing/easing from these custom properties. To
+   tweak the feel of the whole app, change values here: renderer CSS hot-reloads
+   live under `/preview`, no restart. The overlay phase machine unmounts on the
+   `animationend` event (not a JS timer), so no duration is duplicated in
+   TypeScript - this block is the only place to change.
+
+   Easing follows Material 3 / Fluent: decelerate on enter, accelerate on exit.
+   Durations sit in the Fluent Fast/Normal band.
+   ────────────────────────────────────────────────────────────────────────── */
+:root {
+  --overlay-enter-duration: 200ms;
+  --overlay-exit-duration: 150ms;
+  /* ease-out / ease-in spread the opacity+scale change across the whole
+     duration so the fade is actually perceptible. The Material "emphasized"
+     curves front-load the motion into the first ~10% and read as an instant
+     pop at these short durations - avoid them here. */
+  --overlay-enter-ease: ease-out;
+  --overlay-exit-ease:  ease-in;
+
+  --popover-enter-duration: 130ms;
+  --popover-exit-duration: 100ms;
+  --popover-enter-ease: ease-out;
+  --popover-exit-ease:  ease-in;
+
+  --panel-enter-duration: 200ms;
+  --panel-exit-duration: 150ms;
+
+  --command-bar-enter-duration: 160ms;
+  --command-bar-exit-duration: 120ms;
+
+  --toast-duration: 250ms;
+
+  --maximize-duration: 125ms;
+}
+
 /* Dialog transitions */
 @keyframes dialog-backdrop-in  { from { opacity: 0 } }
 @keyframes dialog-backdrop-out { to   { opacity: 0 } }
-@keyframes dialog-content-in   { from { opacity: 0; transform: scale(0.95) translateY(8px) } }
-@keyframes dialog-content-out  { to   { opacity: 0; transform: scale(0.95) translateY(8px) } }
+@keyframes dialog-content-in   { from { opacity: 0; transform: scale(0.96) translateY(8px) } }
+@keyframes dialog-content-out  { to   { opacity: 0; transform: scale(0.96) translateY(8px) } }
 
 /* Command bar slide-down/up */
 @keyframes command-bar-in  { from { opacity: 0; transform: translateY(-20px) } }
@@ -398,6 +437,44 @@
 /* Settings panel slide-in/out */
 @keyframes settings-panel-in  { from { transform: translateX(100%) } }
 @keyframes settings-panel-out { to   { transform: translateX(100%) } }
+
+/* Popover / menu: grow from the trigger (transform-origin set inline by the anchor) */
+@keyframes popover-in  { from { opacity: 0; transform: scale(0.96) } }
+@keyframes popover-out { to   { opacity: 0; transform: scale(0.96) } }
+
+/* ── Token-driven overlay animation utilities ──
+   Overlays apply these per phase (entering -> *-in, exiting -> *-out) instead of
+   hardcoding durations. Backdrops share one fade token-set across all variants. */
+.overlay-backdrop-in  { animation: dialog-backdrop-in  var(--overlay-enter-duration) var(--overlay-enter-ease) forwards; }
+.overlay-backdrop-out { animation: dialog-backdrop-out var(--overlay-exit-duration)  var(--overlay-exit-ease)  forwards; }
+
+.overlay-content-in   { animation: dialog-content-in   var(--overlay-enter-duration) var(--overlay-enter-ease) forwards; }
+.overlay-content-out  { animation: dialog-content-out  var(--overlay-exit-duration)  var(--overlay-exit-ease)  forwards; }
+
+.overlay-panel-in     { animation: settings-panel-in   var(--panel-enter-duration)   var(--overlay-enter-ease) forwards; }
+.overlay-panel-out    { animation: settings-panel-out  var(--panel-exit-duration)    var(--overlay-exit-ease)  forwards; }
+
+.overlay-command-bar-in  { animation: command-bar-in   var(--command-bar-enter-duration) var(--overlay-enter-ease) forwards; }
+.overlay-command-bar-out { animation: command-bar-out  var(--command-bar-exit-duration)  var(--overlay-exit-ease)  forwards; }
+
+.overlay-popover-in   { animation: popover-in  var(--popover-enter-duration) var(--popover-enter-ease) forwards; }
+.overlay-popover-out  { animation: popover-out var(--popover-exit-duration)  var(--popover-exit-ease)  forwards; }
+
+/* Dialog maximize/restore size tween. Applied to the dialog content by
+   maximizedDialogLayout, so only the maximizable dialogs (task detail, create
+   dialogs) animate. The embedded terminal/diff re-fit through their own
+   ResizeObserver during the tween; the 200ms PTY resize debounce keeps the
+   backend from being hammered. */
+.dialog-maximize-anim {
+  transition:
+    width var(--maximize-duration) var(--overlay-enter-ease),
+    height var(--maximize-duration) var(--overlay-enter-ease),
+    border-radius var(--maximize-duration) var(--overlay-enter-ease);
+}
+
+.no-motion .dialog-maximize-anim {
+  transition-duration: 0s;
+}
 
 /* ── Terminal loading overlay ── */
 
@@ -423,7 +500,9 @@
   50%      { opacity: 1; }
 }
 
-/* Disable all CSS keyframe animations when user opts out via Appearance settings. */
+/* Disable all CSS keyframe animations when user opts out via Appearance settings.
+   Zero the duration but keep the animation (never `animation: none`): the overlay
+   phase machine unmounts on `animationend`, which still fires at 0s in Chromium. */
 .no-motion *,
 .no-motion *::before,
 .no-motion *::after {
@@ -447,6 +526,22 @@
 
   .grow-in {
     animation-duration: 1ms;
+  }
+
+  /* Overlay open/close: collapse to instant but keep the animation so the
+     `animationend` that unmounts the overlay still fires. Never `animation:
+     none` here - that would leave a closing dialog mounted forever. */
+  .overlay-backdrop-in, .overlay-backdrop-out,
+  .overlay-content-in, .overlay-content-out,
+  .overlay-panel-in, .overlay-panel-out,
+  .overlay-command-bar-in, .overlay-command-bar-out,
+  .overlay-popover-in, .overlay-popover-out {
+    animation-duration: 0.01ms !important;
+  }
+
+  /* The dialog maximize/restore size tween reads the same preference. */
+  .dialog-maximize-anim {
+    transition-duration: 0.01ms !important;
   }
 }
 

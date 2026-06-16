@@ -9,7 +9,7 @@ interface ImagePreviewOverlayProps {
 export function ImagePreviewOverlay({ url, filename, onClose }: ImagePreviewOverlayProps) {
   return (
     <div
-      className="fixed inset-0 bg-black/80 flex flex-col items-center justify-center z-[60]"
+      className="fixed inset-0 bg-black/80 flex flex-col items-center justify-center z-[60] overlay-backdrop-in"
       onClick={onClose}
     >
       <button

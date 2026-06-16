@@ -52,8 +52,8 @@ export function RestorePopover({
   return (
     <div
       ref={popoverRef}
-      style={popoverStyle}
-      className="absolute z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-1 min-w-[160px]"
+      style={{ ...popoverStyle, transformOrigin: 'top center' }}
+      className="absolute z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-1 min-w-[160px] overlay-popover-in"
     >
       <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-fg-faint">
         Restore to

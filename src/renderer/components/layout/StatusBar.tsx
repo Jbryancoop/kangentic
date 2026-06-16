@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { SquareTerminal, ClipboardCheck, ArrowUp, ArrowDown, ChevronDown, Check } from 'lucide-react';
+import { OverlayPopover } from '../OverlayPopover';
 import { useSessionStore } from '../../stores/session-store';
 import { useConfigStore } from '../../stores/config-store';
 import { useBoardStore } from '../../stores/board-store';
@@ -175,12 +176,12 @@ export function StatusBar() {
               {PERIOD_LABELS[selectedPeriod]}
               <ChevronDown size={10} className="text-fg-faint" />
             </button>
-            {periodPopoverOpen && (
-              <div
-                ref={periodPopoverRef}
-                style={periodPopoverStyle}
-                className="absolute z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-1 min-w-[120px]"
-              >
+            <OverlayPopover
+              open={periodPopoverOpen}
+              popoverRef={periodPopoverRef}
+              style={periodPopoverStyle}
+              className="absolute z-50 bg-surface-raised border border-edge rounded-lg shadow-xl py-1 min-w-[120px]"
+            >
                 {PERIOD_OPTIONS.map(({ value, label }) => (
                   <button
                     key={value}
@@ -192,8 +193,7 @@ export function StatusBar() {
                     {value === selectedPeriod && <Check size={12} className="text-accent flex-shrink-0" />}
                   </button>
                 ))}
-              </div>
-            )}
+              </OverlayPopover>
           </div>
         </div>
       )}

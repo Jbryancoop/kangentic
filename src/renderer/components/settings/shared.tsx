@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { ChevronDown, Search, X } from 'lucide-react';
+import { useOverlayPhase } from '../../hooks/useOverlayPhase';
 import { useSettingVisible, useSettingsSearch } from './settings-search';
 import { Pill } from '../Pill';
 import { ToggleCard, ToggleIndicator } from '../ToggleCard';
@@ -7,8 +8,6 @@ import { ToggleCard, ToggleIndicator } from '../ToggleCard';
 // Re-export scope primitives so consumers can import everything from './shared'.
 export { SettingsPanelProvider, useScopedUpdate } from './setting-scope';
 export type { SettingScope } from './setting-scope';
-
-type Phase = 'entering' | 'visible' | 'exiting';
 
 /* ── Tab Definition ── */
 
@@ -51,13 +50,12 @@ interface SettingsPanelShellProps {
 }
 
 export function SettingsPanelShell({ onClose, children, projectSwitcher, tabs, activeTab, onTabChange, searchQuery, onSearchChange, tabMatchCounts, isSearching }: SettingsPanelShellProps) {
-  const [phase, setPhase] = useState<Phase>('entering');
+  const { requestClose, backdropClassName, contentClassName, onAnimationEnd } = useOverlayPhase(
+    onClose,
+    { variant: 'panel' },
+  );
   const backdropMouseDown = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
-
-  const requestClose = useCallback(() => {
-    if (phase !== 'exiting') setPhase('exiting');
-  }, [phase]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -80,31 +78,12 @@ export function SettingsPanelShell({ onClose, children, projectSwitcher, tabs, a
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [requestClose, isSearching, onSearchChange]);
 
-  const handleBackdropAnimationEnd = () => {
-    if (phase === 'entering') setPhase('visible');
-    if (phase === 'exiting') onClose();
-  };
-
-  const backdropAnimation = phase === 'entering'
-    ? 'dialog-backdrop-in 200ms ease-out forwards'
-    : phase === 'exiting'
-      ? 'dialog-backdrop-out 150ms ease-in forwards'
-      : 'none';
-
-  const panelAnimation = phase === 'entering'
-    ? 'settings-panel-in 200ms ease-out forwards'
-    : phase === 'exiting'
-      ? 'settings-panel-out 150ms ease-in forwards'
-      : 'none';
-
   const sectionHeaderClass = 'text-[10px] uppercase tracking-widest text-fg-faint font-semibold px-4';
   const hasProjectTabs = tabs && !tabs[0]?.separator;
 
   return (
     <div
-      className="fixed inset-0 bg-black/50 z-50"
-      style={{ animation: backdropAnimation }}
-      onAnimationEnd={handleBackdropAnimationEnd}
+      className={`fixed inset-0 bg-black/50 z-50 ${backdropClassName}`}
       onMouseDown={(event) => { backdropMouseDown.current = event.target === event.currentTarget; }}
       onMouseUp={(event) => {
         if (event.target === event.currentTarget && backdropMouseDown.current) requestClose();
@@ -112,8 +91,8 @@ export function SettingsPanelShell({ onClose, children, projectSwitcher, tabs, a
       }}
     >
       <div
-        className="fixed top-10 right-0 bottom-0 w-[720px] bg-surface-raised border-l border-edge shadow-2xl flex flex-col"
-        style={{ animation: panelAnimation }}
+        className={`fixed top-10 right-0 bottom-0 w-[720px] bg-surface-raised border-l border-edge shadow-2xl flex flex-col ${contentClassName}`}
+        onAnimationEnd={onAnimationEnd}
         onMouseDown={(event) => event.stopPropagation()}
       >
         {/* Header */}

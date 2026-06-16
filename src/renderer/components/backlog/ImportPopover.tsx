@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Download, Plus, Trash2, ChevronRight, ArrowLeft, Loader2, X } from 'lucide-react';
 import { usePopoverPosition } from '../../hooks/usePopoverPosition';
+import { OverlayPopover } from '../OverlayPopover';
 import { PROVIDERS, getSourceLabel, getSourceIcon } from './import-providers';
 import type { Provider, SourceTypeOption } from './import-providers';
 import type { ImportSource } from '../../../shared/types';
@@ -216,13 +217,13 @@ export function ImportPopover({ onOpenImportDialog }: ImportPopoverProps) {
         Import Tasks
       </button>
 
-      {open && (
-        <div
-          ref={popoverRef}
-          style={style}
-          className="absolute z-50 w-80 bg-surface border border-edge rounded-lg shadow-xl"
-          data-testid="import-popover"
-        >
+      <OverlayPopover
+        open={open}
+        popoverRef={popoverRef}
+        style={style}
+        className="absolute z-50 w-80 bg-surface border border-edge rounded-lg shadow-xl"
+        data-testid="import-popover"
+      >
           <div className="px-3 py-2 border-b border-edge">
             <span className="text-xs font-medium text-fg-muted uppercase tracking-wider">Import Sources</span>
           </div>
@@ -401,8 +402,7 @@ export function ImportPopover({ onOpenImportDialog }: ImportPopoverProps) {
               </button>
             </div>
           )}
-        </div>
-      )}
+      </OverlayPopover>
 
       {setupDialogOpen && (
         <AsanaSetupDialog

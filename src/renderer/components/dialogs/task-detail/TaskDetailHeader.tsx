@@ -519,7 +519,7 @@ function TaskDetailKebabItems({
             {commandsFlyoutPlacement.horizontal === 'left' ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
           </button>
           {showCommandsSubmenu && (
-            <div ref={commandsFlyoutRef} className="absolute min-w-[220px] max-h-[300px] overflow-y-auto bg-surface-raised border border-edge-input rounded-md shadow-xl z-50 py-1">
+            <div ref={commandsFlyoutRef} style={{ transformOrigin: commandsFlyoutPlacement.horizontal === 'left' ? 'right center' : 'left center' }} className="absolute min-w-[220px] max-h-[300px] overflow-y-auto bg-surface-raised border border-edge-input rounded-md shadow-xl z-50 py-1 overlay-popover-in">
               {kebabCommands.map((command) => (
                 <button
                   key={command.name}
@@ -559,7 +559,7 @@ function TaskDetailKebabItems({
             {moveFlyoutPlacement.horizontal === 'left' ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
           </button>
           {showMoveSubmenu && (
-            <div ref={moveFlyoutRef} className="absolute min-w-[150px] bg-surface-raised border border-edge-input rounded-md shadow-xl z-50 py-1">
+            <div ref={moveFlyoutRef} style={{ transformOrigin: moveFlyoutPlacement.horizontal === 'left' ? 'right center' : 'left center' }} className="absolute min-w-[150px] bg-surface-raised border border-edge-input rounded-md shadow-xl z-50 py-1 overlay-popover-in">
               {moveTargets.map((swimlane) => (
                 <button
                   key={swimlane.id}

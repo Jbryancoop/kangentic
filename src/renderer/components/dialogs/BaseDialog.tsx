@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { useFormattedCombo } from '../../hooks/useKeybinding';
-
-type Phase = 'entering' | 'visible' | 'exiting';
+import { useOverlayPhase } from '../../hooks/useOverlayPhase';
+import { MaximizeOnDoubleClick } from './MaximizeOnDoubleClick';
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -82,6 +82,17 @@ interface BaseDialogProps {
   // when the dialog fills an edge so its border meets the edges flush.
   contentRadiusClass?: string;
   testId?: string;
+  // Imperative handle: BaseDialog assigns its animated, guard-aware close
+  // request here. A custom-header close button or a consumer keybinding should
+  // call `closeRef.current?.()` instead of calling `onClose` directly, so it
+  // plays the exit animation (and honors onCloseRequest) like the standard
+  // header X, Escape, and backdrop click already do.
+  closeRef?: React.MutableRefObject<(() => void) | null>;
+  // Double-clicking the header (standard or custom) toggles this, mirroring the
+  // desktop title-bar convention. Maximizable dialogs pass their maximize
+  // toggle; others omit it and the header double-click does nothing. Double-
+  // clicks on interactive controls in the header are ignored.
+  onHeaderDoubleClick?: () => void;
 }
 
 export function BaseDialog({
@@ -107,18 +118,24 @@ export function BaseDialog({
   backdropPositionClass = 'inset-0',
   contentRadiusClass = 'rounded-lg',
   testId,
+  closeRef,
+  onHeaderDoubleClick,
 }: BaseDialogProps) {
-  const [phase, setPhase] = useState<Phase>('entering');
+  // The shared overlay phase machine (entering -> visible -> exiting) drives the
+  // open/close animation and unmounts via onClose when the exit animation ends.
+  const {
+    requestClose,
+    backdropClassName: backdropAnimClass,
+    contentClassName: contentAnimClass,
+    onAnimationEnd,
+  } = useOverlayPhase(onClose, { variant: 'dialog' });
+
   // Show the consumer's bound close hotkey (e.g. panel.close = Ctrl+Shift+W) on
   // the standard-header X tooltip. Empty id resolves to '' so the tooltip falls
   // back to plain 'Close'. Escape (the hidden universal closer) is never shown.
   const closeCombo = useFormattedCombo(closeHotkeyActionId ?? '');
 
   const contentRef = useRef<HTMLDivElement>(null);
-
-  const requestClose = useCallback(() => {
-    if (phase !== 'exiting') setPhase('exiting');
-  }, [phase]);
 
   // A close gesture routed through the consumer's guard (onCloseRequest). The
   // guard returns true to proceed with the animated close, false to cancel
@@ -130,6 +147,15 @@ export function BaseDialog({
       requestClose();
     }
   }, [onCloseRequest, requestClose]);
+
+  // Expose the animated close so consumers (custom headers, keybindings, footer
+  // Cancel buttons) can route through the exit animation instead of unmounting
+  // instantly via onClose.
+  useEffect(() => {
+    if (!closeRef) return;
+    closeRef.current = requestCloseViaGuard;
+    return () => { closeRef.current = null; };
+  }, [closeRef, requestCloseViaGuard]);
 
   // Focus trap for modals layered over another dialog (e.g. a confirm). On open,
   // pull focus into the dialog if it is not already inside; on close, restore it
@@ -183,28 +209,9 @@ export function BaseDialog({
 
   const backdropMouseDown = useRef(false);
 
-  const handleBackdropAnimationEnd = () => {
-    if (phase === 'entering') setPhase('visible');
-    if (phase === 'exiting') onClose();
-  };
-
-  const backdropAnimation = phase === 'entering'
-    ? 'dialog-backdrop-in 150ms ease-out forwards'
-    : phase === 'exiting'
-      ? 'dialog-backdrop-out 100ms ease-in forwards'
-      : 'none';
-
-  const contentAnimation = phase === 'entering'
-    ? 'dialog-content-in 150ms ease-out forwards'
-    : phase === 'exiting'
-      ? 'dialog-content-out 100ms ease-in forwards'
-      : 'none';
-
   return (
     <div
-      className={`fixed ${backdropPositionClass} bg-black/60 flex items-center justify-center ${zIndex} ${backdropClassName || ''}`}
-      style={{ animation: backdropAnimation }}
-      onAnimationEnd={handleBackdropAnimationEnd}
+      className={`fixed ${backdropPositionClass} bg-black/60 flex items-center justify-center ${zIndex} ${backdropAnimClass} ${backdropClassName || ''}`}
       onMouseDown={(e) => { backdropMouseDown.current = e.target === e.currentTarget; }}
       onMouseUp={(e) => {
         if (e.target === e.currentTarget && backdropMouseDown.current) {
@@ -226,13 +233,16 @@ export function BaseDialog({
         onMouseLeave={onContentMouseLeave}
         onKeyDown={trapFocus ? handleContentKeyDown : undefined}
         tabIndex={trapFocus ? -1 : undefined}
-        style={{ animation: contentAnimation }}
-        className={`bg-surface-raised border border-edge ${contentRadiusClass} shadow-2xl flex flex-col overflow-visible ${className}`}
+        onAnimationEnd={onAnimationEnd}
+        className={`bg-surface-raised border border-edge ${contentRadiusClass} shadow-2xl flex flex-col overflow-visible ${contentAnimClass} ${className}`}
         {...(testId ? { 'data-testid': testId } : {})}
       >
         {/* Standard header */}
         {title && !header && (
-          <div className="flex items-center gap-3 px-4 py-3 border-b border-edge flex-shrink-0">
+          <MaximizeOnDoubleClick
+            onToggle={onHeaderDoubleClick}
+            className="flex items-center gap-3 px-4 py-3 border-b border-edge flex-shrink-0"
+          >
             {icon && <div className="flex-shrink-0">{icon}</div>}
             <h3 className="text-sm font-semibold text-fg flex-1 min-w-0">{title}</h3>
             {headerRight}
@@ -245,14 +255,17 @@ export function BaseDialog({
             >
               <X size={16} />
             </button>
-          </div>
+          </MaximizeOnDoubleClick>
         )}
 
         {/* Custom header */}
         {header && (
-          <div className="border-b border-edge flex-shrink-0">
+          <MaximizeOnDoubleClick
+            onToggle={onHeaderDoubleClick}
+            className="border-b border-edge flex-shrink-0"
+          >
             {header}
-          </div>
+          </MaximizeOnDoubleClick>
         )}
 
         {/* Body */}

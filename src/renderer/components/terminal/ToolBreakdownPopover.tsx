@@ -73,8 +73,8 @@ export function ToolBreakdownPopover({
   return (
     <div
       ref={popoverRef}
-      style={popoverStyle}
-      className="absolute z-50 bg-surface-raised border border-edge rounded-lg shadow-xl w-max max-w-[480px] max-h-[340px] overflow-y-auto"
+      style={{ ...popoverStyle, transformOrigin: 'bottom center' }}
+      className="absolute z-50 bg-surface-raised border border-edge rounded-lg shadow-xl w-max max-w-[480px] max-h-[340px] overflow-y-auto overlay-popover-in"
       data-testid={testId}
     >
       <div className="px-3 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-fg-faint flex items-center gap-1.5">

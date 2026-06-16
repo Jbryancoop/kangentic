@@ -131,6 +131,16 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
     return true;
   }, [confirmDiscard, isDirty]);
 
+  // BaseDialog publishes its animated, guard-aware close here so the footer
+  // Cancel button and the panel.close keybinding play the exit animation instead
+  // of unmounting instantly (matching the header X and Escape). Falls back to
+  // onClose if invoked before mount.
+  const dialogCloseRef = useRef<(() => void) | null>(null);
+  const closeWithAnimation = useCallback(() => {
+    if (dialogCloseRef.current) dialogCloseRef.current();
+    else onClose();
+  }, [onClose]);
+
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
@@ -139,7 +149,7 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
   // mirroring the task detail dialog and command terminal). panel.close and
   // Escape both route through the dirty-changes guard. No ad-hoc keydown listener.
   useKeybinding('panel.maximize', handleToggleMaximized, { capture: true });
-  useKeybinding('panel.close', () => { if (handleCloseAttempt()) onClose(); }, { capture: true });
+  useKeybinding('panel.close', closeWithAnimation, { capture: true });
 
   // Cleanup object URLs on unmount
   useEffect(() => {
@@ -305,6 +315,8 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
       <form onSubmit={handleSubmit}>
         <BaseDialog
           onClose={onClose}
+          closeRef={dialogCloseRef}
+          onHeaderDoubleClick={handleToggleMaximized}
           onCloseRequest={handleCloseAttempt}
           title="New Task"
           icon={<Plus size={14} className="text-fg-muted" />}
@@ -321,7 +333,7 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
             <div className="flex items-center justify-end gap-3">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={closeWithAnimation}
                 className="px-4 py-1.5 text-xs text-fg-muted hover:text-fg-secondary border border-edge-input hover:border-fg-faint rounded transition-colors"
               >
                 Cancel

@@ -6,12 +6,11 @@ import { useBoardStore } from '../../stores/board-store';
 import { useBacklogStore } from '../../stores/backlog-store';
 import { useToastStore } from '../../stores/toast-store';
 import { formatRelativeTime } from '../../lib/datetime';
-import { getIsHmrReload } from '../../utils/hmr-flag';
+import { useOverlayPhase } from '../../hooks/useOverlayPhase';
 import type { SearchHit, SearchHitKind } from '../../../shared/types';
 
 const SEARCH_DEBOUNCE_MS = 200;
 
-type Phase = 'entering' | 'visible' | 'exiting';
 type Scope = 'current' | 'all';
 
 interface SearchPaletteProps {
@@ -30,7 +29,10 @@ const KIND_LABEL: Record<SearchHitKind, string> = {
 };
 
 export function SearchPalette({ onClose }: SearchPaletteProps) {
-  const [phase, setPhase] = useState<Phase>(() => (getIsHmrReload() ? 'visible' : 'entering'));
+  const { requestClose, backdropClassName, contentClassName, onAnimationEnd } = useOverlayPhase(
+    onClose,
+    { variant: 'command-bar', skipEnterOnHmr: true },
+  );
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [scope, setScope] = useState<Scope>('current');
@@ -95,15 +97,6 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
         setIsSearching(false);
       });
   }, [debouncedQuery, scope, currentProjectId]);
-
-  const requestClose = useCallback(() => {
-    if (phase !== 'exiting') setPhase('exiting');
-  }, [phase]);
-
-  const handleAnimationEnd = () => {
-    if (phase === 'entering') setPhase('visible');
-    if (phase === 'exiting') onClose();
-  };
 
   const grouped = useMemo(() => {
     const buckets: Partial<Record<SearchHitKind, SearchHit[]>> = {};
@@ -221,23 +214,9 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
   const showEmpty = !hasQuery;
   const showNoMatches = hasQuery && !isSearching && grouped.flat.length === 0;
 
-  const backdropAnimation = phase === 'entering'
-    ? 'dialog-backdrop-in 150ms ease-out forwards'
-    : phase === 'exiting'
-      ? 'dialog-backdrop-out 100ms ease-in forwards'
-      : 'none';
-
-  const contentAnimation = phase === 'entering'
-    ? 'command-bar-in 150ms ease-out forwards'
-    : phase === 'exiting'
-      ? 'command-bar-out 100ms ease-in forwards'
-      : 'none';
-
   return (
     <div
-      className="fixed inset-0 bg-black/60 z-50"
-      style={{ animation: backdropAnimation }}
-      onAnimationEnd={handleAnimationEnd}
+      className={`fixed inset-0 bg-black/60 z-50 ${backdropClassName}`}
       onMouseDown={(event) => { backdropMouseDown.current = event.target === event.currentTarget; }}
       onMouseUp={(event) => {
         if (event.target === event.currentTarget && backdropMouseDown.current) requestClose();
@@ -247,8 +226,8 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
       data-testid="search-palette"
     >
       <div
-        className="absolute top-20 left-1/2 -translate-x-1/2 w-[70%] max-w-3xl"
-        style={{ animation: contentAnimation }}
+        className={`absolute top-20 left-1/2 -translate-x-1/2 w-[70%] max-w-3xl ${contentClassName}`}
+        onAnimationEnd={onAnimationEnd}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="bg-surface-raised border border-edge rounded-lg shadow-2xl overflow-hidden flex flex-col">

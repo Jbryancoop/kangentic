@@ -52,8 +52,8 @@ export function GroupContextMenu({
   return (
     <div
       ref={containerRef}
-      className="fixed bg-surface-raised border border-edge rounded-md shadow-lg z-50 py-1 min-w-[160px]"
-      style={menuStyle}
+      className="fixed bg-surface-raised border border-edge rounded-md shadow-lg z-50 py-1 min-w-[160px] overlay-popover-in"
+      style={{ ...menuStyle, transformOrigin: 'top left' }}
     >
       <button
         onClick={() => {

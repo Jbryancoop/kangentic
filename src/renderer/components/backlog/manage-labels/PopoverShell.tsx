@@ -1,4 +1,5 @@
 import React from 'react';
+import { OverlayPopover } from '../../OverlayPopover';
 
 /**
  * Shared absolute-positioned popover wrapper for LabelsPopover and
@@ -17,13 +18,14 @@ export function PopoverShell({
   popoverRef: React.RefObject<HTMLDivElement | null>;
   children: React.ReactNode;
 }) {
-  if (!open) return null;
   return (
-    <div
-      ref={popoverRef}
+    <OverlayPopover
+      open={open}
+      popoverRef={popoverRef}
+      transformOrigin="top left"
       className="absolute left-0 top-full mt-1 z-50 bg-surface-raised border border-edge rounded-lg shadow-xl w-[320px] max-h-[420px] overflow-y-auto"
     >
       {children}
-    </div>
+    </OverlayPopover>
   );
 }

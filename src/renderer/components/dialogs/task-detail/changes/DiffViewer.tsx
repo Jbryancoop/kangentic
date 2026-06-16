@@ -249,6 +249,11 @@ export function DiffViewer({
             original={original}
             modified={modified}
             theme={monacoTheme}
+            // Set the theme BEFORE the editor is created. Without this, Monaco
+            // creates the editor under its default light theme and only swaps to
+            // the prop theme afterwards, painting one white frame. A fade hid
+            // that frame; the slide-in reveal does not, so we prevent it here.
+            beforeMount={(monacoInstance) => monacoInstance.editor.setTheme(monacoTheme)}
             onMount={handleEditorMount}
             options={{
               readOnly: true,
