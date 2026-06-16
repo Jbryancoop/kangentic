@@ -22,18 +22,23 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.hoisted lifts these initializers above the vi.mock calls so the factory
 // closures can reference the spy instances without a TDZ error.
-const { mockCallHandler, mockRunHandler, mockWithProject } = vi.hoisted(() => {
+const { mockCallHandler, mockRunHandler, mockWithProject, mockDetectCrossProjectMention } = vi.hoisted(() => {
   const mockCallHandler = vi.fn(() =>
     Promise.resolve({ content: [{ type: 'text' as const, text: 'ok' }] }),
   );
   const mockRunHandler = vi.fn(() =>
     Promise.resolve({ success: true, data: [], message: 'ok' }),
   );
+  // create_task's routing guardrail calls this; default to "no other
+  // project mentioned" so existing wiring tests are unaffected. Tests
+  // that exercise the guardrail override the return value.
+  const mockDetectCrossProjectMention = vi.fn((): string[] => []);
   const mockWithProject = vi.fn(
     async (
       _resolver: unknown,
       selector: unknown,
-      run: (ctx: unknown) => Promise<unknown>,
+      run: (ctx: unknown, resolved: unknown) => Promise<unknown>,
+      _options?: { alwaysAnnotate?: boolean },
     ) => {
       if (selector === 'INVALID_PROJECT') {
         return {
@@ -41,11 +46,20 @@ const { mockCallHandler, mockRunHandler, mockWithProject } = vi.hoisted(() => {
           isError: true,
         };
       }
-      const ctx = { getProjectPath: () => '/projects/default' };
-      return run(ctx);
+      // Approximate the real resolver: an omitted selector resolves to the
+      // URL-path default project (isDefault true); an explicit selector is a
+      // deliberate cross-project choice (isDefault false).
+      const isDefault = selector === undefined || selector === null || selector === '';
+      const resolved = {
+        context: { getProjectPath: () => '/projects/default' },
+        projectId: '11111111-1111-4111-8111-111111111111',
+        projectName: 'Active',
+        isDefault,
+      };
+      return run(resolved.context, resolved);
     },
   );
-  return { mockCallHandler, mockRunHandler, mockWithProject };
+  return { mockCallHandler, mockRunHandler, mockWithProject, mockDetectCrossProjectMention };
 });
 
 // Mock handler-helpers BEFORE importing task-tools/session-tools, which
@@ -55,6 +69,10 @@ vi.mock('../../src/main/agent/mcp-http/handler-helpers', () => ({
   callHandler: mockCallHandler,
   runHandler: mockRunHandler,
   withProject: mockWithProject,
+  detectCrossProjectMention: mockDetectCrossProjectMention,
+  // Identity stub: the real sanitizer is unit-tested elsewhere; here we
+  // only need the routing-check message to embed names verbatim.
+  sanitizeProjectName: (name: string) => name,
   makeTaskCounter: (max: number) => {
     let count = 0;
     return {
@@ -193,6 +211,111 @@ describe('create_task rate-limit wiring', () => {
 });
 
 // ---------------------------------------------------------------------------
+// create_task - cross-project routing guardrail
+// ---------------------------------------------------------------------------
+
+describe('create_task routing guardrail', () => {
+  let server: ReturnType<typeof makeFakeServer>;
+  let taskCounter: TaskCounter;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // clearAllMocks does not reset return values; re-pin the default so a
+    // prior test's mockReturnValue cannot leak into the next one.
+    mockDetectCrossProjectMention.mockReturnValue([]);
+    server = makeFakeServer();
+    const resolver = makeResolver();
+    taskCounter = { tryReserve: vi.fn(() => true) };
+    registerTaskTools(server as never, resolver, taskCounter, 50);
+  });
+
+  it('blocks and creates nothing when defaulting to active but the text names another project', async () => {
+    mockDetectCrossProjectMention.mockReturnValue(['Kangentic']);
+
+    const result = await server.getHandler('kangentic_create_task')({
+      title: 'Fix the cross-project routing bug',
+      description: 'Filed about kangentic from another board.',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Routing check');
+    // Names a concrete re-run for both the target and the active project.
+    expect(result.content[0].text).toContain('project: "Kangentic"');
+    expect(result.content[0].text).toContain('project: "Active"');
+    // No quota slot burned and no task created.
+    expect(taskCounter.tryReserve).not.toHaveBeenCalled();
+    expect(mockCallHandler).not.toHaveBeenCalled();
+  });
+
+  it('does NOT run the guardrail when an explicit project selector is passed', async () => {
+    // Even if a name would match, an explicit selector is a deliberate
+    // choice (isDefault false) and must be honored without a routing check.
+    mockDetectCrossProjectMention.mockReturnValue(['Kangentic']);
+
+    const result = await server.getHandler('kangentic_create_task')({
+      title: 'Fix the kangentic bug',
+      project: 'Kangentic',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockDetectCrossProjectMention).not.toHaveBeenCalled();
+    expect(taskCounter.tryReserve).toHaveBeenCalledOnce();
+    expect(mockCallHandler).toHaveBeenCalledOnce();
+  });
+
+  it('does NOT block when no other project is mentioned in the text', async () => {
+    // Default return ([]) means nothing matched.
+    const result = await server.getHandler('kangentic_create_task')({ title: 'Plain task' });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockDetectCrossProjectMention).toHaveBeenCalledOnce();
+    expect(taskCounter.tryReserve).toHaveBeenCalledOnce();
+    expect(mockCallHandler).toHaveBeenCalledOnce();
+  });
+
+  it('uses the plural branch of the routing-check message when multiple projects are mentioned', async () => {
+    // Simulates: title/description names two separate registered projects.
+    // buildRoutingCheckMessage is not exported; exercise it through the handler.
+    mockDetectCrossProjectMention.mockReturnValue(['Kangentic', 'TWC-Website']);
+
+    const result = await server.getHandler('kangentic_create_task')({
+      title: 'Update the kangentic and TWC-Website landing pages',
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    // Plural branch: "these other registered projects" (not the singular form).
+    expect(text).toContain('these other registered projects');
+    // Both names embedded joined by ", ".
+    expect(text).toContain('"Kangentic", "TWC-Website"');
+    // Re-run hint names the first mentioned project.
+    expect(text).toContain('e.g. project: "Kangentic"');
+    // Re-run hint also names the active project so the agent can confirm it.
+    expect(text).toContain('project: "Active"');
+    // Guardrail fires before quota - no slot burned, no task created.
+    expect(taskCounter.tryReserve).not.toHaveBeenCalled();
+    expect(mockCallHandler).not.toHaveBeenCalled();
+  });
+
+  it('fires the guardrail for Backlog creates (no column carve-out)', async () => {
+    // Guards against a future regression that might add a `column === 'Backlog'`
+    // carve-out exempting Backlog creates from the routing check.
+    mockDetectCrossProjectMention.mockReturnValue(['kangentic.com']);
+
+    const result = await server.getHandler('kangentic_create_task')({
+      title: 'Add foo to kangentic.com',
+      column: 'Backlog',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Routing check');
+    // No quota slot burned and no task created even for a Backlog column.
+    expect(taskCounter.tryReserve).not.toHaveBeenCalled();
+    expect(mockCallHandler).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // get_current_task - uses defaultContextResolved, NOT withProject
 // ---------------------------------------------------------------------------
 
@@ -261,6 +384,10 @@ describe('routing-cue hints in tool descriptions', () => {
     expect(description).toBeDefined();
     expect(description).toMatch(/names a different Kangentic project/i);
     expect(description).toContain('`project`');
+    // Phrase-embedded selectors, not just the explicit "create a task in X"
+    // form, must be covered (the cross-project-misroute fix).
+    expect(description).toMatch(/however it is phrased/i);
+    expect(description).toMatch(/board/i);
   });
 
   it('kangentic_move_task description nudges the model to route by prompt cues', () => {

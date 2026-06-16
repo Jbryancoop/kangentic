@@ -1,8 +1,24 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod/v4';
-import { callHandler, runHandler, withProject, PROJECT_SELECTOR_DESCRIPTION, type TaskCounter } from './handler-helpers';
+import { callHandler, runHandler, withProject, detectCrossProjectMention, sanitizeProjectName, PROJECT_SELECTOR_DESCRIPTION, type TaskCounter } from './handler-helpers';
 import type { RequestResolver } from './project-resolver';
 import type { BoardHit, BacklogHit, SearchScope } from '../commands/search-commands';
+
+/**
+ * Build the create_task routing-check refusal shown when the call
+ * defaulted to the active project but the task text named one or more
+ * other registered projects. Names a concrete re-run for each option:
+ * file into a mentioned project, or confirm the active project. Names
+ * are sanitized for safe single-line display.
+ */
+function buildRoutingCheckMessage(activeName: string, mentioned: string[]): string {
+  const safeActive = sanitizeProjectName(activeName);
+  const safeMentioned = mentioned.map((name) => `"${sanitizeProjectName(name)}"`);
+  if (safeMentioned.length === 1) {
+    return `Routing check: this task was about to be created in the active project "${safeActive}", but its text mentions the registered project ${safeMentioned[0]}. No task was created. Re-run kangentic_create_task with project: ${safeMentioned[0]} to file it there, or with project: "${safeActive}" to confirm the active project.`;
+  }
+  return `Routing check: this task was about to be created in the active project "${safeActive}", but its text mentions these other registered projects: ${safeMentioned.join(', ')}. No task was created. Re-run kangentic_create_task with project set to the intended one (e.g. project: ${safeMentioned[0]}), or with project: "${safeActive}" to confirm the active project.`;
+}
 
 /**
  * Register the board/task/column management tools on an McpServer.
@@ -29,7 +45,7 @@ export function registerTaskTools(
   server.registerTool(
     'kangentic_create_task',
     {
-      description: 'Create a task on the Kangentic board (default: the To Do column on the active board) or in the backlog. This is the only task-creation tool - use it whenever the user asks to "create a task", "add a todo", "add to backlog", or similar. ATTACHMENTS RULE: When the user\'s prompt references local files by absolute path (design handoffs, mockups, screenshots, specs, READMEs, transcripts), pass those paths in `attachments` on this same call. Default to attaching, not omitting. Do not require a second user request to add them. The only exception is files the user explicitly named as "for context only, don\'t attach." With no `column` argument, the task always lands in the active board\'s To Do column - never the backlog. Pass `column: "Backlog"` (case-insensitive) to create a backlog item instead. Pass any other column name (e.g. "Planning", "Code Review") to land directly in that board column. Board tasks get a git branch and are ready to work on immediately. If the user\'s prompt names a different Kangentic project (e.g. "create a task in X to fix ..."), pass that name as `project` to route the task to that project instead of the active default - do not rely on the active default when the user clearly targeted another project. Use kangentic_list_projects to find valid selectors. LABELS WITH A LONG DESCRIPTION: due to a known large-payload limitation, when this call carries both a long description (roughly 1KB or more) and labels, the labels can be dropped before they reach the server. In that case create the task here (you may omit labels), then set labels with a separate labels-only kangentic_update_task call right after.',
+      description: 'Create a task on the Kangentic board (default: the To Do column on the active board) or in the backlog. This is the only task-creation tool - use it whenever the user asks to "create a task", "add a todo", "add to backlog", or similar. ATTACHMENTS RULE: When the user\'s prompt references local files by absolute path (design handoffs, mockups, screenshots, specs, READMEs, transcripts), pass those paths in `attachments` on this same call. Default to attaching, not omitting. Do not require a second user request to add them. The only exception is files the user explicitly named as "for context only, don\'t attach." With no `column` argument, the task always lands in the active board\'s To Do column - never the backlog. Pass `column: "Backlog"` (case-insensitive) to create a backlog item instead. Pass any other column name (e.g. "Planning", "Code Review") to land directly in that board column. Board tasks get a git branch and are ready to work on immediately. If the user\'s prompt names a different Kangentic project, pass that name as `project` to route the task to that project instead of the active default - do not rely on the active default when the user clearly targeted another project. The name counts however it is phrased, not just the explicit "create a task in X" form: "create a task in X to fix ...", "the X to do board", "add a bug to the X board", "in X", and "X\'s backlog" all target project X. Use kangentic_list_projects to find valid selectors. LABELS WITH A LONG DESCRIPTION: due to a known large-payload limitation, when this call carries both a long description (roughly 1KB or more) and labels, the labels can be dropped before they reach the server. In that case create the task here (you may omit labels), then set labels with a separate labels-only kangentic_update_task call right after.',
       inputSchema: z.object({
         title: z.string().max(200).describe('Task title (max 200 characters)'),
         description: z.string().max(10000).optional().describe('Task description. Supports markdown.'),
@@ -52,7 +68,28 @@ export function registerTaskTools(
         project: z.string().optional().describe(PROJECT_SELECTOR_DESCRIPTION),
       }),
     },
-    async ({ title, description, column, priority, labels, branchName, baseBranch, useWorktree, attachments, project }) => withProject(resolver, project, (ctx) => {
+    async ({ title, description, column, priority, labels, branchName, baseBranch, useWorktree, attachments, project }) => withProject(resolver, project, (ctx, resolved) => {
+      // Routing guardrail: when the caller defaulted to the active
+      // project (no explicit selector) but the task text names a
+      // DIFFERENT registered project, refuse instead of silently filing
+      // into the active project. Runs BEFORE tryReserve so a tripped
+      // guardrail doesn't burn a quota slot (same reasoning as the
+      // resolution-failure path). Only fires on the default path; an
+      // explicit `project` selector is a deliberate choice we honor.
+      // The raw `project` check is load-bearing, not redundant with
+      // resolved.isDefault: resolveProject also returns isDefault=true for
+      // an explicit selector that names the active project (makeResolved
+      // short-circuits to the default context), so without this clause an
+      // explicit self-targeting create would wrongly trip the guardrail.
+      if (resolved.isDefault && (project === undefined || project.trim() === '')) {
+        const mentioned = detectCrossProjectMention(resolver, `${title} ${description ?? ''}`);
+        if (mentioned.length > 0) {
+          return Promise.resolve({
+            content: [{ type: 'text' as const, text: buildRoutingCheckMessage(resolved.projectName, mentioned) }],
+            isError: true,
+          });
+        }
+      }
       // Atomic reserve AFTER project resolution so typoed project
       // selectors (which fail in resolveProject above) don't burn
       // quota slots meant to cap actual task creations.
@@ -74,7 +111,7 @@ export function registerTaskTools(
         useWorktree: useWorktree ?? null,
         attachments: attachments ?? null,
       }, ctx, 'Failed to create task');
-    }),
+    }, { alwaysAnnotate: true }),
   );
 
   // --- kangentic_list_columns ---
@@ -363,7 +400,7 @@ export function registerTaskTools(
   server.registerTool(
     'kangentic_move_task',
     {
-      description: 'Move a task to a different column. Triggers the same lifecycle as a UI drag: spawning/suspending agents, creating/cleaning up worktrees, and running configured transition actions. Moving to the Done column auto-archives the task. Moving to To Do kills the session and removes the worktree. If the user\'s prompt names a different Kangentic project (e.g. "move task #7 in X to Done"), pass that name as `project` to route the move to that project instead of the active default.',
+      description: 'Move a task to a different column. Triggers the same lifecycle as a UI drag: spawning/suspending agents, creating/cleaning up worktrees, and running configured transition actions. Moving to the Done column auto-archives the task. Moving to To Do kills the session and removes the worktree. If the user\'s prompt names a different Kangentic project, pass that name as `project` to route the move to that project instead of the active default. The name counts however it is phrased: "move task #7 in X to Done", "on the X board", and "in X" all target project X.',
       inputSchema: z.object({
         taskId: z.string().describe('Task ID (numeric display ID like "42" or full UUID).'),
         column: z.string().describe('Target column name (case-insensitive, e.g. "Review", "In Progress", "Done").'),

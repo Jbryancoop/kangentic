@@ -21,7 +21,7 @@ export interface McpToolResult {
  * session-tools import one source of truth.
  */
 export const PROJECT_SELECTOR_DESCRIPTION =
-  'Optional project selector. Pass a project name (case-insensitive exact) or project UUID to route this call to a different project than the one the MCP client is bound to. If the user\'s request names another Kangentic project (e.g. "create a task in X to ..." or "move task #7 in X to Done"), pass that name here instead of omitting - do not rely on the active default when the prompt specifies a different target. Use kangentic_list_projects to discover valid selectors. Omit to target the active project.';
+  'Optional project selector. Pass a project name (case-insensitive exact) or project UUID to route this call to a different project than the one the MCP client is bound to. If the user\'s request names another Kangentic project, pass that name here instead of omitting - do not rely on the active default when the prompt specifies a different target. The name counts however it is phrased, not just the explicit "create a task in X" form: treat "in X", "in the X board", "on X\'s board", "the X to do", "X\'s backlog", and "add it to X" as all targeting project X. Use kangentic_list_projects to discover valid selectors. Omit to target the active project.';
 
 /**
  * Atomic create_task rate-limit counter shared across all requests served
@@ -100,11 +100,17 @@ export async function callHandler(
  * `[Project: <name> (<shortId>)]` line to the first text block
  * whenever the caller explicitly crossed projects; omitting the
  * selector produces output byte-identical to today.
+ *
+ * Pass `{ alwaysAnnotate: true }` to also prefix the default-project
+ * path so the resolved target is visible even when no selector was
+ * given. create_task uses this so a silent default-to-active create is
+ * loud at creation time instead of only catchable after the fact.
  */
 export async function withProject(
   resolver: RequestResolver,
   selector: string | null | undefined,
   run: (context: CommandContext, resolved: ResolvedProject) => Promise<McpToolResult>,
+  options?: { alwaysAnnotate?: boolean },
 ): Promise<McpToolResult> {
   const resolved = resolver.resolveProject(selector);
   if ('error' in resolved) {
@@ -114,19 +120,12 @@ export async function withProject(
     };
   }
   const result = await run(resolved.context, resolved);
-  if (resolved.isDefault) {
+  if (resolved.isDefault && !options?.alwaysAnnotate) {
     return result;
   }
   return annotateWithProject(result, resolved);
 }
 
-/**
- * Prepend a `[Project: <name> (<shortId>)]` line to the first text
- * content block. Keeps downstream parsers (which already look at the
- * first line of handler output) working since the annotation is
- * visually obvious but doesn't change the shape of `data` or `message`
- * when the handler returned structured data.
- */
 /**
  * Strip characters that would corrupt a single-line embedding of the
  * project name (newlines, brackets) and cap length so a pathologically
@@ -143,6 +142,67 @@ export function sanitizeProjectName(name: string): string {
   return stripped.length > 60 ? `${stripped.slice(0, 57)}...` : stripped;
 }
 
+/**
+ * Project names shorter than this are skipped by the cross-project
+ * mention scan. A one or two character name (e.g. "QA") is too likely
+ * to collide with ordinary prose and trip the routing guardrail on a
+ * task that has nothing to do with that project.
+ */
+const MIN_PROJECT_NAME_MATCH_LENGTH = 3;
+
+/**
+ * Build a case-insensitive regex that matches `name` as a whole token,
+ * not as a substring. Boundaries are lookarounds on `[a-z0-9]` rather
+ * than `\b` so that hyphenated and dotted names count as single tokens:
+ * "kangentic" does not match inside "kangentics", and a bare
+ * "kangentic" does not match "kangentic.com" (the trailing ".com"
+ * differs). Multi-word names match the exact phrase because the internal
+ * space is matched literally. Regex metacharacters in the name are
+ * escaped so a literal dot in "kangentic.com" is not treated as a
+ * wildcard.
+ */
+function buildWholePhraseRegex(name: string): RegExp {
+  const escaped = name
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![a-z0-9])${escaped}(?![a-z0-9])`, 'i');
+}
+
+/**
+ * Return the names of registered projects, other than the active one,
+ * whose name appears as a whole token in `haystack` (a task's title plus
+ * description). Used by the create_task routing guardrail to catch a
+ * silent default-to-active create whose text actually names a different
+ * project. Returns a de-duplicated list in registration order.
+ *
+ * This only catches the subset where the other project's name leaks into
+ * the task content. The primary defense against misrouting is the
+ * server `instructions` and the `project` selector guidance, which the
+ * agent reads against the full user prompt.
+ */
+export function detectCrossProjectMention(resolver: RequestResolver, haystack: string): string[] {
+  const text = haystack.toLowerCase().replace(/\s+/g, ' ');
+  const hits: string[] = [];
+  for (const project of resolver.listProjects()) {
+    if (project.isActive) continue;
+    const name = project.name.trim();
+    if (name.length < MIN_PROJECT_NAME_MATCH_LENGTH) continue;
+    // Push the trimmed `name` (what the regex matched on), not the raw
+    // `project.name`, so a whitespace-padded DB name is reported and
+    // embedded consistently with what was actually matched.
+    if (buildWholePhraseRegex(name).test(text)) hits.push(name);
+  }
+  return [...new Set(hits)];
+}
+
+/**
+ * Prepend a `[Project: <name> (<shortId>)]` line to the first text
+ * content block. Keeps downstream parsers (which already look at the
+ * first line of handler output) working since the annotation is
+ * visually obvious but doesn't change the shape of `data` or `message`
+ * when the handler returned structured data.
+ */
 function annotateWithProject(result: McpToolResult, resolved: ResolvedProject): McpToolResult {
   const shortId = resolved.projectId.slice(0, 8);
   const safeName = sanitizeProjectName(resolved.projectName);

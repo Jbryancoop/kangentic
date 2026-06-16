@@ -31,6 +31,10 @@ describe('buildServerInstructions', () => {
     expect(instructions).toContain('PROJECT ROUTING RULE');
     expect(instructions).toContain('`project`');
     expect(instructions.toLowerCase()).toContain('active default');
+    // The rule must cover phrase-embedded selectors ("the X board"), not
+    // just the explicit "create a task in X" form (cross-project fix).
+    expect(instructions).toContain('phrase-embedded');
+    expect(instructions).toContain('in the X board');
   });
 
   it('names the active project explicitly when one is present', () => {

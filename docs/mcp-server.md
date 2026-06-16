@@ -59,7 +59,7 @@ Every Kangentic MCP tool except `kangentic_get_current_task` accepts an optional
 |-----------|------|-------------|
 | `project` | string | Project name (case-insensitive exact) or project UUID. Omit to target the active project. |
 
-When `project` is set the tool response is prefixed with `[Project: <name> (<shortId>)]` so the caller can confirm where the action landed. Column resolution, `baseBranch` / `branchName` / `useWorktree`, auto-spawn side effects, and session lookups all apply against the *target* project.
+When `project` is set the tool response is prefixed with `[Project: <name> (<shortId>)]` so the caller can confirm where the action landed. `kangentic_create_task` always emits this prefix, including when it falls back to the active project, so a misrouted create is visible up front. Column resolution, `baseBranch` / `branchName` / `useWorktree`, auto-spawn side effects, and session lookups all apply against the *target* project.
 
 `kangentic_get_current_task` is intentionally excluded: it resolves the agent's own CWD/branch, so cross-project lookup makes no sense there.
 
@@ -90,6 +90,8 @@ Create a task on the board (default: the To Do column on the active board) or in
 | `attachments` | array | No | File attachments: `[{ filePath: string, filename?: string }]`. Files are read from disk and stored in the project's `.kangentic/` directory. |
 
 If the target column has `auto_spawn` enabled, creating a task there will also spawn an agent session for it. Backlog items never auto-spawn.
+
+**Cross-project routing guard:** when `project` is omitted (so the task would default to the active project) but the title or description names a *different* registered project, the tool refuses with a routing-check error instead of creating the task. No task is created and no rate-limit slot is consumed. Re-run with `project: "<that project>"` to file it there, or with `project: "<active project>"` to confirm the active project. This catches the common cross-project triage case (filing a bug about one project from another) when the routing cue is only implied by the task text.
 
 Rate limit: 50 task creations per session (shared across board and backlog).
 

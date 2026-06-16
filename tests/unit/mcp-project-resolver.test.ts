@@ -317,6 +317,45 @@ describe('withProject', () => {
     expect(textOf(result)).not.toContain('[Project:');
   });
 
+  it('annotates the default path when alwaysAnnotate is set', async () => {
+    const resolver = makeResolver([makeProject({ id: DEFAULT_ID, name: 'Active' })], DEFAULT_ID);
+
+    const result = await withProject(
+      resolver,
+      undefined,
+      async () => ({
+        content: [{ type: 'text' as const, text: 'Created task "x" in To Do (#1)' }],
+      }),
+      { alwaysAnnotate: true },
+    );
+
+    expect(result.isError).toBeUndefined();
+    // The default path now carries the resolved-project marker so a
+    // silent default-to-active create is visible at creation time.
+    expect(textOf(result)).toBe(`[Project: Active (${DEFAULT_ID.slice(0, 8)})]\nCreated task "x" in To Do (#1)`);
+  });
+
+  it('annotates an error result on the default path when alwaysAnnotate is set', async () => {
+    const resolver = makeResolver([makeProject({ id: DEFAULT_ID, name: 'Active' })], DEFAULT_ID);
+
+    // alwaysAnnotate annotates even when the inner handler fails (e.g. a
+    // create that hits a missing column), so the response still names where
+    // the failed action was routed. annotateWithProject does not inspect
+    // isError, so the flag must survive untouched.
+    const result = await withProject(
+      resolver,
+      undefined,
+      async () => ({
+        content: [{ type: 'text' as const, text: 'boom' }],
+        isError: true,
+      }),
+      { alwaysAnnotate: true },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe(`[Project: Active (${DEFAULT_ID.slice(0, 8)})]\nboom`);
+  });
+
   it('prepends the project marker to the first text block when crossing projects', async () => {
     const resolver = makeResolver(
       [
