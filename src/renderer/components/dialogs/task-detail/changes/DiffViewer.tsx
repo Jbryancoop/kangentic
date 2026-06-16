@@ -243,6 +243,16 @@ export function DiffViewer({
             <Loader2 size={20} className="animate-spin text-fg-muted" />
           </div>
         ) : (
+          // On unmount (panel close, Changes<->Browser switch, file deselect),
+          // @monaco-editor/react disposes this DiffEditor's two TextModels
+          // before the widget, so monaco logs a self-healing BugIndicatingError
+          // ("TextModel got disposed before DiffEditorWidget model got reset")
+          // and resets its own model. It is benign and does not leak (both
+          // models are disposed regardless of order); no stable release fixes
+          // the order, and taking over disposal here would only add leak
+          // surface. The test harness filters this known message; do not
+          // "fix" it by adding keepCurrent*Model + manual disposal.
+          // Upstream: https://github.com/suren-atoyan/monaco-react/issues/647
           <DiffEditor
             height="100%"
             language={language}

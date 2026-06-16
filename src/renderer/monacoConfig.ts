@@ -17,3 +17,14 @@ self.MonacoEnvironment = {
 };
 
 loader.config({ monaco });
+
+// Dev-only: expose the monaco instance for UI test automation (Playwright
+// page.evaluate), e.g. asserting `editor.getModels()` returns to baseline after
+// a DiffEditor unmounts (no leaked TextModels). Production builds drop this via
+// dead-code elimination (import.meta.env.DEV is false). Mirrors the
+// __zustandStores handle in App.tsx. This is a read-only debug handle, not a
+// behavior change.
+// @ts-expect-error - Vite defines import.meta.env; tsc doesn't support it
+if (import.meta.env.DEV) {
+  (window as unknown as Record<string, unknown>).__monaco = monaco;
+}

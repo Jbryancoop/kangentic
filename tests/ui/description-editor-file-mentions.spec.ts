@@ -17,7 +17,19 @@ test.afterAll(async () => {
   await browser?.close();
 });
 
+/**
+ * Wait for all dialog backdrops (fixed inset-0 overlays) to fully unmount.
+ * BaseDialog animates close over 150ms and only unmounts on `animationend`.
+ * Without this wait, a backdrop from the prior test intercepts clicks on "Add
+ * task" in the next test, causing deterministic timeouts in a shared-page suite.
+ */
+async function waitForNoBackdrop(): Promise<void> {
+  await expect(page.locator('.fixed.inset-0')).toHaveCount(0, { timeout: 2000 });
+}
+
 async function openNewTaskDialog() {
+  // Ensure any dialog/backdrop from a prior test is fully gone before clicking.
+  await waitForNoBackdrop();
   await page.locator('[data-swimlane-name="To Do"]').locator('text=Add task').click();
   await page.locator('input[placeholder="Task title"]').waitFor({ state: 'visible' });
 }
@@ -42,7 +54,11 @@ test.describe('DescriptionEditor file mentions', () => {
     await expect(selectedValue.startsWith('@src')).toBeTruthy();
     await expect(menu).not.toBeVisible();
 
+    // Form is dirty (description filled) - Cancel shows "Discard unsaved
+    // changes?" confirm. Dismiss via Discard so the dialog fully closes before
+    // the next test opens it.
     await page.locator('button:has-text("Cancel")').click();
+    await page.locator('button:has-text("Discard")').click();
   });
 
   test('tab selects the highlighted item and escape closes only the menu', async () => {
@@ -65,7 +81,11 @@ test.describe('DescriptionEditor file mentions', () => {
     await page.keyboard.press('Tab');
     await expect(textarea).toHaveValue('@src/renderer/components/DescriptionEditor.tsx ');
 
+    // Form is dirty (description filled) - Cancel shows "Discard unsaved
+    // changes?" confirm. Dismiss via Discard so the dialog fully closes before
+    // the next test runs.
     await page.locator('button:has-text("Cancel")').click();
+    await page.locator('button:has-text("Discard")').click();
   });
 
   test('is available in backlog editing and preview preserves plain text', async () => {

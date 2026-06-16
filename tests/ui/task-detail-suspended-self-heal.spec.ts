@@ -19,7 +19,7 @@
 import { test, expect } from '@playwright/test';
 import { chromium, type Browser, type Page } from '@playwright/test';
 import path from 'node:path';
-import { waitForViteReady } from './helpers';
+import { waitForViteReady, collectPageErrors } from './helpers';
 
 const MOCK_SCRIPT = path.join(__dirname, 'mock-electron-api.js');
 const VITE_URL = `http://localhost:${process.env.PLAYWRIGHT_VITE_PORT || '5173'}`;
@@ -373,9 +373,9 @@ test.describe('Task detail proactive reconcile - genuinely suspended', () => {
     // Attach the pageerror listener BEFORE opening the dialog so the
     // probe's mount window is covered. The probe fires inside a
     // useEffect during dialog mount; attaching after openTaskDialog
-    // would miss any error thrown during that mount frame.
-    const errors: string[] = [];
-    page.on('pageerror', (error) => errors.push(error.message));
+    // would miss any error thrown during that mount frame. Known-benign
+    // renderer errors are filtered by the shared collector.
+    const getPageErrors = collectPageErrors(page);
 
     await openTaskDialog(page);
 
@@ -389,6 +389,6 @@ test.describe('Task detail proactive reconcile - genuinely suspended', () => {
     // The store action's catch logs a warning, not a pageerror, so a
     // clean console is the right signal here.
     await page.waitForTimeout(300);
-    expect(errors).toHaveLength(0);
+    expect(getPageErrors()).toHaveLength(0);
   });
 });
