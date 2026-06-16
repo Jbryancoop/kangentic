@@ -357,3 +357,151 @@ test.describe('To Do Edit Branch Config', () => {
     await page.keyboard.press('Escape');
   });
 });
+
+test.describe('Save double-submit guard', () => {
+  test('Save disables while in flight and calls tasks.update exactly once', async () => {
+    const uniqueTitle = `Save Double Submit Guard ${Date.now()}`;
+
+    // Create a To Do task - To Do tasks open directly in edit mode when clicked.
+    await createTask(page, uniqueTitle);
+
+    // Open the task detail dialog by clicking the card.
+    const taskCard = page.locator('[data-testid="swimlane"]').locator(`text=${uniqueTitle}`).first();
+    await taskCard.click();
+    const detailDialog = page.locator('[data-testid="task-detail-dialog"]');
+    await detailDialog.waitFor({ state: 'visible' });
+
+    // Change the title so `executeSave` takes the non-switchBranch path and
+    // calls `updateTask`, which hits `tasks.update` on the IPC mock.
+    const titleInput = detailDialog.locator('input[placeholder="Task title"]');
+    await titleInput.fill(`${uniqueTitle} edited`);
+
+    // Arm the deferred hook and reset the call counter. While deferred is true
+    // the next tasks.update call will suspend until __mockTaskUpdateResolve() fires,
+    // giving us a deterministic window to observe the in-flight (saving) state.
+    await page.evaluate(() => {
+      const mock = window as unknown as {
+        __mockTaskUpdateCallCount: number;
+        __mockTaskUpdateDeferred: boolean;
+      };
+      mock.__mockTaskUpdateCallCount = 0;
+      mock.__mockTaskUpdateDeferred = true;
+    });
+
+    // Locate the Save button using a regex that matches both "Save" (idle) and
+    // "Saving..." (in-flight). The button lives in the dialog footer and is the
+    // only footer button whose label starts with "Sav". This avoids the locator
+    // becoming stale when the text flips from "Save" to "Saving..." on click.
+    const saveButton = detailDialog.locator('button', { hasText: /^Sav/ });
+
+    await saveButton.click();
+
+    // The button must disable and show "Saving..." while the update is pending.
+    // This verifies the primary UI guard: React re-rendered with saving=true and
+    // the button now has the disabled attribute.
+    await expect(saveButton).toBeDisabled();
+    await expect(saveButton).toHaveText('Saving...');
+
+    // Exactly one tasks.update IPC call must have fired.
+    const callsDuringFlight = await page.evaluate(
+      () => (window as unknown as { __mockTaskUpdateCallCount: number }).__mockTaskUpdateCallCount,
+    );
+    expect(callsDuringFlight).toBe(1);
+
+    // Simulate a stray second activation while in-flight: React has already
+    // rendered `saving=true`, so the button is disabled. The JS guard
+    // `if (saving) return;` in `executeSave` is the backstop for programmatic
+    // re-entry (e.g. the `pendingSaveRef` path or a keyboard race). Verify it by
+    // dispatching a click event directly to the button element -- this bypasses
+    // the browser's native disabled-element click suppression and fires through
+    // React's root-level event delegation. If the guard is absent, a second
+    // `tasks.update` IPC call would be fired.
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find(
+        (b) => b.textContent === 'Saving...',
+      );
+      if (btn) {
+        btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      }
+    });
+
+    const callsAfterSecondActivation = await page.evaluate(
+      () => (window as unknown as { __mockTaskUpdateCallCount: number }).__mockTaskUpdateCallCount,
+    );
+    expect(callsAfterSecondActivation).toBe(1);
+
+    // Resolve the pending update. For a To Do task with no session, executeSave
+    // calls onClose() after updateTask resolves, so the dialog should close.
+    await page.evaluate(() => {
+      (window as unknown as { __mockTaskUpdateResolve: () => void }).__mockTaskUpdateResolve();
+    });
+    await detailDialog.waitFor({ state: 'hidden', timeout: 3000 });
+
+    // Final call count must still be exactly 1.
+    const finalCalls = await page.evaluate(
+      () => (window as unknown as { __mockTaskUpdateCallCount: number }).__mockTaskUpdateCallCount,
+    );
+    expect(finalCalls).toBe(1);
+  });
+});
+
+test.describe('Create double-submit guard', () => {
+  test('Create disables while in flight and creates exactly one task', async () => {
+    const uniqueTitle = `Double Submit Guard ${Date.now()}`;
+    await openNewTaskDialog();
+    await page.locator('input[placeholder="Task title"]').fill(uniqueTitle);
+
+    // Arm the deferred-create hook: the create IPC hangs until we resolve it,
+    // giving us a deterministic window to observe the in-flight state (no timing
+    // assumptions). Reset the call counter so the assertions are isolated.
+    await page.evaluate(() => {
+      const mock = window as unknown as { __mockTaskCreateCallCount: number; __mockTaskCreateDeferred: boolean };
+      mock.__mockTaskCreateCallCount = 0;
+      mock.__mockTaskCreateDeferred = true;
+    });
+
+    // type="submit" uniquely identifies Create (Cancel is type="button") and
+    // stays stable when its label flips to "Creating...".
+    const createButton = page.locator('button[type="submit"]');
+    await createButton.click();
+
+    // The button disables and reflects the in-flight state while the create is
+    // pending.
+    await expect(createButton).toBeDisabled();
+    await expect(createButton).toHaveText('Creating...');
+
+    const callsDuringFlight = await page.evaluate(
+      () => (window as unknown as { __mockTaskCreateCallCount: number }).__mockTaskCreateCallCount,
+    );
+    expect(callsDuringFlight).toBe(1);
+
+    // Simulate a stray second activation landing while the first create is still
+    // in flight (the reported double-click / Enter-then-click). The handler's
+    // `submitting` guard must swallow it: no second create IPC.
+    await page.evaluate(() => {
+      const submitButton = document.querySelector('button[type="submit"]');
+      submitButton?.closest('form')?.requestSubmit();
+    });
+    const callsAfterSecondActivation = await page.evaluate(
+      () => (window as unknown as { __mockTaskCreateCallCount: number }).__mockTaskCreateCallCount,
+    );
+    expect(callsAfterSecondActivation).toBe(1);
+
+    // Resolve the pending create; the dialog closes and exactly one task exists.
+    await page.evaluate(() => {
+      (window as unknown as { __mockTaskCreateResolve: () => void }).__mockTaskCreateResolve();
+    });
+    await page.locator('input[placeholder="Task title"]').waitFor({ state: 'hidden', timeout: 3000 });
+
+    const finalCalls = await page.evaluate(
+      () => (window as unknown as { __mockTaskCreateCallCount: number }).__mockTaskCreateCallCount,
+    );
+    expect(finalCalls).toBe(1);
+
+    const matchingCount = await page.evaluate(async (title) => {
+      const list = await window.electronAPI.tasks.list();
+      return list.filter((task: { title: string }) => task.title === title).length;
+    }, uniqueTitle);
+    expect(matchingCount).toBe(1);
+  });
+});

@@ -52,6 +52,7 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
   const toggleMaximized = useSessionStore((s) => s.toggleMaximized);
   const handleToggleMaximized = useCallback(() => toggleMaximized(NEW_TASK_ENTITY_ID), [toggleMaximized]);
   const [title, setTitle] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState(0);
   const [labels, setLabels] = useState<string[]>([]);
@@ -275,36 +276,41 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim() || submitting) return;
     if (branchNameError) return;
-    const taskTitle = title.trim();
-    await createTask({
-      title: taskTitle,
-      description: description.trim(),
-      swimlane_id: swimlaneId,
-      ...(labels.length > 0 ? { labels } : {}),
-      ...(priority > 0 ? { priority } : {}),
-      ...(baseBranch.trim() ? { baseBranch: baseBranch.trim() } : {}),
-      ...(useWorktree !== null ? { useWorktree } : {}),
-      ...(customBranchName.trim() ? { customBranchName: customBranchName.trim() } : {}),
-      ...(agentOverride ? { agent_override: agentOverride } : {}),
-      ...(modelOverride ? { model_override: modelOverride } : {}),
-      ...(effortOverride ? { effort_override: effortOverride } : {}),
-      ...(attachments.length > 0 ? {
-        pendingAttachments: attachments.map((attachment) => ({
-          filename: attachment.filename,
-          data: attachment.data,
-          media_type: attachment.media_type,
-        })),
-      } : {}),
-    });
-    // Revoke all preview URLs
-    attachments.forEach((attachment) => URL.revokeObjectURL(attachment.previewUrl));
-    useToastStore.getState().addToast({
-      message: `Created task "${taskTitle}"`,
-      variant: 'info',
-    });
-    onClose();
+    setSubmitting(true);
+    try {
+      const taskTitle = title.trim();
+      await createTask({
+        title: taskTitle,
+        description: description.trim(),
+        swimlane_id: swimlaneId,
+        ...(labels.length > 0 ? { labels } : {}),
+        ...(priority > 0 ? { priority } : {}),
+        ...(baseBranch.trim() ? { baseBranch: baseBranch.trim() } : {}),
+        ...(useWorktree !== null ? { useWorktree } : {}),
+        ...(customBranchName.trim() ? { customBranchName: customBranchName.trim() } : {}),
+        ...(agentOverride ? { agent_override: agentOverride } : {}),
+        ...(modelOverride ? { model_override: modelOverride } : {}),
+        ...(effortOverride ? { effort_override: effortOverride } : {}),
+        ...(attachments.length > 0 ? {
+          pendingAttachments: attachments.map((attachment) => ({
+            filename: attachment.filename,
+            data: attachment.data,
+            media_type: attachment.media_type,
+          })),
+        } : {}),
+      });
+      // Revoke all preview URLs
+      attachments.forEach((attachment) => URL.revokeObjectURL(attachment.previewUrl));
+      useToastStore.getState().addToast({
+        message: `Created task "${taskTitle}"`,
+        variant: 'info',
+      });
+      onClose();
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const { dialogClassName, backdropPositionClass, backdropClassName, contentRadiusClass } =
@@ -340,10 +346,10 @@ export function NewTaskDialog({ swimlaneId, onClose }: NewTaskDialogProps) {
               </button>
               <button
                 type="submit"
-                disabled={!!branchNameError}
+                disabled={!!branchNameError || submitting}
                 className="px-4 py-1.5 text-xs bg-accent-emphasis hover:bg-accent text-accent-on rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Create
+                {submitting ? 'Creating...' : 'Create'}
               </button>
             </div>
           }

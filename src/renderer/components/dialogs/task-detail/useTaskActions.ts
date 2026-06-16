@@ -82,6 +82,7 @@ export function useTaskActions(input: {
 }) {
   const [pendingAction, setPendingAction] = useState<null | 'pausing' | 'resuming'>(null);
   const toggling = pendingAction !== null;
+  const [saving, setSaving] = useState(false);
   const [resumeFailed, setResumeFailed] = useState(false);
   const [resumeError, setResumeError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -244,88 +245,98 @@ export function useTaskActions(input: {
     enablingWorktree: boolean,
     trimmedBranch: string,
   ) => {
-    const needsSwitchBranch = (input.task.worktree_path && branchChanged) || enablingWorktree;
-    const prUrlFields = buildPrUrlFields();
+    // In-flight guard: a double-click or rapid keyboard activation must not fire
+    // a second updateTask/switchBranch before the first resolves. The Save button
+    // also disables on `saving`; this early return backstops any programmatic
+    // re-entry (including the deferred pendingSaveRef path).
+    if (saving) return;
+    setSaving(true);
+    try {
+      const needsSwitchBranch = (input.task.worktree_path && branchChanged) || enablingWorktree;
+      const prUrlFields = buildPrUrlFields();
 
-    // Per-task overrides: empty string in the form maps to null in the DB.
-    // Always include them in the payload (even when unchanged) so a user
-    // clearing a previously-set override is persisted. Skipped when the
-    // session is active because the user picks model/effort via the live
-    // ContextBar popover in that flow; agent is never changed while running.
-    const overrideFields = !input.isSessionActive && !input.isArchived
-      ? {
-        agent_override: input.agentOverride || null,
-        model_override: input.modelOverride || null,
-        effort_override: input.effortOverride || null,
-      }
-      : {};
+      // Per-task overrides: empty string in the form maps to null in the DB.
+      // Always include them in the payload (even when unchanged) so a user
+      // clearing a previously-set override is persisted. Skipped when the
+      // session is active because the user picks model/effort via the live
+      // ContextBar popover in that flow; agent is never changed while running.
+      const overrideFields = !input.isSessionActive && !input.isArchived
+        ? {
+          agent_override: input.agentOverride || null,
+          model_override: input.modelOverride || null,
+          effort_override: input.effortOverride || null,
+        }
+        : {};
 
-    if (needsSwitchBranch) {
-      try {
-        await window.electronAPI.tasks.switchBranch({
-          taskId: input.task.id,
-          newBaseBranch: trimmedBranch,
-          enableWorktree: enablingWorktree || undefined,
-        }, useProjectStore.getState().currentProject?.id ?? null);
-        if (input.title !== input.task.title
-          || input.description !== input.task.description
-          || prUrlFields.pr_url !== undefined
-          || JSON.stringify(input.labels) !== JSON.stringify(input.task.labels ?? [])
-          || input.priority !== (input.task.priority ?? 0)
-          || (input.agentOverride || null) !== input.task.agent_override
-          || (input.modelOverride || null) !== input.task.model_override
-          || (input.effortOverride || null) !== input.task.effort_override) {
-          await input.updateTask({
-            id: input.task.id,
-            title: input.title,
-            description: input.description,
-            labels: input.labels,
-            priority: input.priority,
-            ...prUrlFields,
-            ...overrideFields,
+      if (needsSwitchBranch) {
+        try {
+          await window.electronAPI.tasks.switchBranch({
+            taskId: input.task.id,
+            newBaseBranch: trimmedBranch,
+            enableWorktree: enablingWorktree || undefined,
+          }, useProjectStore.getState().currentProject?.id ?? null);
+          if (input.title !== input.task.title
+            || input.description !== input.task.description
+            || prUrlFields.pr_url !== undefined
+            || JSON.stringify(input.labels) !== JSON.stringify(input.task.labels ?? [])
+            || input.priority !== (input.task.priority ?? 0)
+            || (input.agentOverride || null) !== input.task.agent_override
+            || (input.modelOverride || null) !== input.task.model_override
+            || (input.effortOverride || null) !== input.task.effort_override) {
+            await input.updateTask({
+              id: input.task.id,
+              title: input.title,
+              description: input.description,
+              labels: input.labels,
+              priority: input.priority,
+              ...prUrlFields,
+              ...overrideFields,
+            });
+          }
+          await useBoardStore.getState().loadBoard();
+        } catch (error) {
+          console.error('switchBranch failed:', error);
+          useToastStore.getState().addToast({
+            message: `Failed to switch branch: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            variant: 'warning',
           });
+          return;
         }
-        await useBoardStore.getState().loadBoard();
-      } catch (error) {
-        console.error('switchBranch failed:', error);
-        useToastStore.getState().addToast({
-          message: `Failed to switch branch: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          variant: 'warning',
-        });
-        return;
-      }
-    } else {
-      const payload: Parameters<typeof input.updateTask>[0] = {
-        id: input.task.id,
-        title: input.title,
-        description: input.description,
-        labels: input.labels,
-        priority: input.priority,
-        ...prUrlFields,
-        ...overrideFields,
-      };
+      } else {
+        const payload: Parameters<typeof input.updateTask>[0] = {
+          id: input.task.id,
+          title: input.title,
+          description: input.description,
+          labels: input.labels,
+          priority: input.priority,
+          ...prUrlFields,
+          ...overrideFields,
+        };
 
-      if (!input.isSessionActive && !input.isArchived) {
-        if (branchChanged) {
-          payload.base_branch = trimmedBranch || null;
+        if (!input.isSessionActive && !input.isArchived) {
+          if (branchChanged) {
+            payload.base_branch = trimmedBranch || null;
+          }
+          if (worktreeChanged) {
+            payload.use_worktree = input.branchConfig.useWorktree != null
+              ? (input.branchConfig.useWorktree ? 1 : 0)
+              : null;
+          }
+          if (input.isInTodo) {
+            const trimmedCustomBranch = input.branchConfig.customBranchName.trim();
+            payload.branch_name = trimmedCustomBranch || null;
+          }
         }
-        if (worktreeChanged) {
-          payload.use_worktree = input.branchConfig.useWorktree != null
-            ? (input.branchConfig.useWorktree ? 1 : 0)
-            : null;
-        }
-        if (input.isInTodo) {
-          const trimmedCustomBranch = input.branchConfig.customBranchName.trim();
-          payload.branch_name = trimmedCustomBranch || null;
-        }
+        await input.updateTask(payload);
       }
-      await input.updateTask(payload);
-    }
 
-    if (!input.session) {
-      input.onClose();
-    } else {
-      input.setIsEditing(false);
+      if (!input.session) {
+        input.onClose();
+      } else {
+        input.setIsEditing(false);
+      }
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -407,6 +418,7 @@ export function useTaskActions(input: {
     // state
     pendingAction,
     toggling,
+    saving,
     resumeFailed,
     resumeError,
     confirmDelete,

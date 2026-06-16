@@ -564,6 +564,25 @@
         return withAttachmentCounts(tasks);
       },
       create: async function (input) {
+        // Test hook: count create IPC calls so specs can verify a double-submit
+        // (double-click / Enter-then-click) does not fire a second create.
+        // Read via window.__mockTaskCreateCallCount.
+        if (typeof window !== 'undefined') {
+          window.__mockTaskCreateCallCount = (window.__mockTaskCreateCallCount || 0) + 1;
+        }
+
+        // Test hook: make tasks.create() return a controlled promise so the test
+        // can observe the in-flight (submitting) state before the IPC resolves.
+        // Set window.__mockTaskCreateDeferred = true before calling; the promise
+        // hangs until window.__mockTaskCreateResolve() is called.
+        if (typeof window !== 'undefined' && window.__mockTaskCreateDeferred) {
+          window.__mockTaskCreateDeferred = false;
+          var createResolveRef;
+          var createPending = new Promise(function (resolve) { createResolveRef = resolve; });
+          window.__mockTaskCreateResolve = createResolveRef;
+          await createPending;
+        }
+
         var sameColumn = tasks.filter(function (t) {
           return t.swimlane_id === input.swimlane_id;
         });
@@ -612,6 +631,25 @@
         return withAttachmentCount(task);
       },
       update: async function (input) {
+        // Test hook: count update IPC calls so specs can verify a double-submit
+        // (double-click / rapid keyboard activation) does not fire a second save.
+        // Read via window.__mockTaskUpdateCallCount.
+        if (typeof window !== 'undefined') {
+          window.__mockTaskUpdateCallCount = (window.__mockTaskUpdateCallCount || 0) + 1;
+        }
+
+        // Test hook: make tasks.update() return a controlled promise so the test
+        // can observe the in-flight (saving) state before the IPC resolves.
+        // Set window.__mockTaskUpdateDeferred = true before calling; the promise
+        // hangs until window.__mockTaskUpdateResolve() is called.
+        if (typeof window !== 'undefined' && window.__mockTaskUpdateDeferred) {
+          window.__mockTaskUpdateDeferred = false;
+          var updateResolveRef;
+          var updatePending = new Promise(function (resolve) { updateResolveRef = resolve; });
+          window.__mockTaskUpdateResolve = updateResolveRef;
+          await updatePending;
+        }
+
         var idx = tasks.findIndex(function (t) {
           return t.id === input.id;
         });

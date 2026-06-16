@@ -443,14 +443,14 @@ export function TaskDetailDialog({ task, onClose, initialEdit }: TaskDetailDialo
               </button>
               <button
                 onClick={actions.handleSave}
-                disabled={!!branchConfig.branchNameError}
+                disabled={!!branchConfig.branchNameError || actions.saving}
                 className={`px-3 py-1.5 text-xs rounded transition-colors ${
-                  branchConfig.branchNameError
+                  branchConfig.branchNameError || actions.saving
                     ? 'bg-accent-emphasis/50 text-accent-on/50 cursor-not-allowed'
                     : 'bg-accent-emphasis hover:bg-accent text-accent-on'
                 }`}
               >
-                Save
+                {actions.saving ? 'Saving...' : 'Save'}
               </button>
             </div>
           </div>
