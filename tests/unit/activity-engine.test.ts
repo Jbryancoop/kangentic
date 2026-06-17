@@ -1737,7 +1737,7 @@ describe('ActivityEngine', () => {
     });
   });
 
-  describe('markPtyOutput defers the stuck-pending-tools hatch (long quiet foreground tool)', () => {
+  describe('markPtyOutput defers the signal-or-pty-output watchdogs (live streaming is not force-idled)', () => {
     it('streaming PTY output keeps a pending tool thinking, then silence fires the hatch', () => {
       const { engine } = makeEngine();
       engine.initSession(SESSION_ID);
@@ -1760,13 +1760,41 @@ describe('ActivityEngine', () => {
       expect(engine.getState(SESSION_ID)?.compensationCounters.stuckPendingTools).toBe(1);
     });
 
-    it('does NOT defer the stale-thinking watchdog (idle TUI repaints must still time out)', () => {
+    it('streaming PTY output defers the stale-thinking watchdog (live tool-less generation, no false idle)', () => {
+      // Task #246: a single heavy generation turn streamed PTY output for 211s
+      // between two completed tools with no nested hook event and a silent
+      // status heartbeat. turnActive alone (no pending tool) -> stale-thinking
+      // hold; the streaming PTY must keep it thinking. RED before the anchor
+      // change (anchor: 'signal'): force-idled at the threshold, staleThinking 1.
       const { engine } = makeEngine();
       engine.initSession(SESSION_ID);
-      // turnActive alone (no pending tool) -> stale-thinking hold.
       engine.processEvent(SESSION_ID, event(EventType.Prompt));
-      vi.advanceTimersByTime(TEST_STALE_TIMEOUT_MS / 2);
-      engine.markPtyOutput(SESSION_ID); // must NOT push the stale-thinking deadline
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+
+      // Continuous PTY output more frequent than the stale window, for 3x the
+      // window - no hook/status signal arrives.
+      const stepMs = 200;
+      for (let elapsed = 0; elapsed < TEST_STALE_TIMEOUT_MS * 3; elapsed += stepMs) {
+        vi.advanceTimersByTime(stepMs);
+        engine.markPtyOutput(SESSION_ID);
+      }
+      expect(engine.getState(SESSION_ID)?.activity).toBe('thinking');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.staleThinking).toBe(0);
+
+      // Output stops (the turn really finished, Stop hook lost): the safety net
+      // still fires after the stale window of true silence.
+      vi.advanceTimersByTime(TEST_STALE_TIMEOUT_MS + 100);
+      expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
+      expect(engine.getState(SESSION_ID)?.compensationCounters.staleThinking).toBe(1);
+    });
+
+    it('still fires the stale-thinking watchdog on a genuinely silent turn (no PTY output)', () => {
+      // The over-correction guard: with no PTY data at all (the agent sat idle
+      // at a quiet prompt after a lost Stop hook), the anchor stays frozen and
+      // the hold recovers within the threshold. Green before and after the fix.
+      const { engine } = makeEngine();
+      engine.initSession(SESSION_ID);
+      engine.processEvent(SESSION_ID, event(EventType.Prompt));
       vi.advanceTimersByTime(TEST_STALE_TIMEOUT_MS + 100);
       expect(engine.getState(SESSION_ID)?.activity).toBe('idle');
       expect(engine.getState(SESSION_ID)?.compensationCounters.staleThinking).toBe(1);

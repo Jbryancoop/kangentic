@@ -54,7 +54,7 @@ The trigger-label and counter-delta reference is in `docs/activity-detection.md`
 A watchdog fire time is `anchor + threshold + 400ms stability window`. The anchor differs per hold:
 
 - **Both bg-shell holds** anchor on `bgShellHoldSince` (set when bg shells become the sole holder; refreshed ONLY by `markBackgroundShellsAlive`, never by signal-only keep-alives).
-- **Stale-thinking** anchors on `lastSignalAt` (PTY output does NOT defer it).
+- **Stale-thinking** anchors on `max(lastSignalAt, lastPtyOutputAt)` (streaming PTY output defers it; a finished turn sits at a quiet prompt with no PTY data, so the safety net still fires).
 - **Stuck-pending-tools** anchors on `max(lastSignalAt, lastPtyOutputAt)` (streaming foreground output keeps it alive).
 
 Point at `src/main/pty/activity/engine/watchdog.ts` (the `buildWatchdogHolds` table) and `engine/shapes.ts` (the `DEFAULT_*` threshold constants) for live values. Do NOT copy the numbers into the diagnosis - they drift.

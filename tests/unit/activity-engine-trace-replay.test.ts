@@ -335,6 +335,46 @@ describe('ActivityEngine trace-bundle replay', () => {
     });
   });
 
+  // Reconstruction of task #246 (session d7b0125a): a single heavy generation
+  // turn streamed PTY output for 211s between a completed Read (pasted image)
+  // and the next Write, with NO nested hook event and a silent status heartbeat.
+  // This is the tool-less sibling of session-016: pendingToolCount === 0 the
+  // whole gap, so the stuck-pending-tools hold cannot help and (pre-fix) the
+  // stale-thinking hold - anchored to lastSignalAt only - force-idled the live
+  // session at +180s. The fix anchors stale-thinking to signal-or-pty-output, so
+  // the streaming chunks (markPtyOutput) keep it thinking. Pre-fix (anchor:
+  // 'signal') this replays a timer:stale-thinking thinking->idle mid-gap with
+  // staleThinking: 1.
+  describe('session-019-false-idle-tool-less-streaming-gap', () => {
+    let result: ReplayResult;
+    beforeEach(() => {
+      const bundle = loadTraceBundle(
+        path.join(FIXTURES_DIR, 'session-019-false-idle-tool-less-streaming-gap'),
+      );
+      result = replayBundle(bundle);
+    });
+
+    it('does not fire the stale-thinking watchdog while the tool-less turn streams output', () => {
+      // The reliable signal: pre-fix this is 1 (force-idled mid-gap), post-fix 0
+      // (streaming PTY keeps the signal-or-pty-output anchor fresh).
+      expect(result.compensationCounters.staleThinking).toBe(0);
+    });
+
+    it('records no thinking -> idle stale-thinking transition mid-stream', () => {
+      const staleIdles = result.transitions.filter(
+        (transition) =>
+          transition.from === 'thinking'
+          && transition.to === 'idle'
+          && transition.trigger === 'timer:stale-thinking',
+      );
+      expect(staleIdles).toEqual([]);
+    });
+
+    it('settles idle after the real turn ends (clean Stop)', () => {
+      expect(result.finalActivity).toBe('idle');
+    });
+  });
+
   // Concrete regression fixture for Task #121 (plan-composition gap).
   // Skipped until the bundle has been captured via
   // `kangentic_devtools_capture_trace`. Drop the .skip when the fixture

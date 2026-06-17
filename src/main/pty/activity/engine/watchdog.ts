@@ -12,9 +12,12 @@ import type { SessionEngineState, TransitionTrigger } from './shapes';
  *   `markBackgroundShellsAlive` advances it, so a phantom is still reclaimed
  *   at its threshold. Also drives `scheduleTimer`'s stamp/clear maintenance.
  * - `signal-or-pty-output`: the FRESHER of `lastSignalAt` and
- *   `lastPtyOutputAt` - streaming TUI output keeps a genuinely-running
- *   foreground tool alive even when hooks and the status heartbeat are silent.
- * - `signal`: `lastSignalAt` only.
+ *   `lastPtyOutputAt` - streaming TUI output keeps a genuinely-running turn
+ *   alive even when hooks and the status heartbeat are silent, whether the
+ *   turn is held by a foreground tool (stuck-pending-tools), a subagent
+ *   (stuck-subagent), or tool-less generation (stale-thinking).
+ * - `signal`: `lastSignalAt` only. Currently unused by any hold (kept as a
+ *   building block for a future hold that must ignore PTY output).
  */
 export type WatchdogAnchor =
   | 'bg-shell-hold-since'
@@ -185,7 +188,18 @@ export function buildWatchdogHolds(config: WatchdogConfig): readonly WatchdogHol
     },
     {
       // Held by `turnActive` alone (a thinking event fired but the
-      // matching Idle hook never arrived).
+      // matching Idle hook never arrived). Anchored to the FRESHER of
+      // `lastSignalAt` and `lastPtyOutputAt`: a single heavy generation turn
+      // can stream PTY output continuously for >180s with NO nested hook event
+      // and a silent status heartbeat (Claude's `status.json` does not update
+      // mid-generation), which would false-idle a demonstrably-live session
+      // (task #246). `markPtyOutput` (called unconditionally on every PTY chunk)
+      // keeps the anchor fresh, so streaming output defers this hold the same
+      // way it defers stuck-pending-tools. A genuinely-finished turn sits at a
+      // quiet prompt with no PTY data (the basis of the PtyActivityTracker's
+      // silence detector), so the anchor freezes and the safety net still fires
+      // at the threshold. A blinking cursor is xterm-rendered terminal state,
+      // not PTY data, so it never calls `markPtyOutput` and cannot defer it.
       predicate: (state) =>
         state.turnActive
         && state.pendingToolCount === 0
@@ -194,7 +208,7 @@ export function buildWatchdogHolds(config: WatchdogConfig): readonly WatchdogHol
         && !state.permissionPending,
       thresholdMs: config.staleThinkingTimeoutMs,
       trigger: 'timer:stale-thinking',
-      anchor: 'signal',
+      anchor: 'signal-or-pty-output',
       reset: (state) => {
         state.turnActive = false;
       },

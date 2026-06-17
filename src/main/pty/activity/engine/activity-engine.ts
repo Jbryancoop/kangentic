@@ -377,8 +377,8 @@ export class ActivityEngine {
   }
 
   /**
-   * Record a PTY output chunk for the stuck-pending-tools watchdog
-   * (Subsystem B/fix). Production behavior - NOT dev-gated, unlike
+   * Record a PTY output chunk for the `signal-or-pty-output` watchdog
+   * holds (Subsystem B/fix). Production behavior - NOT dev-gated, unlike
    * `markPtyChunk`. Called on every PTY chunk from the spawn flow,
    * independent of `PtyActivityTracker` suppression (which silences PTY
    * activity detection for hooks-based agents like Claude). The single
@@ -391,7 +391,9 @@ export class ActivityEngine {
    * would be wasteful churn. The armed timer re-reads the base time when it
    * fires and re-arms if the threshold has not been reached (see
    * `onTick`), so a forward-moving base is honored without per-chunk work.
-   * The bg-shell and stale-thinking holds ignore this field by design.
+   * The bg-shell holds ignore this field by design (they anchor on
+   * `bgShellHoldSince`); stale-thinking, stuck-pending-tools, and
+   * stuck-subagent all read it via the `signal-or-pty-output` anchor.
    *
    * No-op if the session is unknown.
    */
@@ -621,11 +623,11 @@ export class ActivityEngine {
    *   `markThinkingSignal` cannot push it out; only a watcher-confirmed
    *   `markBackgroundShellsAlive` advances the anchor, so a phantom is
    *   still reclaimed at its threshold).
-   * - stuck-pending-tools: the FRESHER of `lastSignalAt` and
-   *   `lastPtyOutputAt` - streaming TUI output keeps a genuinely-running
-   *   foreground tool from being force-idled even when hooks and the
-   *   status heartbeat are both silent.
-   * - everything else (stale-thinking): `lastSignalAt`.
+   * - `signal-or-pty-output` holds (stuck-pending-tools, stuck-subagent,
+   *   stale-thinking): the FRESHER of `lastSignalAt` and `lastPtyOutputAt` -
+   *   streaming TUI output keeps a genuinely-running turn from being
+   *   force-idled even when hooks and the status heartbeat are both silent.
+   * - `signal`: `lastSignalAt` only. Currently unused by any hold.
    *
    * `fallback` is returned when the relevant anchor(s) are null.
    */

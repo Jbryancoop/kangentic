@@ -1,0 +1,8 @@
+{"ts":1781650000000,"type":"session_start"}
+{"ts":1781650001000,"type":"prompt"}
+{"ts":1781650002000,"type":"tool_start","tool":"Read","toolId":"toolu_read0000000000000001","detail":"C:\\Users\\dev\\AppData\\Local\\Temp\\kangentic-clipboard\\pasted-image-1781650000000.png"}
+{"ts":1781650002200,"type":"tool_end","tool":"Read","toolId":"toolu_read0000000000000001"}
+{"ts":1781650213200,"type":"tool_start","tool":"Write","toolId":"toolu_write000000000000002","detail":"C:\\Users\\dev\\Documents\\GitHub\\kangentic\\src\\renderer\\window-manager\\terminal\\resize-coalescer.ts"}
+{"ts":1781650213400,"type":"tool_end","tool":"Write","toolId":"toolu_write000000000000002"}
+{"ts":1781650214000,"type":"idle"}
+{"ts":1781650214500,"type":"session_end"}

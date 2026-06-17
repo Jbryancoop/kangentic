@@ -61,14 +61,16 @@ export const DEFAULT_BG_SHELL_ONLY_GRACE_MS = 30_000;
  *
  * Default 180 seconds (3 minutes). Long-thinking phases like plan
  * composition can produce no tool events for >45s, so a tighter
- * threshold causes false fires. During real thinking, Claude's
- * `status.json` updates fire `markThinkingSignal` via
- * `processStatusUpdate` at intervals well under 180s (empirically
- * validated against Task #121's recorded events.jsonl, where the
- * worst observed silence-after-signal interval was 45s - well below
- * 180s). Genuine stuck states (no status updates at all) still
- * recover within the threshold. Override via constructor option for
- * tests.
+ * threshold causes false fires. The hold is anchored to
+ * `signal-or-pty-output`, not `lastSignalAt` alone: a single very heavy
+ * generation turn can stream PTY output for >180s with NO nested hook
+ * event and a silent status heartbeat (Claude's `status.json` does not
+ * update mid-generation when no tool call or turn boundary occurs;
+ * task #246 streamed continuously for 211s while the heartbeat was
+ * silent). Streaming PTY output therefore defers this hold; a
+ * genuinely-finished turn sits at a quiet prompt with no PTY data, so
+ * the anchor freezes and a genuine stuck state still recovers within
+ * the threshold. Override via constructor option for tests.
  */
 export const DEFAULT_STALE_THINKING_TIMEOUT_MS = 180_000;
 
@@ -266,12 +268,16 @@ export interface SessionEngineState {
   /**
    * Wall-clock ms of the most recent PTY output chunk. Refreshed on every
    * PTY chunk (production, unconditional - NOT gated by PtyActivityTracker
-   * suppression). Used ONLY by the stuck-pending-tools hold: while a
-   * foreground tool runs, the agent CLI's TUI streams spinner/output, so
-   * chatty PTY proves the tool is genuinely working even when no hook event
-   * or status heartbeat refreshes `lastSignalAt`. Deliberately does NOT feed
-   * the bg-shell hold (anchored to `bgShellHoldSince`) or the stale-thinking
-   * hold (idle TUI repaints must not defer it). Null until the first chunk.
+   * suppression). Feeds the `signal-or-pty-output` watchdog holds
+   * (stuck-pending-tools, stuck-subagent, stale-thinking): while a turn is
+   * genuinely working, the agent CLI's TUI streams spinner/output, so chatty
+   * PTY proves the session is alive even when no hook event or status
+   * heartbeat refreshes `lastSignalAt`. This covers a foreground tool, a live
+   * subagent, AND a long tool-less generation gap (task #246). It is only PTY
+   * DATA: a blinking cursor is xterm-rendered terminal state, never a PTY
+   * chunk, so it does not refresh this field. Deliberately does NOT feed the
+   * bg-shell holds (anchored to `bgShellHoldSince` so signal-only keep-alives
+   * cannot pin a phantom). Null until the first chunk.
    */
   lastPtyOutputAt: number | null;
   /**

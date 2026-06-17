@@ -1,0 +1,5 @@
+{
+  "sessionId": "00000000-0000-0000-0000-000000000000",
+  "capturedAt": "2026-06-16",
+  "note": "Reconstruction of task #246 (session d7b0125a) false-idle-during-tool-less-generation: a single heavy turn streamed PTY output for 211s between a completed Read (pasted image) and the next Write, with no nested hook event and a silent status heartbeat, so the stale-thinking hold (anchored to lastSignalAt only) force-idled a demonstrably-live session. The fix anchors stale-thinking to signal-or-pty-output. pty-chunks downsampled to 5s buckets (real density was ~2-3 chunks/100ms)."
+}
