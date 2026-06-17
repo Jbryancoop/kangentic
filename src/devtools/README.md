@@ -46,7 +46,8 @@ src/devtools/
 
   renderer/
     install.tsx              ← <DevtoolsBootstrap />
-    state-mirror.ts          ← buildPreviewSnapshot()
+    state-mirror.ts          ← buildPreviewSnapshot() + PREVIEW_STORES registry / readStoreState()
+    store-state.ts           ← pure store path-walk + JSON sanitization helpers
     react-bridge.ts          ← React fiber walker + onCommitFiberRoot ring
     DevToolsSections.tsx     ← rendered inside DeveloperTab when __KANGENTIC_DEV__
 
@@ -73,10 +74,11 @@ and reading the lockfiles. Stale lockfiles are detected via PID liveness
 
 Localhost-only HTTP server on a random port. Endpoints wrap product
 diagnostics (`/logs`, `/crashes`, `/process-metrics`, `/ipc-log`),
-expose live engine + renderer state (`/engine-state`, `/renderer-state`),
-serve screenshots + DOM (`/screenshot`, `/dom`, etc.), and accept
+expose live engine + renderer state (`/engine-state`, `/renderer-state`,
+`/store-state`), serve screenshots + DOM (`/screenshot`, `/dom`,
+`/query-all`, `/bounding-box`, `/bounding-box-all`, etc.), and accept
 interaction commands (`/click`, `/type`, `/keypress`, `/drag`, `/wait`,
-`/script`).
+`/script`, `/eval`).
 
 ### CDP wrapper (`main/cdp.ts`)
 
@@ -92,6 +94,13 @@ HTTP bridge: `Page.captureScreenshot`, `DOM.querySelector` /
 buffers (toasts shown, dialogs opened, IPC errors). Installed on
 `window.__kangenticPreviewSnapshot` so the inspection server can read
 it via `Runtime.evaluate('JSON.stringify(window.__kangenticPreviewSnapshot())')`.
+
+For reads beyond the fixed snapshot, `readStoreState(name, path)` (backed
+by the `PREVIEW_STORES` registry, with the pure path-walk + sanitization
+in `store-state.ts`) is installed on `window.__kangenticPreviewStoreState`
+and serves `/store-state`. `PREVIEW_STORES` is the single place a new
+Zustand store must be registered to become readable; the
+`devtools-preview-stores` unit test fails CI if a `*-store.ts` is missing.
 
 `react-bridge.ts` rides the always-installed
 `__REACT_DEVTOOLS_GLOBAL_HOOK__` to walk fibers from a DOM node and
@@ -119,4 +128,9 @@ right port).
 Both gates apply to every tool:
 - `developer.previewInspectionServer` (master switch - lockfile + bridge)
 - `developer.previewEvalEnabled` (extra gate for arbitrary-code surfaces:
-  `eval`, `inject_session_event`, `pty-input.bytes`)
+  `eval`, the `script` `eval` step, `inject_session_event`,
+  `pty-input.bytes`). Read tools built on fixed server-generated
+  expressions (`/renderer-state`, `/store-state`, `/query-all`,
+  `/bounding-box-all`, `/react-component`) are NOT eval-gated - the
+  selector / store name / path is interpolated as a JSON string literal,
+  never executed as caller-supplied code.

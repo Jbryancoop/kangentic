@@ -17,6 +17,7 @@ import {
   getOuterHtml,
   getOuterHtmlByNodeId,
   isDebuggerAttached,
+  queryAllElements,
   resolveSelectorPublic,
   runtimeEvaluate,
   typeText,
@@ -166,6 +167,10 @@ async function handleRequest(
     return respondRendererState(options, response);
   }
 
+  if (route === 'GET /store-state') {
+    return respondStoreState(options, url, response);
+  }
+
   if (route === 'GET /console') {
     return respondConsole(options, url, response);
   }
@@ -206,6 +211,14 @@ async function handleRequest(
 
   if (route === 'GET /bounding-box') {
     return respondBoundingBox(window, url, response);
+  }
+
+  if (route === 'GET /query-all') {
+    return respondQueryAll(window, url, response);
+  }
+
+  if (route === 'GET /bounding-box-all') {
+    return respondBoundingBoxAll(window, url, response);
   }
 
   if (route === 'GET /accessibility-tree') {
@@ -501,6 +514,58 @@ async function respondRendererState(
   respondJson(response, 200, result.value);
 }
 
+/**
+ * Read a renderer Zustand store (optionally at `path`) via the dev-only
+ * `window.__kangenticPreviewStoreState` reader. Mirrors
+ * `respondRendererState`. An unknown store / missing path is reported as a
+ * 200 whose body carries `error` + the `available` store list, so the
+ * agent can self-correct (a 4xx would strip the extra fields at the MCP
+ * bridge layer).
+ */
+async function respondStoreState(
+  options: InspectionServerOptions,
+  url: URL,
+  response: http.ServerResponse,
+): Promise<void> {
+  const store = url.searchParams.get('store');
+  if (!store) {
+    return respondError(response, 400, 'missing-store', 'store query parameter is required.');
+  }
+  const requestedPath = url.searchParams.get('path') ?? '';
+  const window = options.getMainWindow();
+  if (!window) {
+    return respondError(response, 503, 'no-main-window', 'Main window is not available yet.');
+  }
+  const expression = `(() => {
+      const reader = window.__kangenticPreviewStoreState;
+      if (typeof reader !== 'function') return null;
+      try {
+        return reader(${JSON.stringify(store)}, ${JSON.stringify(requestedPath)});
+      } catch (error) {
+        return { __error: String(error) };
+      }
+    })()`;
+  const result = await runtimeEvaluate<{ __error?: string } | Record<string, unknown> | null>(
+    window,
+    expression,
+  );
+  if (result.error) {
+    return respondError(response, 500, 'evaluate-failed', result.error);
+  }
+  if (result.value === null) {
+    return respondError(
+      response,
+      503,
+      'mirror-not-installed',
+      'window.__kangenticPreviewStoreState is not installed yet.',
+    );
+  }
+  if (typeof result.value === 'object' && result.value !== null && '__error' in result.value) {
+    return respondError(response, 500, 'store-read-failed', String(result.value.__error));
+  }
+  respondJson(response, 200, result.value);
+}
+
 function respondConsole(
   options: InspectionServerOptions,
   url: URL,
@@ -659,6 +724,57 @@ async function respondBoundingBox(
     return respondError(response, 404, 'selector-not-found', `No element matched ${selector}.`);
   }
   respondJson(response, 200, { selector, ...box });
+}
+
+async function respondQueryAll(
+  window: BrowserWindow,
+  url: URL,
+  response: http.ServerResponse,
+): Promise<void> {
+  return respondQueryAllVariant(window, url, response, {
+    includeHtml: url.searchParams.get('includeHtml') === 'true',
+    includeAttributes: true,
+    htmlMaxChars: 1024,
+  });
+}
+
+async function respondBoundingBoxAll(
+  window: BrowserWindow,
+  url: URL,
+  response: http.ServerResponse,
+): Promise<void> {
+  return respondQueryAllVariant(window, url, response, {
+    includeHtml: false,
+    includeAttributes: false,
+    htmlMaxChars: 0,
+  });
+}
+
+/**
+ * Shared body for `/query-all` (rich: attributes, optional HTML) and
+ * `/bounding-box-all` (lean: box + tag only). Both validate the selector,
+ * clamp the limit, and measure every matching element in one round-trip;
+ * they differ only in which per-element fields are collected.
+ */
+async function respondQueryAllVariant(
+  window: BrowserWindow,
+  url: URL,
+  response: http.ServerResponse,
+  fields: { includeHtml: boolean; includeAttributes: boolean; htmlMaxChars: number },
+): Promise<void> {
+  const selector = url.searchParams.get('selector');
+  if (!selector) {
+    return respondError(response, 400, 'missing-selector', 'selector query parameter is required.');
+  }
+  const limit = clampLimit(url.searchParams.get('limit'), 100, 1000);
+  const result = await queryAllElements(window, selector, { ...fields, limit });
+  if (result.error) {
+    return respondError(response, 500, 'evaluate-failed', result.error);
+  }
+  if (!result.value) {
+    return respondError(response, 500, 'query-failed', 'query-all returned no result.');
+  }
+  respondJson(response, 200, result.value);
 }
 
 async function respondReactComponent(
@@ -942,6 +1058,8 @@ interface ScriptStepTrace {
   error?: string;
   screenshotPath?: string;
   screenshotUri?: string;
+  /** Serialized return value of an `eval` step (undefined for other steps). */
+  value?: unknown;
 }
 
 async function respondScript(
@@ -984,6 +1102,7 @@ async function respondScript(
 interface ScriptStepOutput {
   screenshotPath?: string;
   screenshotUri?: string;
+  value?: unknown;
 }
 
 async function runScriptStep(
@@ -1051,7 +1170,7 @@ async function runScriptStep(
       if (typeof expression !== 'string') throw new Error('eval step requires `expression`.');
       const result = await runtimeEvaluate(window, expression);
       if (result.error) throw new Error(result.error);
-      return;
+      return { value: result.value };
     }
     default:
       throw new Error(`Unknown step type: ${step.type}.`);

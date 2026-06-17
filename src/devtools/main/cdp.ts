@@ -1,4 +1,5 @@
 import type { BrowserWindow, WebContents } from 'electron';
+import type { QueryAllResult } from '../shared/types';
 
 /**
  * Wraps `webContents.debugger.attach('1.3')` and exposes typed helpers
@@ -360,14 +361,28 @@ async function resolveSelector(window: BrowserWindow, selector: string): Promise
   }
 }
 
+/**
+ * Candidate pool for `text=` / `text*=` matching, shared by
+ * `buildSelectorExpression` (first match) and `buildSelectorAllExpression`
+ * (all matches) so the two paths cannot drift. Favors interactive / labeled
+ * elements so a parent wrapper does not over-match; missing a candidate is
+ * better than a benign over-match because the agent gets a clear "not found".
+ */
+const CANDIDATE_POOL_SELECTOR =
+  'button, a, input, textarea, select, label, summary, [role], [aria-label], [aria-labelledby], [contenteditable="true"]';
+
+/**
+ * Content-named element pool for `aria=` matching: elements whose accessible
+ * name derives from their text content per WAI-ARIA (button, link, heading,
+ * etc.). Shared by both selector builders so the single-match and all-match
+ * aria paths cannot drift.
+ */
+const ARIA_CONTENT_NAME_SELECTOR =
+  'button, a, [role="button"], [role="link"], [role="menuitem"], [role="tab"], h1, h2, h3, h4, h5, h6';
+
 export function buildSelectorExpression(spec: SelectorSpec): string {
   const targetLiteral = JSON.stringify(spec.value);
-  // Limit the candidate pool to interactive / labeled elements so we don't
-  // accidentally match a parent <div> that contains the text. The pool is
-  // intentionally generous - missing a candidate is worse than a benign
-  // over-match because the agent gets a clear "not found" signal.
-  const candidatesJs =
-    "document.querySelectorAll('button, a, input, textarea, select, label, summary, [role], [aria-label], [aria-labelledby], [contenteditable=\"true\"]')";
+  const candidatesJs = `document.querySelectorAll(${JSON.stringify(CANDIDATE_POOL_SELECTOR)})`;
   if (spec.kind === 'text') {
     return `(() => {
       const target = ${targetLiteral};
@@ -398,12 +413,104 @@ export function buildSelectorExpression(spec: SelectorSpec): string {
     for (const element of document.querySelectorAll('[aria-label]')) {
       if ((element.getAttribute('aria-label') ?? '').trim() === target) return element;
     }
-    for (const element of document.querySelectorAll('button, a, [role="button"], [role="link"], [role="menuitem"], [role="tab"], h1, h2, h3, h4, h5, h6')) {
+    for (const element of document.querySelectorAll(${JSON.stringify(ARIA_CONTENT_NAME_SELECTOR)})) {
       const visibleText = (element.innerText ?? element.textContent ?? '').trim();
       if (visibleText === target) return element;
     }
     return null;
   })()`;
+}
+
+/**
+ * Build a single self-contained expression that measures EVERY element
+ * matching `spec` (unlike `buildSelectorExpression`, which returns the
+ * first match). Evaluated once via `Runtime.evaluate` so N elements cost
+ * one CDP round-trip. `attributes` / `outerHTML` are included only when
+ * requested to keep multi-element payloads lean. Pure + exported so the
+ * collection logic is unit-testable without a live window.
+ */
+export function buildSelectorAllExpression(
+  spec: SelectorSpec,
+  opts: { includeHtml: boolean; includeAttributes: boolean; limit: number; htmlMaxChars: number },
+): string {
+  let collectExpr: string;
+  if (spec.kind === 'css') {
+    collectExpr = 'Array.from(document.querySelectorAll(target))';
+  } else if (spec.kind === 'text' || spec.kind === 'text-contains') {
+    const comparison = spec.kind === 'text' ? 'visibleText === target' : 'visibleText.includes(target)';
+    collectExpr = `Array.from(document.querySelectorAll(${JSON.stringify(CANDIDATE_POOL_SELECTOR)})).filter((element) => {
+        const ariaLabel = element.getAttribute('aria-label');
+        const visibleText = (ariaLabel ?? element.innerText ?? element.textContent ?? '').trim();
+        return ${comparison};
+      })`;
+  } else {
+    // aria= -- aria-label matches first, then content-derived names, deduped.
+    collectExpr = `(() => {
+        const matched = new Set();
+        for (const element of document.querySelectorAll('[aria-label]')) {
+          if ((element.getAttribute('aria-label') ?? '').trim() === target) matched.add(element);
+        }
+        for (const element of document.querySelectorAll(${JSON.stringify(ARIA_CONTENT_NAME_SELECTOR)})) {
+          const visibleText = (element.innerText ?? element.textContent ?? '').trim();
+          if (visibleText === target) matched.add(element);
+        }
+        return Array.from(matched);
+      })()`;
+  }
+  return `(() => {
+    const target = ${JSON.stringify(spec.value)};
+    const LIMIT = ${opts.limit};
+    const HTML_MAX = ${opts.htmlMaxChars};
+    const INCLUDE_HTML = ${opts.includeHtml ? 'true' : 'false'};
+    const INCLUDE_ATTRS = ${opts.includeAttributes ? 'true' : 'false'};
+    const all = ${collectExpr};
+    const total = all.length;
+    const elements = all.slice(0, LIMIT).map((element, index) => {
+      const rect = element.getBoundingClientRect();
+      const entry = {
+        index,
+        tag: element.tagName.toLowerCase(),
+        box: {
+          x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+          top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left,
+        },
+      };
+      if (INCLUDE_ATTRS) {
+        const attributes = {};
+        for (const attribute of element.attributes) attributes[attribute.name] = attribute.value;
+        entry.attributes = attributes;
+      }
+      if (INCLUDE_HTML) {
+        const html = element.outerHTML ?? '';
+        entry.outerHTML = html.length > HTML_MAX ? html.slice(0, HTML_MAX) : html;
+        if (html.length > HTML_MAX) entry.outerHTMLTruncated = true;
+      }
+      return entry;
+    });
+    return {
+      selector: target,
+      kind: ${JSON.stringify(spec.kind)},
+      total,
+      returned: elements.length,
+      truncated: total > elements.length,
+      elements,
+    };
+  })()`;
+}
+
+/**
+ * Measure every element matching `selector` in one round-trip. Returns
+ * the raw `runtimeEvaluate` envelope so callers can distinguish an
+ * evaluation error (invalid selector) from an empty match set.
+ */
+export async function queryAllElements(
+  window: BrowserWindow,
+  selector: string,
+  opts: { includeHtml: boolean; includeAttributes: boolean; limit: number; htmlMaxChars: number },
+): Promise<{ value: QueryAllResult | null; error: string | null }> {
+  const spec = parseSelectorSpec(selector);
+  const expression = buildSelectorAllExpression(spec, opts);
+  return runtimeEvaluate<QueryAllResult>(window, expression);
 }
 
 export async function getOuterHtml(

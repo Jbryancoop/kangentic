@@ -461,6 +461,34 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
       toolResult(await callBridge({ method: 'GET', path: '/renderer-state', instanceId })),
   );
 
+  server.registerTool(
+    'kangentic_devtools_store_state',
+    {
+      description:
+        'Read a single renderer Zustand store by name, optionally drilling into a dot/bracket `path` (e.g. "dialogSessionId", "boardConfig.columns[0]", "sessionActivity[\'<id>\']"). Returns the sanitized state (Map -> object, Set -> array, large arrays + deep nesting truncated). Unlike kangentic_devtools_renderer_state (a fixed summary), this reads the FULL source-of-truth state for any registered store. Registered stores: backlog, board, config, project, session, toast. Unknown store names return an error plus the available list. Dev-only.',
+      inputSchema: z.object({
+        store: z
+          .string()
+          .describe('Store name: backlog | board | config | project | session | toast.'),
+        path: z
+          .string()
+          .optional()
+          .describe('Optional dot/bracket path into the store state. Omit to return the whole store.'),
+        instanceId: z.string().optional().describe(INSTANCE_ARG_DESCRIPTION),
+      }),
+      annotations: READ_ONLY_ANNOTATIONS,
+    },
+    async ({ store, path, instanceId }) =>
+      toolResult(
+        await callBridge({
+          method: 'GET',
+          path: '/store-state',
+          query: { store, path },
+          instanceId,
+        }),
+      ),
+  );
+
   // ── Visual / DOM ─────────────────────────────────────────────────────
   server.registerTool(
     'kangentic_devtools_screenshot',
@@ -546,6 +574,30 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
   );
 
   server.registerTool(
+    'kangentic_devtools_query_all',
+    {
+      description:
+        'Like kangentic_devtools_query_dom but returns EVERY element matching `selector`, each with its tag, attributes, and viewport-space box {x,y,width,height,top,right,bottom,left}. Use to measure N elements in one call (e.g. two docked window frames) instead of fragile :nth-child selectors. Set `includeHtml: true` to also get each element\'s outerHTML (clipped per element). `box` is getBoundingClientRect-based (viewport CSS px) - for the raw CDP box-model quads of a single element use kangentic_devtools_bounding_box. Selector forms: CSS, `text="..."`, `text*="..."`, `aria="..."`. Dev-only.',
+      inputSchema: z.object({
+        selector: z.string().describe('CSS selector, or `text="..."` / `text*="..."` / `aria="..."`.'),
+        includeHtml: z.boolean().optional().describe('Include each element\'s (clipped) outerHTML. Default false.'),
+        limit: z.number().int().min(1).max(1000).optional().describe('Max elements returned. Default 100.'),
+        instanceId: z.string().optional().describe(INSTANCE_ARG_DESCRIPTION),
+      }),
+      annotations: READ_ONLY_ANNOTATIONS,
+    },
+    async ({ selector, includeHtml, limit, instanceId }) =>
+      toolResult(
+        await callBridge({
+          method: 'GET',
+          path: '/query-all',
+          query: { selector, includeHtml: includeHtml ? 'true' : undefined, limit },
+          instanceId,
+        }),
+      ),
+  );
+
+  server.registerTool(
     'kangentic_devtools_computed_style',
     {
       description:
@@ -584,6 +636,29 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
           method: 'GET',
           path: '/bounding-box',
           query: { selector },
+          instanceId,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    'kangentic_devtools_bounding_box_all',
+    {
+      description:
+        'Return the viewport-space box {x,y,width,height,top,right,bottom,left} and tag for EVERY element matching `selector`. The lean multi-element measurement tool (no attributes, no HTML). Use kangentic_devtools_query_all when you also need attributes/HTML, or kangentic_devtools_bounding_box for one element\'s raw CDP box-model quads. Selector forms: CSS, `text="..."`, `text*="..."`, `aria="..."`. Dev-only.',
+      inputSchema: z.object({
+        selector: z.string().describe('CSS selector, or `text="..."` / `text*="..."` / `aria="..."`.'),
+        limit: z.number().int().min(1).max(1000).optional().describe('Max elements returned. Default 100.'),
+        instanceId: z.string().optional().describe(INSTANCE_ARG_DESCRIPTION),
+      }),
+      annotations: READ_ONLY_ANNOTATIONS,
+    },
+    async ({ selector, limit, instanceId }) =>
+      toolResult(
+        await callBridge({
+          method: 'GET',
+          path: '/bounding-box-all',
+          query: { selector, limit },
           instanceId,
         }),
       ),
@@ -847,7 +922,7 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
     'kangentic_devtools_script',
     {
       description:
-        'Execute an array of UI steps in order against the inspected preview. Each step: { type: "click" | "type" | "keypress" | "drag" | "wait" | "screenshot" | "eval", ...stepArgs }. Returns a step-by-step trace with ok/durationMs/error. `screenshot` steps persist to disk and the trace entry carries `screenshotPath` + `screenshotUri` (read via Read). Selectors accept CSS, `text="..."`, or `aria="..."`. Cuts MCP latency dramatically vs. one tool call per step. Dev-only.',
+        'Execute an array of UI steps in order against the inspected preview. Each step: { type: "click" | "type" | "keypress" | "drag" | "wait" | "screenshot" | "eval", ...stepArgs }. Returns a step-by-step trace with ok/durationMs/error. `screenshot` steps persist to disk and the trace entry carries `screenshotPath` + `screenshotUri` (read via Read). `eval` steps carry the serialized return value as `value` on their trace entry (requires the Allow Eval setting). Selectors accept CSS, `text="..."`, or `aria="..."`. Cuts MCP latency dramatically vs. one tool call per step. Dev-only.',
       inputSchema: z.object({
         steps: z
           .array(
@@ -876,6 +951,28 @@ export function registerDevtoolsPreviewTools(server: McpServer): void {
           body: { steps, abortOnError },
           instanceId,
           timeoutMs: 60000,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    'kangentic_devtools_eval',
+    {
+      description:
+        'Evaluate a JavaScript expression in the inspected preview\'s renderer and return its serialized value (e.g. `{ value: 2 }` for "1 + 1", or an array of element measurements). The return value must be JSON-serializable - DOM nodes and functions do not round-trip; return their measured/string form instead. Requires Settings -> Developer -> Allow Eval (returns an `eval-disabled` error otherwise). For reading store state prefer kangentic_devtools_store_state; for multi-element measurement prefer kangentic_devtools_query_all - both work without the Allow Eval setting. Dev-only.',
+      inputSchema: z.object({
+        expression: z.string().describe('JavaScript expression to evaluate. Its value is returned (awaited if a Promise).'),
+        instanceId: z.string().optional().describe(INSTANCE_ARG_DESCRIPTION),
+      }),
+      annotations: MUTATING_ANNOTATIONS,
+    },
+    async ({ expression, instanceId }) =>
+      toolResult(
+        await callBridge({
+          method: 'POST',
+          path: '/eval',
+          body: { expression },
+          instanceId,
         }),
       ),
   );

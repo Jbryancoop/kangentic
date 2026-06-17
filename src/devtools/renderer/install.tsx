@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useToastStore } from '../../renderer/stores/toast-store';
-import { buildPreviewSnapshot, pushToastEntry } from './state-mirror';
+import { buildPreviewSnapshot, pushToastEntry, readStoreState } from './state-mirror';
 
 /**
  * Renderer-side bootstrap for the dev-only inspection bridge.
@@ -20,8 +20,10 @@ export function DevtoolsBootstrap(): null {
   useEffect(() => {
     type DevtoolsWindow = Window & {
       __kangenticPreviewSnapshot?: () => unknown;
+      __kangenticPreviewStoreState?: (storeName: string, path?: string | null) => unknown;
     };
     (window as DevtoolsWindow).__kangenticPreviewSnapshot = buildPreviewSnapshot;
+    (window as DevtoolsWindow).__kangenticPreviewStoreState = readStoreState;
 
     // Subscribe to the toast store: every push lands in our ring.
     const unsubscribeToast = useToastStore.subscribe((state, prevState) => {
@@ -43,6 +45,7 @@ export function DevtoolsBootstrap(): null {
     return () => {
       unsubscribeToast();
       delete (window as DevtoolsWindow).__kangenticPreviewSnapshot;
+      delete (window as DevtoolsWindow).__kangenticPreviewStoreState;
     };
   }, []);
 

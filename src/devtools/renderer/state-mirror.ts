@@ -4,7 +4,8 @@ import { useConfigStore } from '../../renderer/stores/config-store';
 import { useProjectStore } from '../../renderer/stores/project-store';
 import { useSessionStore } from '../../renderer/stores/session-store';
 import { useToastStore } from '../../renderer/stores/toast-store';
-import type { RendererStateSnapshot } from '../shared/types';
+import type { RendererStateSnapshot, StoreStateResult } from '../shared/types';
+import { readStoreStateFrom, type ReadableStore } from './store-state';
 
 /**
  * Aggregator for the dev-only `window.__kangenticPreviewSnapshot` global.
@@ -48,6 +49,33 @@ export function buildPreviewSnapshot(): RendererStateSnapshot {
     },
     recentToasts: [...recentToasts],
   };
+}
+
+/**
+ * Registry of renderer Zustand stores readable via the dev-only
+ * `kangentic_devtools_store_state` tool. Adding a store here makes its
+ * full state (by name + path) readable from a live `/preview` - this is
+ * the one place a new store (e.g. a future window-manager store) must be
+ * registered. A unit test (`devtools-preview-stores.test.ts`) asserts
+ * every `src/renderer/stores/*-store.ts` is listed so a forgotten entry
+ * fails CI instead of silently being unreadable.
+ */
+const PREVIEW_STORES: Record<string, ReadableStore> = {
+  backlog: useBacklogStore,
+  board: useBoardStore,
+  config: useConfigStore,
+  project: useProjectStore,
+  session: useSessionStore,
+  toast: useToastStore,
+};
+
+/**
+ * Read one registered store's state, optionally drilling into `path`.
+ * Installed on `window.__kangenticPreviewStoreState` by `install.tsx` and
+ * invoked by the inspection server's `/store-state` endpoint.
+ */
+export function readStoreState(storeName: string, path?: string | null): StoreStateResult {
+  return readStoreStateFrom(PREVIEW_STORES, storeName, path);
 }
 
 function summarizeBoard(state: unknown): unknown {

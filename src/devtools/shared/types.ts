@@ -87,6 +87,68 @@ export interface RendererStateSnapshot {
 }
 
 /**
+ * Viewport-space layout box for one element, derived from
+ * `getBoundingClientRect()` (CSS pixels relative to the viewport). This
+ * differs from the singular `/bounding-box` endpoint, which returns the
+ * raw CDP box-model quads (content / padding / border / margin).
+ */
+export interface QueryAllElementBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/**
+ * One matched element returned by the `/query-all` and `/bounding-box-all`
+ * endpoints. `attributes` and `outerHTML` are only populated when the
+ * caller requests them (lean by default for multi-element measurement).
+ */
+export interface QueryAllElement {
+  index: number;
+  tag: string;
+  attributes?: Record<string, string>;
+  box: QueryAllElementBox;
+  outerHTML?: string;
+  /** Set when `outerHTML` was clipped to the per-element character cap. */
+  outerHTMLTruncated?: boolean;
+}
+
+/**
+ * Result of a query-all over a selector: every matching element measured
+ * in a single `Runtime.evaluate`. `total` is the full match count;
+ * `elements` is capped at `returned` (the caller's `limit`).
+ */
+export interface QueryAllResult {
+  selector: string;
+  /** Resolved selector kind: 'css' | 'text' | 'text-contains' | 'aria'. */
+  kind: string;
+  total: number;
+  returned: number;
+  /** True when `total` exceeded `limit` and `elements` was clipped. */
+  truncated: boolean;
+  elements: QueryAllElement[];
+}
+
+/**
+ * Result of a renderer store-state read via `/store-state`. On success
+ * `value` holds the (sanitized) state at `path` and `error` is null; on an
+ * unknown store name `error` is set and `available` lists registered stores.
+ */
+export interface StoreStateResult {
+  store: string;
+  path: string | null;
+  /** Registered store names, always returned so callers can self-correct. */
+  available: string[];
+  value?: unknown;
+  error?: string;
+}
+
+/**
  * One React component's debug info, returned by
  * `kangentic_devtools_react_query`. Walks the React fiber from a DOM
  * node and reports the nearest custom component.

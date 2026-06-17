@@ -438,16 +438,18 @@ Enumerate worktrees for one or every registered project. Each `WorktreeRecord` c
 
 ## Dev-only tool surface (`kangentic_devtools_*`)
 
-When `developer.previewInspectionServer` is enabled in dev builds (the toggle is excluded from production binaries via `__KANGENTIC_DEV__` esbuild dead-code elimination), 22 additional `kangentic_devtools_*` tools are registered against the same MCP server. They wrap a localhost-only HTTP inspection bridge that powers agent-driven UI inspection and interaction. Implementation lives in `src/devtools/mcp/preview-tools.ts` (build-excluded from production).
+When `developer.previewInspectionServer` is enabled in dev builds (the toggle is excluded from production binaries via `__KANGENTIC_DEV__` esbuild dead-code elimination), 28 additional `kangentic_devtools_*` tools are registered against the same MCP server. They wrap a localhost-only HTTP inspection bridge that powers agent-driven UI inspection and interaction. Implementation lives in `src/devtools/mcp/preview-tools.ts` (build-excluded from production).
 
 Tool categories:
 - **Discovery:** `list_instances` - enumerate running preview instances by lockfile
-- **State:** `engine_state`, `renderer_state` - live ActivityStatsSnapshot and Zustand store snapshots
-- **Visual / DOM:** `screenshot`, `screenshot_element`, `screenshot_diff`, `query_dom`, `computed_style`, `bounding_box`, `accessibility_tree`, `mutations`
+- **State:** `engine_state`, `renderer_state`, `store_state` - live ActivityStatsSnapshot, the fixed Zustand snapshot, and arbitrary store reads by name plus dot/bracket path
+- **Visual / DOM:** `screenshot`, `screenshot_element`, `query_dom`, `query_all`, `computed_style`, `bounding_box`, `bounding_box_all`, `accessibility_tree`, `mutations` - the `_all` variants measure every matching element in one call
 - **React:** `react_query`, `react_tree`, `react_recent_renders` - fiber walker via `__REACT_DEVTOOLS_GLOBAL_HOOK__`
 - **Console:** `console` - CDP `Console.messageAdded` ring buffer (separate from product `tail_logs`)
-- **Drive (interaction):** `click`, `type`, `keypress`, `drag`, `wait`, `script` - dispatched via Chrome DevTools Protocol
-- **Sessions:** `pty_input`, `inject_session_event` - gated additionally by `developer.previewEvalEnabled`
+- **Drive (interaction):** `click`, `type`, `keypress`, `drag`, `wait`, `script` - dispatched via Chrome DevTools Protocol (the `script` `eval` step returns its value and is gated by `developer.previewEvalEnabled`)
+- **Eval:** `eval` - evaluate a JavaScript expression and return its serialized value; gated by `developer.previewEvalEnabled`
+- **Cross-instance:** `run_command` - run a product MCP command inside a specific preview instance
+- **Sessions:** `pty_input`, `inject_session_event`, `capture_trace` - `inject_session_event` and `pty_input` raw bytes are gated additionally by `developer.previewEvalEnabled`
 
 These tools are excluded from production builds at compile time and have no effect in shipped binaries.
 
