@@ -89,11 +89,12 @@ export default defineConfig({
     reuseExistingServer: reuseServer,
     timeout: 60000,
   },
-  // On CI: `blob` so sharded UI runs can be merged into one HTML report (see
-  // .github/workflows/ci.yml ui-shards + ui jobs), plus `github` for inline
-  // failure annotations on the run. Locally: human-readable list + on-demand HTML.
+  // On CI: `blob` only per shard - the aggregate `ui` job merges the shard blobs
+  // and produces ONE consolidated `github` summary + HTML report (see
+  // .github/workflows/ci.yml), so emitting `github` per shard here would just
+  // spam one summary notice per shard. Locally: human-readable list + on-demand HTML.
   reporter: process.env.CI
-    ? [['blob'], ['github']]
+    ? [['blob']]
     : [
         ['list'],
         ['html', { outputFolder: 'tests/reports', open: 'never' }],

@@ -16,10 +16,10 @@ concurrency:
 
 # Each check is its own standalone job (deliberately NOT a matrix) so all of
 # them render as always-visible top-level nodes in the run graph and the checks
-# list - no "Matrix: check / Show all jobs" collapse to click through. They run
-# in parallel, so wall-clock is the slowest single job, not the sum. None
-# consume another's output: build is a "does it bundle" gate, not a dependency,
-# since the UI tier runs the Vite dev server rather than the build.
+# list - no "Show all jobs" collapse to click through. They run in parallel, so
+# wall-clock is the slowest single job. None consume another's output: build is a
+# "does it bundle" gate, not a dependency (the UI tier runs the Vite dev server,
+# not the build).
 #
 # The job `name:` is the status-check context used by branch protection - keep
 # these in sync with main's required checks if you rename one.
@@ -93,14 +93,36 @@ jobs:
       - name: Build (production bundle)
         run: npm run build
 
-  # The UI tier is the slowest gate, so it is sharded across parallel runners
-  # (Playwright `--shard`). Each shard emits a `blob` report; the `ui` aggregate
-  # job below merges them into one HTML report and is the single required status
-  # check. These shard legs are deliberately a matrix (impl detail of one logical
-  # check) - the user-facing/required gate stays the standalone `ui` job.
+  # Resolve the installed @playwright/test version so the UI shards can pin the
+  # matching Playwright container image. Self-maintaining: a Playwright bump in
+  # package-lock.json automatically retags the container, so the baked-in
+  # browsers never drift from the npm-installed Playwright (a mismatch is a hard
+  # launch failure, not just a slow re-download).
+  pw-version:
+    name: Resolve Playwright version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Read @playwright/test version from lockfile
+        id: resolve
+        run: echo "version=$(node -p 'require("./package-lock.json").packages["node_modules/@playwright/test"].version')" >> "$GITHUB_OUTPUT"
+
+  # UI tier, sharded across parallel runners. Each shard runs inside the official
+  # Playwright container (Chromium + all OS deps baked in), so there is no
+  # `playwright install` step - the ~3-4min `--with-deps` apt install that used to
+  # dominate each shard is gone, leaving just npm ci + the tests. Each shard emits
+  # a `blob` report; the `ui` aggregate below merges them. These shard legs are a
+  # matrix (impl detail of one logical check); the required gate is the `ui` job.
   ui-shards:
     name: Playwright ${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+    needs: [pw-version]
     runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v${{ needs.pw-version.outputs.version }}-noble
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -117,34 +139,31 @@ jobs:
           cache: npm
       - name: Install dependencies (npm ci)
         run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
-          restore-keys: ${{ runner.os }}-playwright-
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
       - name: Run UI tests (shard ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
         run: npx playwright test --project=ui --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
       - name: Upload shard blob report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-blob-${{ matrix.shardIndex }}
           path: blob-report
           retention-days: 1
 
-  # Aggregate gate + report. Merges the shard blobs into one HTML report (uploaded
-  # as an artifact) and fails if any shard did not succeed. This job's name is the
-  # `UI tests (Playwright)` status-check context that branch protection requires,
-  # so sharding is invisible to the required-checks config.
+  # Aggregate gate + report. Merges the shard blobs into ONE consolidated summary
+  # (visible inline on the run via the `github` reporter, no download) plus one
+  # downloadable HTML report, deletes the per-shard blob artifacts so only the
+  # single report remains, and fails if any shard did not succeed. This job's name
+  # is the `UI tests (Playwright)` required status check, so sharding is invisible
+  # to branch protection.
   ui:
     name: UI tests (Playwright)
     needs: [ui-shards]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -156,20 +175,31 @@ jobs:
       - name: Install dependencies (npm ci)
         run: npm ci
       - name: Download shard blob reports
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: all-blob-reports
           pattern: ui-blob-*
           merge-multiple: true
+      - name: Publish consolidated Playwright summary
+        run: npx playwright merge-reports --reporter github ./all-blob-reports
       - name: Merge shard reports into one HTML report
         run: npx playwright merge-reports --reporter html ./all-blob-reports
       - name: Upload merged HTML report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-html-report
           path: playwright-report
           retention-days: 14
+      - name: Delete per-shard blob artifacts (noise)
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ids=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts --paginate --jq '.artifacts[] | select(.name | startswith("ui-blob-")) | .id')
+          for id in $ids; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" || true
+          done
       - name: Fail if any shard failed
         if: ${{ needs.ui-shards.result != 'success' }}
         run: |
