@@ -231,7 +231,12 @@ ones (e.g. `board-config-parity.md`):
    into `.claude/rules/<subsystem>/` subdirectories (e.g. `frontend/`, `backend/`). There is no
    per-rule local override; machine-specific overrides go in `CLAUDE.local.md`.
 
-**Linting:** `npm run lint` runs in CI (`.github/workflows/ci.yml`), so ESLint rules
-(`no-explicit-any`, `no-require-imports`, etc.) are enforced on every push.
-`react-hooks/exhaustive-deps` is intentionally `warn` and does not fail CI. Use a `tests/unit/`
-check for conventions ESLint cannot express (em-dashes, IPC and board-config parity, ...).
+**Linting:** `npm run lint` runs `eslint src/ --max-warnings 0` in CI
+(`.github/workflows/ci.yml`), so ESLint rules (`no-explicit-any`, `no-require-imports`, etc.)
+are enforced on every push. No warnings are tolerated: `--max-warnings 0` makes ANY warning
+(including `react-hooks/exhaustive-deps`) fail the lint check, so warnings can never silently
+accumulate. Fix a warning properly where the dependency is safe to add (stable refs, Zustand
+actions) or restructure (wrap an unstable `?? {}`/`?? []` fallback in `useMemo`); only when an
+omission is deliberate, suppress that one line with `// eslint-disable-next-line
+react-hooks/exhaustive-deps -- <reason>` and a concrete reason. Use a `tests/unit/` check for
+conventions ESLint cannot express (em-dashes, IPC and board-config parity, ...).

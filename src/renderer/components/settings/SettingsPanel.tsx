@@ -57,7 +57,7 @@ export function SettingsPanel() {
     window.electronAPI.shell.getAvailable().then(setShells).catch(() => {});
     detectAgent();
     loadAgentList();
-  }, []);
+  }, [detectAgent, loadAgentList]);
 
   // When opening settings for a different project via sidebar gear icon,
   // pick up the initial tab if set.
@@ -69,6 +69,7 @@ export function SettingsPanel() {
         setActiveTab(initialTab);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on projectSettingsPath; tabs is a stable module constant and tab validity is handled by the separate clamp effect below
   }, [projectSettingsPath]);
 
   // Clamp activeTab when available tabs change (e.g. project opened/closed)

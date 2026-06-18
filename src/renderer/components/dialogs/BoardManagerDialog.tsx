@@ -488,6 +488,7 @@ export function BoardManagerDialog({ initialColumnId, seedNewDraft, addDraftRequ
   // Sync hexInput when the active draft's color changes.
   useEffect(() => {
     if (draft) setHexInput(draft.color.toLowerCase());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-sync only when the color changes, not on every draft identity change, so editing other fields does not clobber in-progress hex input
   }, [draft?.color]);
 
   // ── Mutators ───────────────────────────────────────────────────────
