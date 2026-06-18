@@ -137,8 +137,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install dependencies (npm ci)
-        run: npm ci
+      # --ignore-scripts: the Playwright container has no C toolchain (make), so
+      # the node-pty / better-sqlite3 native rebuilds in postinstall would fail.
+      # The headless UI tests (Vite dev server + mock Electron API) never load
+      # those native modules, so skipping the build is safe and faster.
+      - name: Install dependencies (npm ci, no native build)
+        run: npm ci --ignore-scripts
       - name: Run UI tests (shard ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
         run: npx playwright test --project=ui --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
       - name: Upload shard blob report
@@ -172,8 +176,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install dependencies (npm ci)
-        run: npm ci
+      # Only @playwright/test (for merge-reports) is needed here - no native
+      # modules - so skip the native rebuild for speed and parity with the shards.
+      - name: Install dependencies (npm ci, no native build)
+        run: npm ci --ignore-scripts
       - name: Download shard blob reports
         uses: actions/download-artifact@v8
         with:
