@@ -14,48 +14,85 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Each check is its own standalone job (deliberately NOT a matrix) so all of
+# them render as always-visible top-level nodes in the run graph and the checks
+# list - no "Matrix: check / Show all jobs" collapse to click through. They run
+# in parallel, so wall-clock is the slowest single job, not the sum. None
+# consume another's output: build is a "does it bundle" gate, not a dependency,
+# since the UI tier runs the Vite dev server rather than the build.
+#
+# The job `name:` is the status-check context used by branch protection - keep
+# these in sync with main's required checks if you rename one.
+
 jobs:
-  # Fast, independent checks run as parallel matrix legs so each appears as its
-  # own status check with a self-describing name (you can see what failed from
-  # the checks list without opening the job). fail-fast:false so every leg
-  # reports its result even when a sibling fails. None consume another's output -
-  # build is a "does it bundle" gate, not a dependency (the UI tier runs the
-  # Vite dev server, not the build).
-  check:
-    name: ${{ matrix.label }}
+  lint:
+    name: Lint (ESLint)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: Lint (ESLint)
-            command: npm run lint
-          - label: Type check (tsc)
-            command: npm run typecheck
-          - label: Unit tests (Vitest)
-            command: npm run test:unit
-          - label: Build (production bundle)
-            command: npm run build
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
-
       - name: Set up Node.js 22
         uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-
       - name: Install dependencies (npm ci)
         run: npm ci
+      - name: Lint (ESLint)
+        run: npm run lint
 
-      - name: ${{ matrix.label }}
-        run: ${{ matrix.command }}
+  typecheck:
+    name: Type check (tsc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies (npm ci)
+        run: npm ci
+      - name: Type check (tsc)
+        run: npm run typecheck
 
-  # The Playwright UI tier (headless Chromium against the Vite dev server) is the
-  # slowest gate and needs a browser install, so it gets its own job with a
-  # larger timeout.
+  unit:
+    name: Unit tests (Vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies (npm ci)
+        run: npm ci
+      - name: Unit tests (Vitest)
+        run: npm run test:unit
+
+  build:
+    name: Build (production bundle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies (npm ci)
+        run: npm ci
+      - name: Build (production bundle)
+        run: npm run build
+
   ui:
     name: UI tests (Playwright)
     runs-on: ubuntu-latest
@@ -63,18 +100,14 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
-
       - name: Set up Node.js 22
         uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-
       - name: Install dependencies (npm ci)
         run: npm ci
-
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
-
       - name: Run UI tests (Playwright project ui)
         run: npx playwright test --project=ui
