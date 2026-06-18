@@ -62,8 +62,20 @@ import type { ActivityState } from '../../src/shared/types';
 // Test-mode engine timings: shrink the production windows so assertions
 // don't have to wall-clock-wait. The 50ms stability window lets idle
 // transitions resolve within the existing 250ms waitForWatcher buffer.
+//
+// Every watchdog hold must be kept long enough not to fire during these
+// event-driven tests (the watchdog FIRING behaviour is covered separately in
+// activity-engine.test.ts with fake timers). `bgShellEscapeHatchMs` is not just
+// the bg-shell hatch: it is also the threshold for the stuck-pending-tools and
+// stuck-subagent watchdogs (see buildWatchdogHolds). At 500ms it tripped the
+// stuck-subagent net mid-test - a nested-subagent sequence holds subagentDepth>0
+// across several 250ms waitForWatcher steps with the `signal-or-pty-output`
+// anchor frozen (SubagentStop is log-only and does not refresh lastSignalAt),
+// so the 500ms hold fired and force-idled a still-live turn. Keep it as long as
+// staleThinkingTimeoutMs so no safety net interferes; no test here waits for a
+// watchdog to fire.
 const TEST_ACTIVITY_ENGINE_OPTIONS = {
-  bgShellEscapeHatchMs: 500,
+  bgShellEscapeHatchMs: 60_000,
   staleThinkingTimeoutMs: 60_000, // long enough not to interfere with most tests
   idleStabilityWindowMs: 50,
 };
