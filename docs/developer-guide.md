@@ -235,10 +235,14 @@ npx playwright test --project=electron
   and `globalTeardown` (`playwright.config.ts`) to sweep these. It is conservative: a process is
   killed only when its command line points at the repo's `.kangentic/worktrees/` or the main
   checkout's `.vite/build/index.js` AND its parent is dead, so the dogfooding `npm start` app, any
-  `/preview` window, and concurrent runs in other worktrees are never touched. Every kill is logged
-  under the `[E2E-JANITOR]` prefix with PID, reason, and a command-line excerpt. The pure
-  matching predicate is unit-tested in `tests/unit/e2e-janitor.test.ts`; the janitor reuses the
-  scan and kill primitives from `src/main/git/zombie-reaper.ts`.
+  `/preview` window, and concurrent runs in other worktrees are never touched. "Parent is dead" is
+  resolved against the COMPLETE liveness scan (`scanLivePids`, every process image), not the
+  electron/node-only matching scan, so a concurrent worktree's live app whose supervising parent is
+  a non-enumerated image is not mistaken for an orphan and reaped mid-test (bug #258); if that
+  liveness scan returns nothing the sweep aborts rather than treat every process as orphaned. Every
+  kill is logged under the `[E2E-JANITOR]` prefix with PID, parent PID, reason, and a command-line
+  excerpt. The pure matching predicate is unit-tested in `tests/unit/e2e-janitor.test.ts`; the
+  janitor reuses the scan and kill primitives from `src/main/git/zombie-reaper.ts`.
 
 ### Decision Guide
 
