@@ -79,13 +79,20 @@ export function registerSystemHandlers(context: IpcContext): void {
   });
 
   ipcMain.handle(IPC.CONFIG_SET_PROJECT_BY_PATH, (_, projectPath: string, overrides) => {
-    const known = context.projectRepo.list().some((p) => p.path === projectPath);
-    if (!known) throw new Error('Unknown project path');
+    const project = context.projectRepo.list().find((p) => p.path === projectPath);
+    if (!project) throw new Error('Unknown project path');
     context.configManager.saveProjectOverrides(projectPath, overrides);
     // Background projects pick up changes when they next open; only the
     // currently-open project needs its in-memory state refreshed now.
     if (projectPath === context.currentProjectPath) {
       applyRuntimeConfig(context.sessionManager, context.configManager, projectPath);
+      // Re-arm the PR-refresh timer so a changed interval (Git tab) takes effect
+      // immediately without reopening the project. Imported lazily so registering
+      // the system handlers does not pull the gh-backed PR runtime into this
+      // module's graph (keeps unit tests that stub node:child_process light).
+      void import('../../pr/pr-refresh-scheduler').then(({ prRefreshScheduler }) => {
+        prRefreshScheduler.startForProject(context, project);
+      });
     }
   });
 

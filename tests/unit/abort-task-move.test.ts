@@ -119,7 +119,9 @@ vi.mock('../../src/main/ipc/helpers/index', () => ({
   cleanupTaskResources: vi.fn(async () => {}),
   deleteTaskWorktree: vi.fn(async () => true),
   autoSpawnForTask: vi.fn(async () => {}),
-  maybeResolvePRAfterMove: vi.fn(),
+}));
+vi.mock('../../src/main/pr/pr-linking', () => ({
+  linkPRForMovedTask: vi.fn(),
 }));
 
 const mockGetProjectRepos = vi.fn();

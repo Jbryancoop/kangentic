@@ -64,6 +64,7 @@
       defaultBaseBranch: 'main',
       copyFiles: [],
       initScript: null,
+      prRefreshIntervalMinutes: 5,
     },
     mcpServer: {
       enabled: true,
@@ -207,6 +208,7 @@
       defaultBaseBranch: git.defaultBaseBranch,
       copyFiles: git.copyFiles ? git.copyFiles.slice() : undefined,
       initScript: git.initScript,
+      prRefreshIntervalMinutes: git.prRefreshIntervalMinutes,
     });
     if (pickedGit) result.git = pickedGit;
     return result;

@@ -17,8 +17,8 @@ import {
   deleteTaskWorktree,
   spawnAgent,
   buildAutoCommandVars,
-  maybeResolvePRAfterMove,
 } from '../helpers';
+import { linkPRForMovedTask } from '../../pr/pr-linking';
 import { resolveProjectContext } from '../helpers/project-repos';
 import { interpolateTemplate } from '../../agent/shared';
 import { trackEvent } from '../../analytics/analytics';
@@ -919,7 +919,7 @@ export function registerTaskMoveHandlers(context: IpcContext): void {
       // After the move's task lock has released, resolve the PR for the new lane
       // (gated on a branch + non-To Do lane inside the helper). Fire-and-forget so
       // a slow gh query never blocks the move response.
-      maybeResolvePRAfterMove(context, input.taskId, resolvedProjectId ?? context.currentProjectId);
+      linkPRForMovedTask(context, input.taskId, resolvedProjectId ?? context.currentProjectId);
       return result;
     } catch (error) {
       // Shutdown closes the DB synchronously; any handler that crossed an

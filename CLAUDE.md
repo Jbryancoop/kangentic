@@ -33,6 +33,8 @@ src/
     engine/       # Transition engine (action execution)
     git/          # Worktree manager
     ipc/          # IPC handler registration
+    pr/           # PR subsystem (mirrors agent/boards): shared/ contract + errors,
+                  #   adapters/github/ connector, pr-registry, linking, refresh, scheduler
     pty/          # PTY session manager, shell resolver
   preload/        # Context bridge (preload.ts)
   renderer/       # React UI

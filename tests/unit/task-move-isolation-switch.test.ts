@@ -111,8 +111,10 @@ vi.mock('../../src/main/ipc/helpers/index', () => ({
   buildAutoCommandVars: (...args: unknown[]) => mockBuildAutoCommandVars(...args),
   cleanupTaskResources: vi.fn(async () => {}),
   deleteTaskWorktree: vi.fn(async () => true),
-  maybeResolvePRAfterMove: vi.fn(),
   autoSpawnForTask: vi.fn(async () => {}),
+}));
+vi.mock('../../src/main/pr/pr-linking', () => ({
+  linkPRForMovedTask: vi.fn(),
 }));
 
 import { handleTaskMove } from '../../src/main/ipc/handlers/task-move';

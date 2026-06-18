@@ -1109,6 +1109,8 @@ export interface AppConfig {
     defaultBaseBranch: string;
     copyFiles: string[];
     initScript: string | null;
+    /** Minutes between background PR-state refresh sweeps for the open project. null = off (on-open sweep only). */
+    prRefreshIntervalMinutes: number | null;
   };
 
   mcpServer: {
@@ -1268,6 +1270,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     defaultBaseBranch: 'main',
     copyFiles: [],
     initScript: null,
+    prRefreshIntervalMinutes: 5,
   },
   mcpServer: {
     enabled: true,
