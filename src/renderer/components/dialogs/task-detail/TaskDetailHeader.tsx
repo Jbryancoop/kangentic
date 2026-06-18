@@ -6,6 +6,7 @@ import { useFormattedCombo } from '../../../hooks/useKeybinding';
 import { getSwimlaneIcon } from '../../../utils/swimlane-icons';
 import { ICON_REGISTRY } from '../../../utils/swimlane-icons';
 import { Pill } from '../../Pill';
+import { PrLink } from '../../PrLink';
 import { IsolatedBadge } from '../../IsolatedBadge';
 import { KebabMenu, KebabMenuItem, KebabMenuDivider } from '../../KebabMenu';
 import { CommandPalettePopover } from './CommandPalettePopover';
@@ -14,7 +15,6 @@ import { PriorityBadge } from '../../backlog/PriorityBadge';
 import { useConfigStore } from '../../../stores/config-store';
 import { useToastStore } from '../../../stores/toast-store';
 import { useProjectStore } from '../../../stores/project-store';
-import { prStatePresentation } from '../../../lib/pr-state';
 import type { Task, AgentCommand, ShortcutConfig, Swimlane } from '../../../../shared/types';
 
 interface TaskDetailHeaderProps {
@@ -143,6 +143,15 @@ export function TaskDetailHeader({
         title={task.title}
       >
         <span className="truncate">{task.title}</span>
+        {task.pr_url && (
+          <PrLink
+            prUrl={task.pr_url}
+            prNumber={task.pr_number}
+            prState={task.pr_state}
+            testId="pr-pill"
+            className="flex-shrink-0 font-normal"
+          />
+        )}
         {isArchived && (
           <span
             className="flex-shrink-0 inline-flex items-center gap-1 text-[11px] text-fg-disabled bg-surface-hover/60 border border-edge/40 rounded px-1.5 py-0.5"
@@ -211,21 +220,6 @@ export function TaskDetailHeader({
                   ({worktreeBaseBranch})
                 </span>
               )}
-            </Pill>
-          )}
-
-          {/* PR pill */}
-          {task.pr_url && (
-            <Pill
-              shape="square"
-              onClick={() => window.electronAPI.shell.openExternal(task.pr_url!)}
-              className={`bg-surface-hover/50 hover:bg-surface-hover transition-colors flex-shrink-0 ${prStatePresentation(task.pr_state).textClass}`}
-              title={task.pr_state ? `${task.pr_url} (${task.pr_state})` : task.pr_url}
-              data-testid="pr-pill"
-            >
-              <GitPullRequest size={14} />
-              PR #{task.pr_number}
-              {task.pr_state && <span className="opacity-70">· {task.pr_state}</span>}
             </Pill>
           )}
 
