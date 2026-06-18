@@ -8,7 +8,7 @@
  *     closure pass for children, the orphan and self-skip gates, and the
  *     critical negative that the dogfooding argv is never matched.
  *   - sweepLeakedElectronInstances: never throws, logs each kill, survives a
- *     single kill failure.
+ *     single kill failure, and skips the scan entirely on GitHub Actions.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -325,6 +325,23 @@ describe('sweepLeakedElectronInstances', () => {
     liveSpy = vi.spyOn(_internals, 'scanLivePids').mockResolvedValue(new Set([200, 300]));
     findSpy = vi.spyOn(_internals, 'findLeakedTestInstances');
     killSpy = vi.spyOn(_internals, 'killProcess').mockResolvedValue(undefined);
+    // These tests run on CI, where GITHUB_ACTIONS=true would make the sweep
+    // skip before scanning. Force it false so the scan/kill path is exercised;
+    // the skip itself is covered by its own test below.
+    vi.spyOn(_internals, 'isGitHubActions').mockReturnValue(false);
+  });
+
+  it('skips the scan entirely on GitHub Actions', async () => {
+    vi.spyOn(_internals, 'isGitHubActions').mockReturnValue(true);
+
+    await sweepLeakedElectronInstances('setup');
+
+    expect(scanSpy).not.toHaveBeenCalled();
+    expect(killSpy).not.toHaveBeenCalled();
+    const skipLine = logSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes('skipped on GitHub Actions'));
+    expect(skipLine).toBeDefined();
   });
 
   it('resolves without throwing and kills nothing when the scan rejects', async () => {

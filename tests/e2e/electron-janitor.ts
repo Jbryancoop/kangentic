@@ -218,6 +218,22 @@ export function findLeakedTestInstances(
  */
 export async function sweepLeakedElectronInstances(label: 'setup' | 'teardown'): Promise<void> {
   try {
+    // GitHub Actions runners are ephemeral and single-worker: no previous run
+    // can have leaked an instance, there is no dogfooding `npm start` to avoid
+    // killing, no concurrent worktree runs to coexist with, and the runner is
+    // destroyed immediately after teardown. The whole-process scan would only
+    // ever find zero leaks there, so skip it. Gated on GITHUB_ACTIONS, not CI:
+    // per GitHub's docs GITHUB_ACTIONS is "always set to true when GitHub Actions
+    // is running the workflow" and cannot be overwritten, whereas CI is generic
+    // and overwritable, so a stray local `CI=true` must never disable the
+    // janitor's local-machine protection (the dogfooding window and cross-run /
+    // cross-worktree leak cleanup it exists for).
+    if (_internals.isGitHubActions()) {
+      console.log(
+        `[E2E-JANITOR] ${label}: skipped on GitHub Actions (ephemeral runner, no cross-run leaks to sweep)`,
+      );
+      return;
+    }
     const mainRepoRoot = deriveMainRepoRoot(path.resolve(__dirname, '..', '..'));
     // Independent scans, run concurrently: the image-filtered matching scan
     // (needs CommandLine for path needles) and the complete liveness scan (the
@@ -290,4 +306,9 @@ export const _internals = {
   buildSelfSkipSet,
   findLeakedTestInstances,
   killProcess,
+  /** True when running on a GitHub Actions runner (`GITHUB_ACTIONS=true`, a
+   *  non-overwritable default env var). Behind `_internals` so the sweep unit
+   *  tests - which themselves run on CI - can force it false to exercise the
+   *  scan/kill path. */
+  isGitHubActions: (): boolean => process.env.GITHUB_ACTIONS === 'true',
 };
