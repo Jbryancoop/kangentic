@@ -55,8 +55,13 @@ export function SettingsPanel() {
 
   useEffect(() => {
     window.electronAPI.shell.getAvailable().then(setShells).catch(() => {});
-    detectAgent();
-    loadAgentList();
+    // The store already holds the agent inventory and detected-agent info from
+    // app bootstrap (App.tsx), so opening Settings does not need to re-probe -
+    // only fetch when the store is empty (e.g. opened before bootstrap settled).
+    // The Agent tab's re-detect button is the explicit fresh path.
+    const { agentList, agentInfo } = useConfigStore.getState();
+    if (!agentInfo) detectAgent();
+    if (agentList.length === 0) loadAgentList();
   }, [detectAgent, loadAgentList]);
 
   // When opening settings for a different project via sidebar gear icon,

@@ -2396,7 +2396,9 @@ export interface ElectronAPI {
 
   // Agents
   agents: {
-    list: () => Promise<AgentDetectionInfo[]>;
+    // forceRefresh bypasses the main-process cache and re-probes detection
+    // (the Agent settings "re-detect" button); omit/false uses the cache.
+    list: (forceRefresh?: boolean) => Promise<AgentDetectionInfo[]>;
   };
 
   // Handoffs

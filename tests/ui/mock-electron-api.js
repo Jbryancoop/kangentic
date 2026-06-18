@@ -1507,7 +1507,9 @@
     },
 
     agents: {
-      list: async function () {
+      // forceRefresh is accepted to match the real API surface but ignored:
+      // the mock always returns the fixture, fresh or cached alike.
+      list: async function (_forceRefresh) {
         // Tests can override per-agent fields (found, version, authenticated, etc.)
         // by setting window.__mockAgentListOverrides = { kimi: { found: true, authenticated: false }, ... }
         // before navigating to the page. Useful for exercising auth-state UI without
