@@ -89,8 +89,13 @@ export default defineConfig({
     reuseExistingServer: reuseServer,
     timeout: 60000,
   },
-  reporter: [
-    ['list'],
-    ['html', { outputFolder: 'tests/reports', open: 'never' }],
-  ],
+  // On CI: `blob` so sharded UI runs can be merged into one HTML report (see
+  // .github/workflows/ci.yml ui-shards + ui jobs), plus `github` for inline
+  // failure annotations on the run. Locally: human-readable list + on-demand HTML.
+  reporter: process.env.CI
+    ? [['blob'], ['github']]
+    : [
+        ['list'],
+        ['html', { outputFolder: 'tests/reports', open: 'never' }],
+      ],
 });

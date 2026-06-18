@@ -93,10 +93,19 @@ jobs:
       - name: Build (production bundle)
         run: npm run build
 
-  ui:
-    name: UI tests (Playwright)
+  # The UI tier is the slowest gate, so it is sharded across parallel runners
+  # (Playwright `--shard`). Each shard emits a `blob` report; the `ui` aggregate
+  # job below merges them into one HTML report and is the single required status
+  # check. These shard legs are deliberately a matrix (impl detail of one logical
+  # check) - the user-facing/required gate stays the standalone `ui` job.
+  ui-shards:
+    name: UI shard ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -107,7 +116,61 @@ jobs:
           cache: npm
       - name: Install dependencies (npm ci)
         run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-playwright-
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
-      - name: Run UI tests (Playwright project ui)
-        run: npx playwright test --project=ui
+      - name: Run UI tests (shard ${{ matrix.shard }}/4)
+        run: npx playwright test --project=ui --shard=${{ matrix.shard }}/4
+      - name: Upload shard blob report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-blob-${{ matrix.shard }}
+          path: blob-report
+          retention-days: 1
+
+  # Aggregate gate + report. Merges the shard blobs into one HTML report (uploaded
+  # as an artifact) and fails if any shard did not succeed. This job's name is the
+  # `UI tests (Playwright)` status-check context that branch protection requires,
+  # so sharding is invisible to the required-checks config.
+  ui:
+    name: UI tests (Playwright)
+    needs: [ui-shards]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies (npm ci)
+        run: npm ci
+      - name: Download shard blob reports
+        uses: actions/download-artifact@v5
+        with:
+          path: all-blob-reports
+          pattern: ui-blob-*
+          merge-multiple: true
+      - name: Merge shard reports into one HTML report
+        run: npx playwright merge-reports --reporter html ./all-blob-reports
+      - name: Upload merged HTML report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-html-report
+          path: playwright-report
+          retention-days: 14
+      - name: Fail if any shard failed
+        if: ${{ needs.ui-shards.result != 'success' }}
+        run: |
+          echo "One or more UI shards did not succeed (ui-shards result: ${{ needs.ui-shards.result }})"
+          exit 1
