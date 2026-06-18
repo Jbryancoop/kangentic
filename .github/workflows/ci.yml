@@ -126,8 +126,12 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
           restore-keys: ${{ runner.os }}-playwright-
+      # No --with-deps: GitHub's ubuntu-latest image already ships Chromium's
+      # system libraries, so the ~2min --with-deps apt install was nearly all
+      # redundant (the browser binary itself is the cached step above, ~3s). If a
+      # required lib is ever missing, Chromium fails to launch - re-add --with-deps.
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
       - name: Run UI tests (shard ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
         run: npx playwright test --project=ui --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
       - name: Upload shard blob report
