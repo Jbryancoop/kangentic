@@ -228,12 +228,7 @@ export async function sweepLeakedElectronInstances(label: 'setup' | 'teardown'):
     // and overwritable, so a stray local `CI=true` must never disable the
     // janitor's local-machine protection (the dogfooding window and cross-run /
     // cross-worktree leak cleanup it exists for).
-    if (_internals.isGitHubActions()) {
-      console.log(
-        `[E2E-JANITOR] ${label}: skipped on GitHub Actions (ephemeral runner, no cross-run leaks to sweep)`,
-      );
-      return;
-    }
+    if (_internals.isGitHubActions()) return;
     const mainRepoRoot = deriveMainRepoRoot(path.resolve(__dirname, '..', '..'));
     // Independent scans, run concurrently: the image-filtered matching scan
     // (needs CommandLine for path needles) and the complete liveness scan (the

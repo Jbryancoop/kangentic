@@ -117,7 +117,7 @@ jobs:
   # dominate each shard is gone, leaving just npm ci + the tests. Each shard emits
   # a `blob` report; the `ui` aggregate below merges them. These shard legs are a
   # matrix (impl detail of one logical check); the required gate is the `ui` job.
-  ui-shards:
+  playwright-shards:
     name: Playwright ${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
     needs: [pw-version]
     runs-on: ubuntu-latest
@@ -167,7 +167,7 @@ jobs:
   # to branch protection.
   ui:
     name: UI tests (Playwright)
-    needs: [ui-shards]
+    needs: [playwright-shards]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -213,7 +213,7 @@ jobs:
             gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" || true
           done
       - name: Fail if any shard failed
-        if: ${{ needs.ui-shards.result != 'success' }}
+        if: ${{ needs.playwright-shards.result != 'success' }}
         run: |
-          echo "One or more UI shards did not succeed (ui-shards result: ${{ needs.ui-shards.result }})"
+          echo "One or more UI shards did not succeed (playwright-shards result: ${{ needs.playwright-shards.result }})"
           exit 1

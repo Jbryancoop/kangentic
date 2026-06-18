@@ -338,10 +338,6 @@ describe('sweepLeakedElectronInstances', () => {
 
     expect(scanSpy).not.toHaveBeenCalled();
     expect(killSpy).not.toHaveBeenCalled();
-    const skipLine = logSpy.mock.calls
-      .map((call) => String(call[0]))
-      .find((line) => line.includes('skipped on GitHub Actions'));
-    expect(skipLine).toBeDefined();
   });
 
   it('resolves without throwing and kills nothing when the scan rejects', async () => {

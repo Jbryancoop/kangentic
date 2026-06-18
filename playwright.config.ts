@@ -89,12 +89,13 @@ export default defineConfig({
     reuseExistingServer: reuseServer,
     timeout: 60000,
   },
-  // On CI: `blob` only per shard - the aggregate `ui` job merges the shard blobs
-  // and produces ONE consolidated `github` summary + HTML report (see
-  // .github/workflows/ci.yml), so emitting `github` per shard here would just
-  // spam one summary notice per shard. Locally: human-readable list + on-demand HTML.
+  // On CI: `blob` (the aggregate `ui` job merges shard blobs into ONE consolidated
+  // summary + HTML report - see .github/workflows/ci.yml) plus `list` so each
+  // shard's job log prints a line per test as it completes (progress visibility,
+  // instead of a silent run). Not `github` here - that spams one summary notice
+  // per shard. Locally: human-readable list + on-demand HTML.
   reporter: process.env.CI
-    ? [['blob']]
+    ? [['blob'], ['list']]
     : [
         ['list'],
         ['html', { outputFolder: 'tests/reports', open: 'never' }],
