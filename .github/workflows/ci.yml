@@ -93,36 +93,17 @@ jobs:
       - name: Build (production bundle)
         run: npm run build
 
-  # Resolve the installed @playwright/test version so the UI shards can pin the
-  # matching Playwright container image. Self-maintaining: a Playwright bump in
-  # package-lock.json automatically retags the container, so the baked-in
-  # browsers never drift from the npm-installed Playwright (a mismatch is a hard
-  # launch failure, not just a slow re-download).
-  pw-version:
-    name: Resolve Playwright version
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      version: ${{ steps.resolve.outputs.version }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
-      - name: Read @playwright/test version from lockfile
-        id: resolve
-        run: echo "version=$(node -p 'require("./package-lock.json").packages["node_modules/@playwright/test"].version')" >> "$GITHUB_OUTPUT"
-
-  # UI tier, sharded across parallel runners. Each shard runs inside the official
-  # Playwright container (Chromium + all OS deps baked in), so there is no
-  # `playwright install` step - the ~3-4min `--with-deps` apt install that used to
-  # dominate each shard is gone, leaving just npm ci + the tests. Each shard emits
-  # a `blob` report; the `ui` aggregate below merges them. These shard legs are a
-  # matrix (impl detail of one logical check); the required gate is the `ui` job.
+  # UI tier, sharded across parallel ubuntu runners (Playwright `--shard`). This
+  # runs on the standard runner with `playwright install --with-deps`, NOT the
+  # Playwright container: the container ships Chromium but no C toolchain (so our
+  # node-pty/better-sqlite3 postinstall fails), and --ignore-scripts to work around
+  # that broke esbuild so the Vite dev server never rendered - every UI test then
+  # timed out. The browser-binary download is cached; the per-shard cost is the
+  # one-time `--with-deps` apt install. Each shard emits a `blob` report that the
+  # `ui` aggregate merges. These shard legs are a matrix; the required gate is `ui`.
   playwright-shards:
     name: Playwright ${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
-    needs: [pw-version]
     runs-on: ubuntu-latest
-    container:
-      image: mcr.microsoft.com/playwright:v${{ needs.pw-version.outputs.version }}-noble
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -137,18 +118,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # --ignore-scripts: the Playwright container has no C toolchain (make), so
-      # the node-pty / better-sqlite3 native rebuilds in postinstall would fail.
-      # The headless UI tests (Vite dev server + mock Electron API) never load
-      # those native modules, so skipping the build is safe and faster.
-      - name: Install dependencies (npm ci, no native build)
-        run: npm ci --ignore-scripts
-      # --ignore-scripts also skips esbuild's postinstall, but the Vite dev server
-      # (the test webServer) needs the esbuild binary to transform modules - without
-      # it every UI test times out on a blank page. Rebuild just esbuild (a prebuilt
-      # binary, no C toolchain needed); node-pty/better-sqlite3 stay unbuilt.
-      - name: Restore esbuild binary
-        run: npm rebuild esbuild
+      - name: Install dependencies (npm ci)
+        run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-playwright-
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
       - name: Run UI tests (shard ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
         run: npx playwright test --project=ui --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
       - name: Upload shard blob report
@@ -160,11 +139,11 @@ jobs:
           retention-days: 1
 
   # Aggregate gate + report. Merges the shard blobs into ONE consolidated summary
-  # (visible inline on the run via the `github` reporter, no download) plus one
-  # downloadable HTML report, deletes the per-shard blob artifacts so only the
-  # single report remains, and fails if any shard did not succeed. This job's name
-  # is the `UI tests (Playwright)` required status check, so sharding is invisible
-  # to branch protection.
+  # (inline on the run via the `github` reporter, no download) plus one downloadable
+  # HTML report, deletes the per-shard blob artifacts so only the single report
+  # remains, and fails if any shard did not succeed. This job's name is the
+  # `UI tests (Playwright)` required status check, so sharding is invisible to
+  # branch protection.
   ui:
     name: UI tests (Playwright)
     needs: [playwright-shards]
@@ -182,10 +161,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Only @playwright/test (for merge-reports) is needed here - no native
-      # modules - so skip the native rebuild for speed and parity with the shards.
-      - name: Install dependencies (npm ci, no native build)
-        run: npm ci --ignore-scripts
+      - name: Install dependencies (npm ci)
+        run: npm ci
       - name: Download shard blob reports
         uses: actions/download-artifact@v8
         with:
