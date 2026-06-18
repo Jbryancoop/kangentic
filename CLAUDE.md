@@ -30,7 +30,7 @@ src/
       adapters/   # Per-provider subfolders (github-issues/, azure-devops/, jira/, etc.)
       board-registry.ts  # Central BoardRegistry + boardRegistry singleton
     db/           # SQLite database, migrations, repositories
-    engine/       # Transition engine (action execution)
+    transition-engine/  # Transition engine (action execution)
     git/          # Worktree manager
     ipc/          # IPC handler registration
     pr/           # PR subsystem (mirrors agent/boards): shared/ contract + errors,

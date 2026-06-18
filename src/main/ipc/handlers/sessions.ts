@@ -11,7 +11,7 @@ import { resolveProjectContext } from '../helpers/project-repos';
 import { handleTaskMove } from './task-move';
 import { trackEvent } from '../../analytics/analytics';
 import { captureSessionMetrics } from './session-metrics';
-import { markRecordExited, markRecordSuspended, promoteRecord, recoverStaleSessionId } from '../../engine/session-lifecycle';
+import { markRecordExited, markRecordSuspended, promoteRecord, recoverStaleSessionId } from '../../transition-engine/session-lifecycle';
 import { isShuttingDown } from '../../shutdown-state';
 import { applySuspendDbWrites, reconcileTaskSessionRef } from './session-reconcile';
 import { abortInFlightResume, registerResumeController, releaseResumeController } from './session-resume-controllers';

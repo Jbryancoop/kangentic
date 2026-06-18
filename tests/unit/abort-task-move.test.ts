@@ -68,12 +68,12 @@ vi.mock('../../src/main/git/worktree-manager', () => ({
 
 vi.mock('../../src/main/analytics/analytics', () => ({ trackEvent: vi.fn() }));
 
-vi.mock('../../src/main/engine/session-lifecycle', () => ({
+vi.mock('../../src/main/transition-engine/session-lifecycle', () => ({
   markRecordExited: vi.fn(),
   markRecordSuspended: vi.fn(),
 }));
 
-vi.mock('../../src/main/engine/spawn-progress', () => ({
+vi.mock('../../src/main/transition-engine/spawn-progress', () => ({
   emitSpawnProgress: vi.fn(),
   emitSpawnWaiting: vi.fn(),
   clearSpawnProgress: vi.fn(),
@@ -81,7 +81,7 @@ vi.mock('../../src/main/engine/spawn-progress', () => ({
   getInFlightSpawnProgress: vi.fn(() => ({})),
 }));
 
-vi.mock('../../src/main/engine/agent-resolver', () => ({
+vi.mock('../../src/main/transition-engine/agent-resolver', () => ({
   resolveTargetAgent: vi.fn(() => ({ agent: 'claude', isHandoff: false })),
 }));
 

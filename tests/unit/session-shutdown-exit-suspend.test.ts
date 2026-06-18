@@ -63,7 +63,7 @@ vi.mock('../../src/main/db/repositories/task-repository', () => ({
 
 const markRecordExitedMock = vi.fn(() => true);
 const markRecordSuspendedMock = vi.fn(() => true);
-vi.mock('../../src/main/engine/session-lifecycle', () => ({
+vi.mock('../../src/main/transition-engine/session-lifecycle', () => ({
   markRecordExited: (...args: unknown[]) => markRecordExitedMock(...args),
   markRecordSuspended: (...args: unknown[]) => markRecordSuspendedMock(...args),
   promoteRecord: vi.fn(),

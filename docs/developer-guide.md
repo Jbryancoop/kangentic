@@ -64,7 +64,7 @@ src/
         session-repository.ts
         swimlane-repository.ts
         task-repository.ts
-    engine/                # Transition engine and session recovery
+    transition-engine/     # Transition engine and session recovery
       terminal-submit-scheduler.ts # Task-keyed lifecycle wrapper around TerminalSubmit (cancel-on-rerun, freshlySpawned wait, drag-burst coalesce)
       resource-cleanup.ts  # Task resource cleanup (session, worktree, files)
       session-paths.ts     # Session directory path utilities

@@ -366,7 +366,7 @@ Repositories follow a simple pattern -- one class per table, all queries are syn
 
 ## Agent Resolution
 
-`src/main/engine/agent-resolver.ts`
+`src/main/transition-engine/agent-resolver.ts`
 
 `resolveTargetAgent()` determines which agent CLI to use when spawning a session. Resolution priority:
 
@@ -379,7 +379,7 @@ This function is used by task-move (to detect cross-agent handoff), session-reco
 
 ## Transition Engine
 
-`src/main/engine/transition-engine.ts`
+`src/main/transition-engine/transition-engine.ts`
 
 When a task moves between swimlanes, the IPC handler checks priorities in order:
 
@@ -572,7 +572,7 @@ For each session, a merged settings file is created at `.kangentic/sessions/<ses
 
 ## Session Recovery
 
-On project open (`src/main/engine/session-recovery.ts`):
+On project open (`src/main/transition-engine/session-startup/`):
 
 1. **Prune orphaned worktrees** -- delete tasks whose worktree directories were removed externally
 2. **Mark crash recovery** -- leftover `running` DB records become `orphaned`

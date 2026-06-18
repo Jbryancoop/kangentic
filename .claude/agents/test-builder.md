@@ -49,7 +49,7 @@ This agent is invoked in two ways:
    | File | What to test | Tier | Existing coverage |
    |------|-------------|------|-------------------|
    | src/renderer/components/Foo.tsx | FooDialog open/close + validation | UI | None |
-   | src/main/engine/bar.ts | executeAction error path | Unit | Partial (happy path only) |
+   | src/main/transition-engine/bar.ts | executeAction error path | Unit | Partial (happy path only) |
    ```
 
    **What counts as a gap (explicit, falsifiable - do not raise vague "could use more tests" gaps):**

@@ -23,18 +23,18 @@ import { resolveProjectContext } from '../helpers/project-repos';
 import { interpolateTemplate } from '../../agent/shared';
 import { trackEvent } from '../../analytics/analytics';
 import { captureSessionMetrics } from './session-metrics';
-import { markRecordExited, markRecordSuspended } from '../../engine/session-lifecycle';
+import { markRecordExited, markRecordSuspended } from '../../transition-engine/session-lifecycle';
 import type { IpcContext } from '../ipc-context';
 import { isAbortError } from '../../../shared/abort-utils';
 import { abortBacklogPromotion } from './backlog';
 import { withTaskLock } from '../task-lifecycle-lock';
 import { isShuttingDown } from '../../shutdown-state';
 import { runWithProjectLogContext } from '../../diagnostics/project-log-context';
-import { emitSpawnProgress, emitSpawnWaiting, clearSpawnProgress, createProgressCallback, getInFlightSpawnProgress } from '../../engine/spawn-progress';
-import { resolveTargetAgent } from '../../engine/agent-resolver';
+import { emitSpawnProgress, emitSpawnWaiting, clearSpawnProgress, createProgressCallback, getInFlightSpawnProgress } from '../../transition-engine/spawn-progress';
+import { resolveTargetAgent } from '../../transition-engine/agent-resolver';
 import { agentRegistry } from '../../agent/agent-registry';
-import { prepareInjectionPlan } from '../../engine/injection-plan';
-import { resolveIsolatedSwimlaneId, resolveForceFresh } from '../../engine/session-isolation';
+import { prepareInjectionPlan } from '../../transition-engine/injection-plan';
+import { resolveIsolatedSwimlaneId, resolveForceFresh } from '../../transition-engine/session-isolation';
 import type { Task, Swimlane, SessionRecord } from '../../../shared/types';
 
 /**
