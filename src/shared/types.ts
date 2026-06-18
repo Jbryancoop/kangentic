@@ -526,7 +526,7 @@ export type ActivityReason =
  * `ActivityReason`. Subscribed via `getActivityStats(sessionId)`.
  *
  * Keep the scalar fields in sync with the parallel `ActivityStatsSnapshot`
- * in `src/main/pty/activity/engine/shapes.ts` (the engine-internal copy).
+ * in `src/main/activity-engine/engine/shapes.ts` (the engine-internal copy).
  * There is no mechanical parity check yet, so a one-sided field add will
  * not fail typecheck.
  */

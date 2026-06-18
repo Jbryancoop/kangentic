@@ -12,7 +12,7 @@ The session-history subsystem is split into four layers with strict separation o
 |---|---|---|
 | Adapter parser | `adapters/<agent>/session-history-parser.ts` | Agent-specific file format knowledge. Implements `locate()` + `parse()`. |
 | Reader (dispatcher) | `src/main/pty/readers/session-history-reader.ts` | Generic file watching, cursor tracking, parse dispatch. Owns all session-history-specific runtime logic. |
-| Consumer primitives | `src/main/pty/activity/session-telemetry.ts` | Generic primitives (`setSessionUsage`, `ingestEvents`, `forceActivity`, `notifyPtyData`, `processStatusUpdate`, `captureHookSessionIds`) - no telemetry-source-specific vocabulary. |
+| Consumer primitives | `src/main/activity-engine/session-telemetry.ts` | Generic primitives (`setSessionUsage`, `ingestEvents`, `forceActivity`, `notifyPtyData`, `processStatusUpdate`, `captureHookSessionIds`) - no telemetry-source-specific vocabulary. |
 | Session lifecycle | `src/main/pty/session-manager.ts` | Calls `reader.attach()` on agent-session-id capture, `reader.detach()` on removal. Composes both telemetry readers symmetrically. Knows nothing else about session history. |
 
 **Symmetric pipeline**: `StatusFileReader` (`src/main/pty/readers/status-file-reader.ts`) handles Claude's hook-based telemetry (status.json + events.jsonl) using the exact same pattern. Both readers own their own `FileWatcher` instances and dispatch through generic `SessionTelemetry` primitives. Neither reader mentions a specific agent name. See the "Claude status-file pipeline" section below for details.

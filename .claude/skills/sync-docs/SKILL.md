@@ -23,7 +23,7 @@ Each doc file and the source files that are its authority:
 | `database.md` | `src/main/db/migrations/**`, `src/main/db/database.ts`, `src/main/db/repositories/*.ts` |
 | `cross-platform.md` | `src/main/pty/spawn/shell-resolver.ts`, `src/main/pty/session-manager.ts` (adaptCommandForShell), `electron-builder.yml`, `scripts/build.js` |
 | `worktree-strategy.md` | `src/main/git/worktree-manager.ts`, `src/main/agent/adapters/claude/hook-manager.ts`, `src/main/agent/adapters/claude/trust-manager.ts` |
-| `activity-detection.md` | `src/main/agent/event-bridge.js`, `src/shared/types.ts` (EventType, EventTypeActivity, HookEvent), `src/main/pty/activity/engine/shapes.ts` (TransitionTrigger, default thresholds), `src/main/pty/activity/engine/watchdog.ts` (hold table) |
+| `activity-detection.md` | `src/main/agent/event-bridge.js`, `src/shared/types.ts` (EventType, EventTypeActivity, HookEvent), `src/main/activity-engine/engine/shapes.ts` (TransitionTrigger, default thresholds), `src/main/activity-engine/engine/watchdog.ts` (hold table) |
 | `mcp-server.md` | `src/main/agent/mcp-http-server.ts`, `src/main/agent/mcp-http/**`, `src/main/agent/commands/`, `src/main/ipc/handlers/sessions.ts`, `src/shared/types.ts` (MCP types) |
 | `overview.md` | `README.md`, high-level features |
 | `user-guide.md` | `src/renderer/components/`, `src/renderer/stores/`, `src/shared/types.ts` |
@@ -226,10 +226,10 @@ Each entry has a one-line rationale so future edits know what the entry was prot
 - `src/main/agent/event-bridge.js`
   WHY: hook → JSONL → store pipeline backs activity-detection.md.
 
-- `src/main/pty/activity/engine/shapes.ts`
+- `src/main/activity-engine/engine/shapes.ts`
   WHY: the TransitionTrigger label vocabulary and ActivityEngineOptions default thresholds are enumerated in activity-detection.md ("Reading a transition trace", "Configuration").
 
-- `src/main/pty/activity/engine/watchdog.ts`
+- `src/main/activity-engine/engine/watchdog.ts`
   WHY: the four watchdog holds (predicates, thresholds, anchors) are enumerated in activity-detection.md "Four safety nets (the watchdog table)".
 
 - `src/renderer/components/settings/AppSettingsPanel.tsx`
