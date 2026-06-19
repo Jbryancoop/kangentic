@@ -51,7 +51,11 @@ function ensureGitTemplate(): string {
   // runs whose PIDs are no longer live.
   try { fs.rmSync(TEMPLATE_PARENT, { recursive: true, force: true }); } catch { /* ignore */ }
   fs.mkdirSync(TEMPLATE_DIR, { recursive: true });
-  execSync('git init', { cwd: TEMPLATE_DIR, stdio: 'ignore' });
+  // `-b main` pins the initial branch name. Without it, the branch comes from
+  // the machine's `init.defaultBranch`: dev machines set `main` (so this was
+  // green locally) but a fresh CI runner defaults to `master`, and the app then
+  // fails to create a worktree off `main` ("invalid reference: main").
+  execSync('git init -b main', { cwd: TEMPLATE_DIR, stdio: 'ignore' });
   // Pass identity inline with `-c` so the commit does not depend on a global
   // git user being configured. Dev machines have one (so this was green
   // locally), but a fresh CI runner does not, which made `git commit` fail and
