@@ -118,8 +118,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install dependencies (npm ci)
-        run: npm ci
+      # --ignore-scripts skips the node-pty/better-sqlite3/electron native build
+      # in postinstall (the headless UI tests never load those), then rebuild just
+      # esbuild (a prebuilt binary) which the Vite dev server needs to transform
+      # modules. Saves ~13s/shard vs a full npm ci.
+      - name: Install dependencies (npm ci, no native build)
+        run: npm ci --ignore-scripts
+      - name: Restore esbuild binary
+        run: npm rebuild esbuild
       - name: Cache Playwright browsers
         uses: actions/cache@v5
         with:
