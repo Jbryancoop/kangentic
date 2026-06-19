@@ -93,14 +93,14 @@ jobs:
       - name: Build (production bundle)
         run: npm run build
 
-  # UI tier, sharded across parallel ubuntu runners (Playwright `--shard`). This
-  # runs on the standard runner with `playwright install --with-deps`, NOT the
-  # Playwright container: the container ships Chromium but no C toolchain (so our
-  # node-pty/better-sqlite3 postinstall fails), and --ignore-scripts to work around
-  # that broke esbuild so the Vite dev server never rendered - every UI test then
-  # timed out. The browser-binary download is cached; the per-shard cost is the
-  # one-time `--with-deps` apt install. Each shard emits a `blob` report that the
-  # `ui` aggregate merges. These shard legs are a matrix; the required gate is `ui`.
+  # UI tier, sharded across parallel ubuntu runners (Playwright `--shard`). Each
+  # shard prints its own per-test results via the `list` reporter (visible in the
+  # shard's job log) - there is NO blob upload or merged-report job, so the run is
+  # not gated by a serial merge. npm ci uses --ignore-scripts (the headless UI
+  # tests never load node-pty/better-sqlite3/electron) then rebuilds just esbuild,
+  # which the Vite dev server needs. Chromium's system libs already ship on
+  # ubuntu-latest, so the browser install needs no --with-deps; the binary is
+  # cached. The single required status check is the thin `ui` gate below.
   playwright-shards:
     name: Playwright ${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
     runs-on: ubuntu-latest
@@ -108,8 +108,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shardIndex: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-        shardTotal: [12]
+        shardIndex: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        shardTotal: [14]
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -140,69 +140,23 @@ jobs:
         run: npx playwright install chromium
       - name: Run UI tests (shard ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
         run: npx playwright test --project=ui --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
-      - name: Upload shard blob report
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: ui-blob-${{ matrix.shardIndex }}
-          path: blob-report
-          retention-days: 1
 
-  # Aggregate gate + report. Merges the shard blobs into ONE consolidated summary
-  # (inline on the run via the `github` reporter, no download) plus one downloadable
-  # HTML report, deletes the per-shard blob artifacts so only the single report
-  # remains, and fails if any shard did not succeed. This job's name is the
-  # `UI tests (Playwright)` required status check, so sharding is invisible to
-  # branch protection.
+  # Thin required gate: this single check ("UI tests (Playwright)") is what branch
+  # protection requires, so the matrix shards stay an impl detail. It only fails if
+  # any shard failed - no checkout / install / merge, so it adds just job spin-up
+  # to the UI tier (the serial merged-report job is gone). Per-shard results are
+  # visible in each shard's own log.
   ui:
     name: UI tests (Playwright)
     needs: [playwright-shards]
-    if: ${{ !cancelled() }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      actions: write
+    timeout-minutes: 5
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: npm
-      # Only @playwright/test (for merge-reports) is needed here - no browsers,
-      # no native modules, no esbuild - so skip postinstall to shave the gate.
-      - name: Install dependencies (npm ci, no native build)
-        run: npm ci --ignore-scripts
-      - name: Download shard blob reports
-        uses: actions/download-artifact@v8
-        with:
-          path: all-blob-reports
-          pattern: ui-blob-*
-          merge-multiple: true
-      - name: Publish consolidated Playwright summary
-        run: npx playwright merge-reports --reporter github ./all-blob-reports
-      - name: Merge shard reports into one HTML report
-        run: npx playwright merge-reports --reporter html ./all-blob-reports
-      - name: Upload merged HTML report
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: ui-html-report
-          path: playwright-report
-          retention-days: 14
-      - name: Delete per-shard blob artifacts (noise)
-        if: ${{ always() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Gate on shard results
         run: |
-          ids=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts --paginate --jq '.artifacts[] | select(.name | startswith("ui-blob-")) | .id')
-          for id in $ids; do
-            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" || true
-          done
-      - name: Fail if any shard failed
-        if: ${{ needs.playwright-shards.result != 'success' }}
-        run: |
-          echo "One or more UI shards did not succeed (playwright-shards result: ${{ needs.playwright-shards.result }})"
-          exit 1
+          if [ "${{ needs.playwright-shards.result }}" != "success" ]; then
+            echo "One or more Playwright shards did not succeed (result: ${{ needs.playwright-shards.result }})"
+            exit 1
+          fi
+          echo "All Playwright shards passed."
