@@ -92,6 +92,23 @@ Run: `gh pr merge <branch> --admin --rebase --delete-branch`
 is behind and needs a rebase first, or a required check actually went red), do NOT force past it -
 report the unmet requirement and stop.
 
+### Realign the worktree branch (so move-to-Done reads clean)
+
+The `--rebase` merge rewrote the PR commits onto `<sourceBranch>` with NEW SHAs, so the worktree's
+branch still holds the pre-rebase commits (same content, different SHAs). Left as-is, the board's
+move-to-Done check reports them as "N commits remain only on the local branch" - a false positive
+that makes the Done move look unsafe (unlike `/merge-back`, whose same-SHA direct push never
+diverged). Realign the worktree branch onto the merged base:
+
+1. Confirm the worktree is clean: `git status --porcelain` (empty right after the merge). If it is
+   NOT empty, skip the realign and report - never discard uncommitted work.
+2. `git fetch origin <sourceBranch>` to refresh the merged base.
+3. `git rebase origin/<sourceBranch>`. Git drops the now-merged commits (matched by patch-id) and
+   replays only any genuinely-unmerged local commits, leaving the branch at the merged HEAD (plus
+   any real leftover work, which SHOULD still warn on move-to-Done).
+4. On conflict (rare - only a genuinely-unmerged local commit can clash), abort cleanly:
+   `git rebase --abort`, then report. Never leave a half-finished rebase in the worktree.
+
 ## Step 4 - Pull back into the local main checkout
 
 The project root is the dogfooding checkout (`npm start` serves the main process from it), so keep
