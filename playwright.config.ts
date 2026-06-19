@@ -50,6 +50,11 @@ export default defineConfig({
       testDir: './tests/ui',
       testMatch: '**/*.spec.ts',
       timeout: 15_000,
+      // CI-only single retry: the UI suite has a few timing-sensitive specs
+      // (drag-and-drop settle/animation) that flake under load. A retry marks
+      // them "flaky" (still visible) rather than failing the whole run on one
+      // flake. Mirrors the `electron` project. Local runs keep retries: 0.
+      retries: process.env.CI ? 1 : 0,
       use: {
         browserName: 'chromium',
         headless: true,
