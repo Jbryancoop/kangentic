@@ -52,7 +52,11 @@ function ensureGitTemplate(): string {
   try { fs.rmSync(TEMPLATE_PARENT, { recursive: true, force: true }); } catch { /* ignore */ }
   fs.mkdirSync(TEMPLATE_DIR, { recursive: true });
   execSync('git init', { cwd: TEMPLATE_DIR, stdio: 'ignore' });
-  execSync('git commit --allow-empty -m "init"', { cwd: TEMPLATE_DIR, stdio: 'ignore' });
+  // Pass identity inline with `-c` so the commit does not depend on a global
+  // git user being configured. Dev machines have one (so this was green
+  // locally), but a fresh CI runner does not, which made `git commit` fail and
+  // every E2E test error at 0ms during setup.
+  execSync('git -c user.email=ci@kangentic.test -c user.name=kangentic commit --allow-empty -m "init"', { cwd: TEMPLATE_DIR, stdio: 'ignore' });
   templateInitialized = true;
   return TEMPLATE_DIR;
 }
