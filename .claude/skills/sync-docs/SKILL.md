@@ -172,7 +172,7 @@ Determine what source files changed:
 
 ### Step 2 - Anchor Point Verification
 
-This is the **canonical anchor source list**. Both `/sync-docs` and `/merge-back` consult this list. When updating, never duplicate — `/merge-back` reads it from here.
+This is the **canonical anchor source list**. `/sync-docs`, `/pull-request`, `/merge-pull-request`, and `/merge-back` all consult this list. When updating, never duplicate - they read it from here.
 
 Each entry has a one-line rationale so future edits know what the entry was protecting. Do not remove an entry without checking that its rationale no longer applies.
 

@@ -160,3 +160,32 @@ jobs:
             exit 1
           fi
           echo "All Playwright shards passed."
+
+  # E2E tier: launches the REAL bundled Electron app via electron.launch()
+  # (tests/e2e/helpers.ts), so unlike the UI shards it needs a full `npm ci`
+  # (native better-sqlite3 / node-pty built by postinstall, NOT --ignore-scripts)
+  # and the production bundle. No Playwright browser download: the electron
+  # project drives the bundled Electron binary, not a downloaded Chromium. Kept a
+  # SEPARATE job on windows-latest so the fast ubuntu checks still finish in
+  # ~2min. workers=1 (Windows cannot do concurrent electron.launch()) and
+  # retries=1 on CI both come from playwright.config.ts. The job `name:` below is
+  # the branch-protection status-check context - keep it in sync with main's
+  # required checks if you rename it.
+  e2e:
+    name: E2E tests (Electron)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies (npm ci, full native build)
+        run: npm ci
+      - name: Build (production bundle)
+        run: npm run build
+      - name: Run E2E tests (Electron)
+        run: npx playwright test --project=electron

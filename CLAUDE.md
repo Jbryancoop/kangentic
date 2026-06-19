@@ -118,12 +118,23 @@ Three test tiers (unit / UI / E2E). Setup, commands, the headless mock, and tier
 guidance live in [docs/developer-guide.md](docs/developer-guide.md). The scoped-run discipline
 below is the part that must stay in context.
 
+#### The board test gate (Tests and Ship It columns)
+
+The expensive and flaky tiers now run on CI as PR checks, not on the local machine. Moving a task
+into the **Tests** column runs `/pull-request`: it creates a PR and drives its CI checks (lint,
+typecheck, unit, build, the UI shards, and the Windows Electron E2E job) to all-green, auto-fixing
+the code and de-flaking or rewriting tests along the way, then stops without merging. Moving it into
+**Ship It** runs `/merge-pull-request`: it merges the green PR and fast-forwards the local `main`
+checkout for HMR. PRs are the normal path to `main` (CI gates it); `/merge-back` stays a direct
+quick-push escape hatch for admins. `/test` is now for **manual local runs** only - it is no longer
+wired to a column.
+
 #### When to test
 
-`/test` is the full gate (typecheck, build, then unit + UI + E2E, all tests, no selection
-heuristic); `/test quick` runs unit + UI only for the fast inner loop. Full-tier runs are
-reserved for the `/test` command or explicit user request. While working on a task, stay scoped
-to what you changed.
+`/test` is the full local gate (typecheck, build, then unit + UI + E2E, all tests, no selection
+heuristic), run manually when you want it; `/test quick` runs unit + UI only for the fast inner
+loop. Full-tier runs are reserved for the `/test` command or explicit user request. While working on
+a task, stay scoped to what you changed - the PR checks are the authoritative full gate.
 
 **Always fine:**
 - `npm run typecheck` - run freely at any point.
@@ -132,7 +143,7 @@ to what you changed.
   - `npx playwright test tests/ui/my-new.spec.ts`
 - Single-file validation of an existing test directly affected by your change (same scoped form).
 
-**Never run unless the user explicitly asks, or `/test` / `/merge-back` is executing:**
+**Never run unless the user explicitly asks, or `/test`, `/pull-request`, or `/merge-back` is executing:**
 - `npm test`
 - `npm run test:unit` (unscoped vitest)
 - `npx vitest run` (no file path)
@@ -141,8 +152,8 @@ to what you changed.
 If a run would execute tests you did not add or modify, it is a full-tier run. Stop and let
 `/test` handle it.
 
-**Pre-commit:** `/merge-back` runs typecheck and lint automatically. Full-tier validation is the
-`/test` command's job.
+**Pre-commit:** `/pull-request` and `/merge-back` run typecheck and lint automatically. Full-tier
+validation is CI's job (the PR checks), or the `/test` command for a manual local run.
 
 ### Performance
 
@@ -195,12 +206,15 @@ overrides in a gitignored `CLAUDE.local.md` at the project root.
 - A plain **local commit** (snapshot work in progress, protect changes before `/preview`) goes
   through `/commit`: it stages and commits on the current branch only, with no push and no
   rebase. A bare request to "commit" / "commit changes" means `/commit`, never `/merge-back`.
-- **Pushing / landing / merging back** changes goes through `/merge-back` (or `/pull-request`
-  when a PR audit trail is wanted). It handles commit, typecheck, lint, rebase, and push to the
-  source branch from both worktrees and the main repo. Only use it when the user explicitly asks
-  to push, land, or merge back.
-- Both `/commit` and `/merge-back` write conventional-commit messages.
-- `/sync-docs` keeps `docs/` aligned with source and runs during `/merge-back`.
+- **Landing changes goes through a PR by default.** The board drives it: the **Tests** column runs
+  `/pull-request` (commit, conventional branch, push, create the PR, drive its CI checks to green),
+  and the **Ship It** column runs `/merge-pull-request` (merge the green PR, pull back to local
+  `main`). For a deliberate direct quick-push that bypasses the PR gate (admin only - CI is down, a
+  one-line hotfix), use `/merge-back`. Only push, land, or merge when the user explicitly asks.
+- `/commit`, `/pull-request`, `/merge-pull-request`, and `/merge-back` all write conventional-commit
+  messages.
+- `/sync-docs` keeps `docs/` aligned with source; the doc-anchor check runs inside `/pull-request`
+  (commit time) and `/merge-pull-request` (merge time), and `/merge-back` for direct pushes.
 
 ### Authoring a rule
 

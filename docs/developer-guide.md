@@ -257,8 +257,10 @@ Release-time manual validation against real authenticated agent CLIs lives in [r
 ### Run All
 
 The `/test` command is the full local gate: typecheck, build, then unit + UI + E2E (all tests,
-no selection heuristic). `/test quick` runs unit + UI only for the fast inner loop. To run tiers
-directly:
+no selection heuristic). `/test quick` runs unit + UI only for the fast inner loop. It is for
+manual local runs - the automated gate now runs on CI as PR checks (the **Tests** column runs
+`/pull-request`, which pushes a branch and drives the CI checks to green; CI runs lint, typecheck,
+unit, build, the UI shards, and the Windows Electron E2E job). To run tiers directly:
 
 ```bash
 npx playwright test              # UI + E2E
@@ -337,7 +339,9 @@ Run `/sync-docs` to review and update documentation after code changes. This com
 - Checks for stale facts (schema, config keys, constants, types)
 - Updates docs in-place and reports what changed
 
-This runs automatically as part of `/merge-back` (Step 4.5). To run manually: `/sync-docs`.
+The targeted doc-anchor check runs automatically inside `/pull-request` (commit time),
+`/merge-pull-request` (merge time), and `/merge-back` (direct push). To run the full review
+manually: `/sync-docs`.
 
 ## Packaging
 

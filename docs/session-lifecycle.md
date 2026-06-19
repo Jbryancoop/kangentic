@@ -146,7 +146,7 @@ When a suspended task moves to an active column:
 - The **first move OUT of Done** (the recovery / restore move, whatever the
   destination column) resumes the session WITHOUT injecting the destination
   column's `auto_command`. Restoring a Done task is usually to inspect the
-  session or ask a question, so the column automation (e.g. `/merge-back`)
+  session or ask a question, so the column automation (e.g. `/merge-pull-request`)
   sits idle until the next move. This is unconditional and matches crash
   recovery, which also resumes command-free. The drag-out-of-Done path
   (`TASK_UNARCHIVE` / `TASK_BULK_UNARCHIVE`) suppresses it directly; a
