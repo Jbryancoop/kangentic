@@ -1140,6 +1140,8 @@ export interface AppConfig {
     defaultBaseBranch: string;
     copyFiles: string[];
     initScript: string | null;
+    /** Symlink the root node_modules into each worktree so agents skip a fresh install. Disable to let initScript own the worktree's deps. */
+    linkNodeModules: boolean;
     /** Minutes between background PR-state refresh sweeps for the open project. null = off (on-open sweep only). */
     prRefreshIntervalMinutes: number | null;
   };
@@ -1338,6 +1340,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     defaultBaseBranch: 'main',
     copyFiles: [],
     initScript: null,
+    linkNodeModules: true,
     prRefreshIntervalMinutes: 5,
   },
   mcpServer: {
