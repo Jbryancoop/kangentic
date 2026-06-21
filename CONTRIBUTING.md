@@ -164,6 +164,19 @@ Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `buil
   merging. This is normal and not a reflection on your work; it is how we keep the bar consistent.
 - Small, focused PRs are easier to review and merge faster.
 
+### Approvals and merging
+
+The general flow is that a maintainer approves the PR and **you merge it in**. An approval is your
+cue to do a final review of anything that was applied (the maintainer may have left comments or
+pushed changes to your branch), then merge.
+
+A maintainer may instead merge an approved PR directly rather than wait for you, for example to land
+it in the next release. That is expected and not a slight; you do not need to do anything when it
+happens.
+
+Either way, an approval means the PR is accepted. If you are not sure whether to merge or wait, ask
+in the PR thread.
+
 ### UI contributions
 
 UI changes get a maintainer design review against the UI conventions above (shared primitives, font
