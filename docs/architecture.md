@@ -47,6 +47,13 @@ All channels defined in `src/shared/ipc-channels.ts`. The preload bridge in `src
 | `project:autoOpened` | on | Event: project auto-opened on launch |
 | `project:pathMissing` | on | Event: a registered project path no longer exists on disk |
 
+### Dev-only (preview)
+Build-excluded from production via `__KANGENTIC_DEV__` (esbuild dead-code elimination); present only in `npm start` and `/preview` builds, never in shipped installers. Registered from `src/devtools/`, so it is not counted in the production channel totals above.
+
+| Channel | Pattern | Purpose |
+|---------|---------|---------|
+| `dev:createEphemeralProject` | invoke | Clone the current worktree into an isolated, throwaway preview project (TestHarness "Create Project" button); fills its working tree in the background and returns the usable `Project` |
+
 ### Project Groups (6 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
