@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.25.0] - 2026-06-25
+
+### Features
+
+- Multiple command terminals tiled among themselves (Phase 2) (68696a5c)
+- Changes panel: file sort, tree/flat toggle, and collapse-all (b26f7204)
+- Cross-file keyboard navigation for the diff review (270a2164)
+- Per-file "viewed" marks in the changes file tree (452597ed)
+- Segmented scope control and automatic git-metadata refresh in Changes (cf06c23f)
+- Changes panel: branch header, diff scope, and resizable auto-fit tree (6a92b8a5)
+- Full command-terminal window behaviors on a dedicated, globally-persisted layer (4ccc298c)
+
+### Fixes
+
+- Suppress animation replay on project-switch restore (6082847f)
+- Body-portal the model/effort popover so it escapes the footer compositing layer (df432363)
+- Hot-reload kangentic.json on the authoring machine (a52f3962)
+- Stop expanded-then-collapsed terminal flash on project switch (9cf460df)
+- Restore command-terminal focus on maximize/restore (7d620711)
+- Drop commit-matched PR whose merge commit is the anchor (95e34354)
+
+### Other
+
+- Tokenize activity indicators and soften the idle color (e6625ac4)
+- Align rate-limits pill tests with the agent-capability gate (1f46a63e)
+- Update auto-name-scheduler transient mocks to the (project, slot) shape (ea2959c7)
+- Mark CommandTerminalIcon tone checks for the activity-state scanner (5a244ff0)
+- Cover the re-keyed transient-session selector and kill-by-slot (0420ccf9)
+- Smooth /pull-request CI monitoring and MCP resilience (b71bd57b)
+- Sync architecture and configuration for the Changes-tab feature (f477341e)
+- Unit-cover the diff watcher and branch summary, plus panel hardening (6d91f0e7)
+- Cover the Auto-Apply Board Config Changes toggle (01088f30)
+- Extract shared panel drag-resize gesture into one helper (e327d7db)
+- De-flake changes-panel and click-outside-close timeouts (46480f3b)
+
 ## [v0.24.0] - 2026-06-22
 
 ### Features
