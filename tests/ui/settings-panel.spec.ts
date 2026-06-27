@@ -287,6 +287,12 @@ test.describe('Settings Panel', () => {
     await expect(page.getByText('Kangentic MCP Server')).toBeVisible();
     await expect(page.getByText('Give agents tools to interact with your board')).toBeVisible();
 
+    // Settings-driven task-creation cap, defaulting to 50
+    await expect(page.getByText('Max Tasks Per Session')).toBeVisible();
+    await expect(
+      page.getByTestId('setting-row-mcpServer.maxTaskCreateCount').locator('input[type="number"]'),
+    ).toHaveValue('50');
+
     // Tools list should be visible (spot-check a few)
     await expect(page.getByRole('list').getByText('Create Task')).toBeVisible();
     await expect(page.getByText('Board Summary')).toBeVisible();
@@ -296,6 +302,70 @@ test.describe('Settings Panel', () => {
     await expect(page.getByText('How It Works')).toBeVisible();
 
     await closeSettings();
+  });
+
+  test.describe('MCP Server tab - maxTaskCreateCount clamp', () => {
+    // Helper: open Settings and navigate to the MCP Server tab from scratch.
+    // Each test owns its setup to avoid cross-test state leakage (cross-platform-parity rule).
+    async function openMcpServerTab() {
+      await openSettings();
+      await page.getByRole('button', { name: 'MCP Server' }).click();
+    }
+
+    test('valid in-range value 25 persists and the input reflects it', async () => {
+      await openMcpServerTab();
+      const input = page.getByTestId('setting-row-mcpServer.maxTaskCreateCount').locator('input[type="number"]');
+      await input.waitFor({ state: 'visible', timeout: 3000 });
+      try {
+        await input.fill('25');
+        // onChange: Math.max(1, Math.min(500, Math.floor(25))) = 25.
+        // updateGlobal fires config.set, which deep-merges and re-fetches; Zustand
+        // updates globalConfig; React re-renders the controlled input to 25.
+        // toHaveValue retries until the controlled value settles.
+        await expect(input).toHaveValue('25');
+      } finally {
+        // Reset to default so later tests start from a known state.
+        await input.fill('50');
+        await expect(input).toHaveValue('50');
+        await closeSettings();
+      }
+    });
+
+    test('over-max value 5000 clamps to 500', async () => {
+      await openMcpServerTab();
+      const input = page.getByTestId('setting-row-mcpServer.maxTaskCreateCount').locator('input[type="number"]');
+      await input.waitFor({ state: 'visible', timeout: 3000 });
+      try {
+        await input.fill('5000');
+        // onChange: Math.max(1, Math.min(500, Math.floor(5000))) = 500.
+        // Red-green: reverting the onChange to omit Math.min(500, ...) would let 5000
+        // persist in the config, and the controlled input would re-render with 5000,
+        // causing toHaveValue('500') to fail.
+        await expect(input).toHaveValue('500');
+      } finally {
+        await input.fill('50');
+        await expect(input).toHaveValue('50');
+        await closeSettings();
+      }
+    });
+
+    test('value 0 clamps to minimum 1', async () => {
+      await openMcpServerTab();
+      const input = page.getByTestId('setting-row-mcpServer.maxTaskCreateCount').locator('input[type="number"]');
+      await input.waitFor({ state: 'visible', timeout: 3000 });
+      try {
+        await input.fill('0');
+        // onChange: Math.max(1, Math.min(500, Math.floor(0))) = 1.
+        // Red-green: reverting the onChange to omit Math.max(1, ...) would let 0
+        // persist in the config, and the controlled input would re-render with 0,
+        // causing toHaveValue('1') to fail.
+        await expect(input).toHaveValue('1');
+      } finally {
+        await input.fill('50');
+        await expect(input).toHaveValue('50');
+        await closeSettings();
+      }
+    });
   });
 
   test('reopens to the last viewed tab after closing', async () => {

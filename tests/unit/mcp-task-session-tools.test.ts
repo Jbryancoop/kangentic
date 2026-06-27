@@ -73,14 +73,15 @@ vi.mock('../../src/main/agent/mcp-http/handler-helpers', () => ({
   // Identity stub: the real sanitizer is unit-tested elsewhere; here we
   // only need the routing-check message to embed names verbatim.
   sanitizeProjectName: (name: string) => name,
-  makeTaskCounter: (max: number) => {
+  makeTaskCounter: (getMaxTaskCreateCount: () => number) => {
     let count = 0;
     return {
       tryReserve: vi.fn(() => {
-        if (count >= max) return false;
+        if (count >= getMaxTaskCreateCount()) return false;
         count++;
         return true;
       }),
+      limit: () => getMaxTaskCreateCount(),
     };
   },
   PROJECT_SELECTOR_DESCRIPTION: 'optional project selector',
@@ -170,8 +171,9 @@ describe('create_task rate-limit wiring', () => {
         count++;
         return true;
       }),
+      limit: () => MAX_TASKS,
     };
-    registerTaskTools(server as never, resolver, taskCounter, MAX_TASKS);
+    registerTaskTools(server as never, resolver, taskCounter);
   });
 
   it('does NOT call tryReserve when the project selector is invalid', async () => {
@@ -208,6 +210,48 @@ describe('create_task rate-limit wiring', () => {
     // callHandler must NOT be called after a failed tryReserve.
     expect(mockCallHandler).not.toHaveBeenCalled();
   });
+
+  it('rate-limit error message sources from taskCounter.limit(), not the count at exhaustion', async () => {
+    // The counter exhausts after EXHAUST_AT=3 reservations but limit() returns
+    // REPORTED_LIMIT=7 - deliberately mismatched values. If task-tools.ts were
+    // changed to interpolate a captured constant (e.g. the accumulated count at
+    // exhaustion time, or any frozen number) instead of calling taskCounter.limit()
+    // live, the error text would say "maximum 3 tasks per session" and the
+    // toContain('7') assertion below would fail.
+    //
+    // Red-green: temporarily change the rate-limit error string in task-tools.ts
+    // from `taskCounter.limit()` to `3` (or capture the count variable) - observe
+    // red (toContain('7') fails), restore `taskCounter.limit()` - observe green.
+    const EXHAUST_AT = 3;
+    const REPORTED_LIMIT = 7;
+    let decoupledCount = 0;
+    const decoupledCounter: TaskCounter = {
+      tryReserve: vi.fn(() => {
+        if (decoupledCount >= EXHAUST_AT) return false;
+        decoupledCount++;
+        return true;
+      }),
+      limit: () => REPORTED_LIMIT,
+    };
+    const decoupledServer = makeFakeServer();
+    registerTaskTools(decoupledServer as never, makeResolver(), decoupledCounter);
+
+    // Exhaust the counter at EXHAUST_AT reservations.
+    for (let index = 0; index < EXHAUST_AT; index++) {
+      await decoupledServer.getHandler('kangentic_create_task')({ title: `Task ${index}` });
+    }
+
+    const result = await decoupledServer.getHandler('kangentic_create_task')({ title: 'Overflow' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Rate limit reached');
+    // Must contain the live limit() value ('7'), not the exhaustion count ('3').
+    expect(result.content[0].text).toContain(String(REPORTED_LIMIT));
+    // Defensive: '3' must NOT appear; if it does, the code read the count at
+    // exhaustion instead of calling limit() live. (Message is
+    // "Rate limit reached: maximum 7 tasks per session." which contains no '3'.)
+    expect(result.content[0].text).not.toContain(String(EXHAUST_AT));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -225,8 +269,8 @@ describe('create_task routing guardrail', () => {
     mockDetectCrossProjectMention.mockReturnValue([]);
     server = makeFakeServer();
     const resolver = makeResolver();
-    taskCounter = { tryReserve: vi.fn(() => true) };
-    registerTaskTools(server as never, resolver, taskCounter, 50);
+    taskCounter = { tryReserve: vi.fn(() => true), limit: () => 50 };
+    registerTaskTools(server as never, resolver, taskCounter);
   });
 
   it('blocks and creates nothing when defaulting to active but the text names another project', async () => {
@@ -327,8 +371,8 @@ describe('get_current_task uses defaultContextResolved, not withProject', () => 
     vi.clearAllMocks();
     server = makeFakeServer();
     resolver = makeResolver();
-    const taskCounter: TaskCounter = { tryReserve: vi.fn(() => true) };
-    registerTaskTools(server as never, resolver, taskCounter, 50);
+    const taskCounter: TaskCounter = { tryReserve: vi.fn(() => true), limit: () => 50 };
+    registerTaskTools(server as never, resolver, taskCounter);
   });
 
   it('calls resolver.defaultContextResolved() instead of withProject when cwd is supplied', async () => {
@@ -375,8 +419,8 @@ describe('routing-cue hints in tool descriptions', () => {
     vi.clearAllMocks();
     server = makeFakeServer();
     const resolver = makeResolver();
-    const taskCounter: TaskCounter = { tryReserve: vi.fn(() => true) };
-    registerTaskTools(server as never, resolver, taskCounter, 50);
+    const taskCounter: TaskCounter = { tryReserve: vi.fn(() => true), limit: () => 50 };
+    registerTaskTools(server as never, resolver, taskCounter);
   });
 
   it('kangentic_create_task description nudges the model to route by prompt cues', () => {
