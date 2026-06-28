@@ -6,6 +6,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.26.0] - 2026-06-28
+
+### Features
+
+- Local push-to-talk voice-to-text into terminals (e5d1ae66)
+- Drive the embedded Browser pane via kangentic_browser_* MCP tools (3c4a8ded)
+- Add Ollama adapter for local LLMs (35bc20c0)
+- Add a team-shared description field to columns (#70) (36cbb570)
+- Add opt-in ticket numbers to task cards (97ff3c20)
+- Settings-driven cap on MCP task creation (#67) (bd24be18)
+- Persist per-task detail-view layout and lifetime session stats (d6703edf)
+- Show task title in header and pre-trust clone workspace (d74ec8a7)
+
+### Fixes
+
+- Default Claude to fullscreen and fix window-resize sizing (9a2913a2)
+- One-line Agent Browser tab, gate sub-toggles, steer to pane (fcd995b1)
+- Silence benign Monaco DiffEditor disposal console error (fe0281ea)
+- Compare output tokens only in status heartbeat recovery (4dcc6724)
+- Resume session history after a worktree rename (b616a5f7)
+- Restore Ctrl+V paste and copy in the first-party renderer (a9ff6366)
+- Pass the Ollama prompt after an end-of-options marker (1b29047a)
+- Guard refineTranscriptTokens and add it to test mocks (e9aff471)
+- Defer heartbeat force-thinking to authoritative hook idle (987d3644)
+- Cap title reserve at a 50ch floor so quick-action pills can show (396ad0d3)
+- Re-assert DEC private input modes on scrollback replay (2942828d)
+- Show the live model on background task cards (ef44b94e)
+
+### Other
+
+- Eliminate terminal/board freezes via PTY backpressure and off-hot-path I/O (98d682ba)
+- Trim per-agent context tokens injected by the MCP server (958d4257)
+- Clean up MCP Server settings tab (ab1ad962)
+- Correct the TranscriptRepository method table (d2b3de61)
+- Parallelize the safe serial-suspect specs, sweep round 2 (21eef6d4)
+- Keep the two order-dependent activity-log specs serial (dbec8837)
+- Parallelize the safe UI specs across the suite, sweep round 1 (27350b67)
+- Parallelize five heavy serial specs to cut the CI shard long pole (cd34da47)
+- Run UI Playwright shards at 3 workers to fix event-loop contention (e7fa9fef)
+- Harden the Changes-panel UI spec cluster against event-loop starvation (f2aa78c7)
+- De-flake changes-panel file context-menu spec (0fff7698)
+- De-flake non-done drop-settle overlay spec (4853d90a)
+- Cover mixed-param filtering and getScrollback idempotency (b697d3aa)
+- Cover Interrupted/TurnFailed idle provenance (4fd0fe57)
+- Fix session-metrics and slice unit tests for the compaction/projectId wiring (0e45752e)
+- Cover ollama agentLoginCommand (add7cf6d)
+- Rename shorthand ts to timestamp in ticket-number spec (68f9e900)
+- Mock ipcMain.on in session-handler unit tests (da673bc6)
+- Cover the main-process event-loop lag recorder (215333cd)
+- Cover the missing project-DB guard in title resolver (ce6910a4)
+- Cover the missing-projectPath resume-migration guard (88014e67)
+- Satisfy unit parity checks for store registry and activity-state scan (e78e8312)
+- Cover language helpers, multilingual models, and language resolution (c03a49bb)
+- Disambiguate Agent settings-tab selector after rename (fa306374)
+- Cover Agent Browser master-switch gating (d9d7726e)
+- Cover the server-instructions open-pane advertisement (a6ad78ab)
+
 ## [v0.25.0] - 2026-06-25
 
 ### Features
