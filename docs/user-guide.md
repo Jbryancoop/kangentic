@@ -176,6 +176,8 @@ The Changes tab in the task detail dialog shows a git diff of all files modified
 
 The Changes panel is available for all tasks, whether or not worktrees are enabled. It uses `git merge-base` to show only branch-specific changes, excluding upstream commits.
 
+The panel has two views, switched with the **Files | Graph** toggle in its header. **Files** is the diff view described above. **Graph** renders the branch's commit history as a visual DAG: commit nodes down a vertical axis, lane columns for parallel branches, and edges to each commit's parents. Each row shows the short SHA, subject, author, and relative time; the branch tip is marked `HEAD`, the fork point is labelled with the base branch, and a linked pull request's head commit is tagged with its PR number. The graph reads git directly (no session required), refreshes live as you commit or the branch's refs change, and is capped at the most recent 200 commits with a note when older commits are trimmed.
+
 When the dialog is open, it claims the terminal session. The bottom panel releases it. When you close the dialog, the bottom panel reclaims the session.
 
 ### Browser Pane

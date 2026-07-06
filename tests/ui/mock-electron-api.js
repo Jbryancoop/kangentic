@@ -1965,7 +1965,25 @@
       },
       subscribeDiff: function () {},
       unsubscribeDiff: function () {},
-      onDiffChanged: function () { return function () {}; },
+      // Test hook: fire a live diff-changed push to every registered listener
+      // via window.__mockFireDiffChanged() (no payload - mirrors the real
+      // preload's GIT_DIFF_CHANGED push, which is also argument-less). Same
+      // listener-registry shape as onData / onSpawnProgress above.
+      onDiffChanged: function (callback) {
+        if (!window.__mockDiffChangedListeners) window.__mockDiffChangedListeners = [];
+        window.__mockDiffChangedListeners.push(callback);
+        if (!window.__mockFireDiffChanged) {
+          window.__mockFireDiffChanged = function () {
+            var listeners = (window.__mockDiffChangedListeners || []).slice();
+            for (var i = 0; i < listeners.length; i++) { listeners[i](); }
+          };
+        }
+        return function () {
+          var listeners = window.__mockDiffChangedListeners || [];
+          var idx = listeners.indexOf(callback);
+          if (idx >= 0) listeners.splice(idx, 1);
+        };
+      },
       checkPendingChanges: async function () {
         // Test hook: simulate a slow git probe so a test can observe the board
         // during the await window (the real round-trip is ~100ms on a worktree).
@@ -1984,6 +2002,15 @@
           return window.__mockBranchSummary;
         }
         return { currentBranch: null, ahead: 0, behind: 0, lastCommit: null };
+      },
+      commitGraph: async function () {
+        // Test hook: seed the commit-graph pane via window.__mockCommitGraph =
+        // { commits: [{ hash, shortHash, parents, authorName, authorTimestamp, subject }],
+        //   tipHash, baseHash, mergeBaseHash, currentBranch, truncated }.
+        if (typeof window !== 'undefined' && window.__mockCommitGraph) {
+          return window.__mockCommitGraph;
+        }
+        return { commits: [], tipHash: null, baseHash: null, mergeBaseHash: null, currentBranch: null, truncated: false };
       },
     },
 

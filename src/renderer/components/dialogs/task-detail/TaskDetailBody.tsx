@@ -199,6 +199,7 @@ export function TaskDetailBody({
           panelMode={changesViewMode}
           onExpand={handleChangesExpand}
           onCollapse={handleChangesCollapse}
+          task={task}
         />
       </Suspense>
     </PanelErrorBoundary>
