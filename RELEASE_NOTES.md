@@ -1,20 +1,20 @@
 ## What's New
 
-- **Push-to-talk dictation.** Hold a hotkey to speak and have your words typed straight into the terminal, with local on-device voice-to-text.
-- **Agent-driven browser pane.** Agents can now drive an embedded Browser pane through the new `kangentic_browser_*` MCP tools, with a streamlined Agent Browser settings tab.
-- **Ollama adapter.** Run local LLMs through Kangentic with the new Ollama agent adapter.
-- **Team-shared column descriptions.** Add a shared description to any board column; it round-trips through `kangentic.json` for the whole team.
-- **Ticket numbers on cards.** Opt in to show ticket numbers on task cards.
-- **MCP task-creation cap.** Set a limit on how many tasks the MCP server can create, from settings.
-- **Persistent task layout and stats.** Each task remembers its detail-view layout and accumulates lifetime session stats.
-- **Task title in preview.** The preview header now shows the task title.
+- **Searchable conversation memory.** Semantic + keyword search (hybrid RAG) across your past conversations.
+- **Description peek.** Open a task's full description as a resizable side panel and toggle it with Mod+Shift+K.
+- **Per-task commit graph.** A new commit graph pane in the task detail view.
+- **Copyable terminal output blocks.** Select and copy whole output blocks straight from the terminal.
+- **Markdown preview in the diff viewer.** Toggle a rendered markdown view of changed files.
+- **Smarter model picker.** Rescans installed models when you open the dropdown, hides superseded model generations, and shows a self-discovered context-window badge.
+- **Redesigned Edit Columns.** A master-detail layout with maximize support.
+- **MCP improvements.** Attach and remove files on existing tasks, a configurable per-launch task-creation cap, no more prompts for Kangentic's own MCP tools, and each MCP tool pill now links to its docs.
+- **Snappier UI.** Eliminated a class of recurring UI freezes.
 
 ## Bug Fixes
 
-- Claude now opens in fullscreen and resizes correctly when the window changes size.
-- Restored Ctrl+V paste and copy in the app.
-- Eliminated terminal and board freezes under heavy output via PTY backpressure.
-- Smarter activity detection with fewer false idle and thinking states.
-- Session history now resumes correctly after a worktree rename.
-- Background task cards now show the live model.
-- Silenced a benign Monaco editor console error during diff disposal.
+- Terminal: honor OSC 52 clipboard writes, restore the model/effort picker after a live model change, stop block-copy from misfiring on live prompts, and land PowerShell sessions correctly in bracketed project paths.
+- Board cards now show an honest context percentage (never over 100%) and stream the model and context directly from the session transcript.
+- Fixed a ContextBar flip-flop caused by out-of-order rate-limit windows.
+- Sidebar divider clicks no longer collapse the project panel.
+- Restored terminals now paint at the fitted width instead of a stale size.
+- Backlog import filters now cover the full source, and the orphan sweep no longer deletes fresh session directories.

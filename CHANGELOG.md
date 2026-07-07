@@ -6,6 +6,90 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.27.0] - 2026-07-07
+
+### Features
+
+- Searchable conversation memory (hybrid + semantic RAG) (#112) (3c85e2f1)
+- Gate analytics heartbeat on activity, flush on shutdown, add cost/token props and client id (dc684d21)
+- Support attaching and removing files on existing tasks via MCP (e87d49d0)
+- Demote superseded model generations in the picker and humanize labels (a49a4264)
+- Add a per-task commit graph pane (#102) (988fe0c4)
+- Show the description peek as a resizable side panel (ccf52112)
+- Wire description peek state and keybinding in TaskDetailWindow (f74f99da)
+- Add a Description peek pill and kebab item to the task detail header (b1262524)
+- Extend TaskDetailBody with a descriptionPeekOpen prop (b348f361)
+- Register the taskDetail.toggleDescription keybinding (5bd80e19)
+- Rescan models on dropdown open with a self-discovered context badge (d54c9ece)
+- Add a markdown preview toggle to the diff viewer (0a91ab9f)
+- Redesign Edit Columns as a master-detail layout with maximize parity (2d5f1242)
+- Link each MCP tool pill in settings to its docs page (bfa6ac4a)
+- Copyable terminal output blocks (7369d23f)
+- Make the per-launch MCP task-creation cap user-configurable (f7d63cd5)
+- Never prompt for Kangentic's own MCP tools (1ef2b1c5)
+
+### Fixes
+
+- Populate backlog import filters over the full unbounded source (f1ef36fc)
+- Restore the model/effort picker after a live column model change (1fa372b5)
+- Keep the description peek from becoming a dead toggle (6399cb6f)
+- Fold the Description peek pill before core action pills (08902bbd)
+- Hide the description peek pill in queued/suspended states (4c692ec4)
+- Change the description peek hotkey from Mod+Shift+I to Mod+Shift+K (9e0f2546)
+- Harden the markdown diff preview toggle (1c647feb)
+- Persist MCP update_column edits to kangentic.json (52b726af)
+- Self-heal a false-ACTIVE pin after a resume-picker turn (360113bb)
+- Show honest context % on background board cards, never over 100% (175f1392)
+- Repaint-settle scrollback so restored terminals paint at the fitted width (62446ab4)
+- Stop divider clicks from collapsing the project panel (6ef70888)
+- Reconcile command-terminal window population per project on open (49fdeb0a)
+- Stop block-copy misfiring on live prompts and streaming output (6fd18697)
+- Stream the background-session model and context % from the transcript (97a53a84)
+- Merge rate-limit windows monotonically to stop ContextBar flip-flop (8f68c04f)
+- Isolate the worktree Vite dep cache and pre-bundle discovered deep imports (4f21e339)
+- Fall back when the terminal selection can't be read from the buffer (8cb48ba5)
+- Seed the board card model name at spawn instead of waiting on status.json (906a7a31)
+- Honor OSC 52 clipboard writes and route copy through the main process (4529c6ce)
+- Add a grace period so the orphan sweep stops deleting fresh session dirs (e131e66b)
+- Scope lazy-panel load failures and make retry recover (f68cd72d)
+- Land PowerShell sessions in bracketed project paths (9b9f72c6)
+
+### Other
+
+- Add getSummaryForTask to task-move-shutdown's SessionRepository mock (20612052)
+- Cover resolveClientId timeout fallback (4dab4676)
+- Cover attachment field wiring at the tool-registration layer (c8da711f)
+- Tune per-column model and effort overrides (70dd1c5f)
+- Cover externalId dedup across streamed pages (ed8311df)
+- Close coverage gaps for multi-generation model demotion (fdf4609a)
+- Cover the task:sessionResync push on a model-change restart (cd3c25ea)
+- Tidy the description peek and fix its CI UI test (127f5121)
+- Drop the no-superpowers-docs rule, keep the gitignore (8c8da09d)
+- Stop committing Superpowers scratch and process docs (ee5b902b)
+- Move the description peek to the kebab menu only (f1b2f292)
+- Cover queued-state exclusion and terminal no-remount for description peek (8224391d)
+- Ignore .superpowers/ scratch files (ea82a1c8)
+- Update the design spec keybinding to Mod+Shift+K (8c47cb3d)
+- Add a timeout to the description pill visibility assertion (3eccd951)
+- Add a failing test for the description peek pill (98c0d270)
+- Add the description peek implementation plan (fdd8d713)
+- Add the description peek design spec (62369a86)
+- Seed markdown files for the diff preview toggle (a5706a4d)
+- Pin the first-write branch of the output-growth keep-warm gate (b14dbebf)
+- Cover ColumnRail arrow-key navigation and the drag-handle guard (82117776)
+- Cover the deep-archive detail-window self-heal (d01d5ec9)
+- Eliminate recurring UI freezes (0fab1771)
+- Fix the no-cursor glyph-fallback test hitting the default param (aeea3830)
+- Pin an empty-array report against a populated rate-limit snapshot (06c09100)
+- Guard the non-worktree dev.js cache branch (c618a234)
+- De-flake the block-copy hide assertion on CI Linux (52799c74)
+- Cover terminal block pixel-bounds scroll clamping (aa4cdb67)
+- Wire a real CommandBuilder into the model-seed parser tests (be586769)
+- Keep the task-create cap internal; parameterize makeTaskCounter for tests (3ab644a1)
+- Assert browser tools are annotated by capability tier (0b07af42)
+- Assert the cwd fixup is written raw, not via adaptCommandForShell (b0b0672f)
+- Default the Planning lane to Fable 5 (f1cb8acb)
+
 ## [v0.26.0] - 2026-06-28
 
 ### Features
