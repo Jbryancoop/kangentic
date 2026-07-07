@@ -231,8 +231,8 @@ test.describe('Task detail header pill overflow (title floor)', () => {
     await resizeTaskWindow(page, LONG_TASK_ID, NARROW_RECT);
 
     // At the min-width end the floor reserve leaves no room, so even the
-    // highest-priority default (Commands) folds - which proves every pill folded.
-    await expect(page.locator('[data-testid="commands-button"]')).toBeHidden();
+    // highest-priority default (the folder pill) folds - which proves every pill folded.
+    await expect(page.locator('[data-testid="branch-pill"]')).toBeHidden();
     await expect(page.locator('[data-testid="browser-toggle"]')).toBeHidden();
 
     // The title ellipsizes (rendered width < natural width). Poll so the overflow
@@ -251,9 +251,9 @@ test.describe('Task detail header pill overflow (title floor)', () => {
     await maximizeTaskWindow(page, LONG_TASK_ID);
 
     // Maximized leaves plenty of room above the floor, so the pills reclaim it: the
-    // highest-priority default is visible. This inverts the old behavior where a long
-    // title reserved its full width and hid every pill.
-    await expect(page.locator('[data-testid="commands-button"]')).toBeVisible();
+    // highest-priority default (the folder pill) is visible. This inverts the old behavior
+    // where a long title reserved its full width and hid every pill.
+    await expect(page.locator('[data-testid="branch-pill"]')).toBeVisible();
 
     // The title still truncates (its natural width exceeds even a maximized window),
     // and the rendered title keeps at least the ~50ch floor's worth of characters.
@@ -275,10 +275,10 @@ test.describe('Task detail header pill overflow (title floor)', () => {
     await openTaskDialog(page, SHORT_TITLE);
 
     // A short title leaves room for the pills. Every built-in default stays put...
-    await expect(page.locator('[data-testid="commands-button"]')).toBeVisible();
     await expect(page.locator('[data-testid="branch-pill"]')).toBeVisible();
     await expect(page.locator('[data-testid="changes-toggle"]')).toBeVisible();
     await expect(page.locator('[data-testid="browser-toggle"]')).toBeVisible();
+    await expect(page.locator('[data-testid="conversation-pill"]')).toBeVisible();
 
     // ...while the lowest-priority custom shortcuts fold into the kebab. A folded
     // pill is not rendered (showPill === false), so the rendered shortcut-pill count
@@ -288,5 +288,30 @@ test.describe('Task detail header pill overflow (title floor)', () => {
     await expect
       .poll(async () => page.locator('[data-testid^="shortcut-pill-"]').count())
       .toBeLessThan(SHORTCUT_LABELS.length);
+  });
+
+  test('a labeled shortcut pill keeps Pill\'s wider default padding (HeaderActionButton\'s icon-only override is label-gated)', async () => {
+    await openTaskDialog(page, SHORT_TITLE);
+
+    const labeledPill = page.locator('[data-testid^="shortcut-pill-"]').first();
+    await expect(labeledPill).toBeVisible();
+
+    // HeaderActionButton only tightens padding to a near-square icon-only shape
+    // when no `label` is passed (`!min-w-0 !px-[9px]` for size="normal",
+    // `!px-[5px]` for size="small"). Every header shortcut pill renders WITH a
+    // `label`, so none of the icon-only override classes should be present -
+    // it keeps Pill's wider, text-friendly default padding instead.
+    const className = await labeledPill.evaluate((element) => element.className);
+    expect(className).not.toContain('!min-w-0');
+    expect(className).not.toContain('!px-[9px]');
+    expect(className).not.toContain('!px-[5px]');
+
+    // Corroborating geometry: a labeled pill (icon + text) renders visibly
+    // wider than the icon-only "normal" square (~30-44px, per the conversation
+    // viewer's HeaderActionButton size test) - a sanity floor, not a
+    // pixel-exact assertion.
+    const box = await labeledPill.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.width).toBeGreaterThan(44);
   });
 });

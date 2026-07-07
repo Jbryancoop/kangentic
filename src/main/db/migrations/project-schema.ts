@@ -698,6 +698,145 @@ export function runProjectMigrations(db: Database.Database): void {
     db.exec('ALTER TABLE swimlanes ADD COLUMN description TEXT DEFAULT NULL');
   }
 
+  // Migration: conversation-memory index (searchable transcripts). A per-project
+  // retrieval store over the STRUCTURED transcript (TranscriptEntry-derived
+  // chunks), NOT the raw session_transcripts scrollback blob.
+  //
+  // `memory_chunks` is corpus-generic (a `corpus` column) so the same store can
+  // later index repo files/docs. `session_id`/`task_id` are nullable for that
+  // future reuse; the conversation corpus always sets them.
+  //
+  // The vector table (`memory_chunks_vec`, USING vec0) is deliberately NOT
+  // created here: it needs the sqlite-vec extension loaded, which may be
+  // unavailable on a platform/build. It is created at runtime by
+  // RetrievalStore.ensureVecTable() only when the extension loaded. No trigger
+  // may reference it (a missing-module trigger body would break every
+  // `DELETE FROM sessions`), so vec rows are cleaned by application code.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_chunks (
+      id INTEGER PRIMARY KEY,
+      corpus TEXT NOT NULL DEFAULT 'conversation',
+      doc_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      session_id TEXT,
+      task_id TEXT,
+      agent_session_id TEXT,
+      role TEXT NOT NULL,
+      text TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      token_estimate INTEGER NOT NULL,
+      ts_start INTEGER,
+      ts_end INTEGER,
+      turn_uuid_start TEXT,
+      turn_uuid_end TEXT,
+      embedded_model TEXT,
+      meta_json TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(corpus, doc_id, seq)
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_memory_chunks_doc ON memory_chunks(corpus, doc_id, seq)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_memory_chunks_session ON memory_chunks(session_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_memory_chunks_embedded ON memory_chunks(embedded_model)');
+
+  // FTS5 external-content index over memory_chunks.text. FTS5 is compiled into
+  // the shipped better-sqlite3, so this is always safe. External content (not
+  // contentless) so snippet()/highlight() can return text and the sessions
+  // DELETE cascade stays simple.
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_fts USING fts5(
+      text,
+      content='memory_chunks',
+      content_rowid='id',
+      tokenize='unicode61 remove_diacritics 2'
+    )
+  `);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_memory_chunks_ai AFTER INSERT ON memory_chunks BEGIN
+      INSERT INTO memory_chunks_fts(rowid, text) VALUES (new.id, new.text);
+    END
+  `);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_memory_chunks_ad AFTER DELETE ON memory_chunks BEGIN
+      INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    END
+  `);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_memory_chunks_au AFTER UPDATE OF text ON memory_chunks BEGIN
+      INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+      INSERT INTO memory_chunks_fts(rowid, text) VALUES (new.id, new.text);
+    END
+  `);
+
+  // Per-document index bookkeeping: staleness signature (path/mtime/size) so a
+  // sweep can skip unchanged sources, and a terminal 'unsupported' status for
+  // raw-only agents that have no structured parser.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_index_state (
+      corpus TEXT NOT NULL,
+      doc_id TEXT NOT NULL,
+      session_id TEXT,
+      source_path TEXT,
+      source_mtime_ms INTEGER,
+      source_size INTEGER,
+      entry_count INTEGER NOT NULL DEFAULT 0,
+      chunk_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'ok',
+      indexed_at TEXT NOT NULL,
+      PRIMARY KEY (corpus, doc_id)
+    )
+  `);
+
+  db.exec('CREATE TABLE IF NOT EXISTS memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+
+  // Durable per-turn token-usage ledger. Each assistant turn that reported usage
+  // gets one row, keyed by the turn's own uuid. This is the long-lived record that
+  // cost / burn-rate analysis reads from: it is populated by ConversationIndexer
+  // from the parsed transcript at index time, so it SURVIVES the agent pruning its
+  // native JSONL - unlike the in-transcript `usage` field, which is re-derived on
+  // each parse and vanishes with the source file. Counts are kept as raw
+  // components (fresh input, output, cache-creation, cache-read) so downstream
+  // analysis can weight fresh input against the much cheaper cache reads.
+  //
+  // Keyed by turn_uuid because a `--resume` REPLAYS its parent's turns verbatim
+  // under the same uuid; the PK dedups a replayed turn back onto one row so
+  // per-task / per-project totals never double-count a shared turn.
+  //
+  // Deliberately NO sessions-DELETE cascade (unlike memory_chunks below): this is a
+  // durable ledger, not a rebuildable index. A shared turn attributed to a resuming
+  // session must not be wiped when that session row is deleted while the turn still
+  // lives in another session's transcript, and the token history is meant to
+  // outlive the sessions it describes. Orphan tolerance is the intended durability
+  // behavior; each row is a handful of integers.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_turn_usage (
+      turn_uuid TEXT PRIMARY KEY,
+      agent_session_id TEXT,
+      session_id TEXT,
+      task_id TEXT,
+      model TEXT,
+      ts INTEGER,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+      recorded_at TEXT NOT NULL
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_turn_usage_task ON conversation_turn_usage(task_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_turn_usage_session ON conversation_turn_usage(session_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_turn_usage_ts ON conversation_turn_usage(ts)');
+
+  // Cascade cleanup when a session is deleted (mirrors trg_sessions_delete_transcript).
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_sessions_delete_memory
+    AFTER DELETE ON sessions
+    BEGIN
+      DELETE FROM memory_chunks WHERE session_id = OLD.id;
+      DELETE FROM memory_index_state WHERE session_id = OLD.id;
+    END
+  `);
+
   // Hot-path indices for session lookups.
   // - sessions(task_id, started_at): getLatestForTask, cost summaries, per-task history
   // - sessions(task_id, session_type, isolated_swimlane_id, started_at): getLatestForTaskByTypeAndIsolation,

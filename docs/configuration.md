@@ -33,7 +33,6 @@ These settings appear only in App Settings and cannot be overridden per-project:
 - `agent.cliPaths`, `agent.maxConcurrentSessions`, `agent.queueOverflow`, `agent.autoResumeSessionsOnRestart`
 - `terminal.panelHeight`, `terminal.showPreview`
 - `autoFocusIdleSession`
-- `terminalBlockCopy`
 - `skipBoardConfigConfirm`
 - `windowLightDismiss`
 - `contextBar.*` (all context bar visibility toggles)
@@ -42,6 +41,7 @@ These settings appear only in App Settings and cannot be overridden per-project:
 - `developer.activityDebugOverlay`, `developer.persistConsoleLogs`, `developer.recordIpcTraffic`, `developer.previewInspectionServer`, `developer.previewEvalEnabled`
 - `browserAutomation.enabled`, `browserAutomation.allowInteraction`, `browserAutomation.allowNavigation`, `browserAutomation.allowEval`, `browserAutomation.restrictNavigationToLocalhost`
 - `dictation.*` (all voice dictation settings)
+- `memory.*` (conversation search + recall, in the Memory tab)
 - `hotkeyOverrides`
 
 ### Per-Project Overridable Settings
@@ -79,7 +79,6 @@ These settings appear in both App Settings (as defaults) and Project Settings (a
 | `diffFlatList` | boolean | `false` | Show changed files as a flat list of full paths instead of a nested directory tree. Global-only. |
 | `skipDeleteConfirm` | boolean | `false` | Skip confirmation dialog on task delete. Written by the delete dialog's "don't ask again" checkbox. No longer surfaced in the Settings panel. |
 | `autoFocusIdleSession` | boolean | `false` | Auto-switch to session tab when agent goes idle. Idle tabs are always highlighted regardless of this setting. |
-| `terminalBlockCopy` | boolean | `false` | Show the hover highlight, copy button, and right-click "Copy Block" affordance over quote / code / message blocks in the terminal (never over a live interactive prompt or still-streaming output). Off by default; turn on to enable. Global-only. |
 | `windowLightDismiss` | `'off'` \| `'single'` \| `'focused'` \| `'all'` | `'single'` | Click-outside (light-dismiss) policy for modeless task-detail windows. `off` disables; `single` closes the lone window (any state); `focused` closes the focused window (any state); `all` closes every window. Closing a window does not kill its session. Global-only. |
 | `restoreWindowPosition` | boolean | `true` | Remember window size and position between launches. Global-only. |
 | `hasCompletedFirstRun` | boolean | `false` | Whether the user has completed first-run onboarding. Auto-set, not shown in UI. |
@@ -265,9 +264,37 @@ config-only (driven by the Mode preset + Live/Refinement model dropdowns).
 
 Lists every keyboard shortcut grouped by area (General, Task Detail, Git Changes, Windows, Browser, Terminal, Developer) and lets the user rebind the configurable ones. Global-only (per-machine). Each row's capture widget records the next key chord or a mouse button press (middle or side buttons, so an action can be bound to either input; Escape cancels) and probes whether that combo is already claimed by the OS or another app (via the `keybindings:probeGlobal` IPC channel), warning if so. Two actions resolving to the same combo in overlapping scopes are flagged as a conflict. Reset-to-default is available per row and for all at once. Terminal clipboard combos (Copy, Paste) and Escape are shown read-only. The registry of every shortcut + default combo lives in `src/shared/keybindings.ts`; handlers read their effective combo through the `useKeybinding` hook. Overrides persist to the `hotkeyOverrides` key (see the Top-Level table above). The **Git Changes** group adds four cross-file diff-navigation shortcuts for the Changes panel, scoped to the task dialog and gated on the focused window: `changes.nextChange` (Alt+Down, also F7) and `changes.prevChange` (Alt+Up, also Shift+F7) step through hunks and roll over into the adjacent file at the boundaries, while `changes.nextFile` (Alt+Shift+Down) and `changes.prevFile` (Alt+Shift+Up) jump whole files.
 
+### Memory
+
+The Memory tab hosts conversation search + recall - a local index over agent conversation transcripts powering the Quick Find "Conversations" group (for you) and the `kangentic_search` MCP tool (for agents). It sits next to Dictation (both are on-device, keyless, model-backed AI features). Global-only (per-machine). Keyword search is on by default; the semantic layer is opt-in.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `memory.indexingEnabled` | boolean | `true` | Index agent conversation transcripts locally for search and recall. Off: no indexing runs, no conversation hits appear in Quick Find or `kangentic_search`, and the embed worker never starts. All local and keyless. |
+| `memory.semanticEnabled` | boolean | `false` | Enable the semantic (embedding) layer on top of lexical search. Turning it on triggers a one-time local model download (the selected `memory.embeddingModel`) and background embedding of the index. Runs in an Electron utilityProcess (transformers.js on onnxruntime-node; execution provider set by `memory.acceleration`); vector search via the sqlite-vec extension. Lexical FTS5 search works regardless; when the model or extension is unavailable, Smart search transparently falls back to lexical. |
+| `memory.embeddingModel` | string | `'bge-base'` | Which local embedding model powers semantic search, chosen by quality in the Memory tab's "Search quality" dropdown. Options (see `src/shared/embedding-models.ts`), all from the bge-*-en-v1.5 family: `bge-small` (Balanced, 384d, ~34 MB), `bge-base` (Accurate, 768d, ~110 MB), `bge-large` (Best accuracy, 1024d, ~337 MB). All ONNX/q8, keyless, offline, CLS-pooled with the same retrieval query prefix - only size/dimensions/accuracy scale between tiers. The dropdown shows the quality word; the concrete model name + size + download state show in the status card below it. Switching re-embeds the index in the background; a dimension change (e.g. to `bge-large`) recreates the vector table. |
+| `memory.acceleration` | `'auto' \| 'gpu' \| 'cpu'` | `'auto'` | Which hardware the embedding model runs on, set in the Memory tab's "Hardware acceleration" dropdown. `auto` (default) and `gpu` prefer a GPU execution provider (DirectML on Windows, WebGPU elsewhere) and fall back to CPU if it fails to initialize; `cpu` forces the universal path. Offloading to an idle GPU keeps the CPU free for the agents when many run at once. The active backend ("DirectML (GPU)", "CPU", ...) is shown in the status card. All local and keyless. |
+
+Relevance filtering is automatic, with no user-facing threshold. These
+sentence-embedding models are anisotropic: unrelated text does not score ~0, it
+scores near a high, model-specific cosine baseline (bge sit around 0.6), so a raw
+cosine threshold is neither portable across models nor legible to a user. Each
+model instead declares an empirical `noiseFloor`, and the search filter rescales
+raw cosine against it into a model-independent relevance (`(cos - floor) / (1 -
+floor)`); a single internal cutoff then drops off-topic and gibberish hits on
+every model while keeping genuine matches. Only the semantic layer is filtered;
+lexical (keyword) hits always appear. Applied wherever semantic search runs:
+Quick Find, `kangentic_search`, and similar-conversations.
+
+Search mode is not a stored preference: the Quick Find palette auto-selects it
+from `memory.semanticEnabled` (Smart/hybrid when on, keyword when off), so there
+is no per-search toggle. The Memory tab also offers a "Rebuild index" action that
+purges and re-runs the backfill sweep for the current project (recovery from a
+stale or corrupt index).
+
 ### Privacy
 
-The Privacy tab is informational only - it has no configurable keys. It displays what anonymous analytics Kangentic collects (app launches, platform, crash reports, task/session counts) and what it does not collect (task content, file paths, usernames, code). Analytics are powered by Aptabase (no cookies, no persistent identifiers, GDPR-compliant). Set `KANGENTIC_TELEMETRY=0` as an environment variable to opt out.
+The Privacy tab is informational only. It displays what anonymous analytics Kangentic collects (app launches, platform, crash reports, task/session counts) and what it does not collect (task content, file paths, usernames, code). Analytics are powered by Aptabase (no cookies, no persistent identifiers, GDPR-compliant). Set `KANGENTIC_TELEMETRY=0` as an environment variable to opt out. It points to the Memory tab for the (fully local) conversation-search controls. Global-only (per-machine).
 
 ### Developer
 

@@ -1585,6 +1585,30 @@ export interface AppConfig {
   };
 
   /**
+   * Conversation memory: local index over agent conversation transcripts for
+   * search and recall. GLOBAL/shared scope (below the settings separator, in
+   * the Memory tab). Works offline with no API key.
+   */
+  memory?: {
+    /** Index agent conversation transcripts locally for search/recall.
+     *  Default true. Off: no indexing, no conversation search results, and the
+     *  embed worker never runs. */
+    indexingEnabled?: boolean;
+    /** Semantic (embedding) layer on top of lexical search. Default false;
+     *  turning it on triggers the one-time local model download. */
+    semanticEnabled?: boolean;
+    /** Selected embedding model id (see src/shared/embedding-models.ts). Default
+     *  'bge-base'. Switching re-embeds the index in the background. */
+    embeddingModel?: string;
+    /** Which hardware the embedding model runs on. 'auto' (default) prefers a GPU
+     *  execution provider (DirectML on Windows, WebGPU elsewhere) and falls back to
+     *  CPU if it fails to initialize; 'gpu' forces the same GPU-first chain; 'cpu'
+     *  forces the universal CPU path. Offloading to an idle GPU keeps the CPU free
+     *  for the agents when many run at once. */
+    acceleration?: MemoryAcceleration;
+  };
+
+  /**
    * Voice-to-text dictation. GLOBAL/shared scope (hardware/user level, not
    * per-project): lives below the settings separator in the Dictation tab.
    * The push-to-talk binding is NOT here; it lives in `hotkeyOverrides` keyed
@@ -1631,10 +1655,6 @@ export interface AppConfig {
   skipDeleteConfirm: boolean;
   skipBoardConfigConfirm: boolean;
   autoFocusIdleSession: boolean;
-  /** Show the hover highlight, copy button, and right-click "Copy Block" affordance over
-   *  quote / code / message blocks in the terminal (never over a live interactive prompt or
-   *  still-streaming output). Default `false`. */
-  terminalBlockCopy: boolean;
   /** Click-outside dismiss policy for modeless task-detail windows. Default `single`. */
   windowLightDismiss: WindowLightDismiss;
   /** Task IDs that have already been offered an auto-rename suggestion. Persisted so a
@@ -1820,7 +1840,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   skipDeleteConfirm: false,
   skipBoardConfigConfirm: false,
   autoFocusIdleSession: false,
-  terminalBlockCopy: false,
   windowLightDismiss: 'single',
   autoNameAskedTaskIds: [],
   autoNameRateLimitPerHour: 60,
@@ -1834,6 +1853,12 @@ export const DEFAULT_CONFIG: AppConfig = {
   discoveredModelsByAgent: {},
   discoveredContextWindowsByAgent: {},
   hotkeyOverrides: {},
+  memory: {
+    indexingEnabled: true,
+    semanticEnabled: false,
+    embeddingModel: 'bge-base',
+    acceleration: 'auto',
+  },
   dictation: {
     enabled: false,
     engineMode: 'auto',
@@ -2595,18 +2620,73 @@ export interface SessionHistoryParseResult {
 }
 
 /**
+ * Per-turn token usage for one assistant turn, captured from the agent's native
+ * transcript (Claude records `message.usage` on each assistant message). Kept as
+ * the raw component counts, not a single sum, so downstream cost analysis can
+ * weight fresh input vs. the much cheaper cache reads. Deduped by the agent's
+ * message id at parse time, so a turn split across multiple JSONL lines is
+ * counted once. Undefined when the agent/turn reported no usage. This is the
+ * full-fidelity per-turn data that session-level `sessions.total_*_tokens`
+ * aggregates - persisted here so burn-rate / cost analysis can tap it from the
+ * conversation itself, not only the session summary.
+ */
+export interface TranscriptTurnUsage {
+  /** Fresh (non-cached) input tokens. */
+  inputTokens: number;
+  outputTokens: number;
+  /** Tokens written to the prompt cache this turn (billed at the write rate). */
+  cacheCreationInputTokens: number;
+  /** Tokens served from the prompt cache this turn (billed at the cheap read rate). */
+  cacheReadInputTokens: number;
+}
+
+/**
+ * A durably-stored per-turn usage row from the per-project `conversation_turn_usage`
+ * ledger. Unlike the in-transcript `TranscriptTurnUsage` (re-derived on every parse
+ * and gone the moment the agent prunes its native JSONL), these rows are written to
+ * the database at index time and persist independently of the source file, so
+ * cost / burn-rate analysis can read a task's or a project's full token history long
+ * after the transcript is deleted. Keyed by the turn's own uuid: a `--resume` replays
+ * its parent's turns verbatim under the same uuid, so a replayed turn maps back onto
+ * the same row (token totals never double-count a shared turn).
+ */
+export interface ConversationTurnUsageRecord {
+  turnUuid: string;
+  agentSessionId: string | null;
+  sessionId: string | null;
+  taskId: string | null;
+  model: string | null;
+  /** Epoch ms of the turn, or null when the agent reported no timestamp. */
+  ts: number | null;
+  usage: TranscriptTurnUsage;
+  /** When this row was last written (UTC ISO 8601). */
+  recordedAt: string;
+}
+
+/**
  * One entry in a parsed agent transcript. Distinct from `SessionEvent`
  * (telemetry only) - this preserves the actual conversation content for
  * display in the Transcript tab.
  */
 export type TranscriptEntry =
   | { kind: 'user'; uuid: string; ts: number; text: string }
-  | { kind: 'assistant'; uuid: string; ts: number; model?: string; blocks: TranscriptBlock[] }
+  // agentName is set only when this entry was stitched into a cross-session
+  // task-level view (resolveTaskTranscript) whose sessions used different
+  // agents - the role badge prefers it over the response's single top-level
+  // agentName, which only describes the latest session. Absent for an
+  // ordinary single-session transcript.
+  //
+  // usage carries this turn's per-turn token counts when the agent reported
+  // them (see TranscriptTurnUsage). It is not shown in the viewer today; it is
+  // captured so consumption/burn-rate analysis can read it straight off the
+  // conversation. Absent when the agent/turn reported no usage.
+  | { kind: 'assistant'; uuid: string; ts: number; model?: string; agentName?: string; usage?: TranscriptTurnUsage; blocks: TranscriptBlock[] }
   | { kind: 'tool_result'; uuid: string; ts: number; toolUseId: string; content: string; isError?: boolean }
   // Non-conversation events surfaced explicitly instead of being rendered as
   // misleading "## User" turns: conversation-compaction boundaries/summaries,
-  // and slash-command invocations and their local stdout.
-  | { kind: 'system'; uuid: string; ts: number; subtype: 'compaction' | 'command' | 'command_output'; text: string };
+  // slash-command invocations and their local stdout, and (session_boundary)
+  // the seam between two sessions stitched into one task-level view.
+  | { kind: 'system'; uuid: string; ts: number; subtype: 'compaction' | 'command' | 'command_output' | 'session_boundary'; text: string };
 
 export type TranscriptBlock =
   | { type: 'text'; text: string }
@@ -3198,6 +3278,30 @@ export interface ElectronAPI {
     everything: (input: SearchRequest) => Promise<SearchHit[]>;
   };
 
+  // Conversation viewer (structured transcripts)
+  transcripts: {
+    get: (input: TranscriptGetRequest) => Promise<TranscriptGetResponse>;
+    listSessions: (
+      taskId: string,
+      projectId?: string | null,
+    ) => Promise<ConversationSessionMeta[]>;
+  };
+
+  // Conversation memory (search index) status + proactive surfaces.
+  memory: {
+    getStatus: () => Promise<MemoryStatus>;
+    /** Past conversations similar to a task (from its title + description),
+     *  excluding the task's own sessions. Returns conversation-kind hits. */
+    similarForTask: (
+      taskId: string,
+      projectId?: string | null,
+    ) => Promise<Extract<SearchHit, { kind: 'conversation' }>[]>;
+    /** Purge the project's conversation index and re-run the backfill sweep
+     *  (recovery from a corrupt/stale index). Resolves when the purge is done;
+     *  the rebuild sweep continues in the background. */
+    rebuildIndex: (projectId?: string | null) => Promise<void>;
+  };
+
   // Platform
   platform: string;
 
@@ -3266,6 +3370,51 @@ export interface SearchRequest {
   query: string;
   scope: 'current' | 'all';
   currentProjectId: string;
+  /**
+   * Retrieval mode for conversation hits. 'keyword' (default) = lexical FTS5;
+   * 'smart' = hybrid lexical + semantic (falls back to lexical when the
+   * semantic layer is unavailable). Omitted = 'keyword' (back-compat).
+   */
+  mode?: 'keyword' | 'smart';
+}
+
+/** Runtime state of the semantic (embedding) layer, for the palette Smart-mode
+ *  UI. `lexical` = enabled but sqlite-vec unavailable, so search stays lexical. */
+export type MemorySemanticState = 'disabled' | 'downloading' | 'lexical' | 'hybrid' | 'error';
+
+/** Download/availability state of the selected embedding model. */
+export type MemoryModelState = 'absent' | 'downloading' | 'ready' | 'error';
+
+/** The selected embedding model's identity + download state, for the settings
+ *  model card (mirrors the dictation model-status card). */
+export interface MemoryModelStatus {
+  id: string;
+  displayName: string;
+  tier: 'balanced' | 'accurate' | 'max';
+  approxSizeMb: number;
+  dimensions: number;
+  state: MemoryModelState;
+  /** 0..1 while `state === 'downloading'`. */
+  progress?: number;
+}
+
+/** Where the embedding model runs. See `AppConfig.memory.acceleration`. */
+export type MemoryAcceleration = 'auto' | 'gpu' | 'cpu';
+
+export interface MemoryStatus {
+  indexingEnabled: boolean;
+  semantic: MemorySemanticState;
+  /** Human-readable execution backend the embed worker actually initialized on
+   *  (e.g. "DirectML (GPU)", "WebGPU (GPU)", "CPU"), for the settings model card.
+   *  Undefined until the worker has embedded at least once this run. */
+  activeBackend?: string;
+  /** 0..1 while `semantic === 'downloading'`, else undefined. */
+  modelProgress?: number;
+  /** The selected model + its download state (present once semantic is on). */
+  model?: MemoryModelStatus;
+  /** When `semantic === 'lexical'`, the reason sqlite-vec failed to load (so the
+   *  Memory tab can explain the degrade), or undefined if it simply is not loaded. */
+  vecError?: string;
 }
 
 interface SearchHitBase {
@@ -3304,9 +3453,117 @@ export type SearchHit =
   | (SearchHitBase & {
       kind: 'project';
       projectPath: string;
+    })
+  | (SearchHitBase & {
+      kind: 'conversation';
+      /** Owning task, or null for a session whose task row was removed. */
+      taskId: string | null;
+      taskTitle: string;
+      /** Kangentic session id (sessions.id); the conversation-viewer anchor. */
+      sessionId: string;
+      agentName: string;
+      /** memory_chunks.id of the matched chunk; step-2 fetch / context expansion key. */
+      chunkId: number;
+      /** TranscriptEntry uuid the matched chunk starts at; the scroll-to target.
+       *  Null when the chunk lost its anchor (older index rows). */
+      turnUuid: string | null;
+      /** Dominant role of the matched chunk: 'user' | 'assistant' | 'tool_result' | 'system'
+       *  | 'mixed'. Drives the result-row badge. */
+      turnKind: string;
+      /** Epoch ms of the matched turn; scroll-to ts fallback + relative-time display. */
+      turnTs: number | null;
+      /** Relevance, higher = better. Phase 1: normalized bm25. Phase 2: RRF.
+       *  Conversation hits render sorted by this within their group. */
+      score: number;
+      /** How the hit was produced. Semantic-only hits carry an empty
+       *  match range (matchStart === matchEnd) so the row skips the <mark>. */
+      matchKind: 'lexical' | 'semantic' | 'hybrid';
+      /** True when this session has a live agent right now (sessions.status
+       *  running/queued). Selecting the hit then opens the live task terminal
+       *  instead of the read-only conversation viewer, and the row badges it as
+       *  "Terminal" vs "History". */
+      sessionActive: boolean;
+      /** How many chunks in this conversation matched. The hit is the best-scoring
+       *  one; the row shows "N matches" when this is > 1 (results are collapsed to
+       *  one row per conversation). */
+      matchCount: number;
     });
 
 export type SearchHitKind = SearchHit['kind'];
+
+// =============================================================================
+// Conversation viewer (structured transcripts)
+// =============================================================================
+// Backing types for the human-facing conversation viewer, which renders the
+// structured `TranscriptEntry[]` for a task's ENTIRE lifecycle: every session
+// the task has ever accumulated (a model switch, an agent change, an isolated
+// swimlane move each spin up a distinct sessions row), stitched into one
+// chronological timeline with a `session_boundary` divider between them. This
+// is unconditional - not a user setting - so "the conversation for this task"
+// always means its full history end to end, regardless of what changed
+// mid-task. A session with no task_id (rare - a transient/orphan record) falls
+// back to just its own entries, since there is no task to unify across.
+
+export interface TranscriptGetRequest {
+  /** Kangentic session id (sessions.id) or the agent-native session id) -
+   *  used only to resolve WHICH task to show; every session belonging to that
+   *  task is included regardless of which one was passed. */
+  sessionId: string;
+  /** Interaction-time project id. Read-only, but preferred over the ambient
+   *  current project (a conversation hit can target another project). */
+  projectId?: string | null;
+}
+
+/** Where a rendered conversation's content came from. `none` = neither the
+ *  native history nor an index fallback was available. For a stitched
+ *  multi-session view this describes the LATEST session (the one live-polling
+ *  cares about); earlier sessions may individually be 'index' or 'none'. */
+export type TranscriptSource = 'live' | 'index' | 'none';
+
+export type TranscriptUnavailableReason =
+  | 'unsupported_agent'
+  | 'no_agent_session_id'
+  | 'file_missing';
+
+export interface TranscriptGetResponse {
+  /** The LATEST contributing session's id (the one live-polling watches). */
+  sessionId: string;
+  taskId: string | null;
+  taskTitle: string;
+  /** The LATEST contributing session's agent. A session_boundary divider and
+   *  each assistant entry's own agentName (when present) carry the others. */
+  agentName: string;
+  /** ISO 8601 start of the LATEST contributing session. */
+  startedAt: string;
+  /** LATEST contributing session's record status. `running`/`queued` mean the
+   *  transcript may still grow, so an open viewer live-refreshes; other states
+   *  are static. Null when no session was found at all. */
+  sessionStatus: SessionRecordStatus | null;
+  source: TranscriptSource;
+  /** LATEST contributing session's located native history file/db path, or null. */
+  sourcePath: string | null;
+  /** Every session's entries concatenated oldest-first, with a
+   *  `session_boundary` system entry inserted between sessions. A session
+   *  with no task (orphan) has exactly one contributing session: itself. */
+  entries: TranscriptEntry[];
+  /** True when ANY contributing session's content came from the index
+   *  fallback (block structure lossy for that stretch). */
+  degraded: boolean;
+  unavailableReason?: TranscriptUnavailableReason;
+  /** Every session that contributed entries, oldest first - lets the viewer's
+   *  session picker jump to where each one begins in the unified scroll. */
+  sessions: ConversationSessionMeta[];
+}
+
+/** One selectable session in the conversation viewer's session picker. */
+export interface ConversationSessionMeta {
+  sessionId: string;
+  agentName: string;
+  startedAt: string;
+  exitedAt: string | null;
+  isolatedSwimlaneId: string | null;
+  status: SessionRecordStatus;
+}
 
 
 // =============================================================================

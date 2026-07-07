@@ -72,7 +72,7 @@ export const MCP_TOOL_MANIFEST: McpToolManifestEntry[] = [
   { name: 'kangentic_update_backlog_item', label: 'Update Backlog Item', blurb: 'edit a backlog item title, description, priority, labels, or attachments', category: 'board' },
   { name: 'kangentic_delete_backlog_item', label: 'Delete Backlog Item', blurb: 'permanently remove a backlog item and its attachments', category: 'board' },
   { name: 'kangentic_list_projects', label: 'List Projects', blurb: 'every Kangentic project registered on this machine', category: 'board' },
-  { name: 'kangentic_search_everything', label: 'Search Everything', blurb: 'unified search across tasks, backlog, sessions, and projects', category: 'board' },
+  { name: 'kangentic_search', label: 'Search', blurb: 'unified search across tasks, backlog, session events, projects, and past conversations (keyword or semantic)', category: 'board' },
 
   // ── Sessions (session-tools.ts) - per-task session history, transcripts, and handoff ──
   { name: 'kangentic_list_sessions', label: 'List Sessions', blurb: 'session records for a task with timings, cost, and exit info', category: 'sessions' },

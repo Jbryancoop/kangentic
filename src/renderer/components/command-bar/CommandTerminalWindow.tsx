@@ -19,10 +19,10 @@
 
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Circle, CircleStop, FolderOpen, GitBranch, GitCompare, Loader2, Maximize2, Minimize2, PictureInPicture2, SquareChevronRight, Zap } from 'lucide-react';
+import { Circle, CircleStop, FolderOpen, FolderGit, GitBranch, GitCompare, Loader2, Maximize2, Minimize2, PictureInPicture2, SquareChevronRight, Zap } from 'lucide-react';
 import { BranchPicker } from '../dialogs/BranchPicker';
 import { LaunchOverlay } from '../LaunchOverlay';
-import { Pill } from '../Pill';
+import { HeaderActionButton } from '../HeaderActionButton';
 import { KebabMenu, KebabMenuItem, KebabMenuDivider } from '../KebabMenu';
 import { CommandPalettePopover } from '../dialogs/task-detail/CommandPalettePopover';
 import { useHeaderPillOverflow, type HeaderPillSpec } from '../dialogs/task-detail/useHeaderPillOverflow';
@@ -31,7 +31,6 @@ import { useTerminal } from '../../hooks/useTerminal';
 import { useKeybinding, useFormattedCombo } from '../../hooks/useKeybinding';
 import { useTerminalFileDrop } from '../../hooks/useTerminalFileDrop';
 import { FileDropOverlay } from '../terminal/FileDropOverlay';
-import { TerminalBlockCopyButton } from '../terminal/TerminalBlockCopyButton';
 import { ContextBar } from '../terminal/ContextBar';
 import { useSessionStore } from '../../stores/session-store';
 import { transientKey } from '../../stores/session-store/transient-session-slice';
@@ -44,7 +43,6 @@ import { ICON_REGISTRY } from '../../utils/swimlane-icons';
 import { resolveProjectRoot } from '../../../shared/git-utils';
 import { isActive, requiresUserInteraction } from '../../../shared/activity-state';
 import { getIsHmrReload } from '../../utils/hmr-flag';
-import { useHmrGeneration } from '../../utils/hmr-generation';
 import { useLayerStore } from '../../window-manager';
 import type { ManagedWindow } from '../../window-manager';
 import type { AgentCommand } from '../../../shared/types';
@@ -123,11 +121,6 @@ export function CommandTerminalWindow({ managedWindow, isMaximized, titleBarPoin
   const windowCount = useStore((state) => Object.keys(state.windows).length);
   const isTiled = useStore((state) => state.windows[windowId]?.leafId != null);
   const { hideLayer } = useCommandTerminalLayer();
-  // Remount the block-copy overlay on each Fast Refresh so its xterm subscriptions
-  // (attached by terminal identity in ensureLive, which persists across HMR) re-bind with
-  // fresh closures. Inert in production, where hmrGeneration is a constant 0. Mirrors the
-  // <DndContext> key pattern (see hmr-patterns.md Pattern C).
-  const hmrGeneration = useHmrGeneration();
 
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [branch, setBranch] = useState<string | null>(null);
@@ -145,7 +138,6 @@ export function CommandTerminalWindow({ managedWindow, isMaximized, titleBarPoin
   const maximizeCombo = useFormattedCombo('panel.maximize');
   const spawnedRef = useRef(false);
   const terminalPaneRef = useRef<HTMLDivElement>(null);
-  const commandButtonRef = useRef<HTMLDivElement>(null);
   // The branch picker can fold into the kebab; this drives the kebab-anchored
   // fallback dropdown ("Switch branch").
   const [branchMenuOpen, setBranchMenuOpen] = useState(false);
@@ -174,7 +166,8 @@ export function CommandTerminalWindow({ managedWindow, isMaximized, titleBarPoin
   // Quick-access pills fold into the kebab in DESCENDING priority as the window
   // narrows, so the title always wins the space fight (useHeaderPillOverflow).
   const pillSpecs = useMemo<HeaderPillSpec[]>(() => {
-    const specs: HeaderPillSpec[] = [{ id: 'commands', priority: 50 }];
+    // Commands is kebab-only (a menu, not a one-tap toggle), matching the task-detail header.
+    const specs: HeaderPillSpec[] = [];
     if (projectPath) specs.push({ id: 'folder', priority: 40 });
     if (projectPath) specs.push({ id: 'changes', priority: 30 });
     specs.push({ id: 'branch', priority: 25 });
@@ -307,7 +300,7 @@ export function CommandTerminalWindow({ managedWindow, isMaximized, titleBarPoin
     ),
   );
 
-  const { terminalRef, initTerminal, fit, flushResize, focus, getTerminal } = useTerminal({
+  const { terminalRef, initTerminal, fit, flushResize, focus } = useTerminal({
     sessionId: effectiveSessionId,
     fontFamily: config.terminal.fontFamily,
     fontSize: config.terminal.fontSize,
@@ -467,7 +460,7 @@ export function CommandTerminalWindow({ managedWindow, isMaximized, titleBarPoin
       {/* Header. Priority-plus layout: the title keeps a ~50ch floor; the pills
           reclaim the space above it and fold into the kebab as the window narrows
           (useHeaderPillOverflow). */}
-      <div ref={headerRef} className="flex items-center gap-3 px-4 py-2.5 border-b border-edge flex-shrink-0 select-none min-w-0">
+      <div ref={headerRef} className="flex items-center gap-3 px-4 h-[54px] border-b border-edge flex-shrink-0 select-none min-w-0">
         {/* Leading cluster: Stop (protected, measured as one unit). */}
         <div ref={leadingRef} className="flex items-center flex-shrink-0">
           <button
@@ -507,52 +500,31 @@ export function CommandTerminalWindow({ managedWindow, isMaximized, titleBarPoin
         {/* Quick-access pills - each wrapped with `data-pill-id` so the overflow
             calc can measure it; only the ones that fit are rendered. */}
         <div ref={pillsRef} className="flex items-center gap-3 flex-shrink-0">
-          {showPill('commands') && (
-            <div data-pill-id="commands" className="relative flex-shrink-0" ref={commandButtonRef}>
-              <Pill
-                shape="square"
-                onClick={() => setShowCommandPalette(!showCommandPalette)}
-                className="bg-surface-hover/50 text-fg-muted hover:text-fg-secondary hover:bg-surface-hover transition-colors"
-                title="Run a command or skill"
-                data-testid="command-bar-commands-button"
-              >
-                <SquareChevronRight size={14} />
-                Commands
-              </Pill>
-            </div>
-          )}
-
+          {/* Open folder pill - icon-only. The command terminal always runs in the
+              project git dir (never a worktree), so the FolderGit glyph matches the
+              task-detail no-worktree case; the path shows once the folder opens. */}
           {projectPath && showPill('folder') && (
             <div data-pill-id="folder" className="flex-shrink-0">
-              <Pill
-                shape="square"
+              <HeaderActionButton
+                icon={FolderGit}
                 onClick={() => window.electronAPI.shell.openPath(projectPath)}
-                className="bg-surface-hover/50 text-fg-muted hover:text-fg-secondary hover:bg-surface-hover transition-colors flex-shrink-0"
-                title={projectPath}
-                data-testid="command-bar-folder-button"
-              >
-                <FolderOpen size={14} />
-                Project
-              </Pill>
+                title="Project"
+                ariaLabel="Open project folder"
+                testId="command-bar-folder-button"
+              />
             </div>
           )}
 
           {projectPath && showPill('changes') && (
             <div data-pill-id="changes" className="flex-shrink-0">
-              <Pill
-                shape="square"
+              <HeaderActionButton
+                icon={GitCompare}
                 onClick={handleToggleChanges}
-                className={`flex-shrink-0 transition-colors border ${
-                  changesOpen
-                    ? 'bg-accent/15 text-accent-fg border-accent/30'
-                    : 'bg-surface-hover/50 text-fg-muted hover:text-fg-secondary hover:bg-surface-hover border-transparent'
-                }`}
+                active={changesOpen}
                 title={changesOpen ? 'Hide changes' : 'Show changes'}
-                data-testid="command-bar-changes-toggle"
-              >
-                <GitCompare size={14} />
-                Changes
-              </Pill>
+                ariaLabel="Toggle changes"
+                testId="command-bar-changes-toggle"
+              />
             </div>
           )}
 
@@ -572,16 +544,13 @@ export function CommandTerminalWindow({ managedWindow, isMaximized, titleBarPoin
             const ActionIcon = ICON_REGISTRY.get(action.icon ?? 'zap') ?? Zap;
             return (
               <div key={pillId} data-pill-id={pillId} className="flex-shrink-0">
-                <Pill
-                  shape="square"
+                <HeaderActionButton
+                  icon={ActionIcon}
                   onClick={() => handleShortcutExecute(action)}
-                  className="bg-surface-hover/50 text-fg-muted hover:text-fg-secondary hover:bg-surface-hover transition-colors flex-shrink-0"
                   title={action.command}
-                  data-testid={`command-bar-shortcut-${action.label.toLowerCase().replace(/\s+/g, '-')}`}
-                >
-                  <ActionIcon size={14} />
-                  {action.label}
-                </Pill>
+                  label={action.label}
+                  testId={`command-bar-shortcut-${action.label.toLowerCase().replace(/\s+/g, '-')}`}
+                />
               </div>
             );
           })}
@@ -690,12 +659,11 @@ export function CommandTerminalWindow({ managedWindow, isMaximized, titleBarPoin
           </button>
         </div>
 
-        {/* Commands palette: rendered once at the header root; anchors to the
-            Commands pill when shown, else to the kebab (so opening it from the
-            overflow menu after the pill folded still positions correctly). */}
+        {/* Commands palette: rendered once at the header root. Commands is kebab-only
+            now (no header pill), so it always anchors to the kebab. */}
         {showCommandPalette && (
           <CommandPalettePopover
-            triggerRef={showPill('commands') ? commandButtonRef : kebabWrapRef}
+            triggerRef={kebabWrapRef}
             cwd={projectPath ?? undefined}
             onSelect={handleCommandSelect}
             onClose={() => setShowCommandPalette(false)}
@@ -718,7 +686,6 @@ export function CommandTerminalWindow({ managedWindow, isMaximized, titleBarPoin
             className="h-full"
             data-testid="command-bar-terminal"
           />
-          <TerminalBlockCopyButton key={hmrGeneration} containerRef={terminalPaneRef} getTerminal={getTerminal} />
         </div>
 
         {/* Changes panel */}

@@ -2,12 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTerminal } from '../../hooks/useTerminal';
 import { useTerminalFileDrop } from '../../hooks/useTerminalFileDrop';
 import { FileDropOverlay } from './FileDropOverlay';
-import { TerminalBlockCopyButton } from './TerminalBlockCopyButton';
 import { useConfigStore } from '../../stores/config-store';
 import { useSessionStore } from '../../stores/session-store';
 import { LaunchOverlay } from '../LaunchOverlay';
 import { getIsHmrReload } from '../../utils/hmr-flag';
-import { useHmrGeneration } from '../../utils/hmr-generation';
 import { useTerminalOverlay } from '../../utils/task-progress';
 import { isManagerResizeInProgress } from '../../window-manager/terminal/manager-resize-gate';
 
@@ -63,7 +61,7 @@ export function TerminalTab({ sessionId, taskId, active, releaseEscapeWhenPointe
   // PTY output from accumulating in xterm behind the overlay.
   const [terminalReady, setTerminalReady] = useState(() => hasFirstOutput || hasUsage);
 
-  const { terminalRef, initTerminal, fit, flushResize, focus, reloadScrollback, scrollbackPending, suppressDataRef, getTerminal } = useTerminal({
+  const { terminalRef, initTerminal, fit, flushResize, focus, reloadScrollback, scrollbackPending, suppressDataRef } = useTerminal({
     sessionId,
     fontFamily: config.terminal.fontFamily,
     fontSize: config.terminal.fontSize,
@@ -76,7 +74,7 @@ export function TerminalTab({ sessionId, taskId, active, releaseEscapeWhenPointe
   // Sync suppressDataRef with overlay state: suppress all PTY data while overlay is showing.
   suppressDataRef.current = !terminalReady;
 
-  // Relative wrapper that hosts the xterm div and the block-copy overlay.
+  // Relative wrapper that hosts the xterm div and its overlays.
   const containerRef = useRef<HTMLDivElement>(null);
 
   const initialized = useRef(false);
@@ -274,16 +272,9 @@ export function TerminalTab({ sessionId, taskId, active, releaseEscapeWhenPointe
 
   const fileDrop = useTerminalFileDrop(sessionId, focus, sessionShell);
 
-  // Remount the block-copy overlay on each Fast Refresh so its xterm subscriptions
-  // (attached by terminal identity in ensureLive, which persists across HMR) re-bind with
-  // fresh closures. Inert in production, where hmrGeneration is a constant 0. Mirrors the
-  // <DndContext> key pattern (see hmr-patterns.md Pattern C).
-  const hmrGeneration = useHmrGeneration();
-
   return (
     <div ref={containerRef} className="h-full w-full bg-surface relative">
       <div ref={terminalRef} className="h-full w-full" />
-      <TerminalBlockCopyButton key={hmrGeneration} containerRef={containerRef} getTerminal={getTerminal} />
       <FileDropOverlay {...fileDrop} />
       {/* Placeholder overlay while Claude CLI is loading (before first usage report).
           Stays visible until scrollback replay + clear are both done.
