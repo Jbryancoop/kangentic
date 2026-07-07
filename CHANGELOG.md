@@ -25,7 +25,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Redesign Edit Columns as a master-detail layout with maximize parity (2d5f1242)
 - Link each MCP tool pill in settings to its docs page (bfa6ac4a)
 - Copyable terminal output blocks (7369d23f)
-- Make the per-launch MCP task-creation cap user-configurable (f7d63cd5)
 - Never prompt for Kangentic's own MCP tools (1ef2b1c5)
 
 ### Fixes

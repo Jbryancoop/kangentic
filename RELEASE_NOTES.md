@@ -7,7 +7,7 @@
 - **Markdown preview in the diff viewer.** Toggle a rendered markdown view of changed files.
 - **Smarter model picker.** Rescans installed models when you open the dropdown, hides superseded model generations, and shows a self-discovered context-window badge.
 - **Redesigned Edit Columns.** A master-detail layout with maximize support.
-- **MCP improvements.** Attach and remove files on existing tasks, a configurable per-launch task-creation cap, no more prompts for Kangentic's own MCP tools, and each MCP tool pill now links to its docs.
+- **MCP improvements.** Attach and remove files on existing tasks, no more prompts for Kangentic's own MCP tools, and each MCP tool pill now links to its docs.
 - **Snappier UI.** Eliminated a class of recurring UI freezes.
 
 ## Bug Fixes
