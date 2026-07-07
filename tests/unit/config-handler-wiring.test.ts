@@ -91,6 +91,23 @@ vi.mock('../../src/main/pr/pr-refresh-scheduler', () => ({
   },
 }));
 
+// Same treatment for the sibling lazy import inside CONFIG_SET_PROJECT_BY_PATH:
+// system.ts re-runs the conversation-memory sweep via
+// `void import('../../retrieval/retrieval-service')`. Left unmocked, the real
+// retrievalService.startForProject().attach() subscribes to
+// context.sessionManager.on(...), which this file's lightweight sessionManager
+// mock does not implement - the resulting throw surfaces as an unhandled
+// rejection on a later microtask (after the test has passed) and fails the
+// whole shard. Stubbing it isolates this config-wiring test from the retrieval
+// subsystem entirely.
+const retrievalStartForProjectSpy = vi.fn();
+vi.mock('../../src/main/retrieval/retrieval-service', () => ({
+  retrievalService: {
+    startForProject: (...args: unknown[]) => retrievalStartForProjectSpy(...args),
+    attach: vi.fn(),
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Import under test (after all mocks are registered)
 // ---------------------------------------------------------------------------
