@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.27.1] - 2026-07-07
+
+### Fixes
+
+- Remove Similar conversations panel, warm-hold embed worker (51893ffe)
+
+### Other
+
+- Stub retrieval-service in config-handler-wiring (0553c025)
+- Correct v0.27.0 notes, drop reverted MCP cap claim (c88449b6)
+- Cover CONFIG_SET reconcileEmbedWorker wiring (0a8d20d8)
+
 ## [v0.27.0] - 2026-07-07
 
 ### Features
