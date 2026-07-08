@@ -43,7 +43,7 @@
     },
     {
       "id": "1da886f1-804b-42ea-960e-2109f776d451",
-      "name": "Tests",
+      "name": "Testing",
       "icon": "flask-conical",
       "color": "#06b6d4",
       "autoSpawn": true,
@@ -54,8 +54,8 @@
     },
     {
       "id": "8adfe5cc-955c-4c4f-83a2-461e2a9d3c14",
-      "name": "Ship It",
-      "icon": "sailboat",
+      "name": "Merge",
+      "icon": "merge",
       "color": "#f97316",
       "autoSpawn": true,
       "permissionMode": "auto",
@@ -69,6 +69,16 @@
       "role": "done",
       "icon": "circle-check-big",
       "color": "#64748B"
+    },
+    {
+      "id": "54e92fc4-e47b-4af2-a2f5-ac32833bbc96",
+      "name": "Release",
+      "icon": "rocket",
+      "color": "#f43f5e",
+      "autoSpawn": true,
+      "autoCommand": "/release",
+      "modelOverride": "claude-opus-4-8",
+      "effortOverride": "xhigh"
     }
   ],
   "actions": [
