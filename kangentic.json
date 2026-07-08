@@ -69,16 +69,6 @@
       "role": "done",
       "icon": "circle-check-big",
       "color": "#64748B"
-    },
-    {
-      "id": "54e92fc4-e47b-4af2-a2f5-ac32833bbc96",
-      "name": "Release",
-      "icon": "rocket",
-      "color": "#f43f5e",
-      "autoSpawn": true,
-      "autoCommand": "/release",
-      "modelOverride": "claude-opus-4-8",
-      "effortOverride": "xhigh"
     }
   ],
   "actions": [
