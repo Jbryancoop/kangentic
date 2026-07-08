@@ -499,7 +499,7 @@ When an agent goes idle (waiting for input or stopped) on a non-active project, 
 
 Desktop and toast notifications fire when an agent needs attention and the user can't already see it - either the window is minimized/unfocused, or a different project is active. Notification events: agent idle, permission-blocked idle (body shows "Needs permission"), session crash (non-zero exit), and plan-completion auto-moves. The task name is the title and the project name is the body. Clicking a desktop notification brings the window to the foreground, switches to the correct project, and opens the task detail dialog. The taskbar also flashes on Windows. A 10-second per-session cooldown prevents repeated desktop notifications from the same agent.
 
-The Settings > Notifications panel exposes two configurable events: **Agent Idle** and **Plan Complete**. Each can be set to Desktop & Toast, Desktop Only, Toast Only, or Off. Toast duration and max visible count are also configurable. The **Agent Crash** notification (non-zero exit) is always on and not exposed in the settings UI.
+The Settings > Notifications panel exposes three configurable events: **Agent Idle**, **Plan Complete**, and **Spawn Stalled** (a task spawn that waits too long on the git queue while preparing). Each can be set to Desktop & Toast, Desktop Only, Toast Only, or Off. Toast duration and max visible count are also configurable. The **Agent Crash** notification (non-zero exit) is always on and not exposed in the settings UI.
 
 ### Privacy
 

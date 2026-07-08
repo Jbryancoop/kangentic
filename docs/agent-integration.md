@@ -70,6 +70,27 @@ Adapter-discovered capabilities surfaced to the renderer (returned by `discoverC
 
 `AgentDetectionInfo.capabilities?: AgentCapabilities` - populated at detection time; absent for adapters that do not implement `discoverCapabilities`.
 
+### Per-Adapter Capability Discovery
+
+Beyond Claude (detailed above) and Ollama (which lists installed models via `ollama list`, see [Ollama](#ollama)), eight adapters each ship their own `src/main/agent/adapters/<name>/capability-discovery.ts`. The seven that probe the CLI share a common shape built on the bounded session-history scan helpers in `src/main/agent/shared/history-scan.ts` (`listMostRecentDirs` / `listMostRecentFiles` / `readHeadBytes` / `readTailBytes` / `parseJsonlRecords`, all capped so discovery stays fast on a heavily-used install):
+
+1. **Model-override flag** - run `<cli> --help` and regex for a `--model` / `-m` flag to set `supportsModelOverride`.
+2. **Model list** - when that flag is present, scan the agent's own on-disk session history for the distinct model ids the user has actually used, sorted ascending so families cluster. An empty result leaves `models` undefined and the renderer falls back to a free-form text input.
+3. **Effort levels** - only Copilot parses these from `--help`; every other non-Claude adapter reports `effortLevels: []` (no CLI effort concept).
+
+All implementations are best-effort and never throw: a help-read or history-scan failure yields conservative defaults so the rest of detection still succeeds. Droid is the one exception to the probe shape - it discovers nothing and hardcodes `supportsModelOverride: false` by design.
+
+| Adapter | `--model`? | Effort levels | Model list source | Notes |
+|---------|-----------|---------------|-------------------|-------|
+| Qwen Code | `--help` (`--model` / `-m`) | None | `~/.qwen/projects/<hash>/chats/*.jsonl` - assistant `model` + `ui_telemetry` `systemPayload.uiEvent.model` | Probes both shapes for schema-drift resilience. |
+| Gemini | `--help` (`--model` / `-m`) | None | `~/.gemini/tmp/<basename(cwd)>/chats/session-*.{json,jsonl}` - top-level `model` + each `messages[].model` | Reads single-document `.json` in full; head-scans `.jsonl`. |
+| Codex | `--help` (`--model` / `-m`) | None | `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl` - `turn_context` events' `payload.model` | Codex effort is `config.toml` `model_reasoning_effort` only (no CLI flag), so effort stays empty. |
+| GitHub Copilot | `--help` (`--model <...>`) | `--help` `--reasoning-effort` / `--effort` line (commander.js `choices:` format, quotes stripped) | `~/.copilot/session-state/<id>/events.jsonl` (tail) - `session.shutdown` `data.currentModel` / `data.model` / `modelMetrics` keys | The only non-Claude adapter that discovers effort levels; scans the file tail because the model-bearing shutdown event lands last. |
+| Kimi | `--help` (`--model` / `-m`) | None | `~/.kimi/sessions/<md5(workdir)>/<uuid>/wire.jsonl` - top-level `model` + `message.payload.model` | Best-effort; upstream CLI research was quota-limited, so the payload probe is deliberately broad. |
+| Cursor | `--help` (`--model` only, no `-m`) | None | `~/.cursor/sessions/<dated>/*.jsonl` NDJSON `system` / `init` events' `model`, merged with a hardcoded `CURSOR_COMMON_MODELS` fallback | Model entries are display names (e.g. "Claude 4.1 Sonnet"), not ids; the fallback list runs unconditionally so `models` is always populated. Reasoning is encoded in model names, not a separate flag. |
+| OpenCode | `--help` best-effort, defaults false | None | (no history scan) | Model selection is intentionally left to the TUI / `opencode.json` per `cli-features-over-custom-layers.md`; no curated model list. |
+| Droid | No (hardcoded false, no probe) | None | (no history scan) | Intentional: `discoverDroidCapabilities` ignores `cliPath` and returns `supportsModelOverride: false` so the Model / Effort dropdowns stay hidden. TUI-first per `cli-features-over-custom-layers.md`. |
+
 ### `CommandOptions` - new spawn knobs
 
 `src/main/agent/agent-adapter.ts`
@@ -999,20 +1020,10 @@ same caveat the Claude adapter documents).
 
 ## Prompt Templates
 
-Actions of type `spawn_agent` can define a `promptTemplate` with placeholders:
+Actions of type `spawn_agent` can define a `promptTemplate` with `{{placeholder}}` variables. The full variable set (`task_xml`, `title`, `description`, `taskId`, `worktreePath`, `branchName`, `baseBranch`, `prUrl`, `prNumber`, `attachments`) is documented once, in the transition engine's [Template Variables](transition-engine.md#template-variables) section. The two families worth calling out for prompt authoring:
 
-| Variable | Value |
-|----------|-------|
-| `{{task_xml}}` | `<task><title>...</title><description>...</description></task>` envelope (escaped) - preferred for default templates |
-| `{{title}}` | Task title (PTY-sanitized) - kept for backward compat with custom prose templates |
-| `{{description}}` | Task description with `: ` prefix when non-empty, empty string otherwise |
-| `{{taskId}}` | Task UUID |
-| `{{worktreePath}}` | Worktree directory path (empty if no worktree) |
-| `{{branchName}}` | Git branch name (empty if no worktree) |
-| `{{baseBranch}}` | Base branch the task forked from (empty if unset) |
-| `{{prUrl}}` | Pull request URL (empty if none) |
-| `{{prNumber}}` | Pull request number as string (empty if none) |
-| `{{attachments}}` | Bare file paths (one per line) when attachments exist, empty otherwise |
+- `{{task_xml}}` is the preferred default: a `<task><title>...</title><description>...</description></task>` envelope (escaped).
+- `{{title}}` / `{{description}}` remain for backward compatibility with custom prose templates.
 
 Default template: `{{task_xml}}{{attachments}}`
 

@@ -25,6 +25,8 @@ Each doc file and the source files that are its authority:
 | `worktree-strategy.md` | `src/main/git/worktree-manager.ts`, `src/main/agent/adapters/claude/hook-manager.ts`, `src/main/agent/adapters/claude/trust-manager.ts` |
 | `activity-detection.md` | `src/main/agent/event-bridge.js`, `src/shared/types.ts` (EventType, EventTypeActivity, HookEvent), `src/main/activity-engine/engine/shapes.ts` (TransitionTrigger, default thresholds), `src/main/activity-engine/engine/watchdog.ts` (hold table) |
 | `mcp-server.md` | `src/main/agent/mcp-http-server.ts`, `src/main/agent/mcp-http/**`, `src/main/agent/commands/`, `src/main/ipc/handlers/sessions.ts`, `src/shared/types.ts` (MCP types) |
+| `board-integration.md` | `src/main/boards/board-registry.ts`, `src/main/boards/shared/**`, `src/main/boards/adapters/**`, `src/shared/types.ts` (ExternalSource) |
+| `pr-integration.md` | `src/main/pr/pr-registry.ts`, `src/main/pr/shared/**`, `src/main/pr/adapters/**`, `src/main/pr/pr-linking.ts`, `src/main/pr/pr-refresh.ts`, `src/main/pr/pr-refresh-scheduler.ts`, `src/shared/types.ts` (PR types) |
 | `overview.md` | `README.md`, high-level features |
 | `user-guide.md` | `src/renderer/components/`, `src/renderer/stores/`, `src/shared/types.ts` |
 | `developer-guide.md` | `scripts/`, `tests/`, `electron-builder.yml`, `package.json` |
@@ -129,7 +131,7 @@ Anchors are enumerable source-code structures that must be exhaustively listed i
 | Per-agent capability discovery | `src/main/agent/adapters/*/capability-discovery.ts` | agent-integration.md (model/effort tables) |
 | First-output detection strategies | All adapter files (`detectFirstOutput` method) | agent-integration.md (first-output detection table) |
 | Exit sequences | All adapter files (`getExitSequence` method) | agent-integration.md (exit sequences table) |
-| Handoff prompt transforms | All adapter files (`transformHandoffPrompt` method) | agent-integration.md (handoff prompt transform table) |
+| Session history file location | All adapter files (`locateSessionHistoryFile` method) | agent-integration.md (session history file location table) |
 | Per-agent transcript cleanup | `src/main/agent/handoff/transcript-cleanup.ts`, `src/main/agent/adapters/*/transcript-cleanup.ts` | handoff.md (per-agent transcript cleanup section) |
 | Handoff DB columns | `src/main/db/repositories/handoff-repository.ts` | handoff.md (database storage table) |
 
@@ -188,7 +190,7 @@ Each entry has a one-line rationale so future edits know what the entry was prot
   WHY: template variable list is mirrored in configuration.md (canonical) and cross-referenced in transition-engine.md and agent-integration.md.
 
 - `src/main/agent/agent-adapter.ts`
-  WHY: AgentAdapter interface methods (discoverCapabilities, getInjectionSequence, getCommandInjectionVerifier, summarize, transformHandoffPrompt, getExitSequence, detectFirstOutput) are tabulated in agent-integration.md. Catches drift that types.ts re-exports miss.
+  WHY: AgentAdapter interface methods (discoverCapabilities, getInjectionSequence, getCommandInjectionVerifier, summarize, locateSessionHistoryFile, getExitSequence, detectFirstOutput) are tabulated in agent-integration.md. Catches drift that types.ts re-exports miss.
 
 - `src/main/agent/agent-registry.ts`
   WHY: canonical list of registered adapters; adding/removing an adapter is a docs-affecting event for agent-integration.md "Supported agents" table.

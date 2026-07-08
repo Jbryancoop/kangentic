@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.28.0] - 2026-07-07
+
+### Features
+
+- Add Edit-style in-place description updates to kangentic_update_task (5a467c83)
+- Central background embedding engine, duty-cycle throttled (af2127b2)
+
+### Fixes
+
+- Normalize model ids, backfill tool counts, scope clientId (0d4bff99)
+- Hydrate known context windows from persisted metrics on boot (3868e053)
+- Contain wide content and persist panel across project switches (d7c7fe2c)
+
+### Other
+
+- Rename to Testing/Merge and add a Release column (c70ec390)
+- Cover transcript tool-count parser edge cases (0ac7ce1f)
+- Cover description-edit edge cases and Zod schema boundaries (99aefeeb)
+- Cover developer-flag default logic (e8c0090d)
+- Refresh board PR status via kangentic_link_pr after merge (ebc6638a)
+- Add hydrateDiscoveredContextWindows to agent-list-handler mock (8c103836)
+- Cover hydrateKnownWindows edge cases (92c67c46)
+- Warn against forking a side-check during /pull-request (446fae28)
+- Cover serializeWorkspace including conversation windows (76ad00ec)
+
 ## [v0.27.1] - 2026-07-07
 
 ### Fixes

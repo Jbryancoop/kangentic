@@ -401,8 +401,7 @@ Ghost columns are invisible on the board but still exist in the database. Once a
     {
       "from": "*",
       "to": "uuid",
-      "actions": ["uuid"],
-      "executionOrder": [0]
+      "actions": ["uuid"]
     }
   ],
   "_modifiedBy": "device-id"
