@@ -1,11 +1,11 @@
 <p align="center">
-  <a href="https://www.kangentic.com"><img src="https://www.kangentic.com/logo.png" alt="Kangentic Logo" width="128" /></a>
+  <a href="https://www.kangentic.com"><img src="https://raw.githubusercontent.com/Kangentic/branding/main/resources/web/logo.png" alt="Kangentic Logo" width="128" /></a>
 </p>
 
 <h1 align="center"><a href="https://www.kangentic.com">Kangentic</a></h1>
 
 <p align="center">
-  <strong>Kanban Orchestration for AI Coding Agents</strong>
+  <strong>Drag a card. An agent starts.</strong>
 </p>
 
 <p align="center">
@@ -14,21 +14,17 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg?style=flat-square" alt="AGPL-3.0 License" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-brightgreen.svg?style=flat-square" alt="Platform" />
   <a href="https://www.kangentic.com"><img src="https://img.shields.io/badge/website-kangentic.com-purple.svg?style=flat-square" alt="Website" /></a>
-  <a href="https://www.youtube.com/watch?v=jviSrT47F0o"><img src="https://img.shields.io/badge/demo-YouTube-red.svg?style=flat-square&logo=youtube" alt="Demo Video" /></a>
   <a href="https://github.com/Kangentic/kangentic/stargazers"><img src="https://img.shields.io/github/stars/Kangentic/kangentic?style=social" alt="GitHub Stars" /></a>
 </p>
 
 ---
 
-<p align="center">One board for any coding agent. Drag tasks to spawn sessions, see real-time status, and ship work in parallel from native terminals on your desktop.</p>
+<p align="center">A Kanban board for AI coding agents. Spawn, suspend, and resume eleven coding-agent CLIs from one board, with your own backlog. Local, free, open source.</p>
 
 <p align="center">AI coding agents can build features, fix bugs, and refactor entire modules autonomously. With git worktrees you can run many of them in parallel, but now the bottleneck is <strong>you</strong>: juggling terminals across projects to track which agents are stuck, finished, or waiting for approval. Kangentic replaces that with a Kanban command center. One board shows every agent's status, output, and progress. Respond when needed; let them work autonomously the rest of the time.</p>
 
 <p align="center">
-  <a href="https://www.kangentic.com"><img src="https://www.kangentic.com/og-image.png" alt="Kangentic Kanban Board" width="800" /></a>
-</p>
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=jviSrT47F0o"><img src="https://img.shields.io/badge/%E2%96%B6%20Watch%20Demo-YouTube-red.svg?style=for-the-badge&logo=youtube" alt="Watch Demo" /></a>
+  <a href="https://www.kangentic.com"><img src="https://raw.githubusercontent.com/Kangentic/branding/main/resources/social/og-image.png" alt="Kangentic: Kanban board for AI coding agents" width="800" /></a>
 </p>
 
 ## Features
@@ -36,45 +32,43 @@
 - **Backlog, labels & priorities** - stage work in a dedicated backlog before it hits the board. Tag items with custom labels and colors, rank them on a fully-customizable priority scale, and batch-promote a week's worth of work to any column in one move.
 - **Customizable workflows** - build pipelines like Plan, Execute, Review. Set permission modes, auto-commands, and transition actions per column. Configure a plan-exit target so cards advance automatically after planning, inject prompts on column entry, and chain scripts or PRs on the way out.
 - **Real-time status** - see which agents are thinking or idle right on the card, with per-agent activity detection via native hooks where available and PTY fallbacks where not. Desktop notifications fire when an agent needs your attention.
-- **Agent-to-board tools** - every running session has MCP tools to create tasks, move cards, search prior sessions, and queue follow-up work, so a planning agent can hand a backlog to an executing agent without you touching the board.
-- **Git worktrees & review** - each agent runs in its own git worktree for parallel development without branch conflicts. When work is ready, the built-in Changes panel opens a split or inline diff viewer with file tree and untracked files, one click from the task card.
+- **Agent-to-board tools** - agents that self-organize. Every running session has MCP tools to create tasks, move cards, search prior sessions, and queue follow-up work, so a planning agent can hand a backlog to an executing agent without you touching the board.
+- **Git worktrees & review** - each agent runs in its own git worktree for parallel development without branch conflicts. When work is ready, the built-in Changes panel opens a split or inline diff viewer with file tree, a commit graph, and a Markdown preview, one click from the task card.
 - **Session persistence** - sessions survive restarts and crashes. Orphaned sessions are detected on startup and resumable. Suspend to Done, resume later with full context, nothing is lost.
 - **Handoff context** - hand work between agents without losing context. When a card moves from a Claude plan column to a Codex execute column, the next agent starts with the full history of what came before. Supported in both directions for Claude, Codex, Gemini, Qwen, Kimi, and OpenCode.
 - **Terminal & activity log** - a built-in terminal for every session, plus a structured activity log that shows what each agent is doing without the noise.
+- **Usage & cost analytics** - track tokens, cost, and burn rate across every project, agent, model, and effort level. Filter by any time range, watch spend by week or cumulatively, and drill into a per-project ledger with cost share, dollars per million tokens, and top agent.
 - **Embedded browser** - point a sandboxed Chromium pane at any URL inside the task dialog, draw annotations, pick DOM elements, and submit the rendered frame plus context to the active agent as a multi-modal prompt, all without leaving the task.
-- **Global search palette** - one overlay (Ctrl+Shift+F) searches across tasks, backlog items, session events, and projects (current project or all projects). Selecting a session-event hit jumps the Activity Log to the matched event.
-- **Per-column & per-task model overrides** - pin Plan to opus, Execute to gpt-5-codex, Review to a cheaper model. Kangentic live-applies model and effort changes via the agent's `/model` and `/effort` slashes when sessions cross a column boundary.
-- **Cross-platform & local** - runs entirely on your desktop on Windows, macOS, Linux, and WSL. No cloud service, no data leaves your machine. Uses the agent CLIs you already have installed.
-- **Your CLIs, your way** - no OAuth flows, no wrappers, no API proxies. Kangentic launches native Claude Code, Codex, Gemini, Qwen Code, Kimi Code, OpenCode, Droid, Cursor, Copilot, Aider, and Warp terminals. Your logins, your subscriptions or API keys. Just the real CLIs, the way each vendor intended.
+- **Search & memory** - one overlay (Ctrl+Shift+F) searches everything on your machine: tasks, backlog, session events, projects, and every past agent conversation, by keyword or on-device semantic memory. Land on the exact turn where you solved something before, no API key required, and your agents can recall it too through the board's MCP tools.
+- **Voice dictation** - hold a key, talk, release: local push-to-talk speech-to-text drops your words into the agent's terminal, transcribed on-device with a streaming preview and a refinement pass. Punctuation, language, and auto-submit are all configurable.
+- **Model & effort routing** - use Opus for Planning, Sonnet for Code Review, change efforts for the harder steps. Kangentic live-applies changes as cards cross columns: no restart, no manual /model commands.
+- **Your CLIs, your machine** - runs entirely on your desktop (Windows, macOS, Linux, and WSL) with no cloud service and no data leaving your machine. No OAuth, no wrappers, no API proxies: Kangentic launches the native Claude Code, Codex, Gemini, Qwen Code, Kimi Code, OpenCode, Droid, Cursor, Copilot, Aider, and Warp CLIs you already have, with your own logins and subscriptions. Just the real CLIs, the way each vendor intended.
 
 ## How It Works
 
-1. **Add tasks** to your board, describing the work in plain text
-2. **Drag a task** into an active column. Kangentic spawns an agent in an isolated git worktree.
-3. **Watch progress** in the built-in terminal, or let it run and check back later
-4. **Review and merge** when the agent finishes
+1. **Create a task** - add a card with a title and prompt. Paste screenshots, choose a source branch, and toggle worktree isolation, all from the create dialog.
+2. **Drag to run** - drag the card to any active column. Kangentic creates a worktree, picks the permission mode, and spawns your chosen agent automatically. Columns ship preconfigured, To Do through Done; reshape the pipeline, agents, and permissions per column anytime.
+3. **Watch it code** - your agent starts writing immediately. Follow along in the live terminal: see diffs, test results, and tool calls as they happen. Drag between columns to steer, or drag to Done to pause and pick up later.
 
 ## Supported Agents
 
-Run any of these coding agent CLIs from a single Kanban board:
+Eleven coding-agent CLIs, all first-class, on one Kanban board. Mix agents per column and hand off context between them:
 
-| Agent | Status |
-|-------|--------|
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Supported |
-| [Codex CLI](https://developers.openai.com/codex/cli) | Supported |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Supported |
-| [Qwen Code](https://github.com/QwenLM/qwen-code) | Supported |
-| [Cursor CLI](https://cursor.com/docs/cli/overview) | Supported |
-| [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/cli-getting-started) | Supported |
-| [OpenCode](https://opencode.ai/docs) | Supported |
-| [Aider](https://aider.chat/) | Supported |
-| [Oz CLI](https://docs.warp.dev/reference/cli/cli) (Warp) | Supported |
-| [Kimi Code](https://github.com/MoonshotAI/kimi-cli) | Supported |
-| [Droid](https://docs.factory.ai/cli/getting-started/overview) (Factory) | Supported |
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (Anthropic)
+- [Codex CLI](https://developers.openai.com/codex/cli) (OpenAI)
+- [Gemini CLI](https://github.com/google-gemini/gemini-cli) (Google)
+- [Qwen Code](https://github.com/QwenLM/qwen-code) (Alibaba)
+- [Kimi Code](https://github.com/MoonshotAI/kimi-cli) (Moonshot AI)
+- [OpenCode](https://opencode.ai/docs) (sst)
+- [Droid](https://docs.factory.ai/cli/getting-started/overview) (Factory)
+- [Cursor CLI](https://cursor.com/docs/cli/overview)
+- [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/cli-getting-started)
+- [Aider](https://aider.chat/)
+- [Oz CLI](https://docs.warp.dev/reference/cli/cli) (Warp)
 
 ## Supported Boards
 
-Bring your own backlog. Import issues, project cards, and work items from the tools your team already uses:
+Bring your own backlog. Pull tasks in from the tools your team already uses, including titles, descriptions, labels, and inline images. Already-imported items are detected automatically so re-syncing is safe:
 
 | Board | Status |
 |-------|--------|
@@ -85,6 +79,8 @@ Bring your own backlog. Import issues, project cards, and work items from the to
 | Jira | Coming soon |
 | Linear | Coming soon |
 | Trello | Coming soon |
+| GitLab | Coming soon |
+| Obsidian | Coming soon |
 
 ## Prerequisites
 
@@ -146,4 +142,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. All contributors must sig
   <img src="https://img.shields.io/badge/xterm.js-000000?style=for-the-badge" alt="xterm.js" />
   <img src="https://img.shields.io/badge/Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
   <img src="https://img.shields.io/badge/Playwright-2EAD33?style=for-the-badge&logo=playwright&logoColor=white" alt="Playwright" />
+</p>
+
+<p align="center">
+  <a href="https://www.kangentic.com"><img src="https://raw.githubusercontent.com/Kangentic/branding/main/resources/web/brandmark-small.svg" alt="Kangentic app icon" width="26" height="26" /></a>
 </p>
