@@ -1,14 +1,17 @@
 ## What's New
 
-- **Conversation viewer upgrades** - long transcripts now scroll smoothly, with in-viewer search and open-at-position so you can jump straight to the turn you care about.
-- **Per-project agent defaults** - set a default model and reasoning effort per project, override the model, effort, and permission mode per task, and configure MCP servers from agent settings.
-- **Repo history in the Changes panel** - browse the commit history, view any file's history, and run blame without leaving the task.
-- **Move a task to another project** - relocate a task across projects, also available to agents via the kangentic_move_task_to_project MCP tool.
+- **Usage statistics dashboard** - a new project-level and app-wide view of token usage, cost, and session activity, with live and cumulative breakdowns.
+- **Mobile companion bridge** - pair a mobile device over a secure relay transport to watch and drive your boards, backed by a typed protocol package.
+- **Detachable panes** - pop the Stats, Changes, and Browser surfaces out into their own movable, resizable windows.
+- **Refreshed branding** - new Warm Craft desktop app icons and a theme-adaptive title-bar mark.
 
 ## Bug Fixes
 
-- Fixed a false "idle" state while an agent was retrying after a transient server error.
-- Fixed an input and focus freeze at a fullscreen TUI select prompt.
-- Made copy and select-all reliable in the diff viewer.
-- Removed a redundant PR pill from the task detail header.
-- Untangled the Hotkeys and Shortcuts terminology in settings.
+- Command Terminal now refits its content on container-only size changes and settles scrollback cleanly on repaint.
+- Advanced per-task overrides lock reliably at first spawn from every entry point.
+- Usage stats capture git churn on every finalization and merge live sessions correctly; the Live view's cost cards and sparkline are fixed.
+- The Changes panel shows diffs for tasks without a worktree, and its state is scoped per window.
+- Pasted or dropped images now inject an agent-readable reference.
+- Orphaned background shells drain via transcript instead of a dead hook.
+- Restored the pointer cursor on buttons after a Tailwind v4 regression.
+- Board task-detail windows hide correctly over the Backlog view.

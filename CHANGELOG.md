@@ -6,6 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.30.0] - 2026-07-14
+
+### Features
+
+- Project + app-wide usage statistics dashboard (4de7b2e9)
+- Mobile companion bridge: protocol package, device pairing, and secure relay transport (f5c97b9d)
+- Mobile bridge Phase 2: capability handlers, data feeds, and board-tool surface (8bfa87d1)
+- Detachable-surface window engine for stats, changes, and browser panes (5856855a)
+- Consume @kangentic/branding for desktop app icons (v2 Warm Craft) (aee274db)
+- Theme-adaptive title-bar mark and dev favicon (905115d5)
+- Protocol: typed feed payloads, board-tool tuples, and read-stream gap fixes (v0.2.0) (b7accca6)
+
+### Fixes
+
+- Refit Command Terminal xterm on container-only size changes (64d0abd4)
+- Veil the mount replay and settle scrollback on the real repaint (56884289)
+- Lock Advanced overrides at every first-spawn entry point (7de8a67a)
+- Lock all per-task Advanced overrides at first spawn (f9150859)
+- Scope the usage live-session merge to sessionCount only (e087b874)
+- Capture git churn on every finalization, show files, merge live sessions (a5596f7f)
+- Split the Command Terminal title-bar toggle from the spawn-another control (d93b5650)
+- Retarget the rebase-collision test to the New terminal button (ae40e8cb)
+- Scope the Command Terminal Changes panel state to each window (ef916371)
+- Light-dismiss task windows from the empty terminal panel (479cacf5)
+- Fill the two empty cost cards in the Usage Live view (2ff38672)
+- Add toolbar top padding and fix the Cost sparkline in Live (a2d34332)
+- Show diff in Changes surfaces for no-worktree tasks (7164dd1f)
+- Let move_task resolve the archived Done column by name (bd9818d9)
+- Inject an agent-readable reference for pasted or dropped images (5f626cd9)
+- Drain orphaned background shells via transcript, not a dead hook (8c7ebf03)
+- Register the usage-dashboard store in the preview state mirror (853ba020)
+- Register mobile-store in PREVIEW_STORES (4bd3036b)
+- Scope the button cursor rule to native buttons, not role="button" (38bc30a2)
+- Restore pointer cursor on buttons (Tailwind v4 regression) (f709702e)
+- Portal label suggestions and fix suggestion click commit (abd99a39)
+- Hide board task-detail windows over the Backlog view (f34d8271)
+- Resolve dictation target by transient slot anchor (838e3b72)
+- De-flake the cursor-activity-detection stream-json init assertion (8342903a)
+- Add attachContext to the register-all MobileBridgeService mock (665a0e52)
+- Correct the device-name placeholder selector in mobile-devices-settings.spec.ts (7669e724)
+- De-flake the changes-diff-scroll-memory diff-editor-area wait (a523964b)
+
+### Other
+
+- Push usage aggregation into SQL and lazy-load the chart bundle (f6f7b20f)
+- Budget WebGL contexts and gate off-view PTY writes (d0461c1b)
+- Bound lifecycle git bursts and event-loop hygiene (22d13313)
+- Keep git and Monaco diff work off the UI thread in the Changes panel (918fd3ba)
+- Remove dead auto-fit-to-branch-name effect in ChangesPanel (c4bf982f)
+- Align README with the Warm Craft site refresh (a25eebf0)
+- Point mobile-bridge relay references at the live kangentic-relay repo (27ec5334)
+- Index the pop-out-surface-registry rule in CLAUDE.md (d3fd93e1)
+- Fix protocol first-publish build step and ship full AGPL license (32299e2c)
+- Add mobile companion app architecture research (07bd3fa7)
+- Publish-npm release job idempotent, pinned to Node 24 (807d73ca, 859ef26b)
+
 ## [v0.29.0] - 2026-07-09
 
 ### Features
