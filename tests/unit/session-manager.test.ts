@@ -1080,6 +1080,82 @@ describe('Write and resize', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 10b. Dimension tracking (mobile fit-to-phone support)
+// ---------------------------------------------------------------------------
+
+describe('Dimension tracking', () => {
+  let manager: SessionManager;
+
+  beforeEach(() => {
+    manager = new SessionManager();
+  });
+
+  afterEach(async () => {
+    manager.killAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+
+  it('getDimensions reads the live PTY grid and returns null for an unknown session', async () => {
+    const mock = createMockPty();
+    vi.mocked(pty.spawn).mockReturnValue(mock.mockPty as unknown as pty.IPty);
+    const session = await manager.spawn({ taskId: 'task-dims', command: '', cwd: tmpDir });
+
+    expect(manager.getDimensions(session.id)).toEqual({ cols: 120, rows: 30 });
+    manager.resize(session.id, 80, 24);
+    expect(manager.getDimensions(session.id)).toEqual({ cols: 80, rows: 24 });
+
+    expect(manager.getDimensions('nonexistent')).toBeNull();
+  });
+
+  it('every resize emits pty-resize with the clamped grid', async () => {
+    const mock = createMockPty();
+    vi.mocked(pty.spawn).mockReturnValue(mock.mockPty as unknown as pty.IPty);
+    const session = await manager.spawn({ taskId: 'task-dims-emit', command: '', cwd: tmpDir });
+
+    const resizes: Array<[string, number, number]> = [];
+    manager.on('pty-resize', (sessionId: string, cols: number, rows: number) => resizes.push([sessionId, cols, rows]));
+
+    manager.resize(session.id, 80.7, 0);
+    expect(resizes).toEqual([[session.id, 80, 1]]);
+  });
+
+  it('a mobile resize snapshots the desktop grid as the restore target; desktop resizes update it', async () => {
+    const mock = createMockPty();
+    vi.mocked(pty.spawn).mockReturnValue(mock.mockPty as unknown as pty.IPty);
+    const session = await manager.spawn({ taskId: 'task-dims-origin', command: '', cwd: tmpDir });
+
+    // Nothing recorded before any resize.
+    expect(manager.getLastDesktopDimensions(session.id)).toBeNull();
+
+    // First mobile resize of a never-desktop-resized session: the pre-resize
+    // grid (the spawn default) becomes the restore target.
+    manager.resize(session.id, 48, 26, 'mobile');
+    expect(manager.getLastDesktopDimensions(session.id)).toEqual({ cols: 120, rows: 30 });
+    expect(manager.getDimensions(session.id)).toEqual({ cols: 48, rows: 26 });
+
+    // A repeat mobile resize does NOT move the restore target.
+    manager.resize(session.id, 44, 24, 'mobile');
+    expect(manager.getLastDesktopDimensions(session.id)).toEqual({ cols: 120, rows: 30 });
+
+    // A desktop resize (default origin) wins and updates the restore target.
+    manager.resize(session.id, 190, 50);
+    expect(manager.getLastDesktopDimensions(session.id)).toEqual({ cols: 190, rows: 50 });
+  });
+
+  it('kill clears the desktop-dims restore target with the pending resizes', async () => {
+    const mock = createMockPty();
+    vi.mocked(pty.spawn).mockReturnValue(mock.mockPty as unknown as pty.IPty);
+    const session = await manager.spawn({ taskId: 'task-dims-kill', command: '', cwd: tmpDir });
+
+    manager.resize(session.id, 190, 50);
+    expect(manager.getLastDesktopDimensions(session.id)).toEqual({ cols: 190, rows: 50 });
+
+    manager.kill(session.id);
+    expect(manager.getLastDesktopDimensions(session.id)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 11b. Transcript-fallback handoff (background status.json fix)
 // ---------------------------------------------------------------------------
 

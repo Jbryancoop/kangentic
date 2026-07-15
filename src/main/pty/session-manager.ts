@@ -16,7 +16,7 @@ import { ResizeManager } from './lifecycle/resize-manager';
 import { FirstOutputTracker } from './lifecycle/first-output-tracker';
 import { disposeAdapterAttachment, removeAdapterHooks } from './lifecycle/adapter-lifecycle';
 import { safeKillPty } from './lifecycle/pty-kill';
-import { performSpawn } from './lifecycle/session-spawn-flow';
+import { DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS, performSpawn } from './lifecycle/session-spawn-flow';
 import { SessionRegistry, toSession, filterCacheByProject, type ManagedSession } from './session-registry';
 import { createWriteQueue, type WriteQueue } from './write-queue';
 import { BackpressureController } from './buffer/backpressure-controller';
@@ -87,6 +87,16 @@ export class SessionManager extends EventEmitter {
    * at spawn (takePendingResize) or dropped on kill.
    */
   private pendingResizes = new Map<string, { cols: number; rows: number }>();
+  /**
+   * The last grid a DESKTOP-origin resize set per session - the restore
+   * target when a paired phone that resized the PTY (fit-to-phone mode)
+   * releases it. Written on every desktop-origin resize (live or pre-spawn
+   * stash); lazily seeded with the current PTY grid the first time a
+   * mobile-origin resize arrives for a session the desktop never resized,
+   * so the restore always lands on what the desktop last had, never on a
+   * phone-shaped grid. Cleared on kill/remove with pendingResizes.
+   */
+  private lastDesktopDimensions = new Map<string, { cols: number; rows: number }>();
   /**
    * Per-session output backpressure: pauses a session's PTY when the renderer
    * falls behind on its emitted bytes, resuming as the renderer acks. Only
@@ -564,7 +574,12 @@ export class SessionManager extends EventEmitter {
     session.pty.write(data);
   }
 
-  resize(sessionId: string, cols: number, rows: number): { colsChanged: boolean } {
+  resize(
+    sessionId: string,
+    cols: number,
+    rows: number,
+    origin: 'desktop' | 'mobile' = 'desktop',
+  ): { colsChanged: boolean } {
     const session = this.registry.get(sessionId);
 
     // Guard against NaN/Infinity from layout edge cases (e.g. getComputedStyle
@@ -585,8 +600,19 @@ export class SessionManager extends EventEmitter {
       // unchanged dims, so a resurrected 120x30 would stick forever.
       if (session && (session.status === 'queued' || session.status === 'suspended')) {
         this.pendingResizes.set(sessionId, { cols: clampedCols, rows: clampedRows });
+        if (origin === 'desktop') {
+          this.lastDesktopDimensions.set(sessionId, { cols: clampedCols, rows: clampedRows });
+        }
       }
       return { colsChanged: false };
+    }
+
+    if (origin === 'desktop') {
+      this.lastDesktopDimensions.set(sessionId, { cols: clampedCols, rows: clampedRows });
+    } else if (!this.lastDesktopDimensions.has(sessionId)) {
+      // First mobile-origin resize for a session the desktop never resized:
+      // snapshot the current grid as the restore target before changing it.
+      this.lastDesktopDimensions.set(sessionId, { cols: session.pty.cols, rows: session.pty.rows });
     }
 
     const colsChanged = this.bufferManager.onResize(sessionId, clampedCols);
@@ -594,7 +620,36 @@ export class SessionManager extends EventEmitter {
     // Mark resize time so the dispatch can suppress idle->thinking
     // transitions during the redraw burst that follows.
     this.resizeManager.notifyResize(sessionId);
+    // The mobile bridge's seam onto grid changes, mirroring 'data-tap':
+    // read-stream forwards this to subscribed phones as a terminal-resize
+    // event so their renderer matches the grid before the repaint bytes land.
+    this.emit('pty-resize', sessionId, clampedCols, clampedRows);
     return { colsChanged };
+  }
+
+  /**
+   * The grid the session's terminal bytes are currently laid out for: the
+   * live PTY's dimensions, or for a queued/suspended session the stashed
+   * pre-spawn resize, falling back to the spawn defaults. Null only when
+   * the session does not exist.
+   */
+  getDimensions(sessionId: string): { cols: number; rows: number } | null {
+    const session = this.registry.get(sessionId);
+    if (!session) return null;
+    if (session.pty) return { cols: session.pty.cols, rows: session.pty.rows };
+    const pending = this.pendingResizes.get(sessionId);
+    if (pending) return { ...pending };
+    return { cols: DEFAULT_PTY_COLS, rows: DEFAULT_PTY_ROWS };
+  }
+
+  /**
+   * The restore target for a phone-held grid: the last desktop-origin
+   * dimensions (see lastDesktopDimensions). Null when nothing was recorded,
+   * i.e. no resize of either origin has touched the session.
+   */
+  getLastDesktopDimensions(sessionId: string): { cols: number; rows: number } | null {
+    const dims = this.lastDesktopDimensions.get(sessionId);
+    return dims ? { ...dims } : null;
   }
 
   /**
@@ -653,8 +708,10 @@ export class SessionManager extends EventEmitter {
     // orthogonal marker carries the intent.
     if (session) session.intentionalExit = true;
     // Drop any queued pre-spawn resize: a killed session will not respawn to
-    // consume it, and a stale entry keyed by this id must not survive.
+    // consume it, and a stale entry keyed by this id must not survive. The
+    // desktop-dims restore target dies with the session for the same reason.
     this.pendingResizes.delete(sessionId);
+    this.lastDesktopDimensions.delete(sessionId);
     // Release backpressure BEFORE nulling the PTY so a paused session is
     // resumed (lets any buffered output flush) and its accounting entry is
     // dropped immediately, rather than waiting for the async onExit handler.

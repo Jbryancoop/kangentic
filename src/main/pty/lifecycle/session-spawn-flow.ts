@@ -25,9 +25,11 @@ import { adaptCommandForShell } from '../../../shared/paths';
  * Default PTY dimensions a session is spawned at, before any renderer-driven
  * resize. A background (never-opened) session keeps this size for its whole
  * life; the terminal mount resizes to the real viewport when a card is opened.
+ * Exported so SessionManager.getDimensions can report the same grid for a
+ * queued/suspended session with no PTY and no stashed resize.
  */
-const DEFAULT_PTY_COLS = 120;
-const DEFAULT_PTY_ROWS = 30;
+export const DEFAULT_PTY_COLS = 120;
+export const DEFAULT_PTY_ROWS = 30;
 
 /**
  * Collaborators that the spawn flow reads and mutates. Grouped into a
@@ -486,6 +488,11 @@ export async function performSpawn(
   session.ptyDisposables = [ptyDataDisposable, ptyExitDisposable];
 
   context.emit('session-changed', id, toSession(session));
+  // Announce the grid the PTY actually spawned at. A mobile-bridge
+  // subscriber that snapshotted this session while it was still queued
+  // reported the pending/default dims; this closes that gap the same way
+  // a live resize does (read-stream forwards it as a terminal-resize event).
+  context.emit('pty-resize', id, spawnCols, spawnRows);
 
   // After a brief delay, write any Windows cwd fixup (so the session lands
   // in the real project directory) and then the initial command. The fixup
