@@ -25,6 +25,7 @@ import {
   parseDiffFileContentWire,
   parseDiffFileListWire,
   parseSessionUsageWire,
+  parseTerminalDimensionsWire,
   parseTranscriptEntriesWire,
   type ActivityReasonWire,
   type ActivityStateWire,
@@ -34,6 +35,7 @@ import {
   type DiffFileContentWire,
   type DiffFileListWire,
   type SessionUsageWire,
+  type TerminalDimensionsWire,
   type TranscriptEntryWire,
 } from '../events/payloads';
 
@@ -63,6 +65,12 @@ export interface ReadStreamResponsePayload {
   usage: SessionUsageWire | null;
   /** The live outstanding permission-prompt id (see answer-permission-prompt), or null when none is pending. */
   awaitedPromptId: string | null;
+  /**
+   * The PTY grid the scrollback bytes are laid out for. Absent from
+   * pre-0.4.0 desktops; the phone then falls back to inferring a width
+   * from the scrollback content.
+   */
+  ptyDimensions?: TerminalDimensionsWire;
 }
 
 /** Phone-side narrowing of a read-stream subscribe response. Throws on a malformed required field. */
@@ -77,12 +85,16 @@ export function parseReadStreamResponsePayload(payload: JsonValue): ReadStreamRe
   if (payload.awaitedPromptId !== null && typeof payload.awaitedPromptId !== 'string') {
     throw new Error('read-stream response has an invalid "awaitedPromptId"');
   }
-  return {
+  const response: ReadStreamResponsePayload = {
     scrollback: payload.scrollback,
     activity: { state: state ?? null, reason: reason ?? null },
     usage: payload.usage === null || payload.usage === undefined ? null : parseSessionUsageWire(payload.usage as JsonValue),
     awaitedPromptId: payload.awaitedPromptId ?? null,
   };
+  if (payload.ptyDimensions !== undefined) {
+    response.ptyDimensions = parseTerminalDimensionsWire(payload.ptyDimensions as JsonValue);
+  }
+  return response;
 }
 
 /**
@@ -318,20 +330,46 @@ function parseAnswerPermissionPromptRequestPayload(payload: JsonValue): AnswerPe
 
 // === interactive-terminal ===
 
-export interface InteractiveTerminalRequestPayload {
-  sessionId: string;
-  data: string;
-}
+/**
+ * Three actions ride the one interactive-terminal grant: a device trusted
+ * to type raw bytes into the PTY is equally trusted to resize it, so
+ * resize adds no new capability surface.
+ *
+ * - write (the default when `action` is omitted, which is what every
+ *   pre-0.4.0 phone sends): raw bytes into the PTY.
+ * - resize: set the PTY grid so the TUI redraws phone-shaped. The desktop
+ *   remembers its own last dimensions and restores them when the phone
+ *   releases (explicitly, or implicitly on disconnect/revoke).
+ * - release-size: give the grid back to the desktop now.
+ */
+export type InteractiveTerminalRequestPayload =
+  | { sessionId: string; action?: 'write'; data: string }
+  | { sessionId: string; action: 'resize'; dimensions: TerminalDimensionsWire }
+  | { sessionId: string; action: 'release-size' };
 
-export interface InteractiveTerminalResponsePayload {
-  written: boolean;
-}
+export type InteractiveTerminalResponsePayload =
+  | { written: boolean }
+  | { resized: boolean; colsChanged: boolean }
+  | { released: boolean };
 
 function parseInteractiveTerminalRequestPayload(payload: JsonValue): InteractiveTerminalRequestPayload {
   if (!isRecord(payload)) throw new Error('interactive-terminal payload must be an object');
   if (typeof payload.sessionId !== 'string') throw new Error('interactive-terminal payload missing "sessionId"');
-  if (typeof payload.data !== 'string') throw new Error('interactive-terminal payload missing "data"');
-  return { sessionId: payload.sessionId, data: payload.data };
+  if (payload.action === undefined || payload.action === 'write') {
+    if (typeof payload.data !== 'string') throw new Error('interactive-terminal payload missing "data"');
+    return { sessionId: payload.sessionId, action: 'write', data: payload.data };
+  }
+  if (payload.action === 'resize') {
+    return {
+      sessionId: payload.sessionId,
+      action: 'resize',
+      dimensions: parseTerminalDimensionsWire(payload.dimensions as JsonValue),
+    };
+  }
+  if (payload.action === 'release-size') {
+    return { sessionId: payload.sessionId, action: 'release-size' };
+  }
+  throw new Error('interactive-terminal payload has an invalid "action"');
 }
 
 // === board-tool-read / board-tool-write ===

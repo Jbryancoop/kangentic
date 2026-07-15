@@ -2,7 +2,7 @@
  * The event contract the phone consumes, pushed as EventMessage.event over
  * an established BridgeSession once Phase 2's capability handlers (desktop
  * bridge module) subscribe SessionManager/transcript-service/DiffService to
- * a session's live state. Five kinds:
+ * a session's live state. Six kinds:
  *
  * - transcript: a revision-gated delta from resolveTaskTranscript, for the
  *   phone's transcript-styled conversation view.
@@ -13,6 +13,9 @@
  * - terminal: raw PTY output from the unfiltered data-tap, for the phone's
  *   raw-terminal-mirror view (a distinct consumer from the parsed
  *   transcript).
+ * - terminal-resize: the PTY grid changed (desktop pane refit, phone fit
+ *   request, or restore-on-release); the phone re-sizes its renderer to
+ *   match before the TUI's repaint bytes arrive on the terminal stream.
  * - board: a board-mutation notification, filterable by project and
  *   (optionally) task.
  * - diff: a payload-less "something under this task's worktree changed,
@@ -30,11 +33,13 @@ import {
   isActivityStateWire,
   parseSessionEventWire,
   parseSessionUsageWire,
+  parseTerminalDimensionsWire,
   parseTranscriptEventPayload,
   type ActivityReasonWire,
   type ActivityStateWire,
   type SessionEventWire,
   type SessionUsageWire,
+  type TerminalDimensionsWire,
   type TranscriptEventPayload,
 } from './payloads';
 
@@ -66,6 +71,14 @@ export interface TerminalEvent {
   payload: { data: string };
 }
 
+export interface TerminalResizeEvent {
+  kind: 'terminal-resize';
+  sessionId: string;
+  taskId: string;
+  /** The PTY's new grid; every terminal byte sent after this event is laid out for it. */
+  payload: TerminalDimensionsWire;
+}
+
 export interface BoardEventPayload {
   change: 'task-created' | 'task-updated' | 'task-deleted' | 'swimlane-updated' | 'backlog-changed';
   ids: string[];
@@ -84,7 +97,7 @@ export interface DiffEvent {
   payload: null;
 }
 
-export type BridgeEvent = TranscriptEvent | ActivityEvent | TerminalEvent | BoardEvent | DiffEvent;
+export type BridgeEvent = TranscriptEvent | ActivityEvent | TerminalEvent | TerminalResizeEvent | BoardEvent | DiffEvent;
 
 const BOARD_CHANGES: readonly string[] = ['task-created', 'task-updated', 'task-deleted', 'swimlane-updated', 'backlog-changed'];
 
@@ -143,6 +156,15 @@ export function isBridgeEvent(value: unknown): value is BridgeEvent {
     case 'terminal': {
       if (typeof value.sessionId !== 'string' || typeof value.taskId !== 'string') return false;
       return isRecord(value.payload) && typeof value.payload.data === 'string';
+    }
+    case 'terminal-resize': {
+      if (typeof value.sessionId !== 'string' || typeof value.taskId !== 'string') return false;
+      try {
+        parseTerminalDimensionsWire(value.payload as JsonValue);
+        return true;
+      } catch {
+        return false;
+      }
     }
     case 'board': {
       if (typeof value.projectId !== 'string') return false;

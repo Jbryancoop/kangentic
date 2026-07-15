@@ -111,9 +111,23 @@ describe('parseCapabilityRequestPayload', () => {
     expect(() => parseCapabilityRequestPayload('interactive-terminal', { sessionId: 'sess-1' })).toThrow(/data/);
   });
 
-  it('interactive-terminal: parses a valid payload', () => {
+  it('interactive-terminal: an action-less payload (every pre-0.4.0 phone) normalizes to a write', () => {
     const parsed = parseCapabilityRequestPayload('interactive-terminal', { sessionId: 'sess-1', data: 'ls\r' });
-    expect(parsed).toEqual({ sessionId: 'sess-1', data: 'ls\r' });
+    expect(parsed).toEqual({ sessionId: 'sess-1', action: 'write', data: 'ls\r' });
+  });
+
+  it('interactive-terminal: parses resize and release-size actions', () => {
+    expect(parseCapabilityRequestPayload('interactive-terminal', { sessionId: 'sess-1', action: 'resize', dimensions: { cols: 48, rows: 26 } })).toEqual({
+      sessionId: 'sess-1',
+      action: 'resize',
+      dimensions: { cols: 48, rows: 26 },
+    });
+    expect(parseCapabilityRequestPayload('interactive-terminal', { sessionId: 'sess-1', action: 'release-size' })).toEqual({
+      sessionId: 'sess-1',
+      action: 'release-size',
+    });
+    expect(() => parseCapabilityRequestPayload('interactive-terminal', { sessionId: 'sess-1', action: 'resize', dimensions: { cols: 1, rows: 26 } })).toThrow(/cols/);
+    expect(() => parseCapabilityRequestPayload('interactive-terminal', { sessionId: 'sess-1', action: 'detach' })).toThrow(/action/);
   });
 
   it('board-tool-read: rejects a missing tool', () => {

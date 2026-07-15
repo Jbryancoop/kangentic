@@ -83,6 +83,20 @@ export type TranscriptEventPayload =
   | { mode: 'delta'; revision: number; totalEntries: number; upserts: TranscriptUpsertWire[] }
   | { mode: 'reset'; revision: number; totalEntries: number };
 
+// === Terminal ===
+
+/**
+ * PTY grid dimensions, shared by the read-stream snapshot (`ptyDimensions`),
+ * the `terminal-resize` event, and the interactive-terminal `resize` action.
+ * The bytes on the terminal stream are laid out for exactly this grid; a
+ * renderer that uses any other geometry misplaces every cursor-addressed
+ * frame the fullscreen TUI draws.
+ */
+export interface TerminalDimensionsWire {
+  cols: number;
+  rows: number;
+}
+
 // === Activity ===
 
 /** Mirrors the desktop's ActivityState. 'permission' means the agent paused for user approval (incl. AskUserQuestion / ExitPlanMode pauses). */
@@ -294,6 +308,20 @@ export function parseTranscriptEventPayload(payload: JsonValue): TranscriptEvent
     return { index: upsert.index, entry: upsert.entry };
   });
   return { mode: 'delta', revision, totalEntries, upserts };
+}
+
+/**
+ * Narrows a PTY dimensions payload. Bounds are sanity caps, not policy:
+ * the desktop's own resize clamp (cols >= 2, rows >= 1) is the floor, and
+ * 1000 on each axis rejects garbage without constraining any real device.
+ */
+export function parseTerminalDimensionsWire(payload: JsonValue): TerminalDimensionsWire {
+  if (!isRecord(payload)) throw new Error('terminal dimensions must be an object');
+  const cols = requireNumber(payload, 'cols', 'terminal dimensions');
+  const rows = requireNumber(payload, 'rows', 'terminal dimensions');
+  if (!Number.isInteger(cols) || cols < 2 || cols > 1000) throw new Error('terminal dimensions have an invalid "cols"');
+  if (!Number.isInteger(rows) || rows < 1 || rows > 1000) throw new Error('terminal dimensions have an invalid "rows"');
+  return { cols, rows };
 }
 
 /** True for a well-formed ActivityStateWire value. */
