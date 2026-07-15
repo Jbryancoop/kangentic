@@ -33,7 +33,8 @@ export function registerCapabilityHandlers(router: CapabilityRouter, deps: Capab
     handleReadDiff(request, session, deps.context, deps.getSubscriptions(session.deviceId), deps.diffWatcher));
   router.register('send-user-message', (request) => handleSendUserMessage(request, deps.context));
   router.register('move-task', (request) => handleMoveTask(request, deps.context));
-  router.register('interactive-terminal', (request) => handleInteractiveTerminal(request, deps.context));
+  router.register('interactive-terminal', (request, session) =>
+    handleInteractiveTerminal(request, deps.context, deps.getSubscriptions(session.deviceId)));
   router.register('answer-permission-prompt', (request) => handleAnswerPermissionPrompt(request, deps.context));
   router.register('board-tool-read', (request) => handleBoardTool(request, deps.context));
   router.register('board-tool-write', (request) => handleBoardTool(request, deps.context));

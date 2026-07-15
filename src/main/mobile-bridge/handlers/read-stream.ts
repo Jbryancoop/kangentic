@@ -18,11 +18,20 @@ import {
   toActivityReasonWire,
   toSessionEventWire,
   toSessionUsageWire,
+  toTerminalDimensionsWire,
   toWireJson,
 } from './wire-mappers';
 
 /** Coalesce raw PTY output before pushing, so a burst of small onData chunks does not become a flood of tiny frames. */
-const TERMINAL_COALESCE_MS = 50;
+const TERMINAL_COALESCE_MS = 16;
+
+/**
+ * A pending batch at or under this many chars flushes immediately instead of
+ * waiting out the coalesce timer: it is the keystroke-echo fast path (a typed
+ * character's echo is a handful of bytes), while real output bursts blow past
+ * it on the first chunk and still coalesce.
+ */
+const TERMINAL_IMMEDIATE_FLUSH_CHARS = 256;
 
 function subscriptionKeyFor(sessionId: string): string {
   return `stream:${sessionId}`;
@@ -47,13 +56,18 @@ function subscribeReadStream(
   const transcriptSync = new TranscriptSync();
   let lastAwaitedPromptId = initialAwaitedPromptId;
   let pendingTerminalChunks: string[] = [];
+  let pendingTerminalChars = 0;
   let terminalFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   const flushTerminal = (): void => {
-    terminalFlushTimer = null;
+    if (terminalFlushTimer) {
+      clearTimeout(terminalFlushTimer);
+      terminalFlushTimer = null;
+    }
     if (pendingTerminalChunks.length === 0) return;
     const data = pendingTerminalChunks.join('');
     pendingTerminalChunks = [];
+    pendingTerminalChars = 0;
     sendEvent(session, { kind: 'terminal', sessionId, taskId, payload: { data } });
   };
 
@@ -90,7 +104,21 @@ function subscribeReadStream(
   const onDataTap = (tappedSessionId: string, data: string): void => {
     if (tappedSessionId !== sessionId) return;
     pendingTerminalChunks.push(data);
+    pendingTerminalChars += data.length;
+    if (pendingTerminalChars <= TERMINAL_IMMEDIATE_FLUSH_CHARS) {
+      flushTerminal();
+      return;
+    }
     if (!terminalFlushTimer) terminalFlushTimer = setTimeout(flushTerminal, TERMINAL_COALESCE_MS);
+  };
+  // Grid changes ride the same subscription as the bytes they explain. The
+  // pending flush runs FIRST so output drawn for the old grid is delivered
+  // before the phone re-sizes its renderer; the TUI's own repaint bytes
+  // follow on the terminal stream.
+  const onPtyResize = (resizedSessionId: string, cols: number, rows: number): void => {
+    if (resizedSessionId !== sessionId) return;
+    flushTerminal();
+    sendEvent(session, { kind: 'terminal-resize', sessionId, taskId, payload: { cols, rows } });
   };
   const onActivity = (activitySessionId: string, state: ActivityState, reason: ActivityReason): void => {
     if (activitySessionId !== sessionId) return;
@@ -124,6 +152,7 @@ function subscribeReadStream(
   };
 
   context.sessionManager.on('data-tap', onDataTap);
+  context.sessionManager.on('pty-resize', onPtyResize);
   context.sessionManager.on('activity', onActivity);
   context.sessionManager.on('usage', onUsage);
   context.sessionManager.on('event', onSessionEvent);
@@ -131,6 +160,7 @@ function subscribeReadStream(
 
   subscriptions.set(subscriptionKeyFor(sessionId), () => {
     context.sessionManager.off('data-tap', onDataTap);
+    context.sessionManager.off('pty-resize', onPtyResize);
     context.sessionManager.off('activity', onActivity);
     context.sessionManager.off('usage', onUsage);
     context.sessionManager.off('event', onSessionEvent);
@@ -188,6 +218,7 @@ export async function handleReadStream(
   const usage = context.sessionManager.getUsageCache()[payload.sessionId] ?? null;
   const awaitedPromptId = currentAwaitedPromptId(context, payload.sessionId);
 
+  const ptyDimensions = toTerminalDimensionsWire(context.sessionManager.getDimensions(payload.sessionId));
   const responsePayload: ReadStreamResponsePayload = {
     scrollback,
     activity: {
@@ -196,6 +227,7 @@ export async function handleReadStream(
     },
     usage: usage ? toSessionUsageWire(usage) : null,
     awaitedPromptId,
+    ...(ptyDimensions ? { ptyDimensions } : {}),
   };
 
   subscribeReadStream(payload.sessionId, liveSession.taskId, awaitedPromptId, session, context, subscriptions);

@@ -19,6 +19,7 @@ import {
   type JsonValue,
   type SessionEventWire,
   type SessionUsageWire,
+  type TerminalDimensionsWire,
   type TranscriptBlockWire,
   type TranscriptEntryWire,
 } from '@kangentic/protocol';
@@ -37,6 +38,15 @@ import type {
 /** Envelope-boundary cast for an already-shape-checked wire payload. */
 export function toWireJson(payload: unknown): JsonValue {
   return payload as JsonValue;
+}
+
+/**
+ * SessionManager.getDimensions -> the wire mirror. Undefined (field omitted,
+ * not null) when the session has no knowable grid, so a pre-0.4.0 phone's
+ * parser never sees the key at all.
+ */
+export function toTerminalDimensionsWire(dims: { cols: number; rows: number } | null): TerminalDimensionsWire | undefined {
+  return dims ? { cols: dims.cols, rows: dims.rows } : undefined;
 }
 
 /**
