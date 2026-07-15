@@ -71,6 +71,21 @@ describe('wire message framing', () => {
     expect(() => decodeMessage(bytes)).toThrow();
   });
 
+  it('round-trips a terminal-resize event message', () => {
+    const message: BridgeMessage = {
+      type: 'event',
+      event: { kind: 'terminal-resize', sessionId: 'sess-1', taskId: 'task-1', payload: { cols: 48, rows: 26 } },
+    };
+    expect(decodeMessage(encodeMessage(message))).toEqual(message);
+  });
+
+  it('rejects a terminal-resize event missing sessionId', () => {
+    const bytes = new TextEncoder().encode(
+      JSON.stringify({ type: 'event', event: { kind: 'terminal-resize', taskId: 'task-1', payload: { cols: 48, rows: 26 } } }),
+    );
+    expect(() => decodeMessage(bytes)).toThrow();
+  });
+
   it('round-trips a diff event message', () => {
     const message: BridgeMessage = {
       type: 'event',
