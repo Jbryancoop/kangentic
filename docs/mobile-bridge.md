@@ -62,6 +62,15 @@ The desktop service is constructed in `src/main/ipc/register-all.ts` and torn do
 
 Its version and release cadence are **deliberately decoupled from Kangentic's own** - `packages/protocol/package.json` carries its own semver line, bumped and tagged (`protocol-vX.Y.Z`, a separate namespace from Kangentic's `vX.Y.Z` release tags) by the `/release-protocol` skill, published by its own workflow (`.github/workflows/publish-protocol.yml`), independent of the `kangentic` launcher's publish step in `release.yml`. This lets the protocol package ship on its own schedule while the mobile bridge feature is still being built out, without requiring or triggering a full Kangentic desktop release. In-repo, the desktop still consumes the package's TypeScript source directly via the `@kangentic/protocol` alias (see Layout above) - only the external, published npm artifact follows the separate versioning.
 
+### Iterating on the protocol across repos (without publishing every change)
+
+`@kangentic/protocol` is consumed by three repos: this monorepo (the desktop, in-repo workspace), `kangentic-mobile`, and `kangentic-relay`. Publishing to npm on every protocol tweak is a slow path, so while the wire is still firming up:
+
+- **This monorepo's `main` is the protocol's source of truth.** Protocol changes land on `main` via PR, decoupled from npm publishing; publish (`/release-protocol`) only at a release milestone or when a consumer's cloud build needs the pinned version resolvable from npm.
+- **The desktop** rebuilds the workspace after editing protocol source (`npm run build --workspace packages/protocol`) and **restarts** - the mobile-bridge runs in the Electron main process, which does not hot-reload, so an in-place protocol edit is not picked up until a restart.
+- **The mobile app and the relay** pin `@kangentic/protocol` to a published `^x.y.z` in their committed `package.json`, but for local dev their tooling links the freshly built sibling `packages/protocol` into `node_modules` (kangentic-mobile's dev rig does this automatically via `ensureLocalProtocol`; see that repo's `docs/developer-guide.md`). The committed manifest is never rewritten to a local path - only `node_modules` is linked - so a fresh clone or CI still resolves the published version.
+- **Wire compatibility:** additive, backward-compatible changes keep `PROTOCOL_VERSION` the same so mixed-version peers interoperate; a breaking wire change bumps `PROTOCOL_VERSION` (bound into the Noise prologue) and requires all peers to upgrade together.
+
 ## Pairing Ceremony
 
 Direction: **the desktop displays a QR code, the phone scans it.** The desktop is the trust root.
