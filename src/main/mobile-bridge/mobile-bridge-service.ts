@@ -27,6 +27,9 @@ import { SubscriptionRegistry } from './session/subscription-registry';
 import { CapabilityRouter } from './capability-router';
 import { registerCapabilityHandlers } from './handlers';
 import { SessionLifecycleBoardFeed } from './session-lifecycle-feed';
+import { PushRegistrationStore } from './push/push-registration-store';
+import { PushNotifier } from './push/push-notifier';
+import { getProjectRepos } from '../ipc/helpers/project-repos';
 import type { IpcContext } from '../ipc/ipc-context';
 
 export interface MobileBridgeConfig {
@@ -97,6 +100,10 @@ export class MobileBridgeService extends EventEmitter {
   private ipcContext: IpcContext | null = null;
   /** Feeds session lifecycle edges onto the board-changed bus so phones' board views track spawn/queue/suspend/exit. */
   private sessionLifecycleFeed: SessionLifecycleBoardFeed | null = null;
+  /** Per-device push registrations (Expo token + envelope key), written by the register-push handler and read by the notifier. */
+  readonly pushRegistrations = new PushRegistrationStore();
+  /** Seals and sends E2E push notifications on permission/turn-complete/crash triggers. */
+  private pushNotifier: PushNotifier | null = null;
   private disposed = false;
 
   constructor(config: MobileBridgeConfig) {
@@ -118,12 +125,44 @@ export class MobileBridgeService extends EventEmitter {
       context,
       diffWatcher: this.diffWatcher,
       getSubscriptions: (deviceId) => this.getOrCreateSubscriptions(deviceId),
+      pushRegistrations: this.pushRegistrations,
     });
     this.sessionLifecycleFeed = new SessionLifecycleBoardFeed({
       sessionManager: context.sessionManager,
       boardEvents: context.boardEvents,
     });
     this.sessionLifecycleFeed.start();
+    this.pushNotifier = new PushNotifier({
+      sessionManager: context.sessionManager,
+      registrationStore: this.pushRegistrations,
+      // Presence = a live established bridge session for that device; the
+      // user is already watching from it, so it is never pinged.
+      getEstablishedDeviceIds: () => {
+        const establishedDeviceIds = new Set<string>();
+        for (const [deviceId, session] of this.sessions) {
+          if (session.isEstablished) establishedDeviceIds.add(deviceId);
+        }
+        return establishedDeviceIds;
+      },
+      resolveTaskContext: (sessionId) => {
+        const projectId = context.sessionManager.getSessionProjectId(sessionId);
+        const taskId = context.sessionManager.getSessionTaskId(sessionId);
+        if (!projectId || !taskId) return null;
+        let taskTitle = '';
+        try {
+          taskTitle = getProjectRepos(context, projectId).tasks.getById(taskId)?.title ?? '';
+        } catch {
+          // Best-effort: an unknown title still yields a useful notification.
+        }
+        return { projectId, taskId, taskTitle };
+      },
+      getDeviceStaticPublicKey: (deviceId) => {
+        const identity = this.tryLoadIdentity();
+        if (!identity) return null;
+        return loadRoster(identity).devices.find((device) => device.deviceId === deviceId)?.staticPublicKey ?? null;
+      },
+    });
+    this.pushNotifier.start();
   }
 
   private getOrCreateSubscriptions(deviceId: string): SubscriptionRegistry {
@@ -332,6 +371,10 @@ export class MobileBridgeService extends EventEmitter {
   }
 
   revokeDevice(deviceId: string): void {
+    // A revoked device must stop receiving pushes too, unconditionally -
+    // before the identity guard, so a registration can never outlive its
+    // device under any teardown ordering.
+    this.pushRegistrations.remove(deviceId);
     const identity = this.tryLoadIdentity();
     if (!identity) return; // No identity means no roster, so nothing to revoke.
     revokeDeviceInRoster(identity, deviceId);
@@ -446,6 +489,8 @@ export class MobileBridgeService extends EventEmitter {
     this.devQuickPair.stop();
     this.sessionLifecycleFeed?.dispose();
     this.sessionLifecycleFeed = null;
+    this.pushNotifier?.dispose();
+    this.pushNotifier = null;
     this.cancelPairing('Mobile bridge service shutting down');
     this.disposeAllSessions();
     this.diffWatcher.closeAll();

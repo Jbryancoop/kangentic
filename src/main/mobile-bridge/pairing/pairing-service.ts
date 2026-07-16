@@ -13,14 +13,17 @@ import type { BridgeIdentity } from '../identity';
 import { isPairingTokenValid, mintPairingToken, type PairingToken } from './pairing-token';
 
 /**
- * Default grant for a newly paired device: read-only. The write/control
- * verbs (send-user-message, move-task, answer-permission-prompt,
+ * Default grant for a newly paired device: the read-only verbs plus
+ * register-push (registering for E2E-encrypted notifications neither
+ * reads nor mutates the board or any session, and the envelope contents
+ * mirror what the read grants already expose). The write/control verbs
+ * (send-user-message, move-task, answer-permission-prompt,
  * interactive-terminal, board-tool-write) require an explicit grant
  * afterward via the paired-devices settings UI - matches "1:1 management
  * UX is fine for v1" from the research doc: pair once, then adjust
  * capabilities if wanted, rather than granting everything by default.
  */
-export const DEFAULT_PAIRING_CAPABILITIES: CapabilityVerb[] = ['read-stream', 'read-board', 'read-diff', 'board-tool-read'];
+export const DEFAULT_PAIRING_CAPABILITIES: CapabilityVerb[] = ['read-stream', 'read-board', 'read-diff', 'board-tool-read', 'register-push'];
 
 type PairingPhase = 'idle' | 'waiting-for-phone' | 'sas-pending' | 'done';
 

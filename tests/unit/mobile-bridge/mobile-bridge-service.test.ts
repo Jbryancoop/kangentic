@@ -149,6 +149,23 @@ describe('MobileBridgeService read paths never create an identity', () => {
   });
 });
 
+describe('MobileBridgeService.revokeDevice() clears the push registration', () => {
+  it('removes the revoked device from the push registration store even when no identity exists', () => {
+    const service = new MobileBridgeService({ enabled: true, relayUrl: 'wss://relay.example.com' });
+    service.pushRegistrations.upsert('device-1', {
+      expoPushToken: 'ExponentPushToken[abc]',
+      pushKeyHex: 'ab'.repeat(32),
+      platform: 'android',
+      registeredAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(service.pushRegistrations.list()).toHaveLength(1);
+
+    service.revokeDevice('device-1');
+
+    expect(service.pushRegistrations.list()).toEqual([]);
+  });
+});
+
 describe('MobileBridgeService.startPairing() is the deliberate identity-creation trigger', () => {
   it('creates and persists an identity on the first pairing attempt', async () => {
     const service = new MobileBridgeService({ enabled: true, relayUrl: 'wss://relay.example.com' });
