@@ -16,6 +16,7 @@
 import type { CapabilityVerb } from '../capabilities/verbs';
 import type { JsonValue } from './messages';
 import { isJsonValue, isRecord } from './json-value';
+import { base64UrlDecode } from './base64url';
 import {
   isActivityReasonWire,
   isActivityStateWire,
@@ -418,6 +419,66 @@ function parseBoardToolRequestPayload(payload: JsonValue): BoardToolRequestPaylo
   return { tool: payload.tool, params: payload.params };
 }
 
+// === register-push ===
+
+/** The device push key is an XChaCha20-Poly1305 key: exactly 32 bytes, base64url on the wire. */
+const PUSH_KEY_LENGTH = 32;
+
+/**
+ * Registers (or unregisters) this device for E2E-encrypted push
+ * notifications. 'register' carries the device's Expo push token plus a
+ * device-generated 32-byte push key (base64url) the desktop seals every
+ * notification envelope with (see crypto/push-envelope.ts); 'unregister'
+ * carries neither. The desktop keys the registration by the requesting
+ * device's roster identity, never by anything in this payload.
+ */
+export interface RegisterPushRequestPayload {
+  action: 'register' | 'unregister';
+  expoPushToken?: string;
+  pushKeyBase64?: string;
+  platform?: 'android' | 'ios';
+}
+
+export interface RegisterPushResponsePayload {
+  registered: boolean;
+}
+
+export function parseRegisterPushRequestPayload(payload: JsonValue): RegisterPushRequestPayload {
+  if (!isRecord(payload)) throw new Error('register-push payload must be an object');
+  if (payload.action !== 'register' && payload.action !== 'unregister') {
+    throw new Error('register-push payload has an invalid "action"');
+  }
+  const request: RegisterPushRequestPayload = { action: payload.action };
+  if (payload.expoPushToken !== undefined) {
+    if (typeof payload.expoPushToken !== 'string') throw new Error('register-push payload has a non-string "expoPushToken"');
+    request.expoPushToken = payload.expoPushToken;
+  }
+  if (payload.pushKeyBase64 !== undefined) {
+    if (typeof payload.pushKeyBase64 !== 'string') throw new Error('register-push payload has a non-string "pushKeyBase64"');
+    let decodedKey: Uint8Array;
+    try {
+      decodedKey = base64UrlDecode(payload.pushKeyBase64);
+    } catch {
+      throw new Error('register-push payload has a malformed "pushKeyBase64"');
+    }
+    if (decodedKey.length !== PUSH_KEY_LENGTH) {
+      throw new Error(`register-push payload "pushKeyBase64" must decode to ${PUSH_KEY_LENGTH} bytes`);
+    }
+    request.pushKeyBase64 = payload.pushKeyBase64;
+  }
+  if (payload.platform !== undefined) {
+    if (payload.platform !== 'android' && payload.platform !== 'ios') {
+      throw new Error('register-push payload has an invalid "platform"');
+    }
+    request.platform = payload.platform;
+  }
+  if (request.action === 'register') {
+    if (request.expoPushToken === undefined) throw new Error('register-push register payload missing "expoPushToken"');
+    if (request.pushKeyBase64 === undefined) throw new Error('register-push register payload missing "pushKeyBase64"');
+  }
+  return request;
+}
+
 // === dispatch map + entry point ===
 
 export interface CapabilityRequestPayloadMap {
@@ -430,6 +491,7 @@ export interface CapabilityRequestPayloadMap {
   'interactive-terminal': InteractiveTerminalRequestPayload;
   'board-tool-read': BoardToolRequestPayload;
   'board-tool-write': BoardToolRequestPayload;
+  'register-push': RegisterPushRequestPayload;
 }
 
 export interface CapabilityResponsePayloadMap {
@@ -442,6 +504,7 @@ export interface CapabilityResponsePayloadMap {
   'interactive-terminal': InteractiveTerminalResponsePayload;
   'board-tool-read': BoardToolResponsePayload;
   'board-tool-write': BoardToolResponsePayload;
+  'register-push': RegisterPushResponsePayload;
 }
 
 /**
@@ -471,6 +534,8 @@ export function parseCapabilityRequestPayload<Verb extends CapabilityVerb>(
     case 'board-tool-read':
     case 'board-tool-write':
       return parseBoardToolRequestPayload(payload) as CapabilityRequestPayloadMap[Verb];
+    case 'register-push':
+      return parseRegisterPushRequestPayload(payload) as CapabilityRequestPayloadMap[Verb];
     default: {
       const exhaustiveCheck: never = verb;
       throw new Error(`Unknown capability verb: ${String(exhaustiveCheck)}`);

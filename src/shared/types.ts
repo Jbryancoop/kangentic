@@ -2473,6 +2473,7 @@ export const MOBILE_CAPABILITY_VERBS = [
   'interactive-terminal',
   'board-tool-read',
   'board-tool-write',
+  'register-push',
 ] as const;
 export type MobileCapabilityVerb = (typeof MOBILE_CAPABILITY_VERBS)[number];
 
