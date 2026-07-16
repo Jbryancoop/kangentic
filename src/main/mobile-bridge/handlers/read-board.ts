@@ -12,6 +12,7 @@ import type { BridgeSession } from '../session/bridge-session';
 import type { SubscriptionRegistry } from '../session/subscription-registry';
 import type { BoardChangedEvent } from '../board-event-bus';
 import { sendEvent } from './send-event';
+import { deriveProjectAccentColor } from './project-color';
 import { toBacklogItemWire, toBoardColumnWire, toBoardTaskWire, toWireJson } from './wire-mappers';
 
 function subscriptionKeyFor(projectId: string): string {
@@ -27,7 +28,9 @@ export async function handleReadBoard(
   const payload = parseCapabilityRequestPayload('read-board', request.payload);
 
   if (!payload.projectId) {
-    const projects = context.projectRepo.list().map((project) => ({ id: project.id, name: project.name }));
+    const projects = context.projectRepo
+      .list()
+      .map((project) => ({ id: project.id, name: project.name, color: deriveProjectAccentColor(project.id) }));
     const responsePayload: ReadBoardResponsePayload = { projects };
     return { type: 'capability-response', requestId: request.requestId, ok: true, payload: toWireJson(responsePayload) };
   }
@@ -53,6 +56,7 @@ export async function handleReadBoard(
     columns: repos.swimlanes.list().map(toBoardColumnWire),
     tasks: repos.tasks.list().map(toBoardTaskWire),
     backlog: backlogRepo.list().map(toBacklogItemWire),
+    projectColor: deriveProjectAccentColor(projectId),
   };
 
   const listener = (event: BoardChangedEvent): void => {
