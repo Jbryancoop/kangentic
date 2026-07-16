@@ -255,7 +255,7 @@ interface ParsedRosterFile {
 }
 
 describe('PairingService.confirmSas default capabilities', () => {
-  it('persists the read-only default capability set when confirmSas is called without an explicit capabilities argument', async () => {
+  it('persists the default capability set (read-only verbs plus register-push) when confirmSas is called without an explicit capabilities argument', async () => {
     const identity = testIdentity();
     const service = new PairingService(identity);
     const token = service.mintToken();
@@ -287,7 +287,7 @@ describe('PairingService.confirmSas default capabilities', () => {
 
     expect(persistedDevice).toBeDefined();
     expect(persistedDevice?.capabilities).toEqual(DEFAULT_PAIRING_CAPABILITIES);
-    expect(persistedDevice?.capabilities).toEqual(['read-stream', 'read-board', 'read-diff', 'board-tool-read']);
+    expect(persistedDevice?.capabilities).toEqual(['read-stream', 'read-board', 'read-diff', 'board-tool-read', 'register-push']);
   });
 });
 

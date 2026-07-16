@@ -16,6 +16,7 @@
 import type { CapabilityVerb } from '../capabilities/verbs';
 import type { JsonValue } from './messages';
 import { isJsonValue, isRecord } from './json-value';
+import { base64UrlDecode } from './base64url';
 import {
   isActivityReasonWire,
   isActivityStateWire,
@@ -58,6 +59,15 @@ export interface ReadStreamRequestPayload {
   limit?: number;
 }
 
+/**
+ * Mirrors the desktop's SessionStatus. 'suspended' is a registered-but-
+ * parked session (resumable placeholder); 'exited' can appear when a
+ * snapshot races the session's teardown.
+ */
+export type ReadStreamSessionStatusWire = 'running' | 'queued' | 'suspended' | 'exited';
+
+const READ_STREAM_SESSION_STATUSES: readonly string[] = ['running', 'queued', 'suspended', 'exited'];
+
 /** Initial snapshot returned on subscribe; live updates arrive as TerminalEvent/ActivityEvent/TranscriptEvent. */
 export interface ReadStreamResponsePayload {
   scrollback: string;
@@ -71,6 +81,11 @@ export interface ReadStreamResponsePayload {
    * from the scrollback content.
    */
   ptyDimensions?: TerminalDimensionsWire;
+  /**
+   * The session's lifecycle status at snapshot time. Absent from
+   * pre-0.5.0 desktops; the phone then assumes 'running'.
+   */
+  sessionStatus?: ReadStreamSessionStatusWire;
 }
 
 /** Phone-side narrowing of a read-stream subscribe response. Throws on a malformed required field. */
@@ -93,6 +108,12 @@ export function parseReadStreamResponsePayload(payload: JsonValue): ReadStreamRe
   };
   if (payload.ptyDimensions !== undefined) {
     response.ptyDimensions = parseTerminalDimensionsWire(payload.ptyDimensions as JsonValue);
+  }
+  if (payload.sessionStatus !== undefined) {
+    if (typeof payload.sessionStatus !== 'string' || !READ_STREAM_SESSION_STATUSES.includes(payload.sessionStatus)) {
+      throw new Error('read-stream response has an invalid "sessionStatus"');
+    }
+    response.sessionStatus = payload.sessionStatus as ReadStreamSessionStatusWire;
   }
   return response;
 }
@@ -163,6 +184,13 @@ export interface ReadBoardRequestPayload {
 export interface ReadBoardProjectSummary {
   id: string;
   name: string;
+  /**
+   * Accent color for this project ("#rrggbb"). Today the desktop derives
+   * it deterministically from the project id; a user-set project color
+   * can later override it through this same field. Absent from pre-0.5.0
+   * desktops.
+   */
+  color?: string;
 }
 
 /** Returned when the request omits projectId - the phone's project-bootstrap listing. */
@@ -176,20 +204,35 @@ export interface ReadBoardSnapshotResponsePayload {
   columns: BoardColumnWire[];
   tasks: BoardTaskWire[];
   backlog: BacklogItemWire[];
+  /** The project's accent color ("#rrggbb"); same semantics as ReadBoardProjectSummary.color. Absent from pre-0.5.0 desktops. */
+  projectColor?: string;
 }
 
 export type ReadBoardResponsePayload = ReadBoardProjectListResponsePayload | ReadBoardSnapshotResponsePayload;
+
+const ACCENT_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+
+function parseAccentColor(value: unknown, context: string): string {
+  if (typeof value !== 'string' || !ACCENT_COLOR_PATTERN.test(value)) {
+    throw new Error(`${context} has an invalid accent color (expected "#rrggbb")`);
+  }
+  return value;
+}
 
 /** Phone-side narrowing of a read-board response (project list or board snapshot). Throws on a malformed required field. */
 export function parseReadBoardResponsePayload(payload: JsonValue): ReadBoardResponsePayload {
   if (!isRecord(payload)) throw new Error('read-board response must be an object');
 
   if (Array.isArray(payload.projects)) {
-    const projects = payload.projects.map((project, index) => {
+    const projects = payload.projects.map((project, index): ReadBoardProjectSummary => {
       if (!isRecord(project) || typeof project.id !== 'string' || typeof project.name !== 'string') {
         throw new Error(`read-board project ${index} is malformed`);
       }
-      return { id: project.id, name: project.name };
+      return {
+        id: project.id,
+        name: project.name,
+        ...(project.color !== undefined ? { color: parseAccentColor(project.color, `read-board project ${index}`) } : {}),
+      };
     });
     return { projects };
   }
@@ -203,6 +246,7 @@ export function parseReadBoardResponsePayload(payload: JsonValue): ReadBoardResp
     columns: payload.columns.map((column) => parseBoardColumnWire(column as JsonValue)),
     tasks: payload.tasks.map((task) => parseBoardTaskWire(task as JsonValue)),
     backlog: payload.backlog.map((item) => parseBacklogItemWire(item as JsonValue)),
+    ...(payload.projectColor !== undefined ? { projectColor: parseAccentColor(payload.projectColor, 'read-board snapshot') } : {}),
   };
 }
 
@@ -398,6 +442,66 @@ function parseBoardToolRequestPayload(payload: JsonValue): BoardToolRequestPaylo
   return { tool: payload.tool, params: payload.params };
 }
 
+// === register-push ===
+
+/** The device push key is an XChaCha20-Poly1305 key: exactly 32 bytes, base64url on the wire. */
+const PUSH_KEY_LENGTH = 32;
+
+/**
+ * Registers (or unregisters) this device for E2E-encrypted push
+ * notifications. 'register' carries the device's Expo push token plus a
+ * device-generated 32-byte push key (base64url) the desktop seals every
+ * notification envelope with (see crypto/push-envelope.ts); 'unregister'
+ * carries neither. The desktop keys the registration by the requesting
+ * device's roster identity, never by anything in this payload.
+ */
+export interface RegisterPushRequestPayload {
+  action: 'register' | 'unregister';
+  expoPushToken?: string;
+  pushKeyBase64?: string;
+  platform?: 'android' | 'ios';
+}
+
+export interface RegisterPushResponsePayload {
+  registered: boolean;
+}
+
+export function parseRegisterPushRequestPayload(payload: JsonValue): RegisterPushRequestPayload {
+  if (!isRecord(payload)) throw new Error('register-push payload must be an object');
+  if (payload.action !== 'register' && payload.action !== 'unregister') {
+    throw new Error('register-push payload has an invalid "action"');
+  }
+  const request: RegisterPushRequestPayload = { action: payload.action };
+  if (payload.expoPushToken !== undefined) {
+    if (typeof payload.expoPushToken !== 'string') throw new Error('register-push payload has a non-string "expoPushToken"');
+    request.expoPushToken = payload.expoPushToken;
+  }
+  if (payload.pushKeyBase64 !== undefined) {
+    if (typeof payload.pushKeyBase64 !== 'string') throw new Error('register-push payload has a non-string "pushKeyBase64"');
+    let decodedKey: Uint8Array;
+    try {
+      decodedKey = base64UrlDecode(payload.pushKeyBase64);
+    } catch {
+      throw new Error('register-push payload has a malformed "pushKeyBase64"');
+    }
+    if (decodedKey.length !== PUSH_KEY_LENGTH) {
+      throw new Error(`register-push payload "pushKeyBase64" must decode to ${PUSH_KEY_LENGTH} bytes`);
+    }
+    request.pushKeyBase64 = payload.pushKeyBase64;
+  }
+  if (payload.platform !== undefined) {
+    if (payload.platform !== 'android' && payload.platform !== 'ios') {
+      throw new Error('register-push payload has an invalid "platform"');
+    }
+    request.platform = payload.platform;
+  }
+  if (request.action === 'register') {
+    if (request.expoPushToken === undefined) throw new Error('register-push register payload missing "expoPushToken"');
+    if (request.pushKeyBase64 === undefined) throw new Error('register-push register payload missing "pushKeyBase64"');
+  }
+  return request;
+}
+
 // === dispatch map + entry point ===
 
 export interface CapabilityRequestPayloadMap {
@@ -410,6 +514,7 @@ export interface CapabilityRequestPayloadMap {
   'interactive-terminal': InteractiveTerminalRequestPayload;
   'board-tool-read': BoardToolRequestPayload;
   'board-tool-write': BoardToolRequestPayload;
+  'register-push': RegisterPushRequestPayload;
 }
 
 export interface CapabilityResponsePayloadMap {
@@ -422,6 +527,7 @@ export interface CapabilityResponsePayloadMap {
   'interactive-terminal': InteractiveTerminalResponsePayload;
   'board-tool-read': BoardToolResponsePayload;
   'board-tool-write': BoardToolResponsePayload;
+  'register-push': RegisterPushResponsePayload;
 }
 
 /**
@@ -451,6 +557,8 @@ export function parseCapabilityRequestPayload<Verb extends CapabilityVerb>(
     case 'board-tool-read':
     case 'board-tool-write':
       return parseBoardToolRequestPayload(payload) as CapabilityRequestPayloadMap[Verb];
+    case 'register-push':
+      return parseRegisterPushRequestPayload(payload) as CapabilityRequestPayloadMap[Verb];
     default: {
       const exhaustiveCheck: never = verb;
       throw new Error(`Unknown capability verb: ${String(exhaustiveCheck)}`);

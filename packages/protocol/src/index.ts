@@ -45,10 +45,12 @@ export {
   parseReadBoardResponsePayload,
   parseReadDiffResponsePayload,
   parseTranscriptWindowResponsePayload,
+  parseRegisterPushRequestPayload,
   type CapabilityRequestPayloadMap,
   type CapabilityResponsePayloadMap,
   type ReadStreamRequestPayload,
   type ReadStreamResponsePayload,
+  type ReadStreamSessionStatusWire,
   type TranscriptWindowResponsePayload,
   type ReadBoardRequestPayload,
   type ReadBoardProjectSummary,
@@ -68,7 +70,21 @@ export {
   type InteractiveTerminalResponsePayload,
   type BoardToolRequestPayload,
   type BoardToolResponsePayload,
+  type RegisterPushRequestPayload,
+  type RegisterPushResponsePayload,
 } from './wire/payloads';
+
+export {
+  PUSH_CATEGORIES,
+  isPushCategory,
+  parsePushEnvelopePlaintext,
+  sealPushEnvelope,
+  openPushEnvelope,
+  PUSH_ENVELOPE_MAX_AGE_MS,
+  PUSH_ENVELOPE_MAX_FUTURE_SKEW_MS,
+  type PushCategory,
+  type PushEnvelopePlaintext,
+} from './crypto/push-envelope';
 
 export {
   PAIRING_URI_SCHEME,

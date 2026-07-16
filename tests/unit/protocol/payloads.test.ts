@@ -144,6 +144,42 @@ describe('parseCapabilityRequestPayload', () => {
     expect(parsed).toEqual({ tool: 'update_task', params: {} });
   });
 
+  it('register-push: parses a valid register payload', () => {
+    const pushKeyBase64 = 'A'.repeat(43); // 43 base64url chars decode to 32 bytes with 2 spare bits
+    const parsed = parseCapabilityRequestPayload('register-push', {
+      action: 'register',
+      expoPushToken: 'ExponentPushToken[abc123]',
+      pushKeyBase64,
+      platform: 'android',
+    });
+    expect(parsed).toEqual({ action: 'register', expoPushToken: 'ExponentPushToken[abc123]', pushKeyBase64, platform: 'android' });
+  });
+
+  it('register-push: rejects a register without expoPushToken or pushKeyBase64', () => {
+    expect(() => parseCapabilityRequestPayload('register-push', { action: 'register', pushKeyBase64: 'A'.repeat(43) })).toThrow(/expoPushToken/);
+    expect(() => parseCapabilityRequestPayload('register-push', { action: 'register', expoPushToken: 'tok' })).toThrow(/pushKeyBase64/);
+  });
+
+  it('register-push: rejects a push key that does not decode to exactly 32 bytes', () => {
+    expect(() =>
+      parseCapabilityRequestPayload('register-push', { action: 'register', expoPushToken: 'tok', pushKeyBase64: 'A'.repeat(22) }),
+    ).toThrow(/32 bytes/);
+    expect(() =>
+      parseCapabilityRequestPayload('register-push', { action: 'register', expoPushToken: 'tok', pushKeyBase64: 'not base64url!!!' }),
+    ).toThrow(/pushKeyBase64/);
+  });
+
+  it('register-push: rejects an unknown action or platform', () => {
+    expect(() => parseCapabilityRequestPayload('register-push', { action: 'subscribe' })).toThrow(/action/);
+    expect(() =>
+      parseCapabilityRequestPayload('register-push', { action: 'register', expoPushToken: 'tok', pushKeyBase64: 'A'.repeat(43), platform: 'windows' }),
+    ).toThrow(/platform/);
+  });
+
+  it('register-push: an unregister without token or key is accepted', () => {
+    expect(parseCapabilityRequestPayload('register-push', { action: 'unregister' })).toEqual({ action: 'unregister' });
+  });
+
   it('rejects a non-object payload for every verb', () => {
     expect(() => parseCapabilityRequestPayload('read-board', 'not-an-object' as unknown as JsonValue)).toThrow();
     expect(() => parseCapabilityRequestPayload('move-task', null as unknown as JsonValue)).toThrow();

@@ -13,6 +13,11 @@ describe('capability verbs', () => {
     expect(isCapabilityVerb('')).toBe(false);
   });
 
+  it('includes register-push (the E2E push registration verb)', () => {
+    expect(CAPABILITY_VERBS).toContain('register-push');
+    expect(isCapabilityVerb('register-push')).toBe(true);
+  });
+
   it('capabilitySetFromArray drops unrecognized entries (deny-by-default for unknown verbs)', () => {
     const set = capabilitySetFromArray(['read-board', 'delete-everything', 'move-task']);
     expect(capabilitySetToArray(set).sort()).toEqual(['move-task', 'read-board']);

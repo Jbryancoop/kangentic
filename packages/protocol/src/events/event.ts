@@ -55,7 +55,15 @@ export type ActivityEventPayload =
   | { type: 'activity'; state: ActivityStateWire; reason: ActivityReasonWire }
   | { type: 'usage'; usage: SessionUsageWire }
   | { type: 'event'; event: SessionEventWire }
-  | { type: 'permission'; promptId: string; pending: boolean };
+  | { type: 'permission'; promptId: string; pending: boolean }
+  /**
+   * The streamed session's PTY exited. Pushed once by the desktop's
+   * read-stream subscription right before it tears itself down, so the
+   * phone learns "this session is over" from the feed itself instead of
+   * inferring it from silence. `intentional` distinguishes a deliberate
+   * stop (desktop Stop button, suspend, shutdown) from a crash.
+   */
+  | { type: 'session-ended'; intentional: boolean };
 
 export interface ActivityEvent {
   kind: 'activity';
@@ -121,6 +129,10 @@ export function parseActivityEventPayload(payload: JsonValue): ActivityEventPayl
       if (typeof payload.promptId !== 'string') throw new Error('permission payload is missing "promptId"');
       if (typeof payload.pending !== 'boolean') throw new Error('permission payload is missing "pending"');
       return { type: 'permission', promptId: payload.promptId, pending: payload.pending };
+    }
+    case 'session-ended': {
+      if (typeof payload.intentional !== 'boolean') throw new Error('session-ended payload is missing "intentional"');
+      return { type: 'session-ended', intentional: payload.intentional };
     }
     default:
       throw new Error('activity payload has an unknown "type"');

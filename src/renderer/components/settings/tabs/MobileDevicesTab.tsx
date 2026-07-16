@@ -18,6 +18,7 @@ const CAPABILITY_LABELS: Record<MobileCapabilityVerb, { label: string; descripti
   'interactive-terminal': { label: 'Interactive terminal', description: 'Full keystroke control of the running terminal' },
   'board-tool-read': { label: 'Task details', description: 'Search tasks and read stats, transcripts, and handoff notes' },
   'board-tool-write': { label: 'Task actions', description: 'Create, edit, and delete tasks or backlog items, link PRs' },
+  'register-push': { label: 'Push notifications', description: 'Register this device for end-to-end encrypted push notifications' },
 };
 
 export function MobileDevicesTab({ globalConfig }: { globalConfig: AppConfig }) {

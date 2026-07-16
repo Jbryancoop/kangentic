@@ -17,6 +17,7 @@ import {
   type BoardColumnWire,
   type BoardTaskWire,
   type JsonValue,
+  type ReadStreamSessionStatusWire,
   type SessionEventWire,
   type SessionUsageWire,
   type TerminalDimensionsWire,
@@ -28,6 +29,7 @@ import type {
   ActivityReason,
   BacklogTask,
   SessionEvent,
+  SessionStatus,
   SessionUsage,
   Swimlane,
   Task,
@@ -47,6 +49,15 @@ export function toWireJson(payload: unknown): JsonValue {
  */
 export function toTerminalDimensionsWire(dims: { cols: number; rows: number } | null): TerminalDimensionsWire | undefined {
   return dims ? { cols: dims.cols, rows: dims.rows } : undefined;
+}
+
+/**
+ * SessionStatus -> the wire mirror. The unions are identical today, so
+ * this is an identity function whose value is the compile error it raises
+ * here (not a silent phone-side parse failure) if either side ever drifts.
+ */
+export function toReadStreamSessionStatusWire(status: SessionStatus): ReadStreamSessionStatusWire {
+  return status;
 }
 
 /**

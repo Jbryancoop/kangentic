@@ -18,6 +18,7 @@
 import { test, expect } from '@playwright/test';
 import { launchPage, createProject } from './helpers';
 import type { Browser, Page } from '@playwright/test';
+import { MOBILE_CAPABILITY_VERBS } from '../../src/shared/types';
 import type { AppConfig, MobilePairedDevice } from '../../src/shared/types';
 
 // Each describe is isolated per worker (separate process; per-test page launch / goto reset),
@@ -330,7 +331,7 @@ test.describe('Mobile Devices settings tab', () => {
     const deviceRow = page.locator('li', { hasText: 'Bare Device' });
     await expect(deviceRow).toBeVisible();
     const switches = deviceRow.getByRole('switch');
-    await expect(switches).toHaveCount(9);
+    await expect(switches).toHaveCount(MOBILE_CAPABILITY_VERBS.length);
     for (const toggle of await switches.all()) {
       await expect(toggle).toHaveAttribute('aria-checked', 'false');
     }

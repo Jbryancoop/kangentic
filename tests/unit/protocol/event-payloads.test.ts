@@ -118,6 +118,17 @@ describe('parseActivityEventPayload', () => {
     expect(parseActivityEventPayload(payload)).toEqual(payload);
   });
 
+  it('parses a session-ended payload with either intentional value', () => {
+    expect(parseActivityEventPayload({ type: 'session-ended', intentional: true })).toEqual({ type: 'session-ended', intentional: true });
+    expect(parseActivityEventPayload({ type: 'session-ended', intentional: false })).toEqual({ type: 'session-ended', intentional: false });
+  });
+
+  it('rejects a session-ended payload with a missing or non-boolean intentional', () => {
+    expect(() => parseActivityEventPayload({ type: 'session-ended' })).toThrow(/intentional/);
+    expect(() => parseActivityEventPayload({ type: 'session-ended', intentional: 'yes' })).toThrow(/intentional/);
+    expect(() => parseActivityEventPayload({ type: 'session-ended', intentional: 0 })).toThrow(/intentional/);
+  });
+
   it('rejects an invalid state', () => {
     expect(() => parseActivityEventPayload({ type: 'activity', state: 'busy', reason: { kind: 'idle' } })).toThrow(/state/);
   });
@@ -295,6 +306,24 @@ describe('read-* response parsers', () => {
     ).toThrow(/cols/);
   });
 
+  it('carries sessionStatus when present, tolerates absence (pre-0.5.0 desktop), and rejects unknown values', () => {
+    const base: Record<string, JsonValue> = {
+      scrollback: '',
+      activity: { state: null, reason: null },
+      usage: null,
+      awaitedPromptId: null,
+    };
+    for (const status of ['running', 'queued', 'suspended', 'exited']) {
+      expect(parseReadStreamResponsePayload({ ...base, sessionStatus: status }).sessionStatus).toBe(status);
+    }
+
+    const withoutStatus = parseReadStreamResponsePayload(base);
+    expect('sessionStatus' in withoutStatus).toBe(false);
+
+    expect(() => parseReadStreamResponsePayload({ ...base, sessionStatus: 'zombie' })).toThrow(/sessionStatus/);
+    expect(() => parseReadStreamResponsePayload({ ...base, sessionStatus: 3 })).toThrow(/sessionStatus/);
+  });
+
   it('parses a read-board project list', () => {
     expect(parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha' }] })).toEqual({ projects: [{ id: 'p-1', name: 'Alpha' }] });
   });
@@ -312,6 +341,30 @@ describe('read-* response parsers', () => {
 
   it('rejects a read-board snapshot missing columns', () => {
     expect(() => parseReadBoardResponsePayload({ projectId: 'p-1', tasks: [], backlog: [] })).toThrow(/columns/);
+  });
+
+  it('carries per-project color and snapshot projectColor when present, tolerating absence (pre-0.5.0 desktop)', () => {
+    expect(parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha', color: '#D97706' }] })).toEqual({
+      projects: [{ id: 'p-1', name: 'Alpha', color: '#D97706' }],
+    });
+    const withoutColor = parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha' }] }) as {
+      projects: Array<Record<string, unknown>>;
+    };
+    expect('color' in withoutColor.projects[0]).toBe(false);
+
+    const snapshot = parseReadBoardResponsePayload({ projectId: 'p-1', columns: [], tasks: [], backlog: [], projectColor: '#3b82f6' });
+    expect(snapshot).toEqual({ projectId: 'p-1', columns: [], tasks: [], backlog: [], projectColor: '#3b82f6' });
+    const bareSnapshot = parseReadBoardResponsePayload({ projectId: 'p-1', columns: [], tasks: [], backlog: [] });
+    expect('projectColor' in bareSnapshot).toBe(false);
+  });
+
+  it('rejects a malformed accent color on either read-board shape', () => {
+    expect(() => parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha', color: 'amber' }] })).toThrow(/accent color/);
+    expect(() => parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha', color: '#12345' }] })).toThrow(/accent color/);
+    expect(() => parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha', color: 42 }] })).toThrow(/accent color/);
+    expect(() =>
+      parseReadBoardResponsePayload({ projectId: 'p-1', columns: [], tasks: [], backlog: [], projectColor: 'rgb(1,2,3)' }),
+    ).toThrow(/accent color/);
   });
 
   it('parses a read-diff response by discriminating on "files"', () => {
@@ -369,6 +422,7 @@ describe('isBridgeEvent', () => {
     ).toBe(true);
     expect(isBridgeEvent({ kind: 'transcript', sessionId: 's', taskId: 't', payload: { mode: 'reset', revision: 2, totalEntries: 0 } })).toBe(true);
     expect(isBridgeEvent({ kind: 'activity', sessionId: 's', taskId: 't', payload: { type: 'permission', promptId: 'p', pending: true } })).toBe(true);
+    expect(isBridgeEvent({ kind: 'activity', sessionId: 's', taskId: 't', payload: { type: 'session-ended', intentional: false } })).toBe(true);
     expect(isBridgeEvent({ kind: 'terminal', sessionId: 's', taskId: 't', payload: { data: 'bytes' } })).toBe(true);
     expect(isBridgeEvent({ kind: 'terminal-resize', sessionId: 's', taskId: 't', payload: { cols: 48, rows: 26 } })).toBe(true);
     expect(isBridgeEvent({ kind: 'board', projectId: 'p', payload: { change: 'task-updated', ids: ['t-1'] } })).toBe(true);

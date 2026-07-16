@@ -20,6 +20,7 @@ vi.mock('../../../src/main/db/repositories/backlog-repository', () => ({
 
 import type { CapabilityRequestMessage } from '@kangentic/protocol';
 import { handleReadBoard } from '../../../src/main/mobile-bridge/handlers/read-board';
+import { deriveProjectAccentColor, PROJECT_ACCENT_PALETTE } from '../../../src/main/mobile-bridge/handlers/project-color';
 import type { IpcContext } from '../../../src/main/ipc/ipc-context';
 import type { BridgeSession } from '../../../src/main/mobile-bridge/session/bridge-session';
 import { SubscriptionRegistry } from '../../../src/main/mobile-bridge/session/subscription-registry';
@@ -41,7 +42,7 @@ describe('handleReadBoard', () => {
     backlogList.mockReset().mockReturnValue([{ id: 'b-1', external_metadata: { secret: true } }]);
   });
 
-  it('with no projectId, returns the project bootstrap list and never touches repos', async () => {
+  it('with no projectId, returns the project bootstrap list (with derived accent colors) and never touches repos', async () => {
     const projectRepoList = vi.fn(() => [{ id: 'proj-1', name: 'Alpha' }]);
     const context = { projectRepo: { list: projectRepoList, getById: vi.fn() } } as unknown as IpcContext;
     const subscriptions = new SubscriptionRegistry();
@@ -49,7 +50,9 @@ describe('handleReadBoard', () => {
     const response = await handleReadBoard(fakeRequest({}), fakeSession(), context, subscriptions);
 
     expect(response.ok).toBe(true);
-    expect(response.payload).toEqual({ projects: [{ id: 'proj-1', name: 'Alpha' }] });
+    expect(response.payload).toEqual({ projects: [{ id: 'proj-1', name: 'Alpha', color: deriveProjectAccentColor('proj-1') }] });
+    const listed = (response.payload as { projects: Array<{ color: string }> }).projects[0];
+    expect(PROJECT_ACCENT_PALETTE).toContain(listed.color);
     expect(tasksList).not.toHaveBeenCalled();
   });
 
@@ -89,6 +92,7 @@ describe('handleReadBoard', () => {
       columns: [{ id: 'lane-1' }],
       tasks: [{ id: 't-1', session_id: 'sess-1' }],
       backlog: [{ id: 'b-1' }],
+      projectColor: deriveProjectAccentColor('proj-1'),
     });
     const snapshot = response.payload as { columns: object[]; tasks: object[]; backlog: object[] };
     expect(snapshot.tasks[0]).not.toHaveProperty('detail_view_state');

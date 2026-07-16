@@ -31,7 +31,7 @@ const usageFixture = {
 };
 
 class FakeSessionManager extends EventEmitter {
-  getSession = vi.fn((id: string) => ({ id, taskId: 'task-1' }));
+  getSession = vi.fn((id: string) => ({ id, taskId: 'task-1', status: 'running' }));
   getScrollback = vi.fn(() => Promise.resolve('scrollback-content'));
   // The mobile seed uses the parsed-grid serialized frame, not the raw replay.
   getSerializedFrame = vi.fn(() => Promise.resolve('serialized-frame'));
@@ -126,6 +126,51 @@ describe('handleReadStream', () => {
     expect(sessionManager.listenerCount('event')).toBe(0);
     expect(sessionManager.listenerCount('exit')).toBe(0);
     expect(subscriptions.has('stream:sess-1')).toBe(false);
+  });
+
+  it('pushes a session-ended activity event (with the intentional flag) before tearing down on exit', async () => {
+    const session = fakeSession();
+    const context = { sessionManager } as unknown as IpcContext;
+    const subscriptions = new SubscriptionRegistry();
+    await handleReadStream(fakeRequest({ sessionId: 'sess-1', action: 'subscribe' }), session, context, subscriptions);
+
+    sessionManager.emit('data-tap', 'sess-1', 'y'.repeat(300)); // parked on the coalesce timer
+    sessionManager.emit('exit', 'sess-1', 0, true);
+
+    const calls = (session.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
+    // The pending old-grid output flushes FIRST, then session-ended is the feed's last word.
+    expect((calls[calls.length - 2][0] as { event: { kind: string } }).event.kind).toBe('terminal');
+    expect(calls[calls.length - 1][0]).toEqual({
+      type: 'event',
+      event: { kind: 'activity', sessionId: 'sess-1', taskId: 'task-1', payload: { type: 'session-ended', intentional: true } },
+    });
+    expect(subscriptions.has('stream:sess-1')).toBe(false);
+  });
+
+  it('a crash exit (and the flag-less spawn-failure emit) reports intentional false', async () => {
+    const session = fakeSession();
+    const context = { sessionManager } as unknown as IpcContext;
+    await handleReadStream(fakeRequest({ sessionId: 'sess-1', action: 'subscribe' }), session, context, new SubscriptionRegistry());
+    sessionManager.emit('exit', 'sess-1', -1); // spawn-failure path emits no intentional flag
+    const calls = (session.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
+    expect((calls[calls.length - 1][0] as { event: { payload: unknown } }).event.payload).toEqual({
+      type: 'session-ended',
+      intentional: false,
+    });
+  });
+
+  it('the subscribe snapshot carries the live session status', async () => {
+    const context = { sessionManager } as unknown as IpcContext;
+    const response = await handleReadStream(fakeRequest({ sessionId: 'sess-1', action: 'subscribe' }), fakeSession(), context, new SubscriptionRegistry());
+    expect((response.payload as { sessionStatus?: string }).sessionStatus).toBe('running');
+  });
+
+  it('subscribing a suspended-but-registered session reports its suspended status', async () => {
+    sessionManager.getSession.mockReturnValue({ id: 'sess-1', taskId: 'task-1', status: 'suspended' });
+    const context = { sessionManager } as unknown as IpcContext;
+    const response = await handleReadStream(fakeRequest({ sessionId: 'sess-1', action: 'subscribe' }), fakeSession(), context, new SubscriptionRegistry());
+    expect(response.ok).toBe(true);
+    expect((response.payload as { sessionStatus?: string }).sessionStatus).toBe('suspended');
   });
 
   it('a small data-tap chunk flushes immediately (keystroke-echo fast path); a different session never pushes', async () => {

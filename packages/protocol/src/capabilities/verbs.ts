@@ -19,6 +19,7 @@ export const CAPABILITY_VERBS = [
   'interactive-terminal',
   'board-tool-read',
   'board-tool-write',
+  'register-push',
 ] as const;
 
 export type CapabilityVerb = (typeof CAPABILITY_VERBS)[number];

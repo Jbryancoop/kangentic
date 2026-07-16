@@ -104,7 +104,10 @@ beforeEach(() => {
 describe('MobileBridgeService.syncSessions() reentrancy', () => {
   it('two overlapping reconciles open exactly one BridgeSession per device', async () => {
     const service = new MobileBridgeService({ enabled: true, relayUrl: 'wss://relay.example.com' });
-    service.attachContext({} as never);
+    // attachContext also starts the SessionLifecycleBoardFeed, which
+    // subscribes to sessionManager and pushes onto boardEvents - a real
+    // EventEmitter and a stub bus keep that wiring inert here.
+    service.attachContext({ sessionManager: new EventEmitter(), boardEvents: { emitBoardChanged: vi.fn() } } as never);
 
     // Fire two reconciles with the SAME config while the first is still
     // suspended on transport.connect(). Without the guard, both would each
