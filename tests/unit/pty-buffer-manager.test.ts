@@ -1160,4 +1160,53 @@ describe('PtyBufferManager', () => {
       vi.useRealTimers();
     });
   });
+
+  describe('getSerializedFrame (parsed-grid mobile seed)', () => {
+    // Real timers: the headless parser drains its write buffer on a macrotask,
+    // and getSerializedFrame awaits that flush before serializing.
+    it('reconstructs a fullscreen-TUI static cell that the raw 512KB byte-window replay drops', async () => {
+      const manager = new PtyBufferManager({ onFlush: vi.fn() });
+      manager.initSession(SESSION, '', 80, 24);
+
+      // A fullscreen TUI: enter the alt screen, clear, then draw a WRITE-ONCE
+      // static left status segment at the top-left. In the alt buffer this cell
+      // is positioned absolutely and is never rewritten (mirrors Claude Code's
+      // "[icon] auto mode on" segment).
+      const STATIC_SEGMENT = 'auto mode on';
+      manager.onData(SESSION, `\x1b[?1049h\x1b[2J\x1b[1;1H${STATIC_SEGMENT}`);
+
+      // Flood the dynamic bottom segment with well over 512KB of updates that
+      // reposition to row 24 and never touch the static cell, so the bytes that
+      // originally drew STATIC_SEGMENT age out of the raw 512KB byte window.
+      const MAX_SCROLLBACK = 512 * 1024;
+      const dynamicUnit = '\x1b[24;1H' + 'x'.repeat(20); // stays on row 24, 20 cols < 80: no wrap, no scroll
+      const dynamicChunk = dynamicUnit.repeat(80); // ~2.1KB per onData
+      let floodedBytes = 0;
+      while (floodedBytes < MAX_SCROLLBACK + 400 * 1024) {
+        manager.onData(SESSION, dynamicChunk);
+        floodedBytes += dynamicChunk.length;
+      }
+
+      // The raw byte-window replay has lost the static segment: its drawing
+      // bytes were trimmed off the front of the 512KB ring.
+      const rawReplay = manager.getScrollback(SESSION);
+      expect(rawReplay).not.toContain(STATIC_SEGMENT);
+
+      // The parsed-grid serialized frame still carries every visible cell,
+      // static segment included - this is the fix.
+      const serializedFrame = await manager.getSerializedFrame(SESSION);
+      expect(serializedFrame).toContain(STATIC_SEGMENT);
+      // And it lands the phone in the alt screen (the serialize addon emits the
+      // 1049h switch when the session is in the alt buffer), so the frame
+      // renders in the right screen.
+      expect(serializedFrame).toContain('\x1b[?1049h');
+
+      manager.removeSession(SESSION);
+    });
+
+    it('returns empty string for an unknown session', async () => {
+      const manager = new PtyBufferManager({ onFlush: vi.fn() });
+      expect(await manager.getSerializedFrame('nonexistent')).toBe('');
+    });
+  });
 });

@@ -615,7 +615,7 @@ export class SessionManager extends EventEmitter {
       this.lastDesktopDimensions.set(sessionId, { cols: session.pty.cols, rows: session.pty.rows });
     }
 
-    const colsChanged = this.bufferManager.onResize(sessionId, clampedCols);
+    const colsChanged = this.bufferManager.onResize(sessionId, clampedCols, clampedRows);
     session.pty.resize(clampedCols, clampedRows);
     // Mark resize time so the dispatch can suppress idle->thinking
     // transitions during the redraw burst that follows.
@@ -870,6 +870,22 @@ export class SessionManager extends EventEmitter {
     // with no pending width change (see PtyBufferManager.waitForResizeRepaint).
     await this.bufferManager.waitForResizeRepaint(sessionId);
     return this.bufferManager.getScrollback(sessionId);
+  }
+
+  /**
+   * The MOBILE seed frame: a snapshot of the PARSED grid from the per-session
+   * headless xterm, serialized as a self-contained escape-sequence frame the
+   * phone cold-replays into a fresh terminal. Unlike getScrollback's raw 512KB
+   * byte replay, this never drops a fullscreen TUI's write-once static cells
+   * whose drawing bytes have aged out of the byte window.
+   *
+   * Preserves the same repaint settle as getScrollback (awaits
+   * waitForResizeRepaint) so the grid is never serialized mid-repaint at a
+   * stale width. Desktop consumers keep using getScrollback unchanged.
+   */
+  async getSerializedFrame(sessionId: string): Promise<string> {
+    await this.bufferManager.waitForResizeRepaint(sessionId);
+    return this.bufferManager.getSerializedFrame(sessionId);
   }
 
   /**

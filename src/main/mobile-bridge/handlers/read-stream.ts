@@ -212,7 +212,11 @@ export async function handleReadStream(
     return { type: 'capability-response', requestId: request.requestId, ok: true, payload: toWireJson(windowPayload) };
   }
 
-  const scrollback = await context.sessionManager.getScrollback(payload.sessionId);
+  // The mobile seed is the PARSED-grid serialized frame, not the raw byte
+  // replay: a raw 512KB replay drops a fullscreen TUI's write-once static cells
+  // once their drawing bytes age out of the window, so the phone's cold replay
+  // renders them blank. The serialized frame reconstructs every visible cell.
+  const scrollback = await context.sessionManager.getSerializedFrame(payload.sessionId);
   const activityState = context.sessionManager.getActivityCache()[payload.sessionId] ?? null;
   const activityReason = context.sessionManager.getActivityReason(payload.sessionId);
   const usage = context.sessionManager.getUsageCache()[payload.sessionId] ?? null;

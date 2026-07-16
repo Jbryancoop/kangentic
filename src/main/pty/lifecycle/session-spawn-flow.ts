@@ -224,7 +224,7 @@ export async function performSpawn(
   // truthfully: an unchanged width (PTY spawned at the fitted size) reports
   // false and skips the repaint-settle, while the cold-launch 120-to-fitted
   // change reports true and arms it. See PtyBufferManager.onResize.
-  context.bufferManager.initSession(id, previousScrollback, spawnCols);
+  context.bufferManager.initSession(id, previousScrollback, spawnCols, spawnRows);
   context.sessionFiles.register({
     sessionId: id,
     statusOutputPath: input.statusOutputPath || null,

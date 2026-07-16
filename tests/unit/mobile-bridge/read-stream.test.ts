@@ -33,6 +33,8 @@ const usageFixture = {
 class FakeSessionManager extends EventEmitter {
   getSession = vi.fn((id: string) => ({ id, taskId: 'task-1' }));
   getScrollback = vi.fn(() => Promise.resolve('scrollback-content'));
+  // The mobile seed uses the parsed-grid serialized frame, not the raw replay.
+  getSerializedFrame = vi.fn(() => Promise.resolve('serialized-frame'));
   getActivityCache = vi.fn(() => ({ 'sess-1': 'thinking' }));
   getActivityReason = vi.fn(() => ({ kind: 'turn-active' }));
   getUsageCache = vi.fn(() => ({ 'sess-1': usageFixture }));
@@ -63,7 +65,7 @@ describe('handleReadStream', () => {
 
     expect(response.ok).toBe(true);
     const payload = response.payload as { scrollback: string; awaitedPromptId: string | null; ptyDimensions?: unknown };
-    expect(payload.scrollback).toBe('scrollback-content');
+    expect(payload.scrollback).toBe('serialized-frame');
     expect(payload.awaitedPromptId).toBe('sess-1:tool-9');
     expect(payload.ptyDimensions).toEqual({ cols: 120, rows: 30 });
   });
