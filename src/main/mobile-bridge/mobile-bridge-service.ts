@@ -26,6 +26,7 @@ import { BridgeSession } from './session/bridge-session';
 import { SubscriptionRegistry } from './session/subscription-registry';
 import { CapabilityRouter } from './capability-router';
 import { registerCapabilityHandlers } from './handlers';
+import { SessionLifecycleBoardFeed } from './session-lifecycle-feed';
 import type { IpcContext } from '../ipc/ipc-context';
 
 export interface MobileBridgeConfig {
@@ -94,6 +95,8 @@ export class MobileBridgeService extends EventEmitter {
     },
   });
   private ipcContext: IpcContext | null = null;
+  /** Feeds session lifecycle edges onto the board-changed bus so phones' board views track spawn/queue/suspend/exit. */
+  private sessionLifecycleFeed: SessionLifecycleBoardFeed | null = null;
   private disposed = false;
 
   constructor(config: MobileBridgeConfig) {
@@ -116,6 +119,11 @@ export class MobileBridgeService extends EventEmitter {
       diffWatcher: this.diffWatcher,
       getSubscriptions: (deviceId) => this.getOrCreateSubscriptions(deviceId),
     });
+    this.sessionLifecycleFeed = new SessionLifecycleBoardFeed({
+      sessionManager: context.sessionManager,
+      boardEvents: context.boardEvents,
+    });
+    this.sessionLifecycleFeed.start();
   }
 
   private getOrCreateSubscriptions(deviceId: string): SubscriptionRegistry {
@@ -436,6 +444,8 @@ export class MobileBridgeService extends EventEmitter {
     if (this.disposed) return;
     this.disposed = true;
     this.devQuickPair.stop();
+    this.sessionLifecycleFeed?.dispose();
+    this.sessionLifecycleFeed = null;
     this.cancelPairing('Mobile bridge service shutting down');
     this.disposeAllSessions();
     this.diffWatcher.closeAll();

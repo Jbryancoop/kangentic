@@ -16,6 +16,7 @@ import { buildPermissionPromptId } from './permission-prompt-id';
 import { sliceTranscriptWindow, TranscriptSync } from './transcript-sync';
 import {
   toActivityReasonWire,
+  toReadStreamSessionStatusWire,
   toSessionEventWire,
   toSessionUsageWire,
   toTerminalDimensionsWire,
@@ -144,10 +145,21 @@ function subscribeReadStream(
   // When the session exits, tear our own subscription down: nothing else
   // removes these listeners until the device disconnects, so without this a
   // long-lived phone connection would leak four listeners per session it ever
-  // streamed onto the singleton SessionManager.
-  const onExit = (exitedSessionId: string): void => {
+  // streamed onto the singleton SessionManager. Before tearing down, tell the
+  // phone the session ended (with the deliberate-stop flag the session
+  // manager's exit event carries) - the feed's last word, so the phone never
+  // has to infer "over" from silence. The queued-removal exit path emits the
+  // flag explicitly; the spawn-failure path emits no flag, and a spawn
+  // failure is not a deliberate stop, so an absent flag maps to false.
+  const onExit = (exitedSessionId: string, _exitCode: number, intentional?: boolean): void => {
     if (exitedSessionId !== sessionId) return;
     flushTerminal(); // push any last coalesced output before we stop listening
+    sendEvent(session, {
+      kind: 'activity',
+      sessionId,
+      taskId,
+      payload: { type: 'session-ended', intentional: intentional === true },
+    });
     subscriptions.remove(subscriptionKeyFor(sessionId));
   };
 
@@ -232,6 +244,7 @@ export async function handleReadStream(
     usage: usage ? toSessionUsageWire(usage) : null,
     awaitedPromptId,
     ...(ptyDimensions ? { ptyDimensions } : {}),
+    sessionStatus: toReadStreamSessionStatusWire(liveSession.status),
   };
 
   subscribeReadStream(payload.sessionId, liveSession.taskId, awaitedPromptId, session, context, subscriptions);

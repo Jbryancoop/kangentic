@@ -132,7 +132,10 @@ async function flushMicrotasks(): Promise<void> {
 /** Opens a session for the single-device roster and returns the FakeBridgeSession instance the service created for it. */
 async function openSession(service: MobileBridgeServiceInstance): Promise<FakeBridgeSession> {
   const countBefore = createdSessions.length;
-  service.attachContext({} as never);
+  // attachContext also starts the SessionLifecycleBoardFeed, which
+  // subscribes to sessionManager and pushes onto boardEvents - a real
+  // EventEmitter and a stub bus keep that wiring inert here.
+  service.attachContext({ sessionManager: new EventEmitter(), boardEvents: { emitBoardChanged: vi.fn() } } as never);
   service.reconcile({ enabled: true, relayUrl: 'wss://relay.example.com' });
   await flushMicrotasks();
   expect(createdSessions.length).toBe(countBefore + 1);
