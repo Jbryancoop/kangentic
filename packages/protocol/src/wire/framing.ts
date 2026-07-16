@@ -100,7 +100,8 @@ function validateEvent(event: Record<string, unknown>): BridgeEvent {
   switch (event.kind) {
     case 'transcript':
     case 'activity':
-    case 'terminal': {
+    case 'terminal':
+    case 'terminal-resize': {
       if (typeof event.sessionId !== 'string') throw new Error(`"${event.kind}" event is missing "sessionId"`);
       if (typeof event.taskId !== 'string') throw new Error(`"${event.kind}" event is missing "taskId"`);
       return event as unknown as BridgeEvent;

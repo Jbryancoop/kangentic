@@ -12,6 +12,7 @@ import {
   type ShortAuthenticationString,
 } from '@kangentic/protocol';
 import { isGenuineEncryptionAvailable } from '../boards/shared/auth';
+import { DevQuickPair } from './dev-quick-pair';
 import { DiffWatcher } from '../git/diff-watcher';
 import { loadBridgeIdentity, loadOrCreateBridgeIdentity, type BridgeIdentity } from './identity';
 import {
@@ -83,6 +84,15 @@ export class MobileBridgeService extends EventEmitter {
    * the renderer's live watch on the same worktree (and vice versa).
    */
   private readonly diffWatcher = new DiffWatcher();
+  /** Dev-only instant pairing for the mobile dev rig; every call site is __KANGENTIC_DEV__-gated so packaged builds drop it. */
+  private readonly devQuickPair = new DevQuickPair({
+    getIdentity: () => this.ensureIdentity(),
+    getRelayUrl: () => this.config.relayUrl,
+    onRosterChanged: () => {
+      void this.syncSessions();
+      this.emit('stateChanged');
+    },
+  });
   private ipcContext: IpcContext | null = null;
   private disposed = false;
 
@@ -122,6 +132,9 @@ export class MobileBridgeService extends EventEmitter {
     const previousRelayUrl = this.config.relayUrl;
     const wasEnabled = this.config.enabled;
     this.config = config;
+    if (__KANGENTIC_DEV__) {
+      this.devQuickPair.reconcile(config.enabled && config.relayUrl.length > 0 && isGenuineEncryptionAvailable());
+    }
     if (!config.enabled && wasEnabled) {
       this.cancelPairing('Mobile bridge disabled');
       this.disposeAllSessions();
@@ -422,6 +435,7 @@ export class MobileBridgeService extends EventEmitter {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.devQuickPair.stop();
     this.cancelPairing('Mobile bridge service shutting down');
     this.disposeAllSessions();
     this.diffWatcher.closeAll();

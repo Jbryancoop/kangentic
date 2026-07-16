@@ -33,11 +33,14 @@ const usageFixture = {
 class FakeSessionManager extends EventEmitter {
   getSession = vi.fn((id: string) => ({ id, taskId: 'task-1' }));
   getScrollback = vi.fn(() => Promise.resolve('scrollback-content'));
+  // The mobile seed uses the parsed-grid serialized frame, not the raw replay.
+  getSerializedFrame = vi.fn(() => Promise.resolve('serialized-frame'));
   getActivityCache = vi.fn(() => ({ 'sess-1': 'thinking' }));
   getActivityReason = vi.fn(() => ({ kind: 'turn-active' }));
   getUsageCache = vi.fn(() => ({ 'sess-1': usageFixture }));
   getActivityStatsSnapshot = vi.fn(() => ({ permissionPending: false, permissionAwaitedToolId: null }));
   getSessionProjectId = vi.fn(() => 'proj-1');
+  getDimensions = vi.fn((): { cols: number; rows: number } | null => ({ cols: 120, rows: 30 }));
 }
 
 describe('handleReadStream', () => {
@@ -61,9 +64,17 @@ describe('handleReadStream', () => {
     const response = await handleReadStream(fakeRequest({ sessionId: 'sess-1', action: 'subscribe' }), fakeSession(), context, new SubscriptionRegistry());
 
     expect(response.ok).toBe(true);
-    const payload = response.payload as { scrollback: string; awaitedPromptId: string | null };
-    expect(payload.scrollback).toBe('scrollback-content');
+    const payload = response.payload as { scrollback: string; awaitedPromptId: string | null; ptyDimensions?: unknown };
+    expect(payload.scrollback).toBe('serialized-frame');
     expect(payload.awaitedPromptId).toBe('sess-1:tool-9');
+    expect(payload.ptyDimensions).toEqual({ cols: 120, rows: 30 });
+  });
+
+  it('omits ptyDimensions from the snapshot when the grid is unknowable', async () => {
+    sessionManager.getDimensions.mockReturnValue(null);
+    const context = { sessionManager } as unknown as IpcContext;
+    const response = await handleReadStream(fakeRequest({ sessionId: 'sess-1', action: 'subscribe' }), fakeSession(), context, new SubscriptionRegistry());
+    expect('ptyDimensions' in (response.payload as Record<string, unknown>)).toBe(false);
   });
 
   it('awaitedPromptId is null when no permission is pending', async () => {
@@ -79,6 +90,7 @@ describe('handleReadStream', () => {
 
     await handleReadStream(fakeRequest({ sessionId: 'sess-1', action: 'subscribe' }), fakeSession(), context, subscriptions);
     expect(sessionManager.listenerCount('data-tap')).toBe(1);
+    expect(sessionManager.listenerCount('pty-resize')).toBe(1);
     expect(sessionManager.listenerCount('activity')).toBe(1);
     expect(sessionManager.listenerCount('usage')).toBe(1);
     expect(sessionManager.listenerCount('event')).toBe(1);
@@ -86,6 +98,7 @@ describe('handleReadStream', () => {
     const response = await handleReadStream(fakeRequest({ sessionId: 'sess-1', action: 'unsubscribe' }), fakeSession(), context, subscriptions);
     expect(response.ok).toBe(true);
     expect(sessionManager.listenerCount('data-tap')).toBe(0);
+    expect(sessionManager.listenerCount('pty-resize')).toBe(0);
     expect(sessionManager.listenerCount('activity')).toBe(0);
     expect(sessionManager.listenerCount('usage')).toBe(0);
     expect(sessionManager.listenerCount('event')).toBe(0);
@@ -107,6 +120,7 @@ describe('handleReadStream', () => {
     // long-lived phone connection does not leak listeners per streamed session.
     sessionManager.emit('exit', 'sess-1', 0, false);
     expect(sessionManager.listenerCount('data-tap')).toBe(0);
+    expect(sessionManager.listenerCount('pty-resize')).toBe(0);
     expect(sessionManager.listenerCount('activity')).toBe(0);
     expect(sessionManager.listenerCount('usage')).toBe(0);
     expect(sessionManager.listenerCount('event')).toBe(0);
@@ -114,7 +128,7 @@ describe('handleReadStream', () => {
     expect(subscriptions.has('stream:sess-1')).toBe(false);
   });
 
-  it('data-tap for a DIFFERENT session does not push, and coalesces same-session chunks into one terminal event', async () => {
+  it('a small data-tap chunk flushes immediately (keystroke-echo fast path); a different session never pushes', async () => {
     vi.useFakeTimers();
     try {
       const session = fakeSession();
@@ -122,8 +136,31 @@ describe('handleReadStream', () => {
       await handleReadStream(fakeRequest({ sessionId: 'sess-1', action: 'subscribe' }), session, context, new SubscriptionRegistry());
 
       sessionManager.emit('data-tap', 'sess-OTHER', 'ignored');
-      sessionManager.emit('data-tap', 'sess-1', 'hello ');
-      sessionManager.emit('data-tap', 'sess-1', 'world');
+      expect(session.sendMessage).not.toHaveBeenCalled();
+
+      // A few echoed keystrokes: at or under the immediate-flush budget, each
+      // ships without waiting out the coalesce timer.
+      sessionManager.emit('data-tap', 'sess-1', 'h');
+      expect(session.sendMessage).toHaveBeenCalledTimes(1);
+      expect(session.sendMessage).toHaveBeenCalledWith({
+        type: 'event',
+        event: { kind: 'terminal', sessionId: 'sess-1', taskId: 'task-1', payload: { data: 'h' } },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an output burst past the immediate budget coalesces into one terminal event on the timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const session = fakeSession();
+      const context = { sessionManager } as unknown as IpcContext;
+      await handleReadStream(fakeRequest({ sessionId: 'sess-1', action: 'subscribe' }), session, context, new SubscriptionRegistry());
+
+      const bigChunk = 'x'.repeat(300);
+      sessionManager.emit('data-tap', 'sess-1', bigChunk);
+      sessionManager.emit('data-tap', 'sess-1', 'tail');
       expect(session.sendMessage).not.toHaveBeenCalled();
 
       await vi.runAllTimersAsync();
@@ -131,7 +168,31 @@ describe('handleReadStream', () => {
       expect(session.sendMessage).toHaveBeenCalledTimes(1);
       expect(session.sendMessage).toHaveBeenCalledWith({
         type: 'event',
-        event: { kind: 'terminal', sessionId: 'sess-1', taskId: 'task-1', payload: { data: 'hello world' } },
+        event: { kind: 'terminal', sessionId: 'sess-1', taskId: 'task-1', payload: { data: `${bigChunk}tail` } },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a pty-resize flushes pending old-grid output first, then pushes a terminal-resize event', async () => {
+    vi.useFakeTimers();
+    try {
+      const session = fakeSession();
+      const context = { sessionManager } as unknown as IpcContext;
+      await handleReadStream(fakeRequest({ sessionId: 'sess-1', action: 'subscribe' }), session, context, new SubscriptionRegistry());
+
+      sessionManager.emit('data-tap', 'sess-1', 'y'.repeat(300)); // parked on the coalesce timer
+      sessionManager.emit('pty-resize', 'sess-OTHER', 50, 20); // different session: ignored
+      expect(session.sendMessage).not.toHaveBeenCalled();
+
+      sessionManager.emit('pty-resize', 'sess-1', 48, 26);
+      const calls = (session.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls).toHaveLength(2);
+      expect((calls[0][0] as { event: { kind: string } }).event.kind).toBe('terminal');
+      expect(calls[1][0]).toEqual({
+        type: 'event',
+        event: { kind: 'terminal-resize', sessionId: 'sess-1', taskId: 'task-1', payload: { cols: 48, rows: 26 } },
       });
     } finally {
       vi.useRealTimers();

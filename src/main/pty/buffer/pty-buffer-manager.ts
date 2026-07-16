@@ -1,6 +1,15 @@
 import { findSafeStartIndex } from './scrollback-utils';
+import { HeadlessFrameBuffer } from './headless-frame';
 
 const MAX_SCROLLBACK = 512 * 1024; // 512KB per session
+/**
+ * Fallback grid rows for the headless parser when a caller omits the geometry.
+ * Only the production spawn path (session-spawn-flow) and resize path
+ * (session-manager) supply real dimensions; this default keeps the parser
+ * usable for callers that do not (matching DEFAULT_PTY_ROWS). Rows never affect
+ * scrollback or col-change tracking, so a stale default is harmless.
+ */
+const DEFAULT_HEADLESS_ROWS = 30;
 /**
  * Trim scrollback only once it grows this far past the cap, then trim back to
  * the cap. Slicing a 512KB string is O(n); doing it on every chunk once the
@@ -211,6 +220,13 @@ interface BufferState {
   /** Trailing partial escape sequence stitched onto the next chunk so a mode
    *  set split across two PTY chunks is parsed whole. Bounded in onData(). */
   modeParseCarry: string;
+  /** Per-session headless xterm parser, fed the SAME bytes as `scrollback`.
+   *  Its serialized frame is a snapshot of the PARSED grid, used as the mobile
+   *  seed instead of the raw byte replay so write-once static TUI cells (whose
+   *  drawing bytes have aged out of the 512KB window) survive a cold replay.
+   *  Desktop consumers still read the raw `scrollback`; only getSerializedFrame
+   *  reads this. Disposed in removeSession. */
+  headless: HeadlessFrameBuffer;
 }
 
 /** Clear the pending-repaint tracking as one unit. The three fields are set
@@ -236,7 +252,14 @@ export class PtyBufferManager {
     this.callbacks = callbacks;
   }
 
-  initSession(sessionId: string, previousScrollback: string, initialCols: number): void {
+  initSession(sessionId: string, previousScrollback: string, initialCols: number, initialRows: number = DEFAULT_HEADLESS_ROWS): void {
+    // Sized to the initial PTY geometry so the very first serialized frame is
+    // laid out at the right width; onResize keeps it in step thereafter.
+    const headless = new HeadlessFrameBuffer(initialCols, initialRows);
+    // Seed the parser with carried-over scrollback (empty on a fresh spawn) so a
+    // respawn's first frame reconstructs the prior grid, mirroring how the raw
+    // scrollback path replays previousScrollback.
+    if (previousScrollback) headless.write(previousScrollback);
     this.buffers.set(sessionId, {
       buffer: '',
       flushScheduled: false,
@@ -252,6 +275,7 @@ export class PtyBufferManager {
       inAltScreen: false,
       synchronizedOpen: false,
       modeParseCarry: '',
+      headless,
     });
   }
 
@@ -286,6 +310,9 @@ export class PtyBufferManager {
 
     state.buffer += data;
     state.scrollback += data;
+    // Feed the headless parser the SAME bytes so its parsed grid (the mobile
+    // seed source) stays in lockstep with the raw scrollback ring.
+    state.headless.write(data);
     // Stamp the arrival so a pending repaint-settle can tell that the
     // post-resize redraw has landed (data after the resize) and then quiesced.
     state.lastDataAt = Date.now();
@@ -345,10 +372,18 @@ export class PtyBufferManager {
    * waitForResizeRepaint). onResize itself does not touch scrollback; a stale
    * "must not clear on the first resize" guard used to swallow this signal and
    * has been removed (nothing consumes it to clear anything).
+   *
+   * `rows` is used only to keep the headless parser's grid matched to the PTY
+   * (col-change tracking and the repaint-settle key on width alone); it
+   * defaults for callers that do not track rows.
    */
-  onResize(sessionId: string, cols: number): boolean {
+  onResize(sessionId: string, cols: number, rows: number = DEFAULT_HEADLESS_ROWS): boolean {
     const state = this.buffers.get(sessionId);
     if (!state) return false;
+
+    // Keep the headless parser's grid matched to the PTY on EVERY resize (rows
+    // included), so a serialized frame always reflows to the current geometry.
+    state.headless.resize(cols, rows);
 
     const colsChanged = cols !== state.lastCols;
     state.lastCols = cols;
@@ -522,7 +557,24 @@ export class PtyBufferManager {
     return this.buffers.get(sessionId)?.scrollback || '';
   }
 
+  /**
+   * Snapshot of the PARSED grid as a self-contained escape-sequence frame, for
+   * the MOBILE seed only. Unlike getScrollback (a raw 512KB byte replay), this
+   * reconstructs every currently-visible cell whatever its draw age, so a
+   * fullscreen TUI's write-once static regions are never dropped. The frame
+   * carries its own alt-screen + mode preamble (the serialize addon emits it),
+   * so the phone lands in the correct screen with the correct input modes.
+   * Returns '' for an unknown session.
+   */
+  async getSerializedFrame(sessionId: string): Promise<string> {
+    const state = this.buffers.get(sessionId);
+    if (!state) return '';
+    return state.headless.serialize();
+  }
+
   removeSession(sessionId: string): void {
+    const state = this.buffers.get(sessionId);
+    if (state) state.headless.dispose();
     this.buffers.delete(sessionId);
   }
 

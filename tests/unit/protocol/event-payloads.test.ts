@@ -17,6 +17,7 @@ import {
   parseDiffFileListWire,
   parseSessionEventWire,
   parseSessionUsageWire,
+  parseTerminalDimensionsWire,
   parseTranscriptEntriesWire,
   parseTranscriptEventPayload,
 } from '../../../packages/protocol/src/events/payloads';
@@ -155,6 +156,21 @@ describe('parseSessionEventWire', () => {
   });
 });
 
+describe('parseTerminalDimensionsWire', () => {
+  it('parses a valid grid', () => {
+    expect(parseTerminalDimensionsWire({ cols: 48, rows: 26 })).toEqual({ cols: 48, rows: 26 });
+  });
+
+  it('rejects non-integers, out-of-range axes, and missing fields', () => {
+    expect(() => parseTerminalDimensionsWire({ cols: 48.5, rows: 26 })).toThrow(/cols/);
+    expect(() => parseTerminalDimensionsWire({ cols: 1, rows: 26 })).toThrow(/cols/);
+    expect(() => parseTerminalDimensionsWire({ cols: 1001, rows: 26 })).toThrow(/cols/);
+    expect(() => parseTerminalDimensionsWire({ cols: 48, rows: 0 })).toThrow(/rows/);
+    expect(() => parseTerminalDimensionsWire({ cols: 48 })).toThrow(/rows/);
+    expect(() => parseTerminalDimensionsWire('48x26')).toThrow(/object/);
+  });
+});
+
 describe('board row guards', () => {
   it('parses a full task row', () => {
     expect(parseBoardTaskWire(boardTaskFixture)).toEqual(boardTaskFixture);
@@ -250,6 +266,35 @@ describe('read-* response parsers', () => {
     );
   });
 
+  it('carries ptyDimensions when present and omits the field when absent (pre-0.4.0 desktop)', () => {
+    const withDims = parseReadStreamResponsePayload({
+      scrollback: '',
+      activity: { state: null, reason: null },
+      usage: null,
+      awaitedPromptId: null,
+      ptyDimensions: { cols: 120, rows: 30 },
+    });
+    expect(withDims.ptyDimensions).toEqual({ cols: 120, rows: 30 });
+
+    const withoutDims = parseReadStreamResponsePayload({
+      scrollback: '',
+      activity: { state: null, reason: null },
+      usage: null,
+      awaitedPromptId: null,
+    });
+    expect('ptyDimensions' in withoutDims).toBe(false);
+
+    expect(() =>
+      parseReadStreamResponsePayload({
+        scrollback: '',
+        activity: { state: null, reason: null },
+        usage: null,
+        awaitedPromptId: null,
+        ptyDimensions: { cols: 0, rows: 30 },
+      }),
+    ).toThrow(/cols/);
+  });
+
   it('parses a read-board project list', () => {
     expect(parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha' }] })).toEqual({ projects: [{ id: 'p-1', name: 'Alpha' }] });
   });
@@ -325,6 +370,7 @@ describe('isBridgeEvent', () => {
     expect(isBridgeEvent({ kind: 'transcript', sessionId: 's', taskId: 't', payload: { mode: 'reset', revision: 2, totalEntries: 0 } })).toBe(true);
     expect(isBridgeEvent({ kind: 'activity', sessionId: 's', taskId: 't', payload: { type: 'permission', promptId: 'p', pending: true } })).toBe(true);
     expect(isBridgeEvent({ kind: 'terminal', sessionId: 's', taskId: 't', payload: { data: 'bytes' } })).toBe(true);
+    expect(isBridgeEvent({ kind: 'terminal-resize', sessionId: 's', taskId: 't', payload: { cols: 48, rows: 26 } })).toBe(true);
     expect(isBridgeEvent({ kind: 'board', projectId: 'p', payload: { change: 'task-updated', ids: ['t-1'] } })).toBe(true);
     expect(isBridgeEvent({ kind: 'diff', taskId: 't', payload: null })).toBe(true);
   });
@@ -335,6 +381,8 @@ describe('isBridgeEvent', () => {
     expect(isBridgeEvent({ kind: 'transcript', sessionId: 's', taskId: 't', payload: [{ kind: 'user', uuid: 'u', ts: 1, text: 'x' }] })).toBe(false);
     expect(isBridgeEvent({ kind: 'activity', sessionId: 's', taskId: 't', payload: { type: 'activity', state: 'busy', reason: { kind: 'idle' } } })).toBe(false);
     expect(isBridgeEvent({ kind: 'terminal', sessionId: 's', taskId: 't', payload: { data: 42 } })).toBe(false);
+    expect(isBridgeEvent({ kind: 'terminal-resize', sessionId: 's', taskId: 't', payload: { cols: 0, rows: 26 } })).toBe(false);
+    expect(isBridgeEvent({ kind: 'terminal-resize', sessionId: 's', payload: { cols: 48, rows: 26 } })).toBe(false);
     expect(isBridgeEvent({ kind: 'board', projectId: 'p', payload: { change: 'exploded', ids: [] } })).toBe(false);
     expect(isBridgeEvent({ kind: 'diff', taskId: 't', payload: { stale: true } })).toBe(false);
     expect(isBridgeEvent({ kind: 'metrics', sessionId: 's', taskId: 't', payload: null })).toBe(false);
