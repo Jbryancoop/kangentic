@@ -184,6 +184,13 @@ export interface ReadBoardRequestPayload {
 export interface ReadBoardProjectSummary {
   id: string;
   name: string;
+  /**
+   * Accent color for this project ("#rrggbb"). Today the desktop derives
+   * it deterministically from the project id; a user-set project color
+   * can later override it through this same field. Absent from pre-0.5.0
+   * desktops.
+   */
+  color?: string;
 }
 
 /** Returned when the request omits projectId - the phone's project-bootstrap listing. */
@@ -197,20 +204,35 @@ export interface ReadBoardSnapshotResponsePayload {
   columns: BoardColumnWire[];
   tasks: BoardTaskWire[];
   backlog: BacklogItemWire[];
+  /** The project's accent color ("#rrggbb"); same semantics as ReadBoardProjectSummary.color. Absent from pre-0.5.0 desktops. */
+  projectColor?: string;
 }
 
 export type ReadBoardResponsePayload = ReadBoardProjectListResponsePayload | ReadBoardSnapshotResponsePayload;
+
+const ACCENT_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+
+function parseAccentColor(value: unknown, context: string): string {
+  if (typeof value !== 'string' || !ACCENT_COLOR_PATTERN.test(value)) {
+    throw new Error(`${context} has an invalid accent color (expected "#rrggbb")`);
+  }
+  return value;
+}
 
 /** Phone-side narrowing of a read-board response (project list or board snapshot). Throws on a malformed required field. */
 export function parseReadBoardResponsePayload(payload: JsonValue): ReadBoardResponsePayload {
   if (!isRecord(payload)) throw new Error('read-board response must be an object');
 
   if (Array.isArray(payload.projects)) {
-    const projects = payload.projects.map((project, index) => {
+    const projects = payload.projects.map((project, index): ReadBoardProjectSummary => {
       if (!isRecord(project) || typeof project.id !== 'string' || typeof project.name !== 'string') {
         throw new Error(`read-board project ${index} is malformed`);
       }
-      return { id: project.id, name: project.name };
+      return {
+        id: project.id,
+        name: project.name,
+        ...(project.color !== undefined ? { color: parseAccentColor(project.color, `read-board project ${index}`) } : {}),
+      };
     });
     return { projects };
   }
@@ -224,6 +246,7 @@ export function parseReadBoardResponsePayload(payload: JsonValue): ReadBoardResp
     columns: payload.columns.map((column) => parseBoardColumnWire(column as JsonValue)),
     tasks: payload.tasks.map((task) => parseBoardTaskWire(task as JsonValue)),
     backlog: payload.backlog.map((item) => parseBacklogItemWire(item as JsonValue)),
+    ...(payload.projectColor !== undefined ? { projectColor: parseAccentColor(payload.projectColor, 'read-board snapshot') } : {}),
   };
 }
 

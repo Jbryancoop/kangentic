@@ -343,6 +343,30 @@ describe('read-* response parsers', () => {
     expect(() => parseReadBoardResponsePayload({ projectId: 'p-1', tasks: [], backlog: [] })).toThrow(/columns/);
   });
 
+  it('carries per-project color and snapshot projectColor when present, tolerating absence (pre-0.5.0 desktop)', () => {
+    expect(parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha', color: '#D97706' }] })).toEqual({
+      projects: [{ id: 'p-1', name: 'Alpha', color: '#D97706' }],
+    });
+    const withoutColor = parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha' }] }) as {
+      projects: Array<Record<string, unknown>>;
+    };
+    expect('color' in withoutColor.projects[0]).toBe(false);
+
+    const snapshot = parseReadBoardResponsePayload({ projectId: 'p-1', columns: [], tasks: [], backlog: [], projectColor: '#3b82f6' });
+    expect(snapshot).toEqual({ projectId: 'p-1', columns: [], tasks: [], backlog: [], projectColor: '#3b82f6' });
+    const bareSnapshot = parseReadBoardResponsePayload({ projectId: 'p-1', columns: [], tasks: [], backlog: [] });
+    expect('projectColor' in bareSnapshot).toBe(false);
+  });
+
+  it('rejects a malformed accent color on either read-board shape', () => {
+    expect(() => parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha', color: 'amber' }] })).toThrow(/accent color/);
+    expect(() => parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha', color: '#12345' }] })).toThrow(/accent color/);
+    expect(() => parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha', color: 42 }] })).toThrow(/accent color/);
+    expect(() =>
+      parseReadBoardResponsePayload({ projectId: 'p-1', columns: [], tasks: [], backlog: [], projectColor: 'rgb(1,2,3)' }),
+    ).toThrow(/accent color/);
+  });
+
   it('parses a read-diff response by discriminating on "files"', () => {
     expect(parseReadDiffResponsePayload({ files: [], totalInsertions: 0, totalDeletions: 0 })).toEqual({ files: [], totalInsertions: 0, totalDeletions: 0 });
     expect(parseReadDiffResponsePayload({ original: 'a', modified: 'b', language: 'ts' })).toEqual({ original: 'a', modified: 'b', language: 'ts' });
