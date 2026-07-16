@@ -118,6 +118,17 @@ describe('parseActivityEventPayload', () => {
     expect(parseActivityEventPayload(payload)).toEqual(payload);
   });
 
+  it('parses a session-ended payload with either intentional value', () => {
+    expect(parseActivityEventPayload({ type: 'session-ended', intentional: true })).toEqual({ type: 'session-ended', intentional: true });
+    expect(parseActivityEventPayload({ type: 'session-ended', intentional: false })).toEqual({ type: 'session-ended', intentional: false });
+  });
+
+  it('rejects a session-ended payload with a missing or non-boolean intentional', () => {
+    expect(() => parseActivityEventPayload({ type: 'session-ended' })).toThrow(/intentional/);
+    expect(() => parseActivityEventPayload({ type: 'session-ended', intentional: 'yes' })).toThrow(/intentional/);
+    expect(() => parseActivityEventPayload({ type: 'session-ended', intentional: 0 })).toThrow(/intentional/);
+  });
+
   it('rejects an invalid state', () => {
     expect(() => parseActivityEventPayload({ type: 'activity', state: 'busy', reason: { kind: 'idle' } })).toThrow(/state/);
   });
@@ -295,6 +306,24 @@ describe('read-* response parsers', () => {
     ).toThrow(/cols/);
   });
 
+  it('carries sessionStatus when present, tolerates absence (pre-0.5.0 desktop), and rejects unknown values', () => {
+    const base: Record<string, JsonValue> = {
+      scrollback: '',
+      activity: { state: null, reason: null },
+      usage: null,
+      awaitedPromptId: null,
+    };
+    for (const status of ['running', 'queued', 'suspended', 'exited']) {
+      expect(parseReadStreamResponsePayload({ ...base, sessionStatus: status }).sessionStatus).toBe(status);
+    }
+
+    const withoutStatus = parseReadStreamResponsePayload(base);
+    expect('sessionStatus' in withoutStatus).toBe(false);
+
+    expect(() => parseReadStreamResponsePayload({ ...base, sessionStatus: 'zombie' })).toThrow(/sessionStatus/);
+    expect(() => parseReadStreamResponsePayload({ ...base, sessionStatus: 3 })).toThrow(/sessionStatus/);
+  });
+
   it('parses a read-board project list', () => {
     expect(parseReadBoardResponsePayload({ projects: [{ id: 'p-1', name: 'Alpha' }] })).toEqual({ projects: [{ id: 'p-1', name: 'Alpha' }] });
   });
@@ -369,6 +398,7 @@ describe('isBridgeEvent', () => {
     ).toBe(true);
     expect(isBridgeEvent({ kind: 'transcript', sessionId: 's', taskId: 't', payload: { mode: 'reset', revision: 2, totalEntries: 0 } })).toBe(true);
     expect(isBridgeEvent({ kind: 'activity', sessionId: 's', taskId: 't', payload: { type: 'permission', promptId: 'p', pending: true } })).toBe(true);
+    expect(isBridgeEvent({ kind: 'activity', sessionId: 's', taskId: 't', payload: { type: 'session-ended', intentional: false } })).toBe(true);
     expect(isBridgeEvent({ kind: 'terminal', sessionId: 's', taskId: 't', payload: { data: 'bytes' } })).toBe(true);
     expect(isBridgeEvent({ kind: 'terminal-resize', sessionId: 's', taskId: 't', payload: { cols: 48, rows: 26 } })).toBe(true);
     expect(isBridgeEvent({ kind: 'board', projectId: 'p', payload: { change: 'task-updated', ids: ['t-1'] } })).toBe(true);

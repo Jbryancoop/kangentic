@@ -49,6 +49,7 @@ export {
   type CapabilityResponsePayloadMap,
   type ReadStreamRequestPayload,
   type ReadStreamResponsePayload,
+  type ReadStreamSessionStatusWire,
   type TranscriptWindowResponsePayload,
   type ReadBoardRequestPayload,
   type ReadBoardProjectSummary,

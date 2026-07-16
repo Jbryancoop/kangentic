@@ -58,6 +58,15 @@ export interface ReadStreamRequestPayload {
   limit?: number;
 }
 
+/**
+ * Mirrors the desktop's SessionStatus. 'suspended' is a registered-but-
+ * parked session (resumable placeholder); 'exited' can appear when a
+ * snapshot races the session's teardown.
+ */
+export type ReadStreamSessionStatusWire = 'running' | 'queued' | 'suspended' | 'exited';
+
+const READ_STREAM_SESSION_STATUSES: readonly string[] = ['running', 'queued', 'suspended', 'exited'];
+
 /** Initial snapshot returned on subscribe; live updates arrive as TerminalEvent/ActivityEvent/TranscriptEvent. */
 export interface ReadStreamResponsePayload {
   scrollback: string;
@@ -71,6 +80,11 @@ export interface ReadStreamResponsePayload {
    * from the scrollback content.
    */
   ptyDimensions?: TerminalDimensionsWire;
+  /**
+   * The session's lifecycle status at snapshot time. Absent from
+   * pre-0.5.0 desktops; the phone then assumes 'running'.
+   */
+  sessionStatus?: ReadStreamSessionStatusWire;
 }
 
 /** Phone-side narrowing of a read-stream subscribe response. Throws on a malformed required field. */
@@ -93,6 +107,12 @@ export function parseReadStreamResponsePayload(payload: JsonValue): ReadStreamRe
   };
   if (payload.ptyDimensions !== undefined) {
     response.ptyDimensions = parseTerminalDimensionsWire(payload.ptyDimensions as JsonValue);
+  }
+  if (payload.sessionStatus !== undefined) {
+    if (typeof payload.sessionStatus !== 'string' || !READ_STREAM_SESSION_STATUSES.includes(payload.sessionStatus)) {
+      throw new Error('read-stream response has an invalid "sessionStatus"');
+    }
+    response.sessionStatus = payload.sessionStatus as ReadStreamSessionStatusWire;
   }
   return response;
 }
