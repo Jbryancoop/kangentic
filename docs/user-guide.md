@@ -365,8 +365,9 @@ Applies to every project (Settings > Terminal, not a per-project override):
 |---------|-------------|
 | Shell | Override the auto-detected shell |
 | Font Size | Terminal text size in pixels |
-| Font Family | CSS font-family for the terminal |
+| Font Family | Terminal font, picked from your detected system fonts via an autocomplete field |
 | Cursor Style | Terminal cursor appearance (block, underline, or bar) |
+| Word Delete on Backspace | Backspace deletes the whole previous word instead of one character (off by default) |
 
 ### Task Settings
 
@@ -401,8 +402,10 @@ The context bar is a status line displayed below the terminal showing session me
 
 | Setting | Description |
 |---------|-------------|
-| Default Agent | Which agent CLI to use for new sessions in this project. Supported agents: Claude Code, Codex CLI, Gemini CLI, Qwen Code, Kimi Code, OpenCode, Droid (Factory), Cursor CLI, GitHub Copilot CLI, Aider, Oz CLI (Warp). Per-project setting. |
+| Default Agent | Which agent CLI to use for new sessions in this project. Supported agents: Claude Code, Codex CLI, Gemini CLI, Qwen Code, Kimi Code, OpenCode, Droid (Factory), Cursor CLI, GitHub Copilot CLI, Aider, Oz CLI (Warp), Ollama. Per-project setting. |
 | CLI Path | Path to agent CLI binary (auto-detected if empty) |
+| Execution (remote) | For agents that support it (today OpenCode), attach to a server you run instead of spawning a local process: server URL, authentication, and the server-side working directory. Shown only when the selected agent declares remote execution. |
+| Launch Options | Agent-specific startup toggles (today Codex's "Disable ChatGPT Apps", which skips the optional cloud ChatGPT Apps connector that can hang startup). Shown only for agents that declare options. |
 | Permissions | Default permission mode for all sessions. Options vary by agent (e.g., Claude Code has Plan, Don't Ask, Default, Accept Edits, Auto, and Bypass; Aider has Interactive and Auto-Approve) |
 
 All permission modes are available in both the global App Settings dropdown and the per-column Edit Column dialog. The dropdown shows only the modes supported by the active agent. Each column can override the project default agent via the Edit Column dialog. When a task moves between columns with different agents, a context handoff occurs automatically - see [Column Management](#column-management) above.
