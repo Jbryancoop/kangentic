@@ -545,7 +545,7 @@ The phone is treated as an extension of your own desktop, not a separate integra
 
 ### Privacy
 
-The Privacy tab shows what anonymous analytics Kangentic collects and how to opt out. Analytics are powered by Aptabase (no cookies, no persistent identifiers, GDPR-compliant). Set `KANGENTIC_TELEMETRY=0` as an environment variable to disable analytics entirely. This tab is informational only - there are no configurable settings.
+The Privacy tab shows what anonymous analytics Kangentic collects and how to opt out. Analytics are powered by Aptabase (no cookies, no persistent identifiers, GDPR-compliant). Set `KANGENTIC_TELEMETRY=0` as an environment variable to disable analytics entirely. It also lists `support@kangentic.com` for questions about what is collected. This tab is informational only - there are no configurable settings.
 
 ### Developer
 

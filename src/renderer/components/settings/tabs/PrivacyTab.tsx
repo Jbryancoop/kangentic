@@ -2,6 +2,9 @@ import { ShieldAlert } from 'lucide-react';
 import { Pill } from '../../Pill';
 import { SectionHeader } from '../shared';
 
+const PRIVACY_CONTACT_EMAIL = 'support@kangentic.com';
+const PRIVACY_CONTACT_MAILTO = `mailto:${PRIVACY_CONTACT_EMAIL}`;
+
 export function PrivacyTab() {
   return (
     <div className="space-y-4">
@@ -42,6 +45,20 @@ export function PrivacyTab() {
       <SectionHeader label="How to Opt Out" />
       <p className="text-sm text-fg-muted leading-relaxed">
         Set <code className="font-mono">KANGENTIC_TELEMETRY=0</code> as an environment variable to disable analytics.
+      </p>
+
+      <SectionHeader label="Questions" />
+      <p className="text-sm text-fg-muted leading-relaxed">
+        Ask us anything about what Kangentic collects at{' '}
+        <button
+          type="button"
+          data-testid="privacy-contact-email"
+          onClick={() => void window.electronAPI.shell.openExternal(PRIVACY_CONTACT_MAILTO)}
+          className="text-fg-secondary underline underline-offset-2 hover:text-fg transition-colors cursor-pointer"
+        >
+          {PRIVACY_CONTACT_EMAIL}
+        </button>
+        .
       </p>
     </div>
   );

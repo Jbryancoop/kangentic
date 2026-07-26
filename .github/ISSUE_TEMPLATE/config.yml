@@ -3,3 +3,6 @@ contact_links:
   - name: Questions & Discussion
     url: https://github.com/Kangentic/kangentic/discussions
     about: Ask questions, share ideas, or get help from the community.
+  - name: Email Support
+    url: mailto:support@kangentic.com
+    about: Reach us directly if you would rather not post publicly.

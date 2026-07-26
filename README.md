@@ -125,6 +125,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. All contributors must sig
 
 - [GitHub Discussions](https://github.com/Kangentic/kangentic/discussions) for questions and feature requests
 - [GitHub Issues](https://github.com/Kangentic/kangentic/issues) for bug reports
+- [support@kangentic.com](mailto:support@kangentic.com) if you would rather not post publicly
+
+Found a security issue? See [SECURITY.md](SECURITY.md) instead.
 
 ## License
 
