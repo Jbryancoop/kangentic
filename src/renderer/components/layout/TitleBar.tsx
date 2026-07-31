@@ -233,18 +233,6 @@ export function TitleBar({
         >
           <SquareActivity size={20} />
         </button>
-        {onOpenSearch && (
-          <button
-            onClick={onOpenSearch}
-            className="p-1.5 hover:bg-surface-hover rounded text-fg-muted hover:text-fg transition-colors"
-            title={`Quick Find (${quickFindCombo})`}
-            aria-label="Quick Find"
-            // testid kept as "open-search" for selector stability; UI label is "Quick Find"
-            data-testid="open-search-button"
-          >
-            <Command size={20} />
-          </button>
-        )}
         <button
           onClick={() => (statsPopOut.isOpen ? statsPopOut.focus() : toggleStats())}
           onMouseEnter={handleStatsHover}
@@ -257,6 +245,23 @@ export function TitleBar({
         >
           <ChartColumn size={20} />
         </button>
+        {/* Quick Find sits to the RIGHT of Usage Stats: it is the one control here
+            that opens a transient overlay the user dismisses immediately, so it
+            reads as the last step out of the icon cluster before Settings, while
+            the monitor and stats buttons (both surfaces over running work) stay
+            adjacent to each other. */}
+        {onOpenSearch && (
+          <button
+            onClick={onOpenSearch}
+            className="p-1.5 hover:bg-surface-hover rounded text-fg-muted hover:text-fg transition-colors"
+            title={`Quick Find (${quickFindCombo})`}
+            aria-label="Quick Find"
+            // testid kept as "open-search" for selector stability; UI label is "Quick Find"
+            data-testid="open-search-button"
+          >
+            <Command size={20} />
+          </button>
+        )}
         {/* Dev only, and deliberately so. Onboarding is a first-run experience: it shows once
             per project and then retires itself, and a permanent re-entry button in the title
             bar of a shipped app is clutter for a thing the user has already done (or already
