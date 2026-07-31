@@ -363,6 +363,19 @@ The handoff is transparent to the user - the task card shows spawn progress phas
   drop-and-ack (its window can span the whole agent startup). A generation-aware `afterWrite` and a
   bounded watchdog timer additionally guard against a stale or stuck replay leaving
   `scrollbackPendingRef` true indefinitely, which would otherwise drop all live output forever.
+- **But the held bytes that PREDATE the sample are dropped, not flushed.** The hold above must not
+  be read as "every held byte is flushed after the replay": bytes main flushed BEFORE the
+  `getScrollback` reply are, by construction, already inside the replay (main appends to its ring
+  and its pending buffer from the same bytes and clears the pending buffer when it samples), so
+  flushing them afterwards repaints a pre-sample frame ON TOP of the fresh one. Because a TUI then
+  sends only differential updates, nothing repairs it and the terminal shows the previous geometry's
+  frame until the next SIGWINCH - a task detail opening on a session at the bottom panel's 14 rows
+  showed that 14-row frame in a 48-row grid until the window was resized by hand. Both replay paths
+  therefore reset the queue the moment the sample resolves, before writing it, and trace what they
+  discarded (`replay-drop-held`, with a byte count). Bytes flushed AFTER the reply are post-sample
+  and still held, then flushed, exactly as above. This was latent until the deferred terminal init
+  collapsed `TerminalTab`'s StrictMode double mount to one terminal: the second mount's replay had
+  been overwriting the stale paint.
 - **A replay never leaves the terminal both blank and held.** Two rules keep an aborted replay from
   becoming a permanently black terminal. First, `reloadScrollback` clears the terminal immediately
   before writing the new frame, not before fetching it: clearing first opened a window in which only

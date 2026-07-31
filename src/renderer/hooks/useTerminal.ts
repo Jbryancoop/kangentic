@@ -222,6 +222,11 @@ export function useTerminal(options: UseTerminalOptions) {
    *  below). Used by the watchdog to flush replay-held live bytes when a
    *  stuck replay is force-cleared. */
   const incomingResumeRef = useRef<(() => void) | null>(null);
+  /** Drops (and acks) whatever the incoming-write queue is still HOLDING,
+   *  returning the byte count. Set by the queue effect below; called by both
+   *  replay paths the moment a fresh scrollback sample arrives - see the
+   *  stale-held-byte note at that call site. */
+  const incomingResetRef = useRef<(() => number) | null>(null);
   const isAtBottomRef = useRef(true);
   /** When true, onData writes are suppressed. Controlled by the caller
    *  (e.g. TerminalTab) to gate PTY output while a loading overlay is shown. */
@@ -308,6 +313,49 @@ export function useTerminal(options: UseTerminalOptions) {
       reloadScrollbackRef.current?.({ skipResize: true, skipFocus: true });
     }, SCROLLBACK_WATCHDOG_MS);
   }, [settleScrollback, traceReplay]);
+
+  /**
+   * Discard the bytes the incoming queue is HOLDING, because the sample that
+   * just arrived already contains them.
+   *
+   * A replay is a snapshot of main's ring at a single instant, but the queue
+   * has been holding (`shouldHold`, not dropping) every byte main flushed
+   * while the replay was in flight - and those bytes PREDATE the sample.
+   * Kicking them after the replay writes an obsolete frame ON TOP of the fresh
+   * one, and a TUI only sends differential updates afterwards, so the terminal
+   * stays desynced until the next SIGWINCH. That is the "opens showing the
+   * previous pane's frame, fixed by resizing" bug: a task detail opening on a
+   * session at the bottom panel's 14 rows replayed the correct 48-row repaint,
+   * then repainted the 14-row frame over it from the held queue.
+   *
+   * Everything main flushed to this renderer before the getScrollback REPLY is
+   * by construction inside `scrollback`: main appends to its ring and its
+   * pending buffer from the same bytes, clears the pending buffer at sample
+   * time (PtyBufferManager.getScrollback), and IPC replies are ordered against
+   * the flush stream. Main's half of the double-delivery guard has always been
+   * there; this is the renderer's half, for the bytes main can no longer
+   * recall.
+   *
+   * Called in the same microtask as the resolve, so no post-sample flush (a
+   * separate macrotask) can be caught by it. That rests on the resize reply
+   * settling FIRST: it is invoked first and handled synchronously on main (or
+   * pre-resolved under skipResize), so Promise.all resolves off the scrollback
+   * reply. If that ever inverted, Promise.all would resolve a macrotask later
+   * and this could discard a genuine post-sample flush.
+   *
+   * Skipped when there is nothing to replay - a suppressed or failed read
+   * leaves the held bytes as the only copy. A resolve with no terminal needs no
+   * case of its own: the queue's own drain discards when getTerminal() is null.
+   */
+  const dropHeldBytesSupersededBySample = useCallback((
+    trigger: 'mount' | 'reload',
+    generation: number,
+    scrollback: string | null,
+  ): void => {
+    if (!scrollback) return;
+    const droppedBytes = incomingResetRef.current?.() ?? 0;
+    if (droppedBytes > 0) traceReplay('replay-drop-held', { trigger, generation, bytes: droppedBytes });
+  }, [traceReplay]);
 
   // Dev-only host-contract tripwire (compiled out of production, where
   // import.meta.env.DEV is statically false). Registered before any effect the
@@ -500,6 +548,8 @@ export function useTerminal(options: UseTerminalOptions) {
             return;
           }
 
+          dropHeldBytesSupersededBySample('mount', scrollbackGeneration, scrollback);
+
           const afterWrite = () => {
             // A newer replay may have started (and armed its own watchdog,
             // which already canceled ours) while this chunked write was in
@@ -595,7 +645,7 @@ export function useTerminal(options: UseTerminalOptions) {
       // No session -- just fit immediately
       fitAddon.fit();
     }
-  }, [options.sessionId, options.fontFamily, options.fontSize, options.cursorStyle, customBackground, customForeground, customCursor, options.shellName, options.releaseEscapeWhenPointerOutside, settleScrollback, armScrollbackWatchdog, traceReplay]);
+  }, [options.sessionId, options.fontFamily, options.fontSize, options.cursorStyle, customBackground, customForeground, customCursor, options.shellName, options.releaseEscapeWhenPointerOutside, settleScrollback, armScrollbackWatchdog, traceReplay, dropHeldBytesSupersededBySample]);
 
   // Set up data listener. Inbound PTY data flows through a bounded queue that
   // writes capped slices paced by xterm.write's completion callback, yielding
@@ -641,6 +691,7 @@ export function useTerminal(options: UseTerminalOptions) {
       ack: (bytes) => window.electronAPI.sessions.ackData(sessionId, bytes),
     });
     incomingResumeRef.current = () => queue.kick();
+    incomingResetRef.current = () => queue.reset();
 
     const cleanup = window.electronAPI.sessions.onData((incomingSessionId, data) => {
       if (incomingSessionId !== sessionId) return;
@@ -655,6 +706,7 @@ export function useTerminal(options: UseTerminalOptions) {
       cleanup();
       cleanupRef.current = null;
       incomingResumeRef.current = null;
+      incomingResetRef.current = null;
       unsubscribeDragEnd();
       queue.reset();
     };
@@ -945,6 +997,8 @@ export function useTerminal(options: UseTerminalOptions) {
           return;
         }
 
+        dropHeldBytesSupersededBySample('reload', scrollbackGeneration, scrollback);
+
         const afterWrite = () => {
           // A newer replay may have started (and armed its own watchdog,
           // which already canceled ours) while this chunked write was in
@@ -1023,7 +1077,7 @@ export function useTerminal(options: UseTerminalOptions) {
         }
         settleScrollback(false);
       });
-  }, [options.sessionId, settleScrollback, armScrollbackWatchdog, traceReplay]);
+  }, [options.sessionId, settleScrollback, armScrollbackWatchdog, traceReplay, dropHeldBytesSupersededBySample]);
 
   // Let the watchdog (armed from initTerminal, declared above this callback)
   // re-issue a stuck replay without a circular declaration.
