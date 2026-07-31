@@ -120,10 +120,26 @@ If there are uncommitted changes (non-empty `git status --porcelain` output):
       here. The list contains both single-file anchors (e.g., `src/shared/types.ts`,
       `src/main/agent/agent-adapter.ts`) and glob anchors (e.g., `src/main/db/migrations/**`,
       `src/main/agent/adapters/**`, `src/main/ipc/handlers/**`).
-   d. If any changed file matches an anchor entry (single file or glob), spawn a `doc-auditor` agent
-      with the matching files.
-   e. If the agent reports gaps, fix them inline using the `Edit` tool.
-   f. No general prose review here (that is `/sync-docs`'s job).
+   d. **Find the prose-drift candidates too, not just the anchor matches.** Anchor matching answers
+      "you changed this file, does its doc still enumerate it" - it CANNOT catch a doc whose prose
+      describes behavior that changed somewhere else. Real case: a PR changed how effort is
+      resolved, and `docs/database.md` still called `applied_effort` "the ground truth". Its anchor
+      is `src/main/db/migrations/**`, which that PR never touched, so no anchor rule would ever have
+      selected it. Cheap fix: when the diff changes a **precedence chain, fallback order, or
+      source of truth** for some value, take the identifiers in that chain and search `docs/` for
+      each with the **Grep** tool (`bash-single-command.md` routes `grep` through it). Add every hit
+      to the auditor's file list. Scope it to those identifiers, not every symbol the diff touches,
+      or the list becomes noise: on that real case the chain identifiers hit 6 of 27 doc files and
+      the top three were exactly the three that needed edits.
+   e. Spawn a `doc-auditor` agent with the anchor matches plus any prose-drift candidates from (d).
+      Ask it BOTH questions explicitly: does every doc still enumerate its anchors, AND has any
+      prose describing this diff's behavior gone stale. The second is outside the agent's default
+      contract (`.claude/agents/doc-auditor.md`: "Ignore prose"), so it answers it only when asked.
+      Give it a short prose summary of what each changed file now does - a bare file list gets a
+      bare enumeration check back.
+   f. If the agent reports gaps, fix them inline using the `Edit` tool.
+   g. Prose ACCURACY on the diff's own subject is in scope here, per (d) and (e). A general prose
+      sweep of unrelated docs is not - that stays `/sync-docs`'s job.
 4. Stage changes: `git add -A`
 5. Write the commit message using the **Write tool** to the relative path
    `.kangentic/COMMIT_MSG.tmp` (resolved from CWD - do NOT resolve an absolute path, do NOT use the

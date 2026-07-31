@@ -10,11 +10,18 @@ dogfooding `npm start` picks it up via HMR. This is the **Ship It column** skill
 **Tests column** (`/pull-request`) already created the PR and drove its CI checks to all-green and
 flake-free.
 
-It verifies the required CI checks are green, then merges with `--admin` to waive the review
-requirement: `main` requires one approving review, but a maintainer's own PRs get no second
-reviewer, so that bypass is the normal Ship It path. It NEVER bypasses the CI checks - those are
-confirmed green first; the `--admin` only waives the missing review. (For a deliberate direct
-quick-push that skips the whole PR gate, use `/merge-back` instead.)
+It verifies the CI checks are green, then merges with `--admin` to waive the review requirement:
+`main` requires one approving review, but a maintainer's own PRs get no second reviewer, so that
+bypass is the normal Ship It path. It NEVER bypasses the CI checks - those are confirmed green
+first; the `--admin` only waives the missing review. (For a deliberate direct quick-push that skips
+the whole PR gate, use `/merge-back` instead.)
+
+**This skill merges.** By the time a task reaches Ship It the decision to ship has been made, and
+this skill executes it. Red or pending CI is the only thing that may stop a run, and even then only
+until the checks resolve. Anything else it finds - a stale doc, a bad comment, a lint nit - it
+**fixes here and then merges**, accepting a second CI round as the price. It never hands the problem
+back to the user, never bounces the task to another column, and never ends with a green PR still
+open. If you are about to stop without merging, you are almost certainly doing the wrong thing.
 
 **Usage:** `/merge-pull-request`
 
@@ -57,28 +64,45 @@ to the head branch only when there is no stored number.
 Every later `gh pr` command (view, checks, merge) targets `<pr>` or `<prHead>`; the local `<branch>`
 is for local git only.
 
-## Step 1 - Doc review at merge time (verify only, never push)
+## Step 1 - Doc backstop (fix anything it finds, here and now)
 
-`/pull-request` already audits doc anchors twice: before the PR opens (its Step 1 item 3, which runs
-against the branch diff even when the tree is clean) and again inside its Step 7 auto-fix loop for
-anchors a CI fix touched. So by the time a PR reaches Ship It the anchors have been audited. This
-step is a cheap BACKSTOP, not a second audit pass.
+The doc audit's real home is `/pull-request`, BEFORE the PR is created (its Step 1 item 3, which
+runs against the branch diff even when the tree is clean). This step is a cheap BACKSTOP for what
+that pass missed.
 
-It deliberately does **not** edit, commit, or push. Pushing to the PR head here re-triggers the full
-CI suite and forces Step 2 item 4 to wait out a second complete run at merge time, minutes after
-Tests already drove the checks green. It also keeps this skill off the staging path entirely, so
-there is no `git add` here to sweep up a dirty tree on the way to an admin merge. A gap found at
-this point means the Tests column missed something, and the fix belongs there where the CI round is
-already being spent.
+**If the backstop finds a gap, FIX IT HERE.** Do not bounce the task back to Tests, do not file a
+follow-up task, do not merge around it, and do not end the run with the PR still open. Edit the doc,
+commit it, push it, wait out the CI round it re-triggers, and then merge. **Running CI twice is an
+accepted cost** - it is cheaper than shipping a doc that lies, and far cheaper than a human
+round-trip through the board to fix one sentence.
+
+This was learned from a real Ship It that stalled: the backstop found a genuinely stale sentence,
+refused to merge, and told the user to move the task back to Tests. The finding was right and the
+refusal was wrong - it left a 24/24-green PR sitting open over a one-clause doc edit this skill was
+perfectly able to make.
 
 1. Determine the anchor source files in the branch diff (compare the current diff against
    `origin/<sourceBranch>`), then narrow to files matching the canonical anchor list in
    `.claude/skills/sync-docs/SKILL.md` Step 2. If none, skip to Step 2.
-2. Spawn a `doc-auditor` agent with the matching anchor files.
+2. Spawn a `doc-auditor` agent. Ask it BOTH questions: whether the docs still enumerate every
+   anchor, AND whether any prose describing this diff's behavior has gone stale. The second is
+   outside the agent's default contract (`.claude/agents/doc-auditor.md`: "Ignore prose"), so it
+   answers it only when asked. Give it a prose summary of what each changed file now does, not a
+   bare file list.
 3. If it reports no gap, go to Step 2. This is the expected outcome.
-4. If it reports a gap, **stop and report it**: name the anchor files and the missing doc coverage,
-   and tell the user to move the task back to Tests so `/pull-request` fixes the docs and re-greens
-   CI in one round. Do not `Edit` the docs, do not commit, and do not push from this skill.
+4. If it reports a gap, **verify it yourself** by reading the cited `file:line` - a prose finding is
+   the agent working outside its contract, so confirm the sentence is actually stale before editing.
+   Then fix it with `Edit`, commit with a `docs:` message via `.kangentic/COMMIT_MSG.tmp`, and push
+   to the PR head: `git push origin HEAD:<prHead>`.
+
+   **Plain push, no `--force-with-lease`.** This adds a commit rather than rewriting history, so no
+   force is needed - and a lease would likely be REJECTED here anyway, because pushing via
+   `HEAD:<prHead>` never updates the local remote-tracking ref for `<prHead>`, leaving the lease
+   stale. Reach for `--force-with-lease` only after a rebase (Step 2 item 2), and `git fetch` first
+   to refresh the lease.
+
+   Step 2 item 4 then waits out the re-triggered CI before the merge. That is expected, not a
+   failure.
 
 ## Step 2 - Re-verify (rebase if main moved, confirm green and mergeable)
 
@@ -87,12 +111,20 @@ already being spent.
    (resolve conflicts the same way `/pull-request` does, or abort and report). If the rebase changed
    history, push the local HEAD to the PR's remote head: `git push origin HEAD:<prHead> --force-with-lease`.
 3. Re-read the PR state: `gh pr view <pr> --json mergeable,mergeStateStatus,statusCheckRollup`.
-   **Require every required status check in `statusCheckRollup` to be green (SUCCESS).** That is the
-   real gate - do not rely on the merge command to enforce it. `mergeStateStatus` will usually read
-   `BLOCKED` rather than `CLEAN` here because the maintainer's own PR has no approving review; that
-   block is EXPECTED and is waived by the `--admin` merge in Step 3. But if a required CHECK is
-   failing or still pending (not merely the review), stop (or wait - step 4); never `--admin` past a
-   red or pending check.
+   **Require EVERY check in the rollup to be green (SUCCESS)** - the whole set, not the
+   branch-protection-required subset. That is the real gate; do not rely on the merge command to
+   enforce it.
+
+   **Never gate on `gh pr checks --required`.** This repo marks only four checks required (build,
+   lint, typecheck, cla), so `--required` reports all-green while every UI shard, E2E shard, and
+   unit shard is still running. That has already happened once: `--required` said green with 16
+   checks in flight, and an `--admin` merge at that moment would have waived all 16. Use
+   `gh pr checks <pr> --json name,state` and confirm the count of SUCCESS equals the total.
+
+   `mergeStateStatus` will usually read `BLOCKED` rather than `CLEAN` here because the maintainer's
+   own PR has no approving review; that block is EXPECTED and is waived by the `--admin` merge in
+   Step 3. But if a CHECK is failing or still pending (not merely the review), stop (or wait -
+   step 4); never `--admin` past a red or pending check.
 4. If the rebase (step 2) re-triggered checks and they are pending, wait for them with
    `gh pr checks <pr> --watch --fail-fast --interval 30` (Bash `timeout` about `2400000` ms). If
    they go red, stop and report - this should be rare because Tests already drove them green; the
