@@ -19,13 +19,29 @@ Open a new terminal window running a Kangentic dev server for previewing live co
    - exit `2` - crashed; point the user at the preview terminal's scrollback
    - exit `3` - force-killed or the terminal was hard-closed
    - exit `1` - the watcher couldn't attach (unlikely right after a successful launch)
+   - **no exit code** (the notification says the command was `stopped` with no completion record):
+     the WATCHER died, usually with a session teardown. This says nothing about the preview, so
+     treat its state as UNKNOWN, not as running. Either verify before saying anything about it, or
+     say nothing. Do not re-offer `--stop` on the strength of a teardown notice.
+
+6. **Offer the `--stop` command once, when you launch the preview.** Do not append it to later
+   messages about unrelated work. Repeating it every turn is noise, and because a preview the user
+   already stopped leaves no notification you will see, the repeated offer is frequently just wrong.
+   Re-offer only when the user asks about the preview, or when you have re-verified it is alive in
+   the same turn.
+
+7. **Never state that a preview is running from memory.** Liveness is external state that changes
+   without telling you: the user can close the terminal, run `--stop`, or reboot. A launch you
+   performed earlier in the conversation is not evidence it is still up. If it matters, check in
+   that turn (`tasklist` / `Get-Process` on the recorded PID, or the lockfile); otherwise do not
+   make the claim at all.
 
 ## Notes
 
 - This script must be run from inside a `.kangentic/worktrees/` directory. It will error with a clear message if run from the project root.
-- Creates a filesystem junction (Windows) or symlink (Unix) from `<worktree>/node_modules` → `<root>/node_modules` — no `npm install` or rebuild needed.
+- Creates a filesystem junction (Windows) or symlink (Unix) from `<worktree>/node_modules` → `<root>/node_modules` - no `npm install` or rebuild needed.
 - The preview instance runs on a dynamically assigned port (starting from 5174) so it does not conflict with the root dev server on 5173.
-- Each preview instance has its own empty board — board state does NOT sync between instances. Use the root instance for task management.
+- Each preview instance has its own empty board - board state does NOT sync between instances. Use the root instance for task management.
 - When the preview terminal is closed, the worktree's `.kangentic/` and `.vite/` directories are automatically cleaned up (ephemeral mode). The node_modules junction is left in place for instant restarts.
 - Multiple `/preview` invocations can run simultaneously - each gets its own port, and each gets its own watcher.
 - Pass `--fresh` to launch without auto-opening a project (shows the Welcome Screen). Useful for testing the first-launch experience. Example: `/preview --fresh`
@@ -33,8 +49,8 @@ Open a new terminal window running a Kangentic dev server for previewing live co
 - **Watching only observes.** It never stops or restarts the preview - do not run `/preview` again automatically just because a watcher fired.
 - A notification arriving immediately after you ran `--stop` yourself is the expected confirmation of that stop, not a new event to alarm the user about.
 - The watcher holds a background task slot for the preview's whole lifetime, which can be hours. Pass `--no-watch` to skip it and launch fire-and-forget as before.
-- If the Claude Code session restarts, a pending watch notification is lost - the preview keeps running regardless. Re-attach with `node scripts/worktree-preview.js --wait --port=<port>` if you need to know when it later exits.
+- If the Claude Code session restarts, a pending watch notification is lost. The preview is not killed BY the restart, but that is not the same as it still being up: once the watcher is gone you have no signal at all, so a later `--stop` (or a closed terminal) is invisible to you. Treat the state as unknown from that point on and re-verify before saying anything about it. Re-attach with `node scripts/worktree-preview.js --wait --port=<port>` to restore the signal.
 
 ## Allowed Tools
 
-Only use `Bash` (for the `node` command). Run from the current working directory — do not chain commands.
+Only use `Bash` (for the `node` command). Run from the current working directory - do not chain commands.
