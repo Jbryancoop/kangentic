@@ -177,7 +177,7 @@ Build-excluded from production via `__KANGENTIC_DEV__` (esbuild dead-code elimin
 | `transition:set` | invoke | Set action chain for lane A→B |
 | `transition:getFor` | invoke | Get transitions for lane pair (exact match, then wildcard) |
 
-### Sessions (35 channels)
+### Sessions (36 channels)
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
 | `session:spawn` | invoke | Spawn PTY session (may queue) |
@@ -199,6 +199,7 @@ Build-excluded from production via `__KANGENTIC_DEV__` (esbuild dead-code elimin
 | `session:getEvents` | invoke | Fetch activity log events for one session |
 | `session:getEventsCache` | invoke | Fetch cached event arrays. Optional `projectId` scopes to one project. |
 | `session:setFocused` | invoke | Set which sessions are visible in the renderer (optimizes IPC traffic) |
+| `session:setMounted` | invoke | Set which sessions this renderer has an xterm MOUNTED for. Broader than the focused set: a parked terminal is unfocused but still holds a grid, and main must not reshape a PTY something is still rendering at its own size |
 | `session:notifyUserInterrupt` | invoke | Notify telemetry of a user Ctrl+C; arms the 3-second settle timer that synthesizes Interrupted if hooks don't recover |
 | `session:data` | on | Terminal output available (includes `projectId`) |
 | `session:drainAck` | send | Renderer-to-main flow-control ack for per-session PTY backpressure; fire-and-forget (no projectId) |
@@ -285,7 +286,7 @@ from a host's complete mounted set, never accumulated from claim/release - see
 | `boardConfig:shortcutsChanged` | on | Event: shortcuts file changed |
 | `boardConfig:setDefaultBaseBranch` | invoke | Set the team-shared default base branch in `kangentic.json` |
 
-### Mobile Bridge (12 channels)
+### Mobile Bridge (14 channels)
 Machine-global (like Config), not project-scoped - backs the Mobile Devices settings tab. See [Mobile Bridge](mobile-bridge.md) for the pairing ceremony, roster, capability verbs, and relay transport this group fronts.
 | Channel | Pattern | Purpose |
 |---------|---------|---------|
@@ -301,6 +302,8 @@ Machine-global (like Config), not project-scoped - backs the Mobile Devices sett
 | `mobile:pairingConfirmed` | on | Event: the phone's sealed confirm frame opened and the device was auto-enrolled, with its deviceId and phone-supplied display name |
 | `mobile:pairingEnded` | on | Event: pairing ended with a reason and a `kind` (`'cancelled'` \| `'failed'`); the desktop only surfaces a message for `'failed'` (mismatch, timeout, handshake error) - a plain cancel is already obvious from the UI returning to idle |
 | `mobile:stateChanged` | on | Event: status or device list changed (pairing confirmed/revoke/capability update) |
+| `mobile:getTerminalStreams` | invoke | The set of session ids a phone is streaming a terminal for - the set the bottom panel suspends its own terminals for. Seeds a renderer that mounts after the phone already subscribed (app start with a connected phone, window reload) |
+| `mobile:terminalStreamsChanged` | on | Event: the phone-streamed session id set changed; keeps the renderer's copy current between seeds |
 
 ### Notifications (2 channels)
 | Channel | Pattern | Purpose |
