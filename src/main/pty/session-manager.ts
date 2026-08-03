@@ -291,11 +291,15 @@ export class SessionManager extends EventEmitter {
         this.emit('pr-candidate', sessionId, scrollback);
       },
       onAgentSessionId: (sessionId, agentReportedId) => {
-        // Agent session ID capture covers two cases:
+        // Agent session ID capture covers three cases:
         // 1. Fresh capture: agent_session_id was null (Codex/Gemini), now captured from hooks/PTY output.
         // 2. Stale recovery: agent_session_id was pre-specified (Claude --resume) but the agent
         //    created a different session (--resume failed silently). DB needs the correct ID.
-        // recoverStaleSessionId() handles both cases - emit unconditionally.
+        // 3. Mid-session fork: the agent moved the live conversation to a NEW id (Claude /clear)
+        //    and its status file re-reported it, so this callback fires AGAIN mid-session.
+        //    Everything below is repeat-safe: the mutation is value-guarded, and the history
+        //    re-attach is blocked by hasReceivedStatus (see the note further down).
+        // recoverStaleSessionId() handles all cases - emit unconditionally.
         const session = this.registry.get(sessionId);
         if (!session) return;
         // Reflect the captured ID on the live Session so the renderer (and
@@ -310,7 +314,7 @@ export class SessionManager extends EventEmitter {
         // failures and degrades gracefully to PtyActivityTracker.
         //
         // For Claude the transcript reader is a background-session FALLBACK,
-        // and processStatusUpdate's one-shot id capture routes back here. The
+        // and processStatusUpdate's id capture routes back here. The
         // guard skips a re-attach once status.json has been handed off. Note:
         // on the normal Claude path this callback fires synchronously nested
         // inside the FIRST onUsageParsed - before StatusFileReader sets
@@ -320,7 +324,13 @@ export class SessionManager extends EventEmitter {
         // spawn-time attach already holds the slot) plus the detach in
         // onFirstStatus (fired right after onUsageParsed) cancelling any
         // in-flight re-attach. The guard covers any path where an id capture
-        // could arrive after that handoff.
+        // could arrive after that handoff - including the mid-session fork
+        // (case 3 above): a status-reported id CHANGE implies a prior status
+        // write (no adapter reports session ids via both a hook/PTY channel
+        // and parseStatus), so by the time it fires here firstStatusDelivered
+        // is already true and the deliberately-detached transcript fallback
+        // stays detached. status.json remains the live telemetry source for
+        // the forked conversation.
         const historyHook = session.agentParser?.runtime?.sessionHistory;
         if (historyHook && !this.statusFileReader.hasReceivedStatus(sessionId)) {
           // No startAtEnd here: this attach only ever runs when the agent id was

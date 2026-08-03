@@ -36,7 +36,7 @@ All DB status transitions flow through `src/main/transition-engine/session-lifec
 - `suspended -> exited` (retired when replaced by new session, via `retireRecord()`)
 - `orphaned -> exited` (recovery dedup or failed recovery, via `retireRecord()`)
 
-**Resume check (`canResume()`):** a cheap DB-only gate on `agent_session_id` existence, NOT status. Any session with an `agent_session_id` is *potentially* resumable regardless of whether it's `suspended` or `exited`. Note that Claude resolves its transcript by the agent's current cwd, so the worktree path must stay stable across Done round-trips for `--resume` to find it (see "Resume Flow").
+**Resume check (`isResumeEligible()`):** a cheap DB-only gate on `agent_session_id` existence, NOT status. Any session with an `agent_session_id` is *potentially* resumable regardless of whether it's `suspended` or `exited`. Note that Claude resolves its transcript by the agent's current cwd, so the worktree path must stay stable across Done round-trips for `--resume` to find it (see "Resume Flow").
 
 **Illegal transitions (bugs if they happen):**
 - `queued -> suspended` (must run first)
@@ -107,15 +107,18 @@ keyed by the working directory (`slug = cwd.replace(/[/\\:.]/g, '-')`). `--resum
 succeeds when run from the cwd the original session ran in. Resume happens in coordinated
 layers:
 
-1. **Lifecycle check** (`src/main/transition-engine/session-lifecycle.ts`, `canResume()` / `isResumeEligible()`): cheap DB-only gate on `agent_session_id` existence (not status).
-2. **Transition engine** (`src/main/transition-engine/transition-engine.ts`): retires the old record via `retireRecord()`, spawns a new PTY with `--resume <agent_session_id>` in the task's worktree cwd.
-3. **Session manager / store**: scrollback preservation + `syncSessions()` reconciliation.
+1. **Eligibility check** (`isResumeEligible()` in `src/main/transition-engine/spawn-intent.ts`): cheap DB-only gate on `agent_session_id` existence (not status), excluding `run_script` and `queued` records.
+2. **Resume-time id reconcile** (`src/main/transition-engine/resume-id-reconcile.ts`): before building `--resume`, the retiring record's own `.kangentic/sessions/<recordId>/status.json` is consulted; if the agent last reported a DIFFERENT session id (a /clear fork in the final seconds before suspend), the reported id is resumed and persisted instead. Missing file (mock CLIs, pruned dirs) is a silent no-op.
+3. **Transition engine** (`src/main/transition-engine/transition-engine.ts`): retires the old record via `retireRecord()`, spawns a new PTY with `--resume <agent_session_id>` in the task's worktree cwd.
+4. **Session manager / store**: scrollback preservation + `syncSessions()` reconciliation.
 
 **Worktree path must stay stable.** Because the transcript is cwd-keyed, the worktree must be recreated at the SAME path across a Done round-trip. `WorktreeManager.createWorktree` derives the folder from the title for auto-generated branches to guarantee this. A regression here (e.g. re-slugifying the preserved branch name, which already ends in `-<shortId>`, and appending the suffix again -> `foo-abcd1234-abcd1234`) changes the cwd and silently orphans the session.
 
-**`--resume` failure is loud, not silent.** When Claude can't find the transcript under the current cwd it prints `No conversation found with session ID: <id>` and EXITS -- it does NOT start a fresh session. The wrapping shell PTY stays alive and idle (the "N idle" phantom on the project). `recoverStaleSessionId()` therefore cannot heal this case (no agent ever starts to report a new id); the transcript-presence guard prevents the doomed `--resume` in the first place.
+**`--resume` failure is loud, not silent.** When Claude can't find the transcript under the current cwd it prints `No conversation found with session ID: <id>` and EXITS -- it does NOT start a fresh session. The wrapping shell PTY stays alive and idle (the "N idle" phantom on the project). `recoverStaleSessionId()` cannot heal this case (no agent ever starts to report a new id). There is deliberately NO transcript-presence guard on the spawn path (built and reverted in #255 - see docs/adapter-session-history.md); the transcript reliably exists because `buildSpawnEnv` strips the leaked `CLAUDE_CODE_*` markers that once stopped spawned Claudes from persisting it, and `migrateResumeCwdIfRenamed` heals the worktree-rename orphan case.
 
-**Key rule:** A genuine resume gets `--resume <id>` ONLY -- no prompt. Fresh sessions (including a guard-triggered downgrade) get `--session-id <uuid>` WITH the task prompt.
+**/clear forks the conversation to a NEW session id.** The statusline re-reports the new id; the change-sensitive status-file capture (`SessionTelemetry.processStatusUpdate`) rewrites `sessions.agent_session_id` live, and the resume-time reconcile (step 2 above) covers a fork the live path missed. Without these, a restart resumes the pre-clear stub and the real thread looks lost.
+
+**Key rule:** A genuine resume gets `--resume <id>` ONLY -- no prompt. Fresh sessions get `--session-id <uuid>` WITH the task prompt.
 
 ## Subagent Activity Tracking
 
@@ -142,7 +145,9 @@ layers:
 
 ## Key Source Files
 
-- `src/main/transition-engine/session-lifecycle.ts` -- Centralized state machine (canResume, markRecordExited, markRecordSuspended, retireRecord, promoteRecord, recoverStaleSessionId)
+- `src/main/transition-engine/session-lifecycle.ts` -- Centralized state machine (markRecordExited, markRecordSuspended, retireRecord, promoteRecord, recoverStaleSessionId)
+- `src/main/transition-engine/spawn-intent.ts` -- `isResumeEligible` + resume-vs-fresh decision
+- `src/main/transition-engine/resume-id-reconcile.ts` -- resume-time /clear-fork id reconcile
 - `src/main/pty/session-manager.ts` -- PTY lifecycle, spawn, suspend, kill, scrollback
 - `src/main/pty/session-queue.ts` -- Concurrency control, max concurrent sessions
 - `src/main/transition-engine/transition-engine.ts` -- Action execution, resume logic

@@ -10,6 +10,8 @@ import type { TaskRepository } from '../../db/repositories/task-repository';
 import { runSpawnPreamble, resolveEffectivePermissionMode } from '../spawn-preamble';
 import { applyProfileToLane, findTaskProfile } from '../column-strategy';
 import { sessionOutputPaths } from '../session-paths';
+import { reconcileResumeAgentSessionId } from '../resume-id-reconcile';
+import type { SessionRepository } from '../../db/repositories/session-repository';
 import { resolveExecutionTarget } from '../../agent/shared/execution-target';
 import { resolveLaunchOptions } from '../../agent/shared/launch-options';
 
@@ -89,8 +91,17 @@ export async function prepareAgentSpawn(input: {
   projectDefaultEffort: string | null;
   resolvedShell: string;
   mcpServerHandle: McpHttpServerHandle | null | undefined;
-  /** Non-null → build a resume command with the given agent session ID. */
-  resume: { agentSessionId: string } | null;
+  /**
+   * Non-null → build a resume command with the given agent session ID.
+   * `recordId` (the resume-eligible record's id) additionally enables the
+   * resume-time id reconcile against that record's own status.json (see
+   * resume-id-reconcile.ts); omit it to skip the reconcile. `recordCwd` is
+   * that record's own cwd for the reconcile's transcript probe, in case it
+   * differs from the spawn `cwd` (falls back to the spawn cwd).
+   */
+  resume: { agentSessionId: string; recordId?: string; recordCwd?: string } | null;
+  /** Persists a reconciled agent session id. Only consulted when `resume.recordId` is set. */
+  sessionRepo?: Pick<SessionRepository, 'updateAgentSessionId'>;
   /**
    * Whether any session row exists for the task. First-ever-spawn detection
    * for the override lock: recovery resumes pass `true` (a record is in hand,
@@ -153,7 +164,18 @@ export async function prepareAgentSpawn(input: {
   let agentSessionId: string | null;
   const canResume = input.resume !== null;
   if (canResume) {
-    agentSessionId = input.resume!.agentSessionId;
+    // Reconcile the resumed id against the retiring record's own status.json:
+    // a mid-session fork (Claude /clear) in the final seconds before suspend
+    // can leave the DB one id behind. Best-effort; missing file or recordId
+    // keeps the stored id unchanged.
+    agentSessionId = await reconcileResumeAgentSessionId({
+      adapter,
+      recordId: input.resume!.recordId ?? null,
+      storedAgentSessionId: input.resume!.agentSessionId,
+      cwd: input.resume!.recordCwd ?? cwd,
+      projectPath,
+      sessionRepo: input.sessionRepo,
+    });
   } else {
     // Only Claude accepts caller-specified session IDs. Others capture
     // their real ID from hooks / PTY output later and come back here as null.

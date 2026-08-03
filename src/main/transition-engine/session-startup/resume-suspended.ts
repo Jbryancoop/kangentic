@@ -346,7 +346,14 @@ export async function resumeSuspendedSessions(
       // session_type (captured at spawn, agent-specific) and its isolation.
       const typeMatch = sessionRepo.getLatestForTaskByTypeAndIsolation(record.task_id, record.session_type, record.isolated_swimlane_id);
       const canResume = isResumeEligible(typeMatch);
-      const resume = canResume ? { agentSessionId: typeMatch!.agent_session_id! } : null;
+      // recordId enables prepareAgentSpawn's resume-time id reconcile against
+      // the matched record's own status.json (a /clear fork right before the
+      // shutdown suspend can leave agent_session_id one id behind); recordCwd
+      // keeps the reconcile's transcript probe on that same record's cwd in
+      // case it diverges from the gathered record's.
+      const resume = canResume
+        ? { agentSessionId: typeMatch!.agent_session_id!, recordId: typeMatch!.id, recordCwd: typeMatch!.cwd }
+        : null;
 
       const prep = await prepareAgentSpawn({
         task,
@@ -361,6 +368,7 @@ export async function resumeSuspendedSessions(
         resolvedShell,
         mcpServerHandle,
         resume,
+        sessionRepo,
         // A session record is literally in hand on this path, so the
         // first-spawn override lock no-ops by construction.
         hasSessionRecord: true,

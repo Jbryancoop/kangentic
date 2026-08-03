@@ -99,7 +99,7 @@ sessions bypass all of this (not task agents).
    - Determine CWD (worktree path or project path)
    - Pre-populate `~/.claude.json` trust for worktree paths
    - Check for previous suspended session (can resume?)
-   - If resuming: use existing `agent_session_id` with `--resume`, no prompt
+   - If resuming: reconcile the stored `agent_session_id` against the record's own `status.json` (see [Resume](#resume)), then use it with `--resume`, no prompt
    - If fresh: generate new UUID for `agent_session_id`, use `--session-id`, include prompt
    - Create session directory at `.kangentic/sessions/<agentSessionId>/`
    - Build agent CLI command via `CommandBuilder`
@@ -161,6 +161,15 @@ Session teardown varies by target column:
 When a suspended task moves to an active column:
 
 - Command: `claude --settings <path> --resume <agentSessionId>` (no prompt)
+- The resumed id tracks mid-session forks. Running `/clear` inside a Claude session forks the
+  conversation to a brand-new session id; the statusline re-reports it and the change-sensitive
+  status-file capture (`SessionTelemetry.processStatusUpdate` -> `recoverStaleSessionId`)
+  rewrites `sessions.agent_session_id` live. At resume time,
+  `reconcileResumeAgentSessionId` (`src/main/transition-engine/resume-id-reconcile.ts`)
+  additionally checks the retiring record's own `status.json` and swaps the resumed id if a fork
+  landed in the final seconds before suspend (the status watcher detaches before the CLI exits).
+  Details and the empirical grounding: docs/adapter-session-history.md, "Mid-session fork
+  reconcile".
 - New PTY spawned with scrollback carried over from previous session
 - New session DB record inserted, old record marked `exited`
 - The destination column's settings are re-applied as CLI flags on the resume
@@ -198,7 +207,7 @@ On project open (`src/main/transition-engine/session-startup/`):
 5. **Select the current session** -- per task, recover ONLY the session matching the task's current column strategy (`resolveIsolatedSwimlaneId`). Non-target sessions are preserved (an orphaned or interrupted-exited one is CAS-upgraded to `suspended`) so re-entering their column later continues their own conversation.
 6. **Filter** -- skip tasks in non-auto-spawn columns (an interrupted-exited record there is CAS-upgraded to `suspended` for future resume, mirroring move-to-Done), skip user-paused sessions (`suspended_by = 'user'`), skip missing CWD, skip deleted/archived tasks. Skipped does NOT mean invisible: a record that ends up `suspended` in a non-auto-spawn **custom** column gets a `registerSuspendedPlaceholder` entry, because the renderer derives the Resume control and the card's click target from its in-memory session list, not the DB. Without one the task presents exactly like a To Do card (click opens the edit form, no Resume anywhere) even though `SESSION_RESUME` would happily resume it. To Do and Done are excluded by ROLE, not by the `auto_spawn` flag: both deliberately hide Resume, and a To Do card relies on having no session so it opens straight into the edit form.
 7. **Resume or respawn** (isolation-scoped via `getLatestForTaskByTypeAndIsolation`):
-   - Suspended/orphaned/interrupted-exited with `agent_session_id` -- use `--resume` (attempts to restore conversation)
+   - Suspended/orphaned/interrupted-exited with `agent_session_id` -- use `--resume` (attempts to restore conversation; the id is first reconciled against the record's own `status.json`, see [Resume](#resume))
    - No session ID -- fresh `--session-id` with prompt from matching `spawn_agent` action
 8. **Reconcile** -- spawn fresh agents for tasks in auto_spawn columns with no session at all (skips user-paused tasks); fresh rows are tagged with the column's `isolated_swimlane_id`
 

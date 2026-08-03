@@ -236,7 +236,7 @@ readonly runtime: AdapterRuntimeStrategy = {
 
 **File paths** (`status.json`, `events.jsonl` under `.kangentic/sessions/<sessionId>/`) are caller-supplied at spawn time on `SpawnSessionInput.statusOutputPath` / `eventsOutputPath`. They are runtime values, not static adapter metadata.
 
-**First-status handoff (`onFirstStatus`).** `StatusFileReaderCallbacks` carries an `onFirstStatus(sessionId)` primitive that fires once per attachment, immediately after the first successful `parseStatus` dispatch. SessionManager wires it to `sessionHistoryReader.detach(sessionId)`, retiring the transcript fallback the moment `status.json` starts flowing (see the "Claude" section). The ordering is load-bearing: `onFirstStatus` fires *after* `onUsageParsed`, so the detach also cancels any transcript re-attach that the usage path's one-shot agent-session-id capture can trigger. SessionManager additionally guards the `onAgentSessionId` re-attach with `statusFileReader.hasReceivedStatus(sessionId)`. This is capability-driven, not agent-named: adapters whose `parseStatus` returns null (Codex, Gemini) never fire `onFirstStatus`, so nothing changes for them.
+**First-status handoff (`onFirstStatus`).** `StatusFileReaderCallbacks` carries an `onFirstStatus(sessionId)` primitive that fires once per attachment, immediately after the first successful `parseStatus` dispatch. SessionManager wires it to `sessionHistoryReader.detach(sessionId)`, retiring the transcript fallback the moment `status.json` starts flowing (see the "Claude" section). The ordering is load-bearing: `onFirstStatus` fires *after* `onUsageParsed`, so the detach also cancels any transcript re-attach that the usage path's agent-session-id capture (change-sensitive on this channel; see "Mid-session fork reconcile" below) can trigger. SessionManager additionally guards the `onAgentSessionId` re-attach with `statusFileReader.hasReceivedStatus(sessionId)`. This is capability-driven, not agent-named: adapters whose `parseStatus` returns null (Codex, Gemini) never fire `onFirstStatus`, so nothing changes for them.
 
 ## Resume mechanisms (the resume artifact is not always the history file)
 
@@ -359,6 +359,67 @@ This is **not** the reverted `canResumeSession` guard, and does not reintroduce 
 Pre-existing orphans (a task that already failed a resume and wrote an empty transcript under the
 new slug) are left to one-time manual recovery: copy the intact `<id>.jsonl` from the old slug
 directory into the current worktree's slug directory.
+
+### Mid-session fork reconcile (/clear moves the conversation to a new id)
+
+**The invariant: a task points at whatever conversation its agent last reported it was
+writing.** Kangentic never chooses or guesses a session id; it follows the agent's own report,
+adopts it idempotently (same-id reports are no-ops), and no path can turn a resume into a fresh
+session or touch a transcript on disk. Everything in this section is that one rule enforced at
+two moments (live, and at resume), plus the lockdown that keeps every other channel from ever
+moving the pointer.
+
+When the user runs `/clear` inside a Claude session, the CLI **forks the conversation to a
+brand-new session id**: subsequent turns persist to a new `<slug(cwd)>/<newId>.jsonl` and the
+pre-clear file is never touched again. Empirical facts this design is grounded on (validated
+live against CLI v2.1.220 via `scripts/validate-clear-fork.mjs`, plus two real fork instances
+and a 1,557-session-dir scan across versions v2.1.187-v2.1.220):
+
+- The **statusline payload flips to the new id within ~1 refresh** of the fork. Kangentic's
+  `status-bridge.js` persists that payload verbatim as the session dir's `status.json`, so the
+  live id is always on disk. The statusline reflects only the main REPL session, so this channel
+  cannot be poisoned by subagent ids.
+- `SessionStart(source=clear)` / `SessionEnd(reason=clear)` **do fire in current CLI versions**
+  (observed live on v2.1.220) but fired **zero times across 1,557 historical session dirs**
+  (sources observed: startup/resume/compact only), so hook-based fork detection would silently
+  miss on the older CLI versions still in the field. The status channel works across the range.
+- `claude --resume <id>` **continues the same id** in current versions, so "reported id differs
+  from stored id" cleanly means a fork, never routine resume noise.
+
+Kangentic tracks the fork at two layers, neither of which is agent-name-branched (both ride the
+generic `runtime.statusFile` capability, which only Claude implements today):
+
+1. **Live reconcile.** `SessionTelemetry.processStatusUpdate`'s agent-session-id capture is
+   **change-sensitive on the status-file channel**: it re-fires `onAgentSessionId` whenever the
+   status file reports a different id than last reported, flowing through the existing
+   `recoverStaleSessionId` chain to rewrite `sessions.agent_session_id` in place. The PTY-output
+   and hook capture channels stay strictly **one-shot** - multi-shot output capture would
+   reintroduce the OpenCode stale-flag-echo poisoning bug - and any capture closes them, so only
+   the status file may later revise the id.
+2. **Resume-time reconcile.** `reconcileResumeAgentSessionId`
+   (`src/main/transition-engine/resume-id-reconcile.ts`), run at both resume chokepoints
+   (`executeSpawnAgent` before `migrateResumeCwdIfRenamed`, and `prepareAgentSpawn` for startup
+   recovery), reads the retiring record's own `.kangentic/sessions/<recordId>/status.json` and
+   swaps the resumed id when the agent's last report disagrees with the DB. This covers the
+   suspend race (suspend closes the status watcher before the CLI exits, so a fork in the final
+   ~2s can miss the live reconcile) and records from before the fix shipped.
+
+The resume-time reconcile is **not** the reverted `canResumeSession` guard: it reads only
+Kangentic's own session directory (mock CLIs write no status.json, so mocked E2E resumes no-op
+structurally), it can only swap WHICH id is resumed (never downgrades resume to fresh), and its
+one positive probe (`locateSessionHistoryFile` on the reported id, guarding a crash right after
+the fork) keeps the stored id on a miss - degrading to exactly the prior behavior.
+
+Three accepted consequences, all deliberate: (a) lifetime token rollups partition by
+`COALESCE(agent_session_id, id)`, so a forked record's lineage key follows the fork and the
+pre-clear leg leaves the rollups (the pre-clear context is what the user chose to discard); (b)
+the stitched task transcript view follows the reconciled id, so the pre-clear conversation drops
+out of it (the file itself remains on disk under the old id); (c) the conversation retrieval
+index keys document identity on `agent_session_id ?? id`
+(`src/main/retrieval/conversation/conversation-indexer.ts`), so the semantic-search corpus
+partitions at the fork the same way as (a): pre-clear chunks stay indexed under the old document
+id, and post-fork turns index as a new document. Note for MCP consumers: a task's
+`agentSessionId` can rotate mid-session, so do not cache it across turns.
 
 ## Known gaps
 

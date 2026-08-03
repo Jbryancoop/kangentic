@@ -270,13 +270,39 @@ export function buildCommandInjectionVerifier(
   if (!submissionVerifier) return null;
   const record = prefetchedRecord !== undefined ? prefetchedRecord : sessionRepo.getLatestForTask(taskId);
   if (!record?.agent_session_id || !record.cwd) return null;
-  const agentSessionId = record.agent_session_id;
-  const cwd = record.cwd;
-  return async (command: string, sentAt: number) => submissionVerifier({
-    type: 'command-injection',
-    text: command,
-    agentSessionId,
-    cwd,
-    sentAt,
-  });
+  const recordId = record.id;
+  const capturedAgentSessionId = record.agent_session_id;
+  const capturedCwd = record.cwd;
+  return async (command: string, sentAt: number) => {
+    // Re-resolve the agent session id from the SAME record (by primary key,
+    // never latest-for-task, which could shadow an isolated session's row) on
+    // every poll: a /clear mid-burst forks the live conversation to a new id
+    // (persisted by the live status-file reconcile), and the slash entries
+    // being verified land in the NEW transcript. Polling only the
+    // plan-build-time id would never confirm, ending in stray retry Enters
+    // plus a Ctrl+C fired into the live session.
+    const currentRecord = sessionRepo.findByAnyId(recordId);
+    const currentAgentSessionId = currentRecord?.agent_session_id ?? capturedAgentSessionId;
+    const currentCwd = currentRecord?.cwd ?? capturedCwd;
+    const verifiedInCurrent = await submissionVerifier({
+      type: 'command-injection',
+      text: command,
+      agentSessionId: currentAgentSessionId,
+      cwd: currentCwd,
+      sentAt,
+    });
+    if (verifiedInCurrent || currentAgentSessionId === capturedAgentSessionId) {
+      return verifiedInCurrent;
+    }
+    // The id changed mid-burst: also accept a match under the id captured at
+    // plan-build time - the command may have landed in the pre-fork
+    // transcript an instant before the fork.
+    return submissionVerifier({
+      type: 'command-injection',
+      text: command,
+      agentSessionId: capturedAgentSessionId,
+      cwd: capturedCwd,
+      sentAt,
+    });
+  };
 }

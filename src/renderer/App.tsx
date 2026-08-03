@@ -182,8 +182,31 @@ export function App() {
         // mid-drag. Wrapped whole so the (currently side-effect-free) write and
         // auto-name scheduling stay in arrival order with the other handlers.
         enqueueSessionUpdate(() => {
+          // Mid-session conversation fork (e.g. Claude /clear): the live
+          // session's agent id is null until first capture (that flip stays
+          // quiet), so a non-null -> DIFFERENT non-null flip on a running
+          // session is exactly a fork. The comparison runs synchronously in
+          // this push handler and syncSessions never re-enters it, so an HMR
+          // resync cannot replay the toast.
+          const previousSession = useSessionStore.getState().sessions
+            .find((existingSession) => existingSession.id === sessionId);
+          const forkedConversation =
+            session.status === 'running'
+            && !session.transient
+            && previousSession?.agentSessionId != null
+            && session.agentSessionId != null
+            && previousSession.agentSessionId !== session.agentSessionId;
           upsertSession(session);
           scheduleAutoNameSuggestion(session);
+          if (forkedConversation
+            && session.projectId === useProjectStore.getState().currentProject?.id) {
+            const forkTask = useBoardStore.getState().tasks.find((boardTask) => boardTask.id === session.taskId);
+            const forkLabel = forkTask ? `"${forkTask.title}"` : sessionId.slice(0, 8);
+            useToastStore.getState().addToast({
+              message: `Conversation for ${forkLabel} moved to a new session (e.g. /clear). Resume will follow the new conversation.`,
+              variant: 'info',
+            });
+          }
         });
       }));
     }

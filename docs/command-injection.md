@@ -64,7 +64,15 @@ type SubmissionContext =
 type SubmissionVerifier = (context: SubmissionContext) => Promise<boolean>;
 ```
 
-For the `'command-injection'` context, the verifier receives the literal command text plus session metadata (the captured `agent_session_id`, the session `cwd`, and `sentAt` - the wall-clock timestamp of the most recent Enter the verifier should match against) and returns `true` once it confirms the command was processed. `sentAt` advances on each retry-Enter so stale transcript entries from previous attempts cannot satisfy the current verification.
+For the `'command-injection'` context, the verifier receives the literal command text plus session metadata (the `agent_session_id`, the session `cwd`, and `sentAt` - the wall-clock timestamp of the most recent Enter the verifier should match against) and returns `true` once it confirms the command was processed. `sentAt` advances on each retry-Enter so stale transcript entries from previous attempts cannot satisfy the current verification.
+
+The `agent_session_id` is NOT captured once at plan-build time: `buildCommandInjectionVerifier`
+re-reads the session record by primary key (`findByAnyId(recordId)`) on every poll, and when the
+record's id has changed mid-burst it accepts a match under either the current or the
+plan-build-time id. A `/clear` during an in-flight burst forks the live conversation to a new id
+(see docs/adapter-session-history.md, "Mid-session fork reconcile"); polling only the
+plan-build-time id would never confirm, ending in stray retry Enters plus a Ctrl+C fired into
+the live session.
 
 ## Claude's JSONL-polling implementation
 

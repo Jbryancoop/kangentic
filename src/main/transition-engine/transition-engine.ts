@@ -16,6 +16,7 @@ import { retireRecord, markRecordSuspended } from './session-lifecycle';
 import { resolveEffectivePermissionMode } from './spawn-preamble';
 import { resolveSpawnIntent } from './spawn-intent';
 import { migrateResumeCwdIfRenamed } from './resume-cwd-migration';
+import { reconcileResumeAgentSessionId } from './resume-id-reconcile';
 import { sessionOutputPaths } from './session-paths';
 import type { ActionRepository } from '../db/repositories/action-repository';
 import type { TaskRepository } from '../db/repositories/task-repository';
@@ -221,11 +222,22 @@ export class TransitionEngine {
     const canResume = intent.mode === 'resume';
 
     // agent_session_id: the agent CLI's real session ID for --resume/--session-id.
-    // - Resume: use the captured/specified ID from the DB record
+    // - Resume: use the captured/specified ID from the DB record, reconciled
+    //   against the retiring record's own status.json (a /clear-style fork in
+    //   the final seconds before suspend can leave the DB one id behind - see
+    //   resume-id-reconcile.ts). Runs BEFORE migrateResumeCwdIfRenamed below so
+    //   the cwd migration keys on the id actually being resumed.
     // - Fresh + Claude (supportsCallerSessionId): generate UUID, pass via --session-id
     // - Fresh + Codex/Gemini: null (CLI generates its own ID, captured later via hooks)
     const agentSessionId = canResume
-      ? intent.agentSessionId
+      ? await reconcileResumeAgentSessionId({
+          adapter,
+          recordId: intent.retireRecordId,
+          storedAgentSessionId: intent.agentSessionId,
+          cwd: intent.resumeFromCwd,
+          projectPath: appConfig.projectPath || cwd,
+          sessionRepo: this.sessionRepo,
+        })
       : (adapter.supportsCallerSessionId ? randomUUID() : null);
 
     let prompt = intent.prompt;

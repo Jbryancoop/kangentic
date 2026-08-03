@@ -1346,14 +1346,14 @@ describe('Transcript-fallback handoff', () => {
       agentParser: adapter,
     });
 
-    const priv = manager as unknown as {
+    const managerInternals = manager as unknown as {
       sessionHistoryReader: { isAttached(id: string): boolean };
       statusFileReader: { handleStatusChange(id: string): void };
     };
 
     // Let the fire-and-forget eager attach (awaits the mocked locate) settle.
     await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(priv.sessionHistoryReader.isAttached(session.id)).toBe(true);
+    expect(managerInternals.sessionHistoryReader.isAttached(session.id)).toBe(true);
     // The fallback populated the card model + token occupancy from the
     // transcript, but NO window (it is not derivable from a model id): window
     // stays the 0 "unknown size" sentinel and the percentage stays 0, so the
@@ -1380,9 +1380,9 @@ describe('Transcript-fallback handoff', () => {
         model: { id: 'claude-opus-4-8', display_name: 'Opus 4.8' },
       }),
     );
-    priv.statusFileReader.handleStatusChange(session.id);
+    managerInternals.statusFileReader.handleStatusChange(session.id);
 
-    expect(priv.sessionHistoryReader.isAttached(session.id)).toBe(false);
+    expect(managerInternals.sessionHistoryReader.isAttached(session.id)).toBe(false);
   });
 
   // On a RESUME the transcript already holds the PRE-suspend conversation, whose
@@ -1481,14 +1481,14 @@ describe('Transcript-fallback handoff', () => {
       agentParser: adapter,
     });
 
-    const priv = manager as unknown as {
+    const managerInternals = manager as unknown as {
       sessionHistoryReader: { isAttached(id: string): boolean };
       statusFileReader: { handleStatusChange(id: string): void };
     };
 
     // Let the fire-and-forget eager attach (awaits the mocked locate) settle.
     await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(priv.sessionHistoryReader.isAttached(session.id)).toBe(true);
+    expect(managerInternals.sessionHistoryReader.isAttached(session.id)).toBe(true);
 
     const capturedAgentSessionIds: string[] = [];
     manager.on('agent-session-id', (_sessionId: string, _taskId: string, _projectId: string, agentReportedId: string) => {
@@ -1513,7 +1513,7 @@ describe('Transcript-fallback handoff', () => {
         model: { id: 'claude-opus-4-8', display_name: 'Opus 4.8' },
       }),
     );
-    priv.statusFileReader.handleStatusChange(session.id);
+    managerInternals.statusFileReader.handleStatusChange(session.id);
 
     // Proves the nested onAgentSessionId capture actually fired - without
     // this, the assertion below would pass for the wrong reason (like the
@@ -1522,7 +1522,84 @@ describe('Transcript-fallback handoff', () => {
     // The fallback still ends up detached: onFirstStatus's detach (fired
     // immediately after onUsageParsed, in the same synchronous call stack)
     // must win over the nested re-attach.
-    expect(priv.sessionHistoryReader.isAttached(session.id)).toBe(false);
+    expect(managerInternals.sessionHistoryReader.isAttached(session.id)).toBe(false);
+  });
+
+  // Mid-session fork (Claude /clear moves the live conversation to a NEW
+  // session id and the statusline re-reports it): a status.json rewrite with a
+  // DIFFERENT session_id must fire a SECOND 'agent-session-id' (the
+  // change-sensitive status channel), mutate the live session (so the renderer
+  // observes the flip via 'session-changed'), and must NOT re-attach the
+  // deliberately-detached transcript fallback - the `!hasReceivedStatus` guard
+  // in session-manager's onAgentSessionId is load-bearing for the fork case.
+  it('a mid-session fork (new session_id in status.json) re-fires agent-session-id without re-attaching the fallback', async () => {
+    const historyFile = path.join(tmpDir, 'fork-transcript.jsonl');
+    fs.writeFileSync(historyFile, JSON.stringify({ type: 'assistant', message: { id: 'm1', model: 'claude-opus-4-8', usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 } } }) + '\n');
+    vi.spyOn(ClaudeSessionHistoryParser, 'locate').mockResolvedValue(historyFile);
+    const adapter = new ClaudeAdapter();
+
+    const statusPath = path.join(tmpDir, 'fork-status.json');
+    const mock = createMockPty();
+    vi.mocked(pty.spawn).mockReturnValue(mock.mockPty as unknown as pty.IPty);
+    const session = await manager.spawn({
+      taskId: 'task-fork',
+      command: '',
+      cwd: tmpDir,
+      agentSessionId: 'fork-uuid-original',
+      statusOutputPath: statusPath,
+      agentParser: adapter,
+    });
+
+    const managerInternals = manager as unknown as {
+      sessionHistoryReader: { isAttached(id: string): boolean };
+      statusFileReader: { handleStatusChange(id: string): void };
+    };
+
+    // Let the fire-and-forget eager attach (awaits the mocked locate) settle.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const capturedAgentSessionIds: string[] = [];
+    manager.on('agent-session-id', (_sessionId: string, _taskId: string, _projectId: string, agentReportedId: string) => {
+      capturedAgentSessionIds.push(agentReportedId);
+    });
+    const sessionChangedAgentIds: Array<string | null> = [];
+    manager.on('session-changed', (_sessionId: string, changedSession: { agentSessionId: string | null }) => {
+      sessionChangedAgentIds.push(changedSession.agentSessionId);
+    });
+
+    const statusPayload = (sessionId: string) => JSON.stringify({
+      session_id: sessionId,
+      context_window: {
+        used_percentage: 12,
+        total_input_tokens: 24000,
+        total_output_tokens: 500,
+        context_window_size: 200000,
+        current_usage: { input_tokens: 24000 },
+      },
+      cost: { total_cost_usd: 0.02, total_duration_ms: 5000 },
+      model: { id: 'claude-opus-4-8', display_name: 'Opus 4.8' },
+    });
+
+    // First status write: normal capture of the launch id, fallback detaches.
+    fs.writeFileSync(statusPath, statusPayload('fork-uuid-original'));
+    managerInternals.statusFileReader.handleStatusChange(session.id);
+    expect(capturedAgentSessionIds).toEqual(['fork-uuid-original']);
+    expect(managerInternals.sessionHistoryReader.isAttached(session.id)).toBe(false);
+
+    // The fork: status.json re-reports a DIFFERENT id.
+    fs.writeFileSync(statusPath, statusPayload('fork-uuid-after-clear'));
+    managerInternals.statusFileReader.handleStatusChange(session.id);
+
+    expect(capturedAgentSessionIds).toEqual(['fork-uuid-original', 'fork-uuid-after-clear']);
+    // The live session mutated and 'session-changed' carried the new id out.
+    expect(sessionChangedAgentIds).toContain('fork-uuid-after-clear');
+    // The deliberately-detached transcript fallback stays detached.
+    expect(managerInternals.sessionHistoryReader.isAttached(session.id)).toBe(false);
+
+    // Same-id churn after the fork stays quiet.
+    fs.writeFileSync(statusPath, statusPayload('fork-uuid-after-clear'));
+    managerInternals.statusFileReader.handleStatusChange(session.id);
+    expect(capturedAgentSessionIds).toEqual(['fork-uuid-original', 'fork-uuid-after-clear']);
   });
 });
 

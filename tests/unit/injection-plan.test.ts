@@ -22,8 +22,8 @@
  * - auto_command is appended after settings writes and trimmed
  * - appliedSettings reports the new running effort for a concrete effort change
  */
-import { describe, it, expect } from 'vitest';
-import { prepareInjectionPlan, resolveLiveEffort, resolveSourceEffort } from '../../src/main/transition-engine/injection-plan';
+import { describe, it, expect, vi } from 'vitest';
+import { buildCommandInjectionVerifier, prepareInjectionPlan, resolveLiveEffort, resolveSourceEffort } from '../../src/main/transition-engine/injection-plan';
 import type { AgentAdapter, SettingsChangeSpec } from '../../src/main/agent/agent-adapter';
 import type { SessionRepository } from '../../src/main/db/repositories/session-repository';
 import type { SessionRecord, Swimlane } from '../../src/shared/types';
@@ -72,6 +72,9 @@ function fakeAdapter(overrides: Partial<AgentAdapter>): AgentAdapter {
 function sessionRepoWith(record: Partial<SessionRecord> | null): SessionRepository {
   return {
     getLatestForTask: () => record ?? undefined,
+    // The verifier re-reads the record by primary key on every poll (see the
+    // poll-time id re-resolution describe below).
+    findByAnyId: () => record ?? undefined,
   } as unknown as SessionRepository;
 }
 
@@ -752,5 +755,89 @@ describe('resolveLiveEffort', () => {
     expect(resolveLiveEffort(cacheWith({ 's1': 'medium' }), null)).toBeNull();
     expect(resolveLiveEffort(cacheWith({ 's1': 'medium' }), 'other')).toBeNull();
     expect(resolveLiveEffort(cacheWith({ 's1': undefined }), 's1')).toBeNull();
+  });
+});
+
+describe('buildCommandInjectionVerifier: poll-time id re-resolution (mid-burst /clear fork)', () => {
+  // A /clear during an in-flight injection forks the live conversation to a
+  // NEW agent session id; the live status-file reconcile updates the SAME
+  // session record. The verifier must poll the record's CURRENT id (re-read by
+  // primary key on every call), and when the id changed mid-burst, also accept
+  // a match under the plan-build-time id - otherwise verification can never
+  // confirm and the retry ladder fires stray Enters + a Ctrl+C into the live
+  // session.
+
+  interface VerifierCall {
+    agentSessionId: string | undefined;
+    cwd: string | undefined;
+  }
+
+  function makeVerifierHarness(options: {
+    currentRecord: Partial<SessionRecord> | undefined;
+    verifyResult: (call: VerifierCall) => boolean;
+  }) {
+    const calls: VerifierCall[] = [];
+    const submissionVerifier = vi.fn(async (context: { agentSessionId?: string; cwd?: string }) => {
+      const call = { agentSessionId: context.agentSessionId, cwd: context.cwd };
+      calls.push(call);
+      return options.verifyResult(call);
+    });
+    const adapter = fakeAdapter({
+      getSubmissionVerifier: () => submissionVerifier,
+    } as unknown as Partial<AgentAdapter>);
+    const sessionRepo = {
+      getLatestForTask: () => undefined,
+      findByAnyId: vi.fn(() => options.currentRecord),
+    } as unknown as SessionRepository;
+    const buildTimeRecord = {
+      id: 'rec-1',
+      agent_session_id: 'pre-fork-id',
+      cwd: '/worktree',
+    } as SessionRecord;
+    const verifier = buildCommandInjectionVerifier(adapter, sessionRepo, 't1', buildTimeRecord);
+    return { verifier, calls, sessionRepo };
+  }
+
+  it('polls the record CURRENT id, not the plan-build-time capture', async () => {
+    const { verifier, calls, sessionRepo } = makeVerifierHarness({
+      currentRecord: { id: 'rec-1', agent_session_id: 'post-fork-id', cwd: '/worktree' },
+      verifyResult: () => true,
+    });
+
+    await expect(verifier!('/effort high', 123)).resolves.toBe(true);
+    expect(calls).toEqual([{ agentSessionId: 'post-fork-id', cwd: '/worktree' }]);
+    // Re-resolved by PRIMARY KEY (never latest-for-task, which could shadow an
+    // isolated session's sibling row).
+    expect(sessionRepo.findByAnyId).toHaveBeenCalledWith('rec-1');
+  });
+
+  it('falls back to the plan-build-time id when the fork happened after the command landed', async () => {
+    const { verifier, calls } = makeVerifierHarness({
+      currentRecord: { id: 'rec-1', agent_session_id: 'post-fork-id', cwd: '/worktree' },
+      verifyResult: (call) => call.agentSessionId === 'pre-fork-id',
+    });
+
+    await expect(verifier!('/effort high', 123)).resolves.toBe(true);
+    expect(calls.map((call) => call.agentSessionId)).toEqual(['post-fork-id', 'pre-fork-id']);
+  });
+
+  it('does not double-poll when the id has not changed', async () => {
+    const { verifier, calls } = makeVerifierHarness({
+      currentRecord: { id: 'rec-1', agent_session_id: 'pre-fork-id', cwd: '/worktree' },
+      verifyResult: () => false,
+    });
+
+    await expect(verifier!('/effort high', 123)).resolves.toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('degrades to the captured id when the record cannot be re-read', async () => {
+    const { verifier, calls } = makeVerifierHarness({
+      currentRecord: undefined,
+      verifyResult: () => true,
+    });
+
+    await expect(verifier!('/effort high', 123)).resolves.toBe(true);
+    expect(calls).toEqual([{ agentSessionId: 'pre-fork-id', cwd: '/worktree' }]);
   });
 });
