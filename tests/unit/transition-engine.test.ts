@@ -758,10 +758,14 @@ describe('TransitionEngine - resume-time agent-session-id reconcile wiring (exec
       return `claude ${options.prompt ?? ''}`;
     });
 
-    // worktree_path null -> cwd resolves to appConfig.projectPath (our
-    // mkdtemp dir), matching reconcile's `projectPath: appConfig.projectPath
-    // || cwd` read target.
-    const task = makeTask({ worktree_path: null });
+    // worktree_path is a DIFFERENT real directory than projectPath (deliberately
+    // - see the comment above expect(capturedSessionId) below): the local
+    // `cwd` variable at this call site (task.worktree_path || appConfig.projectPath
+    // || process.cwd()) resolves to this worktree dir, which never gets a
+    // status.json written under it. Only `appConfig.projectPath` (our mkdtemp
+    // root) does, via writeStatusFile above.
+    const worktreeDir = path.join(projectPath, 'a-different-worktree');
+    const task = makeTask({ worktree_path: worktreeDir });
     const sessionManager = makeSessionManager();
     const { engine } = makeEngine({ sessionManager, sessionRepo, projectPath });
 
@@ -770,6 +774,13 @@ describe('TransitionEngine - resume-time agent-session-id reconcile wiring (exec
     // Red: deleting the `await reconcileResumeAgentSessionId({...})` call in
     // executeSpawnAgent (falling back to `intent.agentSessionId` directly)
     // makes every one of these STORED_ID instead of FORKED_ID.
+    //
+    // Red (narrower): changing the call site's `projectPath: appConfig.projectPath
+    // || cwd` to `projectPath: cwd` also makes this STORED_ID - the reconcile
+    // would then look for status.json under `worktreeDir` (no file there,
+    // since worktree_path deliberately differs from projectPath above) instead
+    // of under `appConfig.projectPath` where writeStatusFile actually wrote it,
+    // hit the missing-file path, and silently keep the stale stored id.
     expect(capturedSessionId).toBe(FORKED_ID);
 
     expect(sessionManager.spawn).toHaveBeenCalledTimes(1);
@@ -782,6 +793,10 @@ describe('TransitionEngine - resume-time agent-session-id reconcile wiring (exec
 
     // The swap is persisted so a LATER resume agrees.
     expect(sessionRepo.updateAgentSessionId).toHaveBeenCalledWith(RECORD_ID, FORKED_ID);
+
+    // The locate probe uses `intent.resumeFromCwd` (the RETIRING record's own
+    // cwd, i.e. `match.cwd` above), never the new spawn's `cwd` (worktreeDir).
+    expect(mockAdapter.locateSessionHistoryFile).toHaveBeenCalledWith(FORKED_ID, path.join(projectPath, 'worktree'));
 
     // The reconcile must run BEFORE migrateResumeCwdIfRenamed (see the
     // "Runs BEFORE migrateResumeCwdIfRenamed below so the cwd migration keys

@@ -173,10 +173,17 @@ async function getStoreAgentSessionId(page: Page, sessionId: string): Promise<st
  */
 async function fireStatusPushFor(
   page: Page,
-  params: { sessionId: string; taskId: string; projectId: string; agentSessionId: string | null; transient?: boolean },
+  params: {
+    sessionId: string;
+    taskId: string;
+    projectId: string;
+    agentSessionId: string | null;
+    transient?: boolean;
+    status?: string;
+  },
 ): Promise<void> {
   await page.evaluate(
-    ({ sessionId, taskId, projectId, agentSessionId, transient }) => {
+    ({ sessionId, taskId, projectId, agentSessionId, transient, status }) => {
       const fireStatus = (window as unknown as {
         __mockFireStatus?: (sessionId: string, session: unknown) => void;
       }).__mockFireStatus;
@@ -186,7 +193,7 @@ async function fireStatusPushFor(
         taskId,
         projectId,
         pid: 4242,
-        status: 'running',
+        status: status ?? 'running',
         shell: 'bash',
         cwd: '/mock/fork-toast',
         startedAt: new Date().toISOString(),
@@ -486,6 +493,135 @@ test.describe('Transient session (Command Terminal) fork stays quiet (transient 
     // ran unconditionally, before the transient-gated toast check).
     await expect
       .poll(() => getStoreAgentSessionId(page, TRANSIENT_SESSION_ID), { timeout: 5000 })
+      .toBe(FORKED_AGENT_SESSION_ID);
+
+    // Intentional fixed wait: cannot poll for non-occurrence. 800ms is above
+    // the React render cycle and below the toast auto-dismiss window.
+    await page.waitForTimeout(800);
+    expect(await page.locator('[data-testid="toast"]').filter({ hasText: FORK_TOAST_TEXT }).count()).toBe(0);
+  });
+});
+
+test.describe('Fork on a non-running session stays quiet (status gate)', () => {
+  let browser: Browser;
+  let page: Page;
+
+  const PROJECT_ID_STATUS = `proj-fork-toast-status-${RUN_ID}`;
+  const STATUS_SESSION_ID = `sess-fork-toast-status-${RUN_ID}`;
+  const STATUS_TASK_ID = `task-fork-toast-status-${RUN_ID}`;
+  const INITIAL_AGENT_SESSION_ID = `agent-status-a-${RUN_ID}`;
+  const FORKED_AGENT_SESSION_ID = `agent-status-b-${RUN_ID}`;
+
+  test.beforeAll(async () => {
+    await waitForViteReady(VITE_URL);
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+    page = await context.newPage();
+
+    await page.addInitScript({ path: MOCK_SCRIPT });
+
+    await page.addInitScript(`
+      window.__mockPreConfigure(function (state) {
+        var ts = new Date().toISOString();
+
+        state.projects.push({
+          id: '${PROJECT_ID_STATUS}',
+          name: 'Fork Toast Status ${RUN_ID}',
+          path: '/mock/fork-toast-status-${RUN_ID}',
+          github_url: null,
+          default_agent: 'claude',
+          last_opened: ts,
+          created_at: ts,
+        });
+
+        var executingLaneId = null;
+        state.DEFAULT_SWIMLANES.forEach(function (template, index) {
+          var laneId = 'lane-ft-status-' + template.name.toLowerCase().replace(/\\s+/g, '-') + '-${RUN_ID}';
+          if (template.name === 'Executing') executingLaneId = laneId;
+          state.swimlanes.push(Object.assign({}, template, {
+            id: laneId,
+            position: index,
+            created_at: ts,
+          }));
+        });
+
+        // A RUNNING session with an already-captured agent id, so every OTHER
+        // fork conjunct (current project, non-transient, non-null previous id)
+        // is already true. The push below flips the id while ALSO flipping
+        // status away from 'running', isolating the status conjunct.
+        state.sessions.push({
+          id: '${STATUS_SESSION_ID}',
+          taskId: '${STATUS_TASK_ID}',
+          projectId: '${PROJECT_ID_STATUS}',
+          pid: 7171,
+          status: 'running',
+          shell: 'bash',
+          cwd: '/mock/fork-toast-status-${RUN_ID}',
+          startedAt: ts,
+          exitCode: null,
+          resuming: false,
+          agentSessionId: '${INITIAL_AGENT_SESSION_ID}',
+        });
+
+        state.tasks.push({
+          id: '${STATUS_TASK_ID}',
+          title: 'Fork Toast Status Task ${RUN_ID}',
+          description: 'Tests the status-gate on the /clear conversation-fork toast',
+          swimlane_id: executingLaneId,
+          projectId: '${PROJECT_ID_STATUS}',
+          position: 0,
+          agent: 'claude',
+          session_id: '${STATUS_SESSION_ID}',
+          worktree_path: null,
+          branch_name: null,
+          pr_number: null,
+          pr_url: null,
+          base_branch: null,
+          labels: [],
+          priority: 0,
+          archived_at: null,
+          created_at: ts,
+          updated_at: ts,
+        });
+
+        return { currentProjectId: '${PROJECT_ID_STATUS}' };
+      });
+    `);
+
+    await page.goto(VITE_URL);
+    await page.waitForLoadState('load');
+    await page.waitForSelector('text=Kangentic', { timeout: 15000 });
+    await page.locator('[data-swimlane-name="Executing"]').waitFor({ state: 'visible', timeout: 10000 });
+  });
+
+  test.afterAll(async () => {
+    await browser?.close();
+  });
+
+  test('does not toast when the id-flip push also reports a non-running status', async () => {
+    // Confirm the session landed in the renderer's store before firing the
+    // fork push, so a suppressed toast is attributable to the status gate
+    // rather than a missed previousSession lookup.
+    await expect
+      .poll(() => getStoreAgentSessionId(page, STATUS_SESSION_ID), { timeout: 5000 })
+      .toBe(INITIAL_AGENT_SESSION_ID);
+
+    // Red: removing `session.status === 'running' &&` from App.tsx's
+    // forkedConversation predicate makes this toast fire, since every other
+    // conjunct (current project, non-transient, differing non-null ids) holds.
+    await fireStatusPushFor(page, {
+      sessionId: STATUS_SESSION_ID,
+      taskId: STATUS_TASK_ID,
+      projectId: PROJECT_ID_STATUS,
+      agentSessionId: FORKED_AGENT_SESSION_ID,
+      status: 'exited',
+    });
+
+    // Confirm the push actually reached the onStatus handler (upsertSession
+    // ran unconditionally, before the status-gated toast check). Without
+    // this, "no toast" could just mean the push never landed at all.
+    await expect
+      .poll(() => getStoreAgentSessionId(page, STATUS_SESSION_ID), { timeout: 5000 })
       .toBe(FORKED_AGENT_SESSION_ID);
 
     // Intentional fixed wait: cannot poll for non-occurrence. 800ms is above
