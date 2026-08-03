@@ -21,13 +21,16 @@
  * what was interpolated.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { TransitionEngine } from '../../src/main/transition-engine/transition-engine';
 import { buildTaskXml } from '../../src/main/agent/shared/prompt-xml';
 import { sanitizeForPty } from '../../src/shared/paths';
 import { migrateResumeCwdIfRenamed } from '../../src/main/transition-engine/resume-cwd-migration';
 import { OpenCodeCommandBuilder, type OpenCodeCommandOptions } from '../../src/main/agent/adapters/opencode';
 import { CodexCommandBuilder, type CodexCommandOptions } from '../../src/main/agent/adapters/codex';
-import type { AgentExecutionServer, AgentProjectExecution, AgentLaunchOptionInfo } from '../../src/shared/types';
+import type { AgentExecutionServer, AgentProjectExecution, AgentLaunchOptionInfo, SessionUsage } from '../../src/shared/types';
 
 // ---------------------------------------------------------------------------
 // Minimal mock factories
@@ -71,6 +74,11 @@ function makeSessionRepo() {
     // intent.retireRecordId is non-null (existing tests never reach it
     // because they always produce a fresh spawn with retireRecordId=null).
     compareAndUpdateStatus: vi.fn(() => true),
+    // Persist target for reconcileResumeAgentSessionId's swap (only reached
+    // when mockAdapter.runtime.statusFile is set - the reconcile describe
+    // below). Every other test's mockAdapter has no runtime, so the reconcile
+    // returns before ever calling this.
+    updateAgentSessionId: vi.fn(),
     insertedRecords,
   };
 }
@@ -171,6 +179,13 @@ const mockAdapter = {
   buildEnv: undefined,
   getExitSequence: vi.fn(() => ['\x03']),
   removeHooks: vi.fn(),
+  // Undefined by default (matching every existing test in this file, none of
+  // which spawn through the resume-time reconcile branch's swap path): the
+  // "TransitionEngine - resume-time agent-session-id reconcile wiring"
+  // describe below is the only one that sets this, and resets it to
+  // undefined in its afterEach so it never leaks into other describes.
+  runtime: undefined as { statusFile?: { parseStatus: (raw: string) => SessionUsage | null } } | undefined,
+  locateSessionHistoryFile: vi.fn(async (_agentSessionId: string, _cwd: string): Promise<string | null> => null),
 };
 
 vi.mock('../../src/main/agent/agent-registry', () => ({
@@ -244,6 +259,11 @@ function makeEngine(options: {
   /** Project-scoped MCP server URL (mirrors TransitionEngineConfig.mcpServerUrl).
    * Defaults to undefined, matching every existing caller of makeEngine. */
   mcpServerUrl?: string;
+  /** appConfig.projectPath override. Defaults to the fake '/some/project' path
+   * every existing caller relies on. The reconcile-wiring describe below
+   * overrides this to a real mkdtemp dir so reconcileResumeAgentSessionId's
+   * unmocked fs.readFileSync can read a real status.json. */
+  projectPath?: string;
 }) {
   const sessionManager = options.sessionManager ?? makeSessionManager();
   const sessionRepo = options.sessionRepo ?? makeSessionRepo();
@@ -254,7 +274,7 @@ function makeEngine(options: {
 
   const getConfig = vi.fn(() => ({
     permissionMode: 'default',
-    projectPath: '/some/project',
+    projectPath: options.projectPath ?? '/some/project',
     projectId: 'proj-1',
     gitConfig: {
       worktreesEnabled: false,
@@ -655,6 +675,155 @@ describe('TransitionEngine - migrateResumeCwdIfRenamed wiring', () => {
         agentSessionId: 'agent-sess-uuid',
       }),
     );
+  });
+});
+
+describe('TransitionEngine - resume-time agent-session-id reconcile wiring (executeSpawnAgent chokepoint)', () => {
+  // Coverage hole (issue #481 review): executeSpawnAgent's resume branch
+  // computes `agentSessionId` by awaiting `reconcileResumeAgentSessionId`
+  // (resume-id-reconcile.ts), not by using `intent.agentSessionId` directly.
+  // The helper's own logic is fully unit-tested in resume-id-reconcile.test.ts;
+  // what was untested is the WIRING at THIS call site - that the reconciled id
+  // (not the stale DB-stored id) is what actually reaches the built command,
+  // sessionManager.spawn, and the inserted session record.
+  //
+  // Unlike every other describe in this file, mockAdapter needs a real
+  // `runtime.statusFile` + a `locateSessionHistoryFile` that resolves so the
+  // reconcile takes its swap branch. Both are reset to their file-level
+  // defaults in afterEach so they never leak into other describes.
+  //
+  // This describe also uses a REAL mkdtemp projectPath (via the makeEngine
+  // `projectPath` override) instead of the file's usual fake '/some/project':
+  // the file's node:fs mock stubs mkdirSync only and passes readFileSync
+  // through to the real filesystem, so reconcileResumeAgentSessionId's
+  // `fs.readFileSync(statusOutputPath)` needs a real file to read.
+  const RECORD_ID = 'session-record-reconcile-1';
+  const STORED_ID = 'stored-agent-session-id-aaaa';
+  const FORKED_ID = 'forked-agent-session-id-bbbb';
+
+  let projectPath: string;
+
+  /** Writes a real status.json for the retiring record. Uses fs.promises.mkdir
+   * (unmocked in this file's node:fs factory) rather than the file-mocked
+   * fs.mkdirSync, which is a no-op here. */
+  async function writeStatusFile(reportedSessionId: string): Promise<void> {
+    const sessionDir = path.join(projectPath, '.kangentic', 'sessions', RECORD_ID);
+    await fs.promises.mkdir(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, 'status.json'), JSON.stringify({ session_id: reportedSessionId }));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAdapter.buildCommand.mockImplementation((options: { prompt?: string }) => {
+      return `claude ${options.prompt ?? ''}`;
+    });
+    projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'kangentic-te-reconcile-'));
+    mockAdapter.runtime = {
+      statusFile: {
+        parseStatus: (raw: string): SessionUsage | null => {
+          try {
+            const parsed = JSON.parse(raw) as { session_id?: string };
+            return { sessionId: parsed.session_id } as SessionUsage;
+          } catch {
+            return null;
+          }
+        },
+      },
+    };
+    mockAdapter.locateSessionHistoryFile.mockResolvedValue('/found/transcript.jsonl');
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectPath, { recursive: true, force: true });
+    mockAdapter.runtime = undefined;
+    mockAdapter.locateSessionHistoryFile.mockReset();
+    mockAdapter.locateSessionHistoryFile.mockImplementation(async () => null);
+  });
+
+  it('resumes the id reported by the retiring record status.json, not the stale DB-stored id', async () => {
+    await writeStatusFile(FORKED_ID);
+
+    const sessionRepo = makeSessionRepo();
+    sessionRepo.getLatestForTaskByTypeAndIsolation.mockReturnValue({
+      id: RECORD_ID,
+      agent_session_id: STORED_ID,
+      session_type: 'claude_agent',
+      status: 'suspended',
+      cwd: path.join(projectPath, 'worktree'),
+    });
+
+    let capturedSessionId: string | undefined;
+    mockAdapter.buildCommand.mockImplementation((options: { sessionId?: string; prompt?: string }) => {
+      capturedSessionId = options.sessionId;
+      return `claude ${options.prompt ?? ''}`;
+    });
+
+    // worktree_path null -> cwd resolves to appConfig.projectPath (our
+    // mkdtemp dir), matching reconcile's `projectPath: appConfig.projectPath
+    // || cwd` read target.
+    const task = makeTask({ worktree_path: null });
+    const sessionManager = makeSessionManager();
+    const { engine } = makeEngine({ sessionManager, sessionRepo, projectPath });
+
+    await engine.executeTransition(task as Parameters<typeof engine.executeTransition>[0], 'todo', 'doing');
+
+    // Red: deleting the `await reconcileResumeAgentSessionId({...})` call in
+    // executeSpawnAgent (falling back to `intent.agentSessionId` directly)
+    // makes every one of these STORED_ID instead of FORKED_ID.
+    expect(capturedSessionId).toBe(FORKED_ID);
+
+    expect(sessionManager.spawn).toHaveBeenCalledTimes(1);
+    const spawnOptions = sessionManager.spawn.mock.calls[0][0] as unknown as { agentSessionId?: string };
+    expect(spawnOptions.agentSessionId).toBe(FORKED_ID);
+
+    expect(sessionRepo.insert).toHaveBeenCalledTimes(1);
+    const inserted = sessionRepo.insert.mock.calls[0][0] as { agent_session_id?: string };
+    expect(inserted.agent_session_id).toBe(FORKED_ID);
+
+    // The swap is persisted so a LATER resume agrees.
+    expect(sessionRepo.updateAgentSessionId).toHaveBeenCalledWith(RECORD_ID, FORKED_ID);
+
+    // The reconcile must run BEFORE migrateResumeCwdIfRenamed (see the
+    // "Runs BEFORE migrateResumeCwdIfRenamed below so the cwd migration keys
+    // on the id actually being resumed" comment in executeSpawnAgent): the
+    // migration call must already see the reconciled id, not the stale one.
+    // Red: moving the reconcile assignment to AFTER the migrateResumeCwdIfRenamed
+    // call (without deleting it) leaves capturedSessionId/spawn/insert all
+    // correct but this assertion fails, since migrateResumeCwdIfRenamed would
+    // still have been called with the stale STORED_ID.
+    expect(migrateResumeCwdIfRenamed).toHaveBeenCalledWith(
+      expect.objectContaining({ agentSessionId: FORKED_ID }),
+    );
+  });
+
+  it('keeps the stale DB-stored id when the reported id has no locatable transcript', async () => {
+    // Sibling of the swap test above: proves the wiring does not swap
+    // unconditionally, only when the reconcile's own positive check passes.
+    await writeStatusFile(FORKED_ID);
+    mockAdapter.locateSessionHistoryFile.mockResolvedValue(null);
+
+    const sessionRepo = makeSessionRepo();
+    sessionRepo.getLatestForTaskByTypeAndIsolation.mockReturnValue({
+      id: RECORD_ID,
+      agent_session_id: STORED_ID,
+      session_type: 'claude_agent',
+      status: 'suspended',
+      cwd: path.join(projectPath, 'worktree'),
+    });
+
+    let capturedSessionId: string | undefined;
+    mockAdapter.buildCommand.mockImplementation((options: { sessionId?: string; prompt?: string }) => {
+      capturedSessionId = options.sessionId;
+      return `claude ${options.prompt ?? ''}`;
+    });
+
+    const task = makeTask({ worktree_path: null });
+    const { engine } = makeEngine({ sessionRepo, projectPath });
+
+    await engine.executeTransition(task as Parameters<typeof engine.executeTransition>[0], 'todo', 'doing');
+
+    expect(capturedSessionId).toBe(STORED_ID);
+    expect(sessionRepo.updateAgentSessionId).not.toHaveBeenCalled();
   });
 });
 
