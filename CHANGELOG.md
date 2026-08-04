@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.32.1] - 2026-08-04
+
+### Features
+
+- Show release notes on first launch after an update (69f14ee3)
+
+### Fixes
+
+- Default Claude's full-repaint flag for Windows spawns (1682955f)
+- Follow /clear conversation forks so resume targets the live thread (75cb5724)
+- Show honest telemetry instead of a fabricated 0% or "Claude" (9f9a134d)
+- Give the What's New dialog its own icon and a non-echoing title (d63ffb00)
+- Seed the What's New marker in the ephemeral preview config (d1149cf5)
+- Re-assert mouse-encoding modes on the parsed-grid replay (e5429467)
+- Replay the parsed grid for alt-screen terminal sessions (ffe67f32)
+
+### Other
+
+- Swap README hero to the redesigned Play feature graphic (9df12d93)
+- Match README's agent-CLI count to the hero image (12) (a9c997d6)
+- Pin the fork-toast status gate and the reconcile projectPath resolution (a467ef4f)
+- Pin /clear-fork reconcile wiring and toast gates (d36d9f88)
+- Cover ContextUsageFooter's unknownLabel prop and the board's unchanged default (567b7aa8)
+- Stop re-offering a stale `--stop` command for a dead preview (c6592f85)
+- Backfill the missing protocol changelog entries and guard the gap (7a46211c)
+- Cover the baked release notes and the ConfigManager cache clobber (90cf2a36)
+- Pin replay-snapshot failure paths and flush recovery (c0127edf)
+
 ## [v0.32.0] - 2026-08-03
 
 ### Features

@@ -242,7 +242,18 @@ the project root. A junction is not a way around any of this.
 
 ## Environment Stripping
 
-When spawning PTY sessions, Kangentic strips the `CLAUDECODE` environment variable from `process.env`. This prevents spawned Claude CLI sessions from refusing to start when Kangentic itself was launched from inside a Claude Code session.
+When spawning PTY sessions, `buildSpawnEnv` (`src/main/pty/spawn/pty-spawn.ts`) strips `CLAUDECODE`
+and every `CLAUDE_CODE_*` identity marker from the merged environment. Kangentic is often launched
+from inside a Claude Code session, and those markers would otherwise re-parent the spawned agent to
+the launching session, so a later `--resume` finds nothing. A Kangentic-spawned agent must always be
+a clean top-level session. `ANTHROPIC_*` keys (BYOK / API auth) are deliberately left untouched.
+
+One key is keeplisted: `CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT`. It is a renderer tuning flag, not an
+identity marker, so it cannot re-parent a session. Kangentic defaults it to `1` on **win32 only**,
+matching what Claude Code's own agent views do on Windows, because the fullscreen TUI otherwise
+intermittently drops history entries from its incremental scrolled-view updates. An explicit value
+already present in the environment always wins, including a user's opt-out. Non-Claude agents ignore
+the variable.
 
 ## See Also
 

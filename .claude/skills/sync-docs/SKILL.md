@@ -116,8 +116,9 @@ Anchors are enumerable source-code structures that must be exhaustively listed i
 
 | Anchor | Source file | Target doc |
 |--------|-----------|------------|
-| Settings tabs | `src/renderer/components/settings/AppSettingsPanel.tsx` tab array | user-guide.md, configuration.md |
+| Settings tabs | `src/renderer/components/settings/settings-tabs.ts` (`SETTINGS_TABS` array) | user-guide.md, configuration.md |
 | Settings registry | `src/renderer/components/settings/settings-registry.ts` entries | configuration.md |
+| Pop-out surfaces | `src/shared/pop-out.ts` (`PopOutKind`) | architecture.md (Pop-out Windows section) |
 
 ### Agent Adapter Anchors
 
@@ -142,6 +143,15 @@ Anchors are enumerable source-code structures that must be exhaustively listed i
 |--------|-----------|------------|
 | Template variables | `src/shared/template-vars.ts` | configuration.md (canonical), transition-engine.md and agent-integration.md (cross-reference only) |
 | Task template variables (auto_command / promptTemplate) | `src/shared/task-template-vars.ts` | transition-engine.md (canonical, "Template Variables"), architecture.md (cross-reference only) |
+
+### Deliberately Not Anchored
+
+Enumerable structures that intentionally have no `docs/` target, so an auditor does not report
+them as a missing-doc gap:
+
+| Structure | Source | Why it is not a docs anchor |
+|-----------|--------|------------------------------|
+| Activity marks | `src/renderer/components/ActivityMark.tsx` (`ACTIVITY_MARK_NAMES`) | The nine glyphs are owned upstream in `@kangentic/branding`; their contract is covered by CLAUDE.md's "Activity marks" section and pinned mechanically by `tests/unit/activity-mark.test.ts`. A `docs/` table would duplicate CLAUDE.md and drift from the upstream package. |
 
 ### Verification Procedures
 
