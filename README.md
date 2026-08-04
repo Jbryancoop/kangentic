@@ -19,7 +19,7 @@
 
 ---
 
-<p align="center">A Kanban board for AI coding agents. Spawn, suspend, and resume eleven coding-agent CLIs from one board, with your own backlog. Local, free, open source.</p>
+<p align="center">A Kanban board for AI coding agents. Spawn, suspend, and resume 12 coding-agent CLIs from one board, with your own backlog. Local, free, open source.</p>
 
 <p align="center">AI coding agents can build features, fix bugs, and refactor entire modules autonomously. With git worktrees you can run many of them in parallel, but now the bottleneck is <strong>you</strong>: juggling terminals across projects to track which agents are stuck, finished, or waiting for approval. Kangentic replaces that with a Kanban command center. One board shows every agent's status, output, and progress. Respond when needed; let them work autonomously the rest of the time.</p>
 
