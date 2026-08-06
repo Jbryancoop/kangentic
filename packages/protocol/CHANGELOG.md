@@ -2,6 +2,58 @@
 
 <!-- releases -->
 
+## [protocol-v0.12.0] - 2026-08-06
+
+Wire `PROTOCOL_VERSION` goes '2' -> '3'. All peers must upgrade together, and
+every already-paired device must re-pair.
+
+### Breaking Changes
+- The pairing relay slot is derived from the pairing token instead of being
+  the token, via the new `derivePairingSlotId()` (ac5565b8)
+
+  The 32-byte token was doing three jobs: the single-use pairing token, the
+  Noise `IKpsk0` PSK, and, hex-encoded, the relay slot id sent as a cleartext
+  `?slot=` query parameter. The third published the second. On a hosted relay
+  TLS terminates at the edge, which therefore saw the PSK, as would anything
+  logging request URIs, so `IKpsk0` degraded to plain `IK` for such an
+  observer and the `psk0` contribution bought nothing against them.
+  `derivePairingSlotId()` is a labeled BLAKE2s hash of the token, 16 bytes,
+  matching `deriveSessionSlotId`'s shape. The routing label stays public, the
+  PSK stays secret, and the token never leaves the QR code. No relay change is
+  required: the relay's default slot-id pattern already accepts a 32-hex slot.
+
+  `PROTOCOL_VERSION` is bumped because a slot is a zero-negotiation rendezvous
+  value: peers deriving it differently never meet, and would otherwise hang
+  until the relay's park timeout. Binding the version turns that into an
+  explicit version-incompatible result at QR-scan time, before anything dials.
+  The version is bound into the KK session prologue as well, which is why
+  existing pairings must be re-established.
+
+### Fixes
+- A pairing ceremony can no longer be ended by an unauthenticated frame
+  (ac5565b8)
+
+  The desktop marked the pairing token consumed on the first frame received,
+  before `readMessage` authenticated anything, so anyone able to deliver one
+  frame to the pairing slot burned the ceremony deterministically while
+  holding no key material. Since the slot id needed to deliver that frame was
+  the token itself, travelling in cleartext, that was reachable by anyone who
+  could read a request URI or photograph the QR. The token is now consumed
+  only after a frame authenticates, and frames that fail to authenticate are
+  ignored rather than ending the ceremony, in both the waiting-for-phone and
+  sas-pending phases.
+
+  Reordering alone is not sufficient: `readMessage` advances the message index
+  and mixes the sender's ephemeral into the transcript before it can
+  authenticate, so a rejected frame left a shared `HandshakeState` poisoned
+  and the legitimate peer's later attempt failed anyway. Each inbound frame
+  now gets its own responder handshake, committed only once it authenticates.
+  Ignoring a failed `openPairingConfirm` is safe because `CipherState`
+  advances its nonce only on a successful decrypt.
+
+  This is abort-the-ceremony, not compromise-the-ceremony: impersonating a
+  peer still requires the desktop's static key, which never crosses the relay.
+
 ## [protocol-v0.11.1] - 2026-07-26
 
 ### Fixes
