@@ -107,7 +107,7 @@ Build-excluded from production via `__KANGENTIC_DEV__` (esbuild dead-code elimin
 | `attachment:add` | invoke | Add attachment (base64 data) |
 | `attachment:remove` | invoke | Delete attachment |
 | `attachment:getDataUrl` | invoke | Get data URL for display |
-| `attachment:open` | invoke | Open attachment in the system default application |
+| `attachment:open` | invoke | Open attachment in the system default application. Resolves to `''` on success or an error string the renderer surfaces as a toast; races a timeout so the invoke is always answered, and reveals the file in the file manager when no default app handles it |
 
 ### Backlog (13 channels)
 | Channel | Pattern | Purpose |
@@ -150,7 +150,7 @@ Build-excluded from production via `__KANGENTIC_DEV__` (esbuild dead-code elimin
 | `backlogAttachment:add` | invoke | Add attachment to a backlog item (base64 data) |
 | `backlogAttachment:remove` | invoke | Delete backlog item attachment |
 | `backlogAttachment:getDataUrl` | invoke | Get data URL for display |
-| `backlogAttachment:open` | invoke | Open attachment in the system default application |
+| `backlogAttachment:open` | invoke | Open attachment in the system default application. Same answer-or-timeout contract and file-manager fallback as `attachment:open` |
 
 ### Swimlanes (6 channels)
 | Channel | Pattern | Purpose |

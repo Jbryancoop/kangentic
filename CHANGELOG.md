@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.33.0] - 2026-08-07
+
+### Breaking Changes
+
+- Mobile bridge: derive the pairing slot, and authenticate before consuming the token (ac5565b8)
+
+### Features
+
+- Rename the hosted relay preset, and back "Official" with something checkable (4715a098)
+- Swap the Mobile Devices QR steps for a docs link (55ad3a7c)
+- Self-diagnosing capture for missing-row frames, plus two replay repairs (6cba2aee)
+- In-app announcements feed and Mobile Devices "Get the App" section (2d130fff)
+- Add a quiet mobile pairing link to the welcome screen footer (b3f82bf4)
+- Un-gate the mobile bridge for production builds (df66b28a)
+
+### Fixes
+
+- Keep the indicators animating while the main thread is busy (01747469)
+- Bump the protocol package for its breaking wire change (9f8c158c)
+- Rename the nudge's internal phase off the ActivityState 'idle' literal (47a78ca4)
+- Stop the repaint nudge self-arming on xterm's own reports (e84d81e2)
+- Surface open failures and never leave attachment:open unanswered (26e917bd)
+- Register the announcements store in PREVIEW_STORES (449449d5)
+- Expose Agent Crash in Settings and close the config-to-UI parity hole (a7c52a21)
+- Stop a persisted 'local' relay mode blanking the Select in production (954960c8)
+- Heal PTY/xterm width drift with a dims echo and owner re-assert (9b85817d)
+
+### Other
+
+- Rewrite the README hero and resync the feature list with what ships (11714439)
+- Cover a mark REBUILT after mount, not just anchored at first paint (59d21522)
+- Pin the Monitor Active tile freeze, and resync the march prose (f9afbae8)
+- Cover useAnySettingVisible directly and both hide directions (e3f20cfb)
+- Correct two Mobile Devices details the section split invalidated (06297fae)
+- Split Mobile Devices into Relay and Mobile sections (47c5df62)
+- Give a section heading and its body one visibility rule (565993b4)
+- Pin the 'get the app' search alias for the renamed section (656f545d)
+- protocol-v0.12.0 (5e1304d7)
+- Pin the send-ordering that protects a just-succeeded ceremony (0c1757ce)
+- Correct the DECSTBM claim on both sides, and the empty-suffix condition (105a88e9)
+- Pin the forensics capture against a real defective frame and a split surrogate (5587c4cc)
+- Document the focus-edge catch-up, the repaint nudge, and the DECSTBM replay gap (e0a9a85c)
+- Cover the remaining branches of openAttachmentWithToast (49dd8285)
+- Cover the announcements push path's destroyed-window guard (7b7b12dc)
+- Count the Get the App entry in the mobile registry parity list (538538d3)
+- Enforce the announcements store HMR pin, extract the shared external-link button (6c4163e4)
+- Pin the Agent Crash dropdown's global config write (07d9b207)
+- Document the notification config-to-UI parity checks (ebfb1c92)
+- Correct stale Bridge Phase 3 notification and device-UI notes (ba185527)
+- Pin both welcome-screen footer links' visible copy (5592004e)
+- Cover the send-event warn path and the dev-pairing inline-path invariant (c23ca472)
+- Pin the monitor surface's PTY-dims echo channel declaration (274dd1cf)
+- Extract shared PTY-echo E2E helpers (2f036547)
+
 ## [v0.32.1] - 2026-08-04
 
 ### Features
