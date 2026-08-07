@@ -19,9 +19,9 @@
 
 ---
 
-<p align="center">A Kanban board for AI coding agents. Spawn, suspend, and resume 12 coding-agent CLIs from one board, with your own backlog. Local, free, open source.</p>
+<p align="center">A Kanban board for AI coding agents. Spawn, suspend, and resume sessions across twelve agent CLIs from one board, with your own backlog. Local, free, open source. One board shows every agent's status, output, and progress: respond when needed, and let them work autonomously the rest of the time.</p>
 
-<p align="center">AI coding agents can build features, fix bugs, and refactor entire modules autonomously. With git worktrees you can run many of them in parallel, but now the bottleneck is <strong>you</strong>: juggling terminals across projects to track which agents are stuck, finished, or waiting for approval. Kangentic replaces that with a Kanban command center. One board shows every agent's status, output, and progress. Respond when needed; let them work autonomously the rest of the time.</p>
+<p align="center"><em>If Kangentic saves you time, <a href="https://github.com/Kangentic/kangentic">star the repo</a> so others can find it too.</em></p>
 
 <p align="center">
   <a href="https://www.kangentic.com"><img src="https://raw.githubusercontent.com/Kangentic/branding/main/resources/mobile/android-feature-graphic-1024x500.png" alt="Kangentic: Kanban board for AI coding agents" width="800" /></a>
@@ -29,20 +29,24 @@
 
 ## Features
 
-- **Backlog, labels & priorities** - stage work in a dedicated backlog before it hits the board. Tag items with custom labels and colors, rank them on a fully-customizable priority scale, and batch-promote a week's worth of work to any column in one move.
-- **Customizable workflows** - build pipelines like Plan, Execute, Review. Set permission modes, auto-commands, and transition actions per column. Configure a plan-exit target so cards advance automatically after planning, inject prompts on column entry, and chain scripts or PRs on the way out.
-- **Real-time status** - see which agents are thinking or idle right on the card, with per-agent activity detection via native hooks where available and PTY fallbacks where not. Desktop notifications fire when an agent needs your attention.
-- **Agent-to-board tools** - agents that self-organize. Every running session has MCP tools to create tasks, move cards, search prior sessions, and queue follow-up work, so a planning agent can hand a backlog to an executing agent without you touching the board.
-- **Git worktrees & review** - each agent runs in its own git worktree for parallel development without branch conflicts. When work is ready, the built-in Changes panel opens a split or inline diff viewer with file tree, a commit graph, and a Markdown preview, one click from the task card.
-- **Session persistence** - sessions survive restarts and crashes. Orphaned sessions are detected on startup and resumable. Suspend to Done, resume later with full context, nothing is lost.
-- **Handoff context** - hand work between agents without losing context. When a card moves from a Claude plan column to a Codex execute column, the next agent starts with the full history of what came before. Supported in both directions for Claude, Codex, Gemini, Qwen, Kimi, and OpenCode.
-- **Terminal & activity log** - a built-in terminal for every session, plus a structured activity log that shows what each agent is doing without the noise.
-- **Usage & cost analytics** - track tokens, cost, and burn rate across every project, agent, model, and effort level. Filter by any time range, watch spend by week or cumulatively, and drill into a per-project ledger with cost share, dollars per million tokens, and top agent.
-- **Embedded browser** - point a sandboxed Chromium pane at any URL inside the task dialog, draw annotations, pick DOM elements, and submit the rendered frame plus context to the active agent as a multi-modal prompt, all without leaving the task.
-- **Search & memory** - one overlay (Ctrl+Shift+F) searches everything on your machine: tasks, backlog, session events, projects, and every past agent conversation, by keyword or on-device semantic memory. Land on the exact turn where you solved something before, no API key required, and your agents can recall it too through the board's MCP tools.
-- **Voice dictation** - hold a key, talk, release: local push-to-talk speech-to-text drops your words into the agent's terminal, transcribed on-device with a streaming preview and a refinement pass. Punctuation, language, and auto-submit are all configurable.
-- **Model & effort routing** - use Opus for Planning, Sonnet for Code Review, change efforts for the harder steps. Kangentic live-applies changes as cards cross columns: no restart, no manual /model commands.
-- **Your CLIs, your machine** - runs entirely on your desktop (Windows, macOS, Linux, and WSL) with no cloud service and no data leaving your machine. No OAuth, no wrappers, no API proxies: Kangentic launches the native Claude Code, Codex, Gemini, Qwen Code, Kimi Code, OpenCode, Droid, Cursor, Copilot, Aider, and Warp CLIs you already have, with your own logins and subscriptions. Just the real CLIs, the way each vendor intended.
+- **Customizable workflows** - build pipelines like Plan, Execute, Review, with permission modes, auto-commands, plan-exit targets, entry prompts, and exit scripts or PRs set per column.
+- **Real-time status** - see which agents are thinking or idle right on the card, via native hooks where available and PTY fallbacks where not, with desktop notifications when one needs you.
+- **Agent Monitor** - one overlay watches every project on your machine: live and recently finished sessions as cards, a table, or a dense list, each with a peek at the agent's latest output.
+- **Usage & cost analytics** - tokens, cost, and burn rate by project, agent, model, and effort, over any time range, down to a per-project ledger with cost share and dollars per million tokens.
+- **Git worktrees & review** - each agent runs in its own worktree, so parallel work never collides. The built-in Changes panel opens a split or inline diff with file tree and commit graph, one click from the card.
+- **Session persistence** - session data is written incrementally, so even a hard crash loses nothing. On relaunch running agents auto-resume with full context, and sessions you paused stay paused.
+- **Handoff context** - move a card from a Claude plan column to a Codex execute column and the next agent starts with the full history. Both directions for Claude, Codex, Gemini, Qwen, Kimi, and OpenCode.
+- **Model & effort routing** - Opus at xhigh for Planning, Sonnet for Executing, another agent for review. Save ladders as named Board Profiles; Kangentic applies them live as cards cross columns.
+- **Project & global settings** - every project carries its own agent, model, effort, permission mode, base branch, and worktree defaults, separate from machine-wide ones, in a searchable settings panel.
+- **Backlog, labels & priorities** - stage work before it hits the board, tag it with custom labels and a fully-customizable priority scale, and batch-promote in one move. The tags keep working as board filters afterward.
+- **Agent-to-board tools** - every session gets MCP tools to create tasks, move cards, add columns, search prior sessions, and even message another task's running agent, so agents self-organize.
+- **Quick Find & memory** - Ctrl+Shift+F / Cmd+Shift+F searches tasks, backlog, session events, projects, and every past agent conversation, by keyword or on-device semantic memory. No API key.
+- **Terminal & activity log** - a real xterm.js terminal per session with WebGL rendering, scrollback that survives restarts, and clipboard image paste, plus an Activity tab that distills output into a structured event feed.
+- **Command Terminal** - Ctrl+Shift+P / Cmd+Shift+P opens an ephemeral agent session over any board, no task card needed. Run up to four tiled side by side, with a layout that persists across projects and restarts.
+- **Context Bar** - a live strip under every terminal: model, cost, tokens, tool calls, elapsed time, context-window fraction, and Claude rate-limit meters. The profile, model, and effort pills double as pickers.
+- **Embedded browser** - point a sandboxed Chromium pane at any URL inside the task dialog, annotate it, and send the frame to the agent. Agents can screenshot, inspect, and click the same pane through MCP.
+- **Voice dictation** - hold your push-to-talk button, talk, release: on-device speech-to-text drops your words into the agent's terminal, with a streaming preview and a refinement pass.
+- **Your CLIs, your machine** - runs on your desktop (Windows, macOS, Linux, and WSL) with your data in a local database. No OAuth, no wrappers, no API proxies: Kangentic launches the native CLIs you already have, with your own logins and subscriptions.
 
 ## How It Works
 
