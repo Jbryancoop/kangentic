@@ -21,11 +21,11 @@
 
 <p align="center">A Kanban board for AI coding agents. Spawn, suspend, and resume sessions across twelve agent CLIs from one board, with your own backlog. Local, free, open source. One board shows every agent's status, output, and progress: respond when needed, and let them work autonomously the rest of the time.</p>
 
-<p align="center"><em>If Kangentic saves you time, <a href="https://github.com/Kangentic/kangentic">star the repo</a> so others can find it too.</em></p>
-
 <p align="center">
   <a href="https://www.kangentic.com"><img src="https://raw.githubusercontent.com/Kangentic/branding/main/resources/mobile/android-feature-graphic-1024x500.png" alt="Kangentic: Kanban board for AI coding agents" width="800" /></a>
 </p>
+
+<p align="center"><em>If Kangentic saves you time, hit ⭐ at the top of this page so others can find it.</em></p>
 
 ## Features
 
