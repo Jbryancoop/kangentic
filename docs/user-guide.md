@@ -198,6 +198,8 @@ Click a task card to open the detail dialog. From here you can:
   - **Archive** - move the task to Done and archive it
   - **Delete** - permanently delete the task, session, and worktree
 
+**Closing by clicking outside.** Task-detail windows are modeless, so clicking empty space outside one closes it. The rule is a denylist, not an allowlist: a control, a task card, or a running terminal still acts on your first click, so clicking outside never costs you a click you meant for something else, and overlays mounted outside the window shell (the settings panel, palettes, dialogs) never dismiss it either. Set the policy at **Settings > Behavior > Windows > Close on Outside Click**: `Off`, `Single Window` (only when one is open), `Focused Window` (the default), or `All Windows`. Closing a window never kills its session; the agent keeps running and reattaches when you reopen the task.
+
 ### Changes Panel
 
 The Changes tab in the task detail dialog is a commit-history browser stacked vertically: a commit-history region on top, and a detail pane (file tree + diff) below, split by a resizable divider.
@@ -738,7 +740,7 @@ Two things are deliberately left out of that restore, because the monitor is for
 
 ## Keyboard Shortcuts
 
-Every shortcut is declared in a central registry and is **rebindable** under Settings > Hotkeys, where it can be bound to a key chord or a mouse button (middle or side buttons). Hotkeys also flags conflicts and combos already claimed by the OS or another app. `Mod` below is Cmd on macOS and Ctrl on every other platform.
+Every shortcut is declared in a central registry, and nearly all are **rebindable** under Settings > Hotkeys, where each can be bound to a key chord or a mouse button (middle or side buttons). Hotkeys also flags conflicts and combos already claimed by the OS or another app. The description-editor keys below are the exception: they are **fixed**, because they are the platform conventions for text formatting. Fixed keys are still listed in Hotkeys for reference, just not editable. `Mod` below is Cmd on macOS and Ctrl on every other platform.
 
 General:
 
@@ -762,6 +764,13 @@ Task detail (whichever panel is open):
 - **Mod+Shift+G** - Toggle the changes (diff) panel inside the task detail dialog
 - **Mod+Shift+K** - Toggle the description panel inside the task detail dialog
 - **Middle-click the window header** - Close a modeless task-detail window (default `Mouse:Middle`; routes through the same unsaved-edits guard as the close button)
+
+Description editor (mounts in task detail and in the New Task / New Backlog Task dialogs). All four are fixed, not rebindable:
+
+- **Mod+B** - Wrap the selected text in bold markdown
+- **Mod+I** - Wrap the selected text in italic markdown
+- **Mod+K** - Wrap the selected text in a markdown link
+- **Mod+Shift+V** - Paste without converting pasted HTML to markdown. Not listed in Settings > Hotkeys, since no app lets you rebind it
 
 Windows (modeless task-detail windows):
 

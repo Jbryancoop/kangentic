@@ -249,8 +249,8 @@ Each entry has a one-line rationale so future edits know what the entry was prot
 - `src/main/activity-engine/engine/watchdog.ts`
   WHY: the five watchdog holds (predicates, thresholds, anchors) are enumerated in activity-detection.md "Five safety nets (the watchdog table)".
 
-- `src/renderer/components/settings/AppSettingsPanel.tsx`
-  WHY: settings tab order, separator position, and visibility rules are mirrored in user-guide.md and configuration.md.
+- `src/renderer/components/settings/settings-tabs.ts`
+  WHY: settings tab order, category/tier grouping, separator position, and visibility rules are mirrored in user-guide.md and configuration.md. This is the file that DECLARES `SETTINGS_TABS`; `AppSettingsPanel.tsx` only imports it, so anchoring on the panel misses a tab added or reordered here.
 
 - `src/renderer/components/settings/settings-registry.ts`
   WHY: settings registry entries and their defaults are enumerated in configuration.md.

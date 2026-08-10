@@ -916,6 +916,206 @@ Scope is the caller's project by default, and the response always names the scop
 
 Cookie isolation is per worktree (`persist:kngbrowser-<hash(worktreePath)>`) so concurrent worktrees' dev environments never share a `localhost` cookie jar. See [embedded-browser.md](embedded-browser.md).
 
+### Shared target parameters
+
+Every **driving** tool below takes the same optional target pair. They are listed in each tool's table for completeness; the resolution precedence and the `foreign-project` rule are described once, above.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Session whose Browser pane to target. Must name a pane in your own project. |
+| `taskId` | string | No | Task whose Browser pane to target. An alternative to `sessionId`, likewise same-project. |
+
+Omitting both resolves your own pane, then the single pane open in the project. Alongside the per-tool errors listed below, any driving tool can return the shared refusals raised while resolving and attaching to a pane: `no-pane-open`, `multiple-panes` (more than one is open and neither argument was given; the error carries the candidates), `foreign-project`, `pane-destroyed`, `pane-not-rendering`, `cdp-attach-failed`, and `driver-error`.
+
+The capability gate (`capabilityGate` in `src/main/browser/browser-pane-driver.ts`, the single source of the tier rules) adds four more: `automation-disabled` when the master switch is off, and `interaction-disabled` / `navigation-disabled` / `eval-disabled` for the tool's own tier. `automation-disabled` is reachable even though the family is not registered while the master switch is off, because the policy is read live per request: a switch flipped mid-session refuses the next call rather than waiting for a reconnect.
+
+### kangentic_browser_list_panes
+
+List the Browser panes open in your project, so you can discover a `sessionId` / `taskId` to drive or confirm the user has a dev server loaded. Returns an empty list when no pane is open. Not a driving tool: it takes no target pair.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `includeOtherProjects` | boolean | No | Also list panes in other projects. They are listed for visibility only and cannot be driven from this connection. Default false. |
+
+Returns `{ automationEnabled, projectId, panes, otherProjectPaneCount, unknownProjectPaneCount }`. Each pane carries its `sessionId`, `taskId`, current URL, liveness / debugger-attached state, plus `sameProject` and `driveable`. The two counts are why an empty `panes` list is never mistaken for an idle machine.
+
+### kangentic_browser_navigate
+
+Point the pane at an http(s) URL. This navigates the in-app pane the user has open, not a general web browser; the pane's URL bar and the per-task saved URL both update. Capability tier: `navigate`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `url` | string | Yes | Absolute http(s) URL to load, e.g. `http://localhost:4200`. |
+
+Returns `{ ok: true, url }` with the validated URL. The URL is checked before the pane is resolved, so a malformed URL or a non-http(s) scheme (`invalid-url`), or a non-local host while `restrictNavigationToLocalhost` is on (`navigation-host-blocked`), is refused without touching the pane.
+
+### kangentic_browser_screenshot
+
+Capture the pane's loaded page and return an inline image plus viewport and scale metadata for mapping image coordinates back to the page. Capability tier: `observe`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `fullPage` | boolean | No | Capture the full scrollable page instead of the viewport. Default false. |
+| `format` | string | No | `png` or `jpeg`. Default `jpeg`. |
+| `quality` | number | No | JPEG quality 1-100, ignored for png. Defaults to 80 for jpeg. |
+| `maxBytes` | number | No | Soft cap on decoded image bytes; the capture downscales and recompresses to fit. |
+
+Error modes beyond the shared set: `screenshot-failed` when CDP returns no data. A window that is hidden or fully occluded composites no frames and cannot be detected as such from the main process, so those captures fail after a short bound with a `driver-error` asking for the window to be brought forward. Non-pixel tools keep working against that same backgrounded pane.
+
+### kangentic_browser_screenshot_element
+
+Capture a screenshot clipped to a single element. Capability tier: `observe`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `selector` | string | Yes | CSS selector (or `text=` / `aria=` form) of the element to capture. |
+| `format` | string | No | `png` or `jpeg`. Default `png`. |
+| `quality` | number | No | JPEG quality 1-100, ignored for png. |
+| `maxBytes` | number | No | Soft cap on decoded image bytes. |
+
+Error modes: `selector-not-found` when nothing matches, `screenshot-failed` when the clip returns no data.
+
+### kangentic_browser_query_dom
+
+Read the `outerHTML` of the first element matching a selector. Capability tier: `observe`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `selector` | string | No | CSS selector (or `text=` / `aria=` form). Defaults to `html`. |
+| `includeBox` | boolean | No | Also return the element's `{x, y, width, height}` viewport box. |
+
+Returns `{ selector, outerHTML }`, plus `box` when `includeBox` is set. `box` is `null` when the element matched but CDP returned no usable box model. Error mode: `selector-not-found`.
+
+### kangentic_browser_query_all
+
+Measure every element matching a selector in one round-trip, instead of one call per element. Capability tier: `observe`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `selector` | string | Yes | CSS selector (or `text=` / `aria=` form). |
+| `includeHtml` | boolean | No | Include each element's `outerHTML`, clipped to 1024 characters. |
+| `limit` | number | No | Max elements to return. Default 100, max 1000. |
+
+Returns one entry per match with its tag, box, and attributes (attributes are always included). Error modes: `evaluate-failed` when the page-side query throws, `query-failed` when it returns nothing.
+
+### kangentic_browser_bounding_box
+
+Read the raw CDP box model (content, padding, border, and margin quads) of one element. Use `query_dom` with `includeBox` for the simpler rectangle. Capability tier: `observe`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `selector` | string | Yes | CSS selector of the element. |
+
+Returns `{ selector, ...boxModel }`. Error mode: `selector-not-found`.
+
+### kangentic_browser_console
+
+Read console messages captured from the pane. Capability tier: `observe`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `since` | string | No | ISO timestamp; only return entries at or after this time. |
+| `level` | string | No | One of `log`, `warn`, `error`, `info`, `debug`, `verbose`, `all`. Default `all`. |
+| `limit` | number | No | Max entries, newest last. Default 100, max 500. |
+
+Each entry is `{ ts, level, text, url, lineNumber }`. The underlying ring holds the most recent 500 messages per attached pane and starts filling when the debugger attaches, so messages logged before that are not retrievable. This is the product tool for the user's own page, separate from the dev-only `kangentic_devtools_console`, which reads Kangentic's own renderer.
+
+### kangentic_browser_wait
+
+Poll until an element appears, optionally containing text, or until a string appears anywhere in the body. Capability tier: `observe`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `selector` | string | No | CSS selector to wait for. |
+| `domText` | string | No | Text to wait for, within `selector` if given, else anywhere in `body`. |
+| `timeoutMs` | number | No | Max wait. Default 30000, max 60000. |
+| `intervalMs` | number | No | Poll interval. Default 250, max 5000. |
+
+Returns `{ matched: true, matchedAt }` or `{ matched: false, timedOutAfterMs }`. A timeout is an ordinary result, not an error, so check `matched` rather than assuming success. Error mode: `missing-condition` when neither `selector` nor `domText` is given.
+
+### kangentic_browser_click
+
+Click an element by selector, or a point by coordinates. Capability tier: `interact`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `selector` | string | No | CSS selector (or `text=` / `aria=` form) to click at its center. |
+| `x` | number | No | X coordinate. Use with `y` instead of `selector`. |
+| `y` | number | No | Y coordinate. |
+| `coordSpace` | string | No | `viewport` (default) or `image`, which maps screenshot pixels back via the device scale factor. |
+
+Pass either `selector` or both `x` and `y`. Returns `{ ok: true }`, plus the mapped `dispatched: { x, y }` on the coordinate path. Error modes: `selector-not-found`, `missing-target` when neither form is supplied, and `coord-mapping-failed` when `coordSpace: "image"` is used but the device scale factor could not be read.
+
+### kangentic_browser_type
+
+Type text into the pane. Capability tier: `interact`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `text` | string | Yes | Text to type. |
+| `selector` | string | No | CSS selector to focus before typing. Focus is taken by clicking the element's center. |
+| `clearFirst` | boolean | No | Select-all and delete before typing. Requires `selector`, since it runs as part of focusing. |
+
+Returns `{ ok: true }`. Error mode: `selector-not-found`. With no `selector`, the text goes to whatever the page currently has focused.
+
+### kangentic_browser_keypress
+
+Send a key or chord. Single printable characters are typed. Capability tier: `interact`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `keys` | string | Yes | Key or chord, e.g. `Enter`, `Escape`, `Tab`, `Ctrl+Shift+P`, `ArrowDown`. |
+
+Returns `{ ok: true }`. Error mode: `unknown-key` when the combo cannot be parsed.
+
+### kangentic_browser_drag
+
+Drag from one element to another: mouse press, move in steps, release. Capability tier: `interact`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `fromSelector` | string | Yes | CSS selector of the drag source. |
+| `toSelector` | string | Yes | CSS selector of the drop target. |
+| `steps` | number | No | Intermediate move steps. Default 10, max 60. Raise it for libraries that need several move events to register a drag. |
+
+Returns `{ ok: true }`. Error mode: `selector-not-found`, which covers either selector failing to match.
+
+### kangentic_browser_eval
+
+Evaluate a JavaScript expression in the loaded page's origin and return its value. Capability tier: `eval`, which is **off by default**: turn it on at Settings > Agent Browser > Allow eval.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sessionId` | string | No | Target pane by session. |
+| `taskId` | string | No | Target pane by task. |
+| `expression` | string | Yes | JavaScript expression to evaluate. The resolved value is returned. |
+
+Returns `{ value }` with the serialized result. Error mode: `evaluate-failed`, carrying the page-side error text.
+
 ## Dev-only tool surface (`kangentic_devtools_*`)
 
 When `developer.previewInspectionServer` is enabled in dev builds (the toggle is excluded from production binaries via `__KANGENTIC_DEV__` esbuild dead-code elimination), 32 additional `kangentic_devtools_*` tools are registered against the same MCP server. They wrap a localhost-only HTTP inspection bridge that powers agent-driven UI inspection and interaction. Implementation lives in `src/devtools/mcp/preview-tools.ts` (build-excluded from production).

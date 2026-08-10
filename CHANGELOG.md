@@ -6,6 +6,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.34.0] - 2026-08-09
+
+### Features
+
+- Drive every dock from the pointer, drop the tile-layout menu (d8f03adc)
+- Let agents place and reorder tasks within a column (a1ef7bc4)
+- Let an agent open and close its own task's Browser pane via MCP (24a04884)
+- Invert click-outside polarity to a denylist (f9903725)
+- Unify control fill and setting text into shared components (6adcd030)
+- Rebuild auto_command delivery for verified, observable injection (b37039c6)
+- Close the task detail window when its session is paused (33b39b77)
+
+### Fixes
+
+- Let a background shell opt out of holding the session active (da7db01a)
+- Classify reorder_tasks in the mobile board-tool allowlist (7234a5fd)
+- Arbitrate which terminal takes focus on arrival (b9189d71)
+- Export the browser capability gate and pin the pane setters (d9dc2ff8)
+- Give the control fill a visible step against its ground (fe915d18)
+- Keep the description preview readable on the retuned control fill (7d5a0cea)
+- Migrate a persisted windowLightDismiss 'single' to 'focused' on upgrade (d3a6cc44)
+- Mirror the light-dismiss migration marker in the UI mock (7f94f857)
+- Fit a revealed terminal on the renderer it keeps (b1c2d0a6)
+- Rename the app status bar testid to avoid a collision (602c0944)
+- Exclude the terminal context bar from light dismiss (5d2f8691)
+- Report each pane's live URL from list_panes (e3adf5b9)
+- Scope pane control to the caller's project, and retain panes on switch (fd438bd7)
+- Repair deferred-injection identity guard and draft notice (5c3c18d5)
+- Use Claude Code's documented keys and stop interrupting the agent (4072a047)
+- Align the relay row and rebuild its Test connection verdict (fae5b689)
+
+### Other
+
+- Cover the budget's undock re-anchor and group-move cancel (0c4b07a9)
+- Record the in-gesture Escape keybinding exception (1d1f6a8e)
+- Split a terminal init into its phases via a dev-only trace (064bfebb)
+- Correct four stale counts in the engine's triage docs (85209fd0)
+- Cover the exempt shell's memo cap, reset asymmetry, and watcher wiring (213ff00f)
+- Stop closeApp's force-kill path from crashing teardown (dc8023e8)
+- Stop counting the board-changed bus's feeders (70768f47)
+- Cover the archived-reorder branch and parseSlotParam's junk guard (c310fe96)
+- Prove the forced replay delay from the mock's call log (acb11c83)
+- Cover selectActiveSession's arrival-focus claim (4d75e99b)
+- Pin TERMINAL_WINDOW_LAYERS against allWindowManagers drift (92f70da6)
+- Scope the family's same-project guarantee to driving (cbedb5c2)
+- Cover the pane opener's unavailable-host branches and the live-guest refetch (25fd95c5)
+- Pin the markdown-on-control class to the rule that consumes it (c21b563d)
+- Tighten hasMigratedWindowLightDismissDefault's unreadable-file wording (089f608e)
+- Guard load() against valid-but-non-object config JSON (52f87532)
+- Pin the width re-issue's resize argument (ec8f7db7)
+- Share dev permissions and drop a redundant MCP rule (4cf6e0ac)
+- Pin each scope marker's VALUE, not just its presence (703fd29e)
+- Reconcile three sentences this branch made inaccurate (001d17de)
+- Cover the live-URL read's throwing guest and its scoped flow-through (e5716940)
+- Say the pane registry's tracked URL is a fallback, not the reported one (edf8d4ef)
+- Cover pane-active shortcut gating and project-scoped URL routing (7fb27472)
+- Pin the useBrowserUrl refetch guard that keeps a retained pane alive (1a2dfd93)
+- Note auto-command mode on board profiles and the prompted-resume caller (7d5eb8c6)
+- Correct injection prose that still described the pre-rebuild behavior (967dfcc1)
+- Keep verification cheap when several tasks inject at once (7daec1fb)
+- Pin the probe verdict's tokens, its glyph, and where latency is measured (33629895)
+- Note that mobileBridge.relayUrl is search-index only (817c9eba)
+- Close two coverage holes the composited-fill scan cannot see (a166fc09)
+- Serialize terminal construction, composite the context fill (643e9cae)
+- Cover the terminal-ownership release on pause-close (11d61f57)
+- Add a kebab pause/resume testid and document close-on-pause (d807a78a)
+- Move the star line below the hero image (915cc5cc)
+
 ## [v0.33.0] - 2026-08-07
 
 ### Breaking Changes

@@ -26,7 +26,7 @@ When given a list of changed files, map them to anchors:
 - `src/shared/types.ts` -- all Type System Anchors
 - `src/shared/ipc-channels.ts` -- IPC Anchors
 - `src/main/db/migrations.ts` -- Database Anchors
-- `src/renderer/components/settings/AppSettingsPanel.tsx` -- Settings tabs anchor
+- `src/renderer/components/settings/settings-tabs.ts` -- Settings tabs anchor (the file that declares `SETTINGS_TABS`; `AppSettingsPanel.tsx` only imports it)
 - `src/renderer/components/settings/settings-registry.ts` -- Settings registry anchor
 - `src/shared/template-vars.ts` -- Template Anchors
 

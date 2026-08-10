@@ -20,6 +20,16 @@ chrome unless these are stated.
 - **Dropdowns:** use the shared `Select` component from
   `src/renderer/components/settings/shared.tsx`, never a raw `<select>` with inline classes.
   The shared component renders `appearance-none` with a custom ChevronDown for correct spacing.
+- **Setting label + description:** use the shared `SettingText`
+  (`src/renderer/components/SettingText.tsx`), or its `SETTING_LABEL_CLASS` /
+  `SETTING_DESCRIPTION_CLASS` when a surface needs the two parts separately. Never re-type the
+  label/description class pair inline.
+- **Control fill:** every input-like control draws one fill, border, and value colour, off the
+  `surface-control` / `edge-input` tokens. Use `FIELD_CONTROL_CLASS` / `FIELD_SELECT_CLASS`
+  (`src/renderer/components/Field.tsx`) in dialogs and `INPUT_CLASS`
+  (`settings/shared.tsx`) in the settings panel. `Combobox`, `ToggleCard`, and
+  `SegmentedControl` each match that fill deliberately and say so in a comment, so a one-off
+  `bg-*` on a new control breaks a family that is being held together by hand.
 - **Numeric counts:** use the shared `CountBadge` (`src/renderer/components/CountBadge.tsx`)
   with its `muted` / `accent` / `solid` variants. Do not inline badge styles.
 - **Confirmations:** use `ConfirmDialog` for all yes/no prompts; set `showDontAskAgain` when the
