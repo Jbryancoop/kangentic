@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.35.0] - 2026-08-17
+
+### Features
+
+- Announce revocation and act on the phone's unpair (82643898)
+- Add Antigravity CLI adapter with full Claude-parity harness (4624a624)
+- Add Grok Build (xAI) as the thirteenth agent adapter (1bb609f8)
+- Megaphone access point, unread badge, browsable history (a66f2c31)
+- Verified auto_command delivery for six more agents (1d815c4d)
+
+### Fixes
+
+- Drop the duplicate qwen entry the rebase auto-merge left in the agents mock (f17b74a5)
+- Hide adapter runtime files from git via shared info/exclude seeding (cec1f2a3)
+- Harden grok/antigravity adapters, drain seam, and bridge (e24e68a8)
+- Keep subagent depth across a live turn_retrying hold (64d3c48c)
+- Correct engine docs the retry-hold depth fix falsified (92b3b55e)
+- Floor the history panel, and stop /preview relighting the badge (023bd2cc)
+- Default TERM and drop the leaked NO_COLOR so agent TUIs render in color (13223407)
+- Close the drain/quoting/caching findings from the adapter-branch review (2a6535f2)
+- Align agent enumerations left stale by the Antigravity adapter (0e76844b)
+- Convert single-quoted CLI paths for unix-like shells and spawn WSL as wsl.exe (fc0ea2f1)
+- Align WSL exe replicas and the platform-guard rubric with wsl.exe (1501ef3f)
+- Report replay-drained bytes to data-tap via a dedicated onDrain seam (f042cf45)
+- Update the data-tap contract comment for its second feeder (be03479b)
+- Wire the Kangentic MCP server into Codex, Gemini, and Droid (97d81e0b)
+- Gate the project model default on the startup spawn path (0407ef45)
+- Cap at the measured clamp, prune the clipboard temp dir (6e38c1e4)
+- Bound the OpenCode part scan and pin the confirm-only escalation gate (d6e7afde)
+- Detect Cursor by cursor-agent, not the shared agent shim (d6e2a2f9)
+
+### Other
+
+- Close the coverage gaps the branch audit found (d66dc3c1)
+- Enumerate stuck-subagent in the synthetic-events list (416232b2)
+- Pin the heartbeat-forced disjunct of watchdogBaseTime (c30cf80c)
+- Close the enumeration gaps the Grok/Antigravity rebase merge left (e0cf0690)
+- Cover the Antigravity detector and handoff display label (696e98e9)
+- Pin wsl.exe shell-spec conversion and guard the hardened exe-path regexes (85c38db5)
+- Cover GrokAdapter.probeAuth's exec branches (cc56deed)
+- Record the worktree-removal trust cleanup where it was still missing (e233d5d1)
+- Cover the adapter trust wiring, and drop Gemini trust on worktree removal (a5ef5e56)
+- Cover the two store branches the UI tier cannot observe (0f67b62e)
+- Cover the paste handler's degrade-to-null failure path (bece4001)
+- Pin the clipboard-image handler wiring, refresh stale cap references (38c17952)
+- Correct when a second project gets an onboarding baseline (e0e63622)
+- Cover the reset-before-open ordering of the Restart trigger (8312c0ed)
+- Move the dev-only onboarding trigger into the Developer tab (bbb6f7d6)
+- Fix the session-history paths and two comments this branch left behind (216c1cde)
+- Pin the injection verifier's part-query bound (37357d1d)
+- Correct five claims the verifier work made stale (922460ac)
+- Route contributors to the agent-parity gaps (aa180ead)
+- Pin every injection extractor to a real captured history file (59f45f3a)
+
 ## [v0.34.0] - 2026-08-09
 
 ### Features

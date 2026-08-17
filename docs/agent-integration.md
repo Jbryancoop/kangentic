@@ -1207,6 +1207,40 @@ a generic `agent` shim that collides with Cursor's (see the collision guard belo
 `parseVersion` requires the `grok ` banner prefix so a foreign binary answering on a shared
 name is rejected. `tests/unit/cursor-grok-binary-collision.test.ts` pins both directions.
 
+### Command Building
+
+`src/main/agent/adapters/grok/command-builder.ts`
+
+```
+grok [-s <uuid> | --resume <uuid>] --permission-mode <mode> [--allow "MCPTool(kangentic__*)"]
+     [--model <slug>] [--reasoning-effort <effort>]
+     [-- "<prompt>" | -p "<prompt>" --output-format plain]
+```
+
+- `-s <uuid>` names a NEW session and `--resume <uuid>` resumes an existing one; the builder emits exactly one of the two, never both.
+- `--permission-mode` is always emitted (see below).
+- `--allow "MCPTool(kangentic__*)"` rides along only when the Kangentic MCP server is attached, so a board-driven session never stalls on grok's interactive approval prompt for Kangentic's own tools. An explicit user deny still wins.
+- Model and effort overrides pass straight through as `--model <slug>` and `--reasoning-effort <effort>` when set.
+- The interactive prompt is delivered after `--` (end-of-options), so prompt text starting with a dash can never be parsed as a CLI option regardless of shell quoting. Non-interactive spawns (`nonInteractive` transition actions) use `-p "<prompt>" --output-format plain` instead, which prints one turn and exits. A resume passes no prompt at all.
+
+### Permission Modes
+
+`--permission-mode` accepts Kangentic's `PermissionMode` names verbatim (verified in
+`grok --help`), so all six pass through 1:1. Internally grok normalizes `acceptEdits` and
+`dontAsk` onto its own ladder (`default | auto | plan | bypassPermissions`), with `auto` as the
+nearest neighbor, so the behavior these names select is grok's, not Claude's.
+
+| Mode | CLI Flag |
+|------|----------|
+| `plan` | `--permission-mode plan` |
+| `default` | `--permission-mode default` |
+| `acceptEdits` | `--permission-mode acceptEdits` |
+| `auto` | `--permission-mode auto` |
+| `dontAsk` | `--permission-mode dontAsk` |
+| `bypassPermissions` | `--permission-mode bypassPermissions` |
+
+`defaultPermission` is `acceptEdits`.
+
 ## Antigravity
 
 Antigravity CLI (`agy`, https://antigravity.google/docs/cli/getting-started) is Google's terminal TUI coding agent, Gemini-family models by default with optional Claude and open-source backends. It shares the `~/.gemini` home directory with the Gemini CLI but keeps everything of its own under the `~/.gemini/antigravity-cli/` subtree, with its own trust store, hook schema, and MCP config format - hence a sibling adapter rather than a Gemini variant. Every behavior below was verified against a real agy 1.1.13 install (2026-08-16).

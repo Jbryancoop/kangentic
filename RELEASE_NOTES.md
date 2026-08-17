@@ -1,20 +1,16 @@
 ## What's New
 
-- **Docking a window follows your cursor** - drag a task window by its header and wherever you point decides what happens. Run into the left, right, or bottom edge of the board to snap that half, into the top edge to maximize, or over another window to tile beside it: its left and right thirds dock to that side, the middle third docks above or below. A nudge just repositions, and Escape mid-drag puts the window back where it started. The separate tile-layout menu is gone, since the drag now expresses every layout it offered.
-- **Click outside a task window to close it** - the old behavior only worked when a single window was open. Now the focused window closes on an outside click however many are open, and the first click still lands normally on a control, a task card, or a running terminal, so dismissing never costs you a click you meant for something else. Set it at Settings > Behavior > Close on Outside Click.
-- **Pausing a session puts its window away** - pausing from the task detail header or kebab now closes the window too, instead of leaving you to dismiss it separately. The session stays paused and resumable from the board.
-- **Agents can open their own Browser pane** - an agent that needs to look at your dev server can now open and close the embedded Browser pane for its own task over MCP, rather than stopping to ask you to click the Browser pill. Pane control is scoped to the agent's own project, panes survive a project switch, and the pane list reports each pane's live URL.
-- **Agents can place and reorder tasks within a column** - task position is now something an agent can set, not just which column a task lands in.
-- **Auto commands are verified, not fire-and-forget** - the delivery path for commands attached to a column transition was rebuilt so Kangentic can confirm the agent actually received one, and report it when that fails. Injection now uses Claude Code's documented keys and no longer interrupts an agent mid-turn.
-- **A more consistent settings and dialog surface** - setting labels, descriptions, and input fills now come from shared components, so a dropdown, a text field, and a toggle card read as one family wherever they appear.
-- **Snappier boards with many terminals** - terminal construction is serialized rather than done all at once, and the context bar's fill is composited.
+- **Two new agent adapters: Grok Build (xAI) and Antigravity.** Both ship with the full Claude-parity harness: caller-owned session resume, hook-driven activity detection, Kangentic MCP wiring, folder trust, and usage telemetry. Kangentic now supports 14 agent CLIs.
+- **Verified auto_command delivery for six more agents.** A task's opening prompt is now confirmed delivered rather than fired and forgotten, with a warning toast naming the command and reason when delivery fails.
+- **In-app announcements got a home.** A megaphone in the title bar carries an unread badge and opens a browsable history, so an announcement you dismissed is still readable later.
+- **Mobile companion pairing is honest in both directions.** The desktop announces a revoked pairing, and acts immediately when the phone unpairs from its side.
+- **The Kangentic MCP server is now wired into Codex, Gemini, and Droid**, so agents on those CLIs can read and drive their own board.
 
 ## Bug Fixes
 
-- An arriving terminal no longer steals focus from the one you are typing in when several open at once.
-- A terminal revealed by opening a panel now fits the renderer it keeps, instead of drawing at the wrong width.
-- A background shell left running by an agent no longer holds its session in the active state, so tasks stop showing as busy when they are waiting on you.
-- Upgrading installs now get the new close-on-outside-click behavior rather than silently keeping the old single-window setting as if it had been chosen deliberately.
-- The Browser pane list reports each pane's current URL instead of the one it was opened with.
-- Control fills have a visible step against their background again, and description previews stay readable on them.
-- The relay row in Mobile Devices is aligned properly and its Test connection result rebuilt to say what actually happened.
+- Agent TUIs render in color again: sessions now default `TERM` and no longer inherit a leaked `NO_COLOR`.
+- WSL sessions spawn as `wsl.exe`, and single-quoted CLI paths convert correctly for unix-like shells.
+- Cursor is detected by its own `cursor-agent` binary instead of the generic `agent` shim that other CLIs also install.
+- An agent running background subagents no longer reads as idle while a turn is retrying.
+- Pasted images are capped at the measured size clamp, and the clipboard temp directory is pruned instead of growing without bound.
+- The announcement history panel keeps a stable floor, and a preview run no longer relights the unread badge.
