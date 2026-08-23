@@ -27,6 +27,14 @@ Each doc file and the source files that are its authority:
 | `mcp-server.md` | `src/main/agent/mcp-http-server.ts`, `src/main/agent/mcp-http/**`, `src/main/agent/commands/`, `src/main/ipc/handlers/sessions.ts`, `src/shared/types.ts` (MCP types) |
 | `board-integration.md` | `src/main/boards/board-registry.ts`, `src/main/boards/shared/**`, `src/main/boards/adapters/**`, `src/shared/types.ts` (ExternalSource) |
 | `pr-integration.md` | `src/main/pr/pr-registry.ts`, `src/main/pr/shared/**`, `src/main/pr/adapters/**`, `src/main/pr/pr-linking.ts`, `src/main/pr/pr-refresh.ts`, `src/main/pr/pr-refresh-scheduler.ts`, `src/shared/types.ts` (PR types) |
+| `embedded-browser.md` | `src/main/browser/**` (pane driver, lane manager, guest-drive queue, dev-server-error), `src/renderer/components/browser/**`, `src/main/agent/mcp-http/browser-tools.ts`, `src/main/db/migrations/global-schema.ts` (the `dev_ports` ledger) |
+| `mobile-bridge.md` | `src/main/mobile-bridge/**` (identity, pairing, capability router, transport, push), `packages/protocol/src/**` |
+| `adapter-session-history.md` | `src/main/agent/adapters/*/session-history-parser.ts`, `src/main/pty/readers/session-history-reader.ts`, `src/main/agent/handoff/session-history-reference.ts` |
+| `transcript-pipeline-audit.md` | `src/main/agent/transcript-service.ts`, `src/main/agent/transcript-cache.ts`, `src/main/agent/shared/transcript-truncation.ts`, `src/main/agent/adapters/*/transcript-parser.ts`, `src/shared/transcript-format.ts` |
+| `analytics.md` | `src/main/analytics/analytics.ts`, `src/main/agent/commands/analytics-commands.ts` |
+| `deployment.md` | `electron-builder.yml`, `.github/workflows/release.yml`, `scripts/verify-release-assets.js`, `src/main/updater.ts`, `src/main/updater-release-notes.ts` |
+| `installation.md` | `packages/launcher/**`, `electron-builder.yml`, `README.md` |
+| `release-checklist.md` | `.claude/skills/release/SKILL.md`, `.github/workflows/release.yml`, `scripts/verify-release-assets.js` |
 | `overview.md` | `README.md`, high-level features |
 | `user-guide.md` | `src/renderer/components/`, `src/renderer/stores/`, `src/shared/types.ts` |
 | `developer-guide.md` | `scripts/`, `tests/`, `electron-builder.yml`, `package.json` |
@@ -202,7 +210,7 @@ Each entry has a one-line rationale so future edits know what the entry was prot
   WHY: template variable list is mirrored in configuration.md (canonical) and cross-referenced in transition-engine.md and agent-integration.md.
 
 - `src/shared/task-template-vars.ts`
-  WHY: the 10-keyword auto_command / spawn_agent promptTemplate catalog (title, description, task_xml, taskId, worktreePath, branchName, baseBranch, prUrl, prNumber, attachments) is tabulated in transition-engine.md "Template Variables" and cross-referenced in architecture.md. Mechanically enforced by tests/unit/task-template-vars-parity.test.ts; see .claude/rules/task-template-vars-parity.md. Distinct from src/shared/template-vars.ts (the unrelated Shortcut command system). agent-integration.md's "Prompt Templates" section also names the full keyword list in prose (linking back to transition-engine.md as canonical) - not mechanically checked, spot-check it by hand on a keyword add/rename.
+  WHY: the auto_command / spawn_agent promptTemplate catalog (title, description, task_xml, taskId, worktreePath, branchName, baseBranch, prUrl, prNumber, attachments, port) is tabulated in transition-engine.md "Template Variables" and cross-referenced in architecture.md. Mechanically enforced by tests/unit/task-template-vars-parity.test.ts; see .claude/rules/task-template-vars-parity.md. Distinct from src/shared/template-vars.ts (the unrelated Shortcut command system). agent-integration.md's "Prompt Templates" section also names the full keyword list in prose (linking back to transition-engine.md as canonical) - not mechanically checked, spot-check it by hand on a keyword add/rename.
 
 - `src/main/agent/agent-adapter.ts`
   WHY: AgentAdapter interface methods (discoverCapabilities, getInjectionSequence, getCommandInjectionVerifier, summarize, locateSessionHistoryFile, getExitSequence, detectFirstOutput) are tabulated in agent-integration.md. Catches drift that types.ts re-exports miss.

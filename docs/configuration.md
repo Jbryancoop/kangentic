@@ -462,6 +462,11 @@ Power-user settings for diagnosing the activity engine and other internal subsys
 
 Each swimlane has its own overrides (stored in the per-project DB):
 
+> This table covers the automation and behavior overrides only. A column's identity fields on
+> `BoardColumnConfig` (`id`, `name`, `role`, `icon`, `color`, `archived`) are not listed here:
+> they are set in the Board Manager UI and round-trip through `kangentic.json`. See
+> [Board Configuration](#board-configuration) below.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `description` | string \| null | null | Free-form description of the column's purpose. Shown as a header tooltip and round-trips through `kangentic.json`. |
