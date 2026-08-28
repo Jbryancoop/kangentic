@@ -312,6 +312,13 @@ no TERM at all and capability-detecting TUIs (Antigravity's agy) render monochro
 gives Windows children the same environment POSIX children already get; an explicit TERM in the
 environment always wins.
 
+`COLORTERM` and `TERM_PROGRAM` are deliberately not defaulted, even though VS Code's integrated
+terminal exports both unconditionally. Claude Code already selects truecolor from
+`TERM=xterm-256color` alone (measured 2026-08-28 at claude 2.1.250: 222 truecolor SGR sequences,
+zero indexed, with COLORTERM absent), so a `COLORTERM` default would change nothing. `TERM_PROGRAM`
+is host identity that the CLI's DECSTBM capability gate enumerates among its inputs, so a fake
+host name could reopen the gate that `scrollRegionSuffix()` in `headless-frame.ts` guards against.
+
 ## See Also
 
 - [Shell Resolution](architecture.md#shell-resolution) -- overview in architecture doc

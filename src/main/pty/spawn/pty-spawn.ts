@@ -91,6 +91,21 @@ export function resolveShellArgs(shell: string): ShellInvocation {
  * measured shut while TERM was unset - see `scrollRegionSuffix()` in
  * `src/main/pty/buffer/headless-frame.ts` for the guard and the measurement.
  *
+ * Two host-advertising keys are deliberately NOT defaulted, unlike VS Code's
+ * integrated terminal (which exports `COLORTERM=truecolor` and
+ * `TERM_PROGRAM=vscode` unconditionally):
+ * - `COLORTERM`: Claude Code already selects truecolor from
+ *   `TERM=xterm-256color` alone. Measured 2026-08-28 (claude 2.1.250,
+ *   `claude --debug` under an env mirroring this function, COLORTERM absent):
+ *   222 truecolor `38;2` / `48;2` SGR sequences, zero indexed `38;5`. A
+ *   default would change nothing; re-measure only if a CLI upgrade visibly
+ *   drops to indexed color.
+ * - `TERM_PROGRAM`: host identity, so a fake host name would misreport, and
+ *   the same debug log enumerates it among the inputs of the DECSTBM
+ *   capability gate (`TERM_PROGRAM=unset` in the gate line quoted in
+ *   headless-frame.ts). Setting it risks reopening that gate, not just
+ *   cosmetics.
+ *
  * `platform` is injectable for tests (cross-platform parity); production
  * callers omit it.
  */
