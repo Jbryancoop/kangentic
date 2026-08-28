@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 <!-- releases -->
 
+## [v0.37.0] - 2026-08-28
+
+### Features
+
+- Mark dev builds as "Kangentic (dev)" in the wordmark and OS title (31334d0f)
+- Answer four task-tool questions at call time instead of making the caller probe (0141261b)
+- Task-keyed cookie jars with project-wide IdP login sharing (b218ed6a)
+- Never start a task from a stale base branch (64bb4d70)
+- Multi-select project scope filter in the toolbar (f9908b96)
+- Double-click a file row to pop out a single-file diff window (a4ae190a)
+
+### Fixes
+
+- Paste engine observes data-tap so unfocused sessions settle on real output (44cc2766)
+- Warn loudly when npm start loses the single-instance lock (9ccc8298)
+- Give mouse motion a self-superseding paced lane (2efc1b08)
+- Bound the paced wheel-report queue with a lane cap and reversal supersede (ee5cf400)
+- Replay geometry-spanning non-alt sessions via the parsed grid (7701505a)
+- Complete the shared/paths mock in session-exit-intentional (34a8dd18)
+- Abort-vs-timeout close race, resume projectId, coverage tests (ca7a8836)
+- Value-compare the pop-out monitor's config re-hydrate guard (5f213906)
+- Activate Unicode 11 emoji widths in every terminal parser (1a87ffff)
+
+### Other
+
+- Record why COLORTERM and TERM_PROGRAM are not defaulted (4b5f6956)
+- Extract computeWindowTitle so the OS title logic is tested (9d04b81f)
+- Document the single-instance lock warning in the dev guide (94c8d2b2)
+- Pin the evidence phase's data-tap path for unfocused sessions (654201d2)
+- Drop the paste-engine subscription caller contract (c80f1f05)
+- Record the audited worst-case bounds at their sites (8159c816)
+- Cover the override-validation ladder rungs with real values (e5f3e151)
+- Pin that flush empties a saturated wheel lane (6d1e0cef)
+- Gate the task-prompt readiness poll on mock output, task-scoped (a8bef53f)
+- Assert plan mode via a mock-printed marker, not the shell echo (f55b63d6)
+- De-flake the panel re-expand arrival-focus spec (58f71b4b)
+- Cover the cookie-jar route dispatch gate and the ensureJar degrade path (a895b8a2)
+- Pin the jar-seeding surface; sync stale cookie-jar docs (5da00b5b)
+- Pin the chunk-split takeover-clear and OSC-title paths (88c6b122)
+- Correct the Tasks channel count and the checkout-guard prose (b455ddf0)
+- Align two main-side scans with the stale-base branch work (a8d852e8)
+- Pin the Update-from-base kebab flow and the mount-only remote refresh (523951a0)
+- De-flake width-drift selfheal's rogue-frame precondition (ac7f09c4)
+- Pin the trigger's representable-selection intersection (893702cf)
+- Pin the exact-fit boundary of VirtualScreen's wide-glyph wrap (d91aa268)
+- Pin the shared window-frame Escape guard chain (698678cd)
+- Pin pop-out manager, git-diff subscription handler, and title-anchor contracts (d68444a5)
+
 ## [v0.36.0] - 2026-08-23
 
 ### Features

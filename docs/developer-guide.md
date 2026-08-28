@@ -179,6 +179,8 @@ Flags:
 
 **Single-instance lock warning:** a non-ephemeral launch whose Electron process exits almost immediately with code 0 means another Kangentic instance (usually the installed app) already holds the single-instance lock -- the loser exits silently and the holder's window is focused, which looks exactly like a successful dev launch while you are actually using the other build. `dev.js` detects that signature (non-ephemeral, exit 0, under 5s from spawn) and prints an unmissable warning: quit the other instance (including its tray icon and any background processes in Task Manager), then run `npm start` again. Ephemeral previews skip the lock and can never trigger it.
 
+**Dev build marker:** a dev build names itself `Kangentic (dev)` in the title-bar wordmark and in the OS window title, so a dogfooding `npm start` window is tellable from a packaged build in the taskbar without clicking into it. Both strings are gated on the build-time `__KANGENTIC_DEV__` flag and are dead-code-eliminated from a production build. A worktree preview is a dev window, so it gains the wordmark suffix on top of its preview pill, while its own `#<id> - <title>` label still wins the OS title. Marketing captures render against the Vite dev server, where the flag is true, so `hideDevOnlyChrome` in `tests/captures/helpers/capture-page.ts` hides the badge; a capture entry point that forgets the call fails `tests/unit/capture-dev-chrome-parity.test.ts`.
+
 ### Production (`npm run build` / `scripts/build.js`)
 
 1. `tsc --noEmit` (type check)
